@@ -5,7 +5,7 @@ description: Integração ampla com servidores MySQL usando perfis de configura�
 
 # MySQL
 
-Use esta skill para trabalhar com instâncias MySQL descritas por perfis INI.
+Use esta skill para trabalhar com instâncias MySQL descritas por perfis TOML explícitos.
 
 ## Princípios
 
@@ -20,15 +20,13 @@ Use esta skill para trabalhar com instâncias MySQL descritas por perfis INI.
 
 ## Configuração
 
-Perfis ficam em `configs/` e usam o nome da skill:
+Perfis ficam em `configs/mysql.toml`, são ignorados pelo Git e partem de `configs/mysql.toml.model`:
 
 ```text
-configs/mysql.ini
-configs/mysql_pessoal.ini
-configs/mysql_producao.ini
+python scripts/mysql.py --config configs/mysql.toml --profile pessoal
 ```
 
-Use sufixos separados por `_` para perfis adicionais. O perfil deve definir o executável ou driver, servidor, porta ou socket, banco, usuário e referência da entrada KeePassVault. Valores sensíveis permanecem no Vault.
+Use tabelas `[profiles.<nome>]` para perfis adicionais. O perfil deve definir executável, servidor, porta ou socket, banco, usuário e referência da entrada KeePassVault. Valores sensíveis permanecem no Vault.
 
 Leia `references/configuration.md` antes de criar ou ajustar perfis.
 
@@ -62,4 +60,4 @@ Operações suportadas incluem `query`, `execute`, `script`, `client` e `ping`. 
 - `scripts/test_mysql.py`: testes locais mockados.
 - `references/configuration.md`: formato dos perfis.
 - `references/operations.md`: operações e comandos suportados.
-- `configs/mysql.example.ini`: exemplo sem segredos.
+- `configs/mysql.toml.model`: exemplo sem segredos.

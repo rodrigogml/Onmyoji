@@ -1,6 +1,6 @@
 ---
 name: ssh
-description: Conectar e executar comandos em servidores SSH usando perfis INI, autenticação por senha ou chave privada e credenciais/anexos obtidos pela KeePassVault. Use para executar comandos remotos, transferir arquivos e administrar servidores sem expor senhas ou chaves no contexto, nos argumentos ou nos logs.
+description: Conectar e executar comandos em servidores SSH usando perfis TOML explícitos, autenticação por senha ou chave privada e credenciais/anexos obtidos pela KeePassVault. Use para executar comandos remotos, transferir arquivos e administrar servidores sem expor senhas ou chaves no contexto, nos argumentos ou nos logs.
 ---
 
 # SSH
@@ -9,26 +9,20 @@ Use `scripts/ssh.py` como wrapper JSON para conexões SSH. O wrapper usa Paramik
 
 ## Perfil
 
-Cada perfil é um arquivo INI local e não versionado. O perfil contém host, porta, usuário, backend SSH e a referência à entrada KeePass; nunca contém senha, chave privada ou passphrase.
+Os perfis ficam no arquivo local e não versionado `configs/ssh.toml`, criado a partir de `configs/ssh.toml.model`. Informe sempre `--config configs/ssh.toml --profile <perfil>`; o perfil contém host, porta, usuário, backend SSH e a referência à entrada KeePass, nunca senha, chave privada ou passphrase.
 
-```ini
-[ssh]
-host = 192.168.3.64
+```toml
+[profiles.servidor]
+host = "192.168.3.64"
 port = 22
-username = usuario
-auth_mode = password
-timeout_seconds = 30
-keepass_wrapper = C:\\project\\skills\\keepass-vault\\scripts\\keepass_vault.py
-keepass_config = C:\\project\\configs\\keepass-personal.ini
-keepass_entry = Servidores/Turing:SSH:servidor
-keepass_password_field = password
-keepass_auth_mode = windows_credential_manager
-keepass_auth_target = Company/KeePassVault
-known_hosts = C:\\Users\\usuario\\.ssh\\known_hosts
-temp_dir = C:\\Users\\usuario\\AppData\\Local\\Temp
+username = "usuario"
+auth_mode = "password"
+vault_profile = "pessoal"
+vault_entry_path = "Servidores/Turing:SSH:servidor"
+known_hosts = "C:/Users/usuario/.ssh/known_hosts"
 ```
 
-Para `auth_mode = key`, informe também `keepass_key_attachment` com o nome exato do anexo da chave privada e, opcionalmente, `keepass_key_passphrase_field = password` se a passphrase estiver em outra entrada. A chave é exportada para um arquivo temporário, usada somente na sessão e removida em `finally`.
+Para `auth_mode = key`, informe também `key_attachment` com o nome exato do anexo da chave privada e, opcionalmente, `key_passphrase_field = password`. A chave é exportada para um arquivo temporário, usada somente na sessão e removida em `finally`.
 
 ## Operações
 

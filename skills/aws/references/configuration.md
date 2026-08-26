@@ -1,10 +1,7 @@
 # Configuration
 
-Create a local profile from `configs/aws.example.ini` and keep it outside the repository.
+Create `configs/aws.toml` from `configs/aws.toml.model` and call the wrapper with `--config configs/aws.toml --profile <name>`.
 
-`[aws]` accepts `cli_path` (optional; defaults to `aws`), `region`, `expected_account_id` (optional 12-digit AWS account ID), `timeout_seconds`, and `max_attempts`. `region`, `timeout_seconds`, and `max_attempts` are required.
+`[defaults]` accepts `timeout_seconds` and `max_attempts`. Each `[profiles.<name>]` accepts `cli_path` (optional; defaults to `aws`), `region`, `expected_account_id` (optional 12-digit AWS account ID), `vault_profile`, and `vault_entry_path`.
 
-`[vault]` accepts `command`, `script`, `config`, `entry_path`, and `auth_json`. It is the direct contract of `skillKeePassVault`; its profile path and authentication selector are not credentials.
-
-The AWS entry must use `username` for the Access Key ID and `password` for the Secret Access Key. This first version supports permanent IAM access keys only. Do not store an AWS session token in the profile.
-
+The configured KeePass entry uses `username` for the Access Key ID and `password` for the Secret Access Key. This version supports permanent IAM access keys only; do not store an AWS session token in the profile.

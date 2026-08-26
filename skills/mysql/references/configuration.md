@@ -1,32 +1,24 @@
 # Configuração
 
-O wrapper lê um perfil INI com estas seções:
+O wrapper lê `configs/mysql.toml` e exige `--profile <nome>`. Use `configs/mysql.toml.model` como ponto de partida:
 
-```ini
-[mysql]
-executable = mysql
-host = 127.0.0.1
+```toml
+[defaults]
+executable = "mysql"
 port = 3306
-database = exemplo
-user = app
-connect_timeout = 10
-
-[auth]
-provider_command = python path/to/keepass_vault.py --config configs/keepass.ini
-entry = APIs/MySQL:app
-username_field = username
-password_field = password
-credential_target = Akuma/KeePassXC/KeeVault
-
-[execution]
-timeout = 120
+timeout_seconds = 120
 allow_client_commands = true
+
+[profiles.app]
+host = "127.0.0.1"
+database = "exemplo"
+user = ""
+vault_profile = "pessoal"
+vault_entry_path = "APIs/MySQL:app"
+username_field = "username"
+password_field = "password"
 ```
 
-`provider_command` recebe uma requisição JSON pela entrada padrão, sem segredos nos argumentos. Quando `auth.username_field` é definido, o usuário também é lido do Vault e `mysql.user` pode ficar vazio:
+Quando `username_field` é definido, o usuário também é lido do Vault e `user` pode ficar vazio. O wrapper chama a KeePassVault nativa da instância Onmyōji com o perfil indicado; nenhum comando externo, segredo ou seletor de autenticação deve constar no perfil MySQL.
 
-```json
-{"version":1,"operation":"read","entry":{"path":"APIs/MySQL:app"},"field":"password","auth":{"mode":"windows_credential_manager","target":"Akuma/KeePassXC/KeeVault"}}
-```
-
-O provedor deve devolver JSON contendo `ok: true` e `data.value`. Arquivos reais de configuração devem ficar em `configs/`, ser ignorados pelo Git e nunca conter senha.
+Arquivos reais de configuração ficam em `configs/`, são ignorados pelo Git e nunca contêm senha.
