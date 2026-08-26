@@ -1,0 +1,5 @@
+interface:
+  display_name: "AWS CLI"
+  short_description: "Operate Amazon S3 securely through AWS CLI."
+  default_prompt: "Use $aws to work with Amazon S3 through a configured profile."
+

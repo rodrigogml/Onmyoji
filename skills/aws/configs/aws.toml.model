@@ -1,0 +1,10 @@
+schema_version = 1
+[defaults]
+timeout_seconds = 30
+max_attempts = 3
+[profiles.example]
+cli_path = "aws"
+region = "sa-east-1"
+expected_account_id = ""
+vault_profile = "example"
+vault_entry_path = "AWS/example"
