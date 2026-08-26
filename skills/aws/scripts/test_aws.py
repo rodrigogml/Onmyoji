@@ -1,4 +1,3 @@
-import configparser
 import importlib.util
 import io
 import json
@@ -13,15 +12,24 @@ SPEC.loader.exec_module(aws)
 
 
 def profile(path: Path, account="123456789012"):
-    path.write_text(f"""[aws]\nregion = sa-east-1\nexpected_account_id = {account}\ntimeout_seconds = 30\nmax_attempts = 3\n\n[vault]\ncommand = py\nscript = C:\\skillKeePassVault\\scripts\\keepass_vault.py\nconfig = C:\\configs\\keepass.ini\nentry_path = AWS/example\nauth_json = {{\"mode\":\"prompt\"}}\n""", encoding="utf-8")
+    path.write_text(f'''schema_version = 1
+[defaults]
+timeout_seconds = 30
+max_attempts = 3
+[profiles.test]
+region = "sa-east-1"
+expected_account_id = "{account}"
+vault_profile = "vault"
+vault_entry_path = "AWS/example"
+''', encoding="utf-8")
 
 
 class AwsSkillTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.config_path = Path(self.temp.name) / "aws.ini"
+        self.config_path = Path(self.temp.name) / "aws.toml"
         profile(self.config_path)
-        self.config = aws.load_config(str(self.config_path))
+        self.config = aws.load_config(str(self.config_path), "test")
 
     def tearDown(self):
         self.temp.cleanup()
@@ -29,7 +37,7 @@ class AwsSkillTests(unittest.TestCase):
     def test_load_config_rejects_unknown_key(self):
         self.config_path.write_text("[aws]\nregion=x\ntimeout_seconds=1\nmax_attempts=1\nunknown=x\n[vault]\ncommand=x\nscript=x\nconfig=x\nentry_path=x\nauth_json={}\n", encoding="utf-8")
         with self.assertRaises(aws.SafeError) as context:
-            aws.load_config(str(self.config_path))
+            aws.load_config(str(self.config_path), "test")
         self.assertEqual(context.exception.code, "invalid_config")
 
     def test_request_reader_accepts_powershell_utf8_bom(self):
@@ -54,8 +62,8 @@ class AwsSkillTests(unittest.TestCase):
     @patch("subprocess.run")
     def test_cli_uses_isolated_credentials(self, run):
         run.side_effect = [
-            type("R", (), {"returncode": 0, "stdout": json.dumps({"ok": True, "data": {"value": "ACCESS"}})})(),
-            type("R", (), {"returncode": 0, "stdout": json.dumps({"ok": True, "data": {"value": "SECRET"}})})(),
+            type("R", (), {"returncode": 0, "stdout": json.dumps({"ok": True, "result": {"value": "ACCESS"}})})(),
+            type("R", (), {"returncode": 0, "stdout": json.dumps({"ok": True, "result": {"value": "SECRET"}})})(),
             type("R", (), {"returncode": 0, "stdout": "{}"})(),
         ]
         aws.run_aws(self.config, ["sts", "get-caller-identity"])
