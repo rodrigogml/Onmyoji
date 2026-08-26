@@ -17,7 +17,7 @@ from typing import Any
 
 class Ui:
     enabled = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
-    reset = "\x1b[0m"; bold = "\x1b[1m"; violet = "\x1b[38;5;141m"; cyan = "\x1b[38;5;80m"; slate = "\x1b[38;5;245m"; green = "\x1b[38;5;78m"
+    reset = "\x1b[0m"; bold = "\x1b[1m"; violet = "\x1b[38;5;141m"; cyan = "\x1b[38;5;80m"; slate = "\x1b[38;5;245m"; green = "\x1b[38;5;78m"; red = "\x1b[38;5;203m"
     @classmethod
     def text(cls, value: str, *styles: str) -> str: return "".join(styles) + value + cls.reset if cls.enabled and styles else value
 
@@ -38,6 +38,11 @@ def screen(title: str, subtitle: str = "") -> None:
 def menu_item(key: str, label: str, value: str = "") -> None:
     shortcut = Ui.text(f"{key:>4}", Ui.bold, Ui.cyan)
     print(f"  {shortcut}  {label:<30}" + (Ui.text(value, Ui.slate) if value else ""))
+
+
+def result(ok: bool, message: str) -> None:
+    label, color = ("+ OK", Ui.green) if ok else ("! ERRO", Ui.red)
+    print("\n    " + Ui.text(label, Ui.bold, color) + "  " + Ui.text(message, color))
 
 
 def prompt(label: str) -> str: return input(Ui.text(f"› {label}", Ui.bold, Ui.violet))
@@ -137,7 +142,7 @@ def ask(label: str, current: str = "", required: bool = False) -> str:
         if value: return value
         if current: return current
         if not required: return ""
-        print("Este valor é obrigatório.")
+        result(False, "Este valor é obrigatório.")
 
 
 def ask_choice(label: str, choices: dict[str, str], current: str) -> str:
@@ -147,7 +152,7 @@ def ask_choice(label: str, choices: dict[str, str], current: str) -> str:
         value = prompt(f"Opção [{current}]: ").strip() or current
         if value.casefold() == "x" or value == "\x1b": raise WizardCancelled
         if value in choices: return value
-        print("Opção inválida.")
+        result(False, "Opção inválida.")
 
 
 def choose_profile(profiles: dict[str, Any], action: str) -> str | None:
@@ -159,7 +164,7 @@ def choose_profile(profiles: dict[str, Any], action: str) -> str | None:
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return None
         if choice.isdigit() and 1 <= int(choice) <= len(names): return names[int(choice) - 1]
-        print("Opção inválida.")
+        result(False, "Opção inválida.")
 
 
 def create_profile(data: dict[str, Any], path: Path, profile_name: str) -> None:
@@ -170,7 +175,7 @@ def create_profile(data: dict[str, Any], path: Path, profile_name: str) -> None:
     print(f"\nPerfil: {profile_name}")
     vault_name = ask("Identificador do vault", current_vault, True)
     if not re.fullmatch(r"[A-Za-z0-9_-]+", vault_name):
-        print("Nome de vault inválido; nenhuma alteração foi salva.")
+        result(False, "Nome de vault inválido; nenhuma alteração foi salva.")
         return
     executable = ask("Executável do KeePassXC", vault["cli_command"][0] if vault["cli_command"] else "keepassxc-cli", True)
     platform = "windows" if os.name == "nt" else "linux"
@@ -194,13 +199,13 @@ def create_profile(data: dict[str, Any], path: Path, profile_name: str) -> None:
     candidate["profiles"][profile_name] = {"vault": vault_name, "access": "read_write" if access == "2" else "read_only", "allowed_operations": WRITE_OPS if access == "2" else READ_OPS, "allowed_entry_roots": [item.strip() for item in entry_roots.split(";") if item.strip()], "allowed_attachment_roots": [item.strip() for item in attachment_roots.split(";") if item.strip()], "auth": {"allowed_modes": ["configured", "stdin", "prompt", "windows_credential_manager"], "windows": windows, "linux": linux}}
     ok, message = save_transactional(path, candidate)
     if ok: data.clear(); data.update(candidate)
-    print(message if ok else f"Não salvo: {message}")
+    result(ok, message if ok else f"Não salvo: {message}")
 
 
 def commit_profile_change(data: dict[str, Any], path: Path, candidate: dict[str, Any]) -> bool:
     ok, message = save_transactional(path, candidate)
     if ok: data.clear(); data.update(candidate)
-    print(message if ok else f"Não salvo: {message}")
+    result(ok, message if ok else f"Não salvo: {message}")
     return ok
 
 
@@ -217,30 +222,30 @@ def store_password(profile_name: str, profile: dict[str, Any]) -> None:
     password = None
     try:
         password = getpass.getpass("Senha mestra KeePass (não será exibida): ")
-        if not password: print("Nenhuma senha informada; operação cancelada."); return
+        if not password: result(False, "Nenhuma senha informada; operação cancelada."); return
         if os.name == "nt":
             auth = profile["auth"]["windows"]
             if auth.get("mode") != "windows_credential_manager" or not auth.get("target"):
-                print("Configure a autenticação Windows como Windows Credential Manager antes de armazenar a senha."); return
+                result(False, "Configure a autenticação Windows como Windows Credential Manager antes de armazenar a senha."); return
             store_windows_credential(str(auth["target"]), password)
-            print("Senha salva no Windows Credential Manager.")
+            result(True, "Senha salva no Windows Credential Manager.")
         else:
             auth = profile["auth"]["linux"]
             command = auth.get("command", [])
             if auth.get("mode") != "command" or not isinstance(command, list) or len(command) < 2 or command[1] != "lookup":
-                print("Configure a autenticação Linux como secret-tool antes de armazenar a senha."); return
+                result(False, "Configure a autenticação Linux como secret-tool antes de armazenar a senha."); return
             store_command = [str(command[0]), "store", f"--label=Onmyoji KeePass {profile_name}", *[str(value) for value in command[2:]]]
             subprocess.run(store_command, input=password + "\n", text=True, capture_output=True, check=True, timeout=20)
-            print("Senha salva no keyring Linux.")
-    except (EOFError, KeyboardInterrupt): print("Armazenamento da senha cancelado.")
-    except (OSError, subprocess.SubprocessError): print("Não foi possível salvar a senha no provedor do sistema operacional.")
+            result(True, "Senha salva no keyring Linux.")
+    except (EOFError, KeyboardInterrupt): result(False, "Armazenamento da senha cancelado.")
+    except (OSError, subprocess.SubprocessError): result(False, "Não foi possível salvar a senha no provedor do sistema operacional.")
     finally:
         if password is not None: del password
 
 
 def test_vault_access(profile_name: str, profile: dict[str, Any], vault: dict[str, Any], defaults: dict[str, Any]) -> None:
     valid, message = validate({"schema_version": 1, "defaults": defaults, "vaults": {profile["vault"]: vault}, "profiles": {profile_name: profile}})
-    if not valid: print(f"Teste não iniciado: {message}"); return
+    if not valid: result(False, f"Teste não iniciado: {message}"); return
     sys.path.insert(0, str(SKILL_DIR / "scripts"))
     import keepass_vault
     password = None
@@ -248,9 +253,9 @@ def test_vault_access(profile_name: str, profile: dict[str, Any], vault: dict[st
         password, key_file = keepass_vault.password_for({"auth": {"mode": "configured"}}, profile)
         client = keepass_vault.KeePass(vault, password, key_file, int(defaults["timeout_seconds"]))
         client.run(["ls", "-q", "__DATABASE__"])
-        print("Acesso ao vault confirmado.")
-    except keepass_vault.VaultError as error: print(f"Falha ao acessar o vault: {error.message}")
-    except (OSError, ValueError): print("Falha inesperada ao iniciar o teste de acesso ao vault.")
+        result(True, "Acesso ao vault confirmado.")
+    except keepass_vault.VaultError as error: result(False, f"Falha ao acessar o vault: {error.message}")
+    except (OSError, ValueError): result(False, "Falha inesperada ao iniciar o teste de acesso ao vault.")
     finally:
         if password is not None: del password
 
@@ -283,14 +288,14 @@ def edit_profile(data: dict[str, Any], path: Path, profile_name: str) -> None:
         try:
             if choice == "1":
                 new_name = ask("Novo nome do perfil", profile_name, True)
-                if not re.fullmatch(r"[A-Za-z0-9_-]+", new_name): print("Nome inválido."); continue
-                if new_name != profile_name and new_name in candidate["profiles"]: print("Esse perfil já existe."); continue
+                if not re.fullmatch(r"[A-Za-z0-9_-]+", new_name): result(False, "Nome inválido."); continue
+                if new_name != profile_name and new_name in candidate["profiles"]: result(False, "Esse perfil já existe."); continue
                 if new_name != profile_name:
                     candidate["profiles"][new_name] = candidate["profiles"].pop(profile_name)
                     if commit_profile_change(data, path, candidate): profile_name = new_name
             elif choice == "2":
                 new_vault = ask("Identificador do vault", candidate_profile["vault"], True)
-                if not re.fullmatch(r"[A-Za-z0-9_-]+", new_vault): print("Nome de vault inválido."); continue
+                if not re.fullmatch(r"[A-Za-z0-9_-]+", new_vault): result(False, "Nome de vault inválido."); continue
                 if new_vault not in candidate["vaults"]: candidate["vaults"][new_vault] = candidate["vaults"][candidate_profile["vault"]]
                 candidate_profile["vault"] = new_vault
                 commit_profile_change(data, path, candidate)
@@ -323,22 +328,22 @@ def edit_profile(data: dict[str, Any], path: Path, profile_name: str) -> None:
                 commit_profile_change(data, path, candidate)
             elif choice == "9": store_password(profile_name, profile)
             elif choice == "10": test_vault_access(profile_name, profile, vault, data["defaults"])
-            else: print("Opção inválida.")
-        except WizardCancelled: print("Edição cancelada; nenhuma alteração foi gravada.")
+            else: result(False, "Opção inválida.")
+        except WizardCancelled: result(False, "Edição cancelada; nenhuma alteração foi gravada.")
 
 
 def configure(root: Path) -> int:
     path = config_for(root)
     try: data = load_config(path)
-    except ValueError as error: print(error); return 2
+    except ValueError as error: result(False, str(error)); return 2
     if remove_legacy_model_example(data):
         ok, message = save_transactional(path, data)
-        if not ok: print(f"Não foi possível migrar o perfil de exemplo: {message}"); return 2
-        print("Perfil demonstrativo 'example' removido da configuração local.")
+        if not ok: result(False, f"Não foi possível migrar o perfil de exemplo: {message}"); return 2
+        result(True, "Perfil demonstrativo 'example' removido da configuração local.")
     if not path.exists():
         ok, message = save_transactional(path, data)
-        if not ok: print(f"Não foi possível criar a configuração inicial: {message}"); return 2
-        print(f"Configuração inicial criada: {path}")
+        if not ok: result(False, f"Não foi possível criar a configuração inicial: {message}"); return 2
+        result(True, f"Configuração inicial criada: {path}")
     while True:
         screen("Configuração", "Perfis, vaults e autenticação da instância")
         menu_item("1.", "Criar perfil")
@@ -351,38 +356,38 @@ def configure(root: Path) -> int:
         if choice == "1":
             try:
                 name = ask("Nome do perfil (letras, números, _ ou -)", required=True)
-                if not re.fullmatch(r"[A-Za-z0-9_-]+", name): print("Nome inválido.")
-                elif name in data["profiles"]: print("Esse perfil já existe.")
+                if not re.fullmatch(r"[A-Za-z0-9_-]+", name): result(False, "Nome inválido.")
+                elif name in data["profiles"]: result(False, "Esse perfil já existe.")
                 else: create_profile(data, path, name)
-            except WizardCancelled: print("Configuração cancelada; nenhuma alteração foi gravada.")
+            except WizardCancelled: result(False, "Configuração cancelada; nenhuma alteração foi gravada.")
         elif choice == "2":
-            if not data["profiles"]: print("Nenhum perfil criado."); continue
+            if not data["profiles"]: result(False, "Nenhum perfil criado."); continue
             name = choose_profile(data["profiles"], "editar")
             if name is not None:
                 try: edit_profile(data, path, name)
-                except WizardCancelled: print("Configuração cancelada; nenhuma alteração foi gravada.")
+                except WizardCancelled: result(False, "Configuração cancelada; nenhuma alteração foi gravada.")
         elif choice == "3":
-            if not data["profiles"]: print("Nenhum perfil criado."); continue
+            if not data["profiles"]: result(False, "Nenhum perfil criado."); continue
             name = choose_profile(data["profiles"], "remover")
             if name is not None:
-                print(f"ATENÇÃO: o perfil '{name}' deixará de poder ser usado nesta instância.")
+                result(False, f"ATENÇÃO: o perfil '{name}' deixará de poder ser usado nesta instância.")
                 confirmation = prompt("Digite REMOVER para confirmar: ").strip()
                 if confirmation == "REMOVER":
                     candidate = json.loads(json.dumps(data)); del candidate["profiles"][name]
                     ok, message = save_transactional(path, candidate)
                     if ok: data = candidate
-                    print(message if ok else f"Não removido: {message}")
-                else: print("Remoção cancelada.")
+                    result(ok, message if ok else f"Não removido: {message}")
+                else: result(False, "Remoção cancelada.")
         elif choice == "4":
             try:
                 value = ask("Timeout em segundos", str(data["defaults"]["timeout_seconds"]), True)
                 candidate = json.loads(json.dumps(data)); candidate["defaults"]["timeout_seconds"] = int(value)
                 ok, message = save_transactional(path, candidate)
                 if ok: data = candidate
-                print(message if ok else f"Não salvo: {message}")
-            except ValueError: print("Informe um número inteiro.")
-            except WizardCancelled: print("Configuração cancelada; nenhuma alteração foi gravada.")
-        else: print("Opção inválida.")
+                result(ok, message if ok else f"Não salvo: {message}")
+            except ValueError: result(False, "Informe um número inteiro.")
+            except WizardCancelled: result(False, "Configuração cancelada; nenhuma alteração foi gravada.")
+        else: result(False, "Opção inválida.")
 
 
 def main() -> int:

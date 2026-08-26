@@ -30,6 +30,14 @@ class SetupTests(unittest.TestCase):
             result = subprocess.run([sys.executable, str(SKILL_DIR / "setupSkill.py"), "--onmyoji-root", temporary, "--action", "configure"], input="x\n", capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue((Path(temporary) / "configs" / "keepass.toml").is_file())
+            self.assertIn("+ OK", result.stdout)
+
+    def test_operation_failure_has_a_prominent_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            result = subprocess.run([sys.executable, str(SKILL_DIR / "setupSkill.py"), "--onmyoji-root", temporary, "--action", "configure"], input="4\ninvalido\nx\n", capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("! ERRO", result.stdout)
+            self.assertIn("Informe um número inteiro.", result.stdout)
 
     def test_configure_creates_profile_from_guided_menu(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
