@@ -1,0 +1,15 @@
+schema_version = 1
+[defaults]
+timeout_seconds = 30
+temp_dir = ""
+[profiles.example]
+host = "example.internal"
+port = 22
+username = "user"
+auth_mode = "key"
+vault_profile = "example"
+vault_entry_path = "Servers/example"
+keepass_password_field = "password"
+keepass_key_attachment = "id_ed25519"
+keepass_key_passphrase_field = "password"
+known_hosts = ""

@@ -1,0 +1,4 @@
+interface:
+  display_name: "SSH Integration"
+  short_description: "SSH com senha ou chave privada e KeePass"
+  default_prompt: "Use a skill SSH para conectar ao servidor configurado, obtendo credenciais e anexos pela KeePassVault e limpando arquivos temporários após o uso."
