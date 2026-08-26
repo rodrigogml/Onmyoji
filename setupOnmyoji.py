@@ -213,8 +213,11 @@ def skill_item(index: int, skill: Skill, state: str) -> None:
     """Renderiza a linha da skill na grade fixa do menu principal."""
     option = Ui.text(f"{index}.".rjust(4), Ui.bold, Ui.cyan)
     name = skill.title
-    fill = "·" * max(3, 30 - len(name))
-    print(f"  {option}  {name}{Ui.text(fill, Ui.slate)}   {state}")
+    value_column = 48
+    prefix_width = 8  # margem, opção de quatro caracteres e dois espaços
+    fill_width = max(1, value_column - prefix_width - len(name))
+    filler = "·" * fill_width if index % 2 == 0 else " " * fill_width
+    print(f"  {option}  {name}{Ui.text(filler, Ui.slate)}{state}")
 
 
 def choose(label: str, values: list[str], current: str) -> str | None:
