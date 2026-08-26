@@ -1,0 +1,5 @@
+interface:
+  display_name: "EccoVox"
+  short_description: "Transcreve áudio e sintetiza fala no serviço local EccoVox."
+  default_prompt: "Use a skill EccoVox para verificar o serviço local, transcrever um áudio autorizado ou gerar um arquivo de fala."
+
