@@ -76,6 +76,8 @@ class SetupTests(unittest.TestCase):
             self.assertIn("2. beta", result.stdout)
             self.assertIn("1. Nome do perfil: alpha", result.stdout)
             self.assertIn("8. Diretórios de anexos: todos", result.stdout)
+            self.assertIn("9. Salvar senha no provedor do sistema operacional", result.stdout)
+            self.assertIn("10. Testar acesso ao vault", result.stdout)
             self.assertIn("X. Voltar", result.stdout)
 
     def test_edit_menu_changes_only_selected_item(self) -> None:

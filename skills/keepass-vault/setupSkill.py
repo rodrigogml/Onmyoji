@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+import getpass
 import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -174,6 +177,57 @@ def commit_profile_change(data: dict[str, Any], path: Path, candidate: dict[str,
     return ok
 
 
+def store_windows_credential(target: str, password: str) -> None:
+    class Credential(ctypes.Structure):
+        _fields_ = [("Flags", ctypes.c_uint32), ("Type", ctypes.c_uint32), ("TargetName", ctypes.c_wchar_p), ("Comment", ctypes.c_wchar_p), ("LastWritten", ctypes.c_byte * 8), ("CredentialBlobSize", ctypes.c_uint32), ("CredentialBlob", ctypes.POINTER(ctypes.c_byte)), ("Persist", ctypes.c_uint32), ("AttributeCount", ctypes.c_uint32), ("Attributes", ctypes.c_void_p), ("TargetAlias", ctypes.c_wchar_p), ("UserName", ctypes.c_wchar_p)]
+    encoded = password.encode("utf-16-le")
+    blob = ctypes.create_string_buffer(encoded)
+    credential = Credential(0, 1, target, None, (ctypes.c_byte * 8)(), len(encoded), ctypes.cast(blob, ctypes.POINTER(ctypes.c_byte)), 2, 0, None, None, None)
+    if not ctypes.windll.advapi32.CredWriteW(ctypes.byref(credential), 0): raise OSError("CredWriteW falhou.")
+
+
+def store_password(profile_name: str, profile: dict[str, Any]) -> None:
+    password = None
+    try:
+        password = getpass.getpass("Senha mestra KeePass (não será exibida): ")
+        if not password: print("Nenhuma senha informada; operação cancelada."); return
+        if os.name == "nt":
+            auth = profile["auth"]["windows"]
+            if auth.get("mode") != "windows_credential_manager" or not auth.get("target"):
+                print("Configure a autenticação Windows como Windows Credential Manager antes de armazenar a senha."); return
+            store_windows_credential(str(auth["target"]), password)
+            print("Senha salva no Windows Credential Manager.")
+        else:
+            auth = profile["auth"]["linux"]
+            command = auth.get("command", [])
+            if auth.get("mode") != "command" or not isinstance(command, list) or len(command) < 2 or command[1] != "lookup":
+                print("Configure a autenticação Linux como secret-tool antes de armazenar a senha."); return
+            store_command = [str(command[0]), "store", f"--label=Onmyoji KeePass {profile_name}", *[str(value) for value in command[2:]]]
+            subprocess.run(store_command, input=password + "\n", text=True, capture_output=True, check=True, timeout=20)
+            print("Senha salva no keyring Linux.")
+    except (EOFError, KeyboardInterrupt): print("Armazenamento da senha cancelado.")
+    except (OSError, subprocess.SubprocessError): print("Não foi possível salvar a senha no provedor do sistema operacional.")
+    finally:
+        if password is not None: del password
+
+
+def test_vault_access(profile_name: str, profile: dict[str, Any], vault: dict[str, Any], defaults: dict[str, Any]) -> None:
+    valid, message = validate({"schema_version": 1, "defaults": defaults, "vaults": {profile["vault"]: vault}, "profiles": {profile_name: profile}})
+    if not valid: print(f"Teste não iniciado: {message}"); return
+    sys.path.insert(0, str(SKILL_DIR / "scripts"))
+    import keepass_vault
+    password = None
+    try:
+        password, key_file = keepass_vault.password_for({"auth": {"mode": "configured"}}, profile)
+        client = keepass_vault.KeePass(vault, password, key_file, int(defaults["timeout_seconds"]))
+        client.run(["ls", "-q", "__DATABASE__"])
+        print("Acesso ao vault confirmado.")
+    except keepass_vault.VaultError as error: print(f"Falha ao acessar o vault: {error.message}")
+    except (OSError, ValueError): print("Falha inesperada ao iniciar o teste de acesso ao vault.")
+    finally:
+        if password is not None: del password
+
+
 def edit_profile(data: dict[str, Any], path: Path, profile_name: str) -> None:
     platform = "windows" if os.name == "nt" else "linux"
     platform_name = "Windows" if platform == "windows" else "Linux"
@@ -191,6 +245,8 @@ def edit_profile(data: dict[str, Any], path: Path, profile_name: str) -> None:
         print(f"  6. Autenticação no {platform_name}: {auth_value}")
         print(f"  7. Raízes de entradas: {'; '.join(profile['allowed_entry_roots']) or 'todas'}")
         print(f"  8. Diretórios de anexos: {'; '.join(profile['allowed_attachment_roots']) or 'todos'}")
+        print("  9. Salvar senha no provedor do sistema operacional")
+        print(" 10. Testar acesso ao vault")
         print("  X. Voltar")
         choice = input("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
@@ -238,6 +294,8 @@ def edit_profile(data: dict[str, Any], path: Path, profile_name: str) -> None:
                 value = ask("Diretórios de anexos (separe por ;, vazio = todos)", ";".join(candidate_profile["allowed_attachment_roots"]))
                 candidate_profile["allowed_attachment_roots"] = [item.strip() for item in value.split(";") if item.strip()]
                 commit_profile_change(data, path, candidate)
+            elif choice == "9": store_password(profile_name, profile)
+            elif choice == "10": test_vault_access(profile_name, profile, vault, data["defaults"])
             else: print("Opção inválida.")
         except WizardCancelled: print("Edição cancelada; nenhuma alteração foi gravada.")
 
