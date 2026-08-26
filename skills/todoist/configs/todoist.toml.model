@@ -1,0 +1,13 @@
+schema_version = 1
+
+[defaults]
+api_base = "https://api.todoist.com/api/v1"
+timeout_seconds = 30
+max_retries = 2
+
+[profiles.example]
+vault_profile = "example"
+vault_entry_path = "APIs/Todoist"
+vault_field = "password"
+access = "read_only"
+allowed_operations = []

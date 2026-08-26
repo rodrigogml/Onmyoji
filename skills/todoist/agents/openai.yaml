@@ -1,0 +1,4 @@
+interface:
+  display_name: "Todoist"
+  short_description: "Gerencie dados do Todoist por perfis seguros."
+  default_prompt: "Use o perfil Todoist configurado para consultar ou atualizar tarefas e projetos."
