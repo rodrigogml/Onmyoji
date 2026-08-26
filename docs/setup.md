@@ -22,7 +22,7 @@ As ações mínimas são:
 - `describe`: informa os metadados usados pelo menu.
 - `status`: informa se o perfil existe, está válido e está atualizado em relação ao modelo.
 - `init`: cria o perfil a partir do arquivo `.model`, sem sobrescrever um arquivo existente.
-- `configure`: cria, lista, altera ou remove perfis mediante confirmação.
+- `configure`: cria o perfil a partir do modelo quando ele ainda não existe e indica o arquivo local para edição; nunca sobrescreve um perfil existente.
 - `validate`: valida a configuração e os pré-requisitos da skill.
 - `migrate`: propõe e aplica uma atualização de modelo após criar backup do perfil local.
 

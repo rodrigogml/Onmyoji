@@ -44,8 +44,12 @@ def main() -> int:
         if target.exists(): shutil.copy2(target, target.with_suffix(".toml.bak"))
         shutil.copy2(MODEL, target); print(f"Criado: {target}"); return 0
     if args.action == "configure":
-        if not target.exists(): print("Inicialize primeiro com --action init.", file=sys.stderr); return 2
-        print(f"Edite os perfis em: {target}"); return 0
+        if not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(MODEL, target)
+            print(f"Perfil inicial criado a partir do modelo: {target}")
+        print(f"Edite os perfis em: {target}")
+        return 0
     if args.action == "migrate": print("Nenhuma migração é necessária para schema_version = 1."); return 0
     ok, message = validate(target); print(message); return 0 if ok else 2
 

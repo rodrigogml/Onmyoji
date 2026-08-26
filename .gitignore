@@ -1,3 +1,16 @@
+# O diretório é um CODEX_HOME de produção: ignore qualquer arquivo novo na raiz.
+# Os únicos recursos versionados na raiz são liberados explicitamente abaixo.
+/*
+!/.gitignore
+!/.gitattributes
+!/AGENTS.md
+!/README.md
+!/setupOnmyoji.py
+!/docs/
+!/docs/**
+!/skills/
+!/skills/**
+
 # Configuração local de uma instância do Onmyōji (CODEX_HOME)
 /config.toml
 /*.config.toml
