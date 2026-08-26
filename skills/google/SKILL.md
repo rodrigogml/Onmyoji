@@ -31,7 +31,7 @@ Consulte `references/google-cloud-setup.md` para criar o projeto, ativar as APIs
 
 ## Perfis
 
-Perfis reais ficam em `configs/`, são ignorados pelo Git e devem seguir `google.ini` ou `google_<perfil>.ini`. Use `configs/google.example.ini` como modelo. O formato das notas é `{"version":1,"profiles":{"rodrigogml":{"refresh_token":"..."}}}`.
+Perfis reais ficam em `configs/google.toml`, são ignorados pelo Git e usam tabelas `[profiles.<nome>]`. Use `configs/google.toml.model` como modelo. O formato das notas é `{"version":1,"profiles":{"rodrigogml":{"refresh_token":"..."}}}`.
 
 ## Escopo
 

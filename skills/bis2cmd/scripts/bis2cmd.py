@@ -31,13 +31,6 @@ def load_config(path: str, profile_name: str) -> dict[str, dict[str, Any]]:
     return {"biscmd":biscmd,"auth":auth,"execution":execution}
 
 
-def provider_command(raw: str) -> list[str]:
-    try:
-        return [item.strip('"') for item in shlex.split(raw, posix=False)]
-    except ValueError as exc:
-        raise BIS2CMDError("invalid_config", "Comando do provedor de credenciais inválido.") from exc
-
-
 def read_secret(config: dict[str,dict[str,Any]], field: str) -> str:
     auth = config["auth"]
     request = {"operation":"read","path":auth["vault_entry_path"],"field":field,"auth":{"mode":"configured"}}
