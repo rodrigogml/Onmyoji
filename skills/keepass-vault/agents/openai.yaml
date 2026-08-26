@@ -1,0 +1,4 @@
+interface:
+  display_name: "KeePass Vault"
+  short_description: "Gerencie cofres KeePassXC com segurança."
+  default_prompt: "Use $keepass-vault para consultar ou gerenciar um cofre configurado."

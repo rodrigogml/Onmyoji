@@ -1,0 +1,29 @@
+schema_version = 1
+
+[defaults]
+timeout_seconds = 30
+
+[vaults.example]
+cli_command = ["keepassxc-cli"]
+
+[vaults.example.database]
+windows = "C:/caminho/para/cofre.kdbx"
+linux = "/caminho/para/cofre.kdbx"
+
+[profiles.example]
+vault = "example"
+access = "read_only"
+allowed_operations = ["list", "list.totp", "read", "attachment.export"]
+allowed_entry_roots = []
+allowed_attachment_roots = []
+
+[profiles.example.auth]
+allowed_modes = ["configured", "stdin", "prompt", "windows_credential_manager"]
+
+[profiles.example.auth.windows]
+mode = "windows_credential_manager"
+target = "Onmyoji/KeePass/example"
+
+[profiles.example.auth.linux]
+mode = "command"
+command = ["secret-tool", "lookup", "service", "onmyoji", "vault", "example"]

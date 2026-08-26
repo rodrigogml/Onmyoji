@@ -1,0 +1,24 @@
+# Configuração local de uma instância do Onmyōji (CODEX_HOME)
+/config.toml
+/*.config.toml
+/configs/
+/*.bak
+/*.bak.*
+
+# Estado, autenticação e caches gerenciados pelo Codex
+/auth.json
+/sessions/
+/state/
+/log/
+/tmp/
+/plugins/
+/cache/
+/thread-writer-locks/
+/*.sqlite
+/*.sqlite-shm
+/*.sqlite-wal
+
+# Artefatos locais de Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
