@@ -13,6 +13,9 @@
 !/tests/
 !/tests/**
 
+# Skills instaladas/geradas pelo próprio Codex nesta instância.
+/skills/.system/
+
 # Configuração local de uma instância do Onmyōji (CODEX_HOME)
 /config.toml
 /*.config.toml
