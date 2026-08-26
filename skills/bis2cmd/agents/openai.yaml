@@ -1,0 +1,4 @@
+interface:
+  display_name: "BIS2CMD"
+  short_description: "Executar comandos remotos do BIS2"
+  default_prompt: "Use $bis2cmd para executar uma operação do BISCMD no perfil configurado."
