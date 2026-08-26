@@ -12,6 +12,11 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 ROOT = Path(__file__).resolve().parent
 MANAGED_BEGIN = "# BEGIN ONMYOJI MANAGED SKILLS"
 MANAGED_END = "# END ONMYOJI MANAGED SKILLS"
@@ -20,6 +25,26 @@ SYSTEM_END = "# END ONMYOJI MANAGED CODEX SETTINGS"
 REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"]
 SANDBOXES = ["read-only", "workspace-write", "danger-full-access"]
 APPROVALS = ["untrusted", "on-request", "never"]
+
+
+class Ui:
+    """Camada visual ANSI sem dependências e segura para saídas não interativas."""
+    enabled = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+    reset = "\x1b[0m"; bold = "\x1b[1m"; dim = "\x1b[2m"
+    violet = "\x1b[38;5;141m"; cyan = "\x1b[38;5;80m"; green = "\x1b[38;5;78m"; amber = "\x1b[38;5;221m"; red = "\x1b[38;5;203m"; slate = "\x1b[38;5;245m"
+
+    @classmethod
+    def text(cls, value: str, *styles: str) -> str:
+        return "".join(styles) + value + cls.reset if cls.enabled and styles else value
+
+    @classmethod
+    def badge(cls, label: str, state: str) -> str:
+        colors = {"ready": cls.green, "active": cls.green, "warning": cls.amber, "inactive": cls.slate, "danger": cls.red}
+        return cls.text(f" {label} ", cls.bold, colors[state])
+
+
+def prompt(label: str) -> str:
+    return input(Ui.text(f"› {label}", Ui.violet, Ui.bold))
 
 
 @dataclass(frozen=True)
@@ -171,15 +196,18 @@ def invoke(skill: Skill, root: Path) -> None:
 
 
 def screen(title: str, subtitle: str = "") -> None:
-    width = 70
-    print("\n" + "═" * width)
-    print(f"  ONMYŌJI  ·  {title.upper()}")
-    if subtitle: print(f"  {subtitle}")
-    print("═" * width)
+    width = max(56, min(shutil.get_terminal_size((78, 24)).columns, 96))
+    print("\n" + Ui.text("╭" + "─" * (width - 2) + "╮", Ui.violet))
+    brand = Ui.text(" ONMYŌJI", Ui.bold, Ui.violet)
+    section = Ui.text(f"  /  {title.upper()}", Ui.bold, Ui.cyan)
+    print("│" + f"{brand}{section}" + " " * max(0, width - 2 - 11 - len(title) - 4) + "│")
+    if subtitle: print("│ " + Ui.text(subtitle[:width - 4].ljust(width - 4), Ui.slate) + " │")
+    print(Ui.text("╰" + "─" * (width - 2) + "╯", Ui.violet))
 
 
 def item(key: str, label: str, value: str = "") -> None:
-    print(f"  {key:<2} {label}" + (f"\n     {value}" if value else ""))
+    shortcut = Ui.text(f"{key:<3}", Ui.bold, Ui.cyan)
+    print(f"  {shortcut} {label}" + (f"\n       {Ui.text(value, Ui.slate)}" if value else ""))
 
 
 def choose(label: str, values: list[str], current: str) -> str | None:
@@ -326,7 +354,8 @@ def menu(skills: list[Skill], root: Path) -> int:
         item("A.", "Codex-CLI", "Modelo, projeto, sandbox e permissões")
         print("\n  SKILLS DE INTEGRAÇÃO")
         for index, skill in enumerate(skills, 1):
-            state = "ATIVA" if skill.identifier in enabled else "inativa"
+            active = skill.identifier in enabled
+            state = Ui.badge("ATIVA", "active") if active else Ui.badge("inativa", "inactive")
             item(f"{index}.", skill.title, state)
         print()
         item("X.", "Sair")
