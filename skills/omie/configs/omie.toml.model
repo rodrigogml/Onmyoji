@@ -1,0 +1,11 @@
+schema_version = 1
+
+[defaults]
+timeout_seconds = 30
+max_retries = 2
+
+[profiles.example]
+vault_profile = "example"
+vault_entry_path = "APIs/Omie/example"
+app_key_field = "username"
+app_secret_field = "password"

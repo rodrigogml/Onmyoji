@@ -1,0 +1,4 @@
+interface:
+  display_name: "Omie"
+  short_description: "Opere o ERP Omie com credenciais seguras."
+  default_prompt: "Use o perfil Omie configurado para consultar ou operar cadastros, financeiro ou NF-e."
