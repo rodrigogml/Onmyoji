@@ -16,6 +16,11 @@ SPEC.loader.exec_module(MODULE)
 
 
 class SystemSetupTests(unittest.TestCase):
+    def test_prompt_uses_the_shared_visual_prefix(self) -> None:
+        with patch("builtins.input", return_value="x") as input_mock:
+            self.assertEqual(MODULE.prompt("Opção: "), "x")
+        input_mock.assert_called_once_with("› Opção: ")
+
     def test_system_settings_are_local_and_applied_to_codex_config(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -47,6 +47,11 @@ def prompt(label: str) -> str:
     return input(Ui.text(f"› {label}", Ui.violet, Ui.bold))
 
 
+def result(ok: bool, message: str) -> None:
+    label, color = ("+ OK", Ui.green) if ok else ("! ERRO", Ui.red)
+    print("\n    " + Ui.text(label, Ui.bold, color) + "  " + Ui.text(message, color))
+
+
 @dataclass(frozen=True)
 class Skill:
     identifier: str
@@ -225,17 +230,17 @@ def choose(label: str, values: list[str], current: str) -> str | None:
     for index, value in enumerate(values, 1): item(f"{index}.", value)
     item("X.", "Voltar")
     while True:
-        choice = input(f"Opção [{current}]: ").strip().casefold()
+        choice = prompt(f"Opção [{current}]: ").strip().casefold()
         if choice in {"x", "\x1b"}: return None
         if not choice: return current
         if choice.isdigit() and 1 <= int(choice) <= len(values): return values[int(choice) - 1]
-        print("Opção inválida.")
+        result(False, "Opção inválida.")
 
 
 def update_system(root: Path, data: dict[str, object], key: str, value: object) -> dict[str, object]:
     candidate = dict(data); candidate[key] = value
     ok, message = save_system(root, candidate)
-    print(message if ok else f"Não salvo: {message}")
+    result(ok, message if ok else f"Não salvo: {message}")
     return candidate if ok else data
 
 
@@ -253,33 +258,33 @@ def manage_writable_directories(root: Path, data: dict[str, object]) -> dict[str
         item("2.", "Remover diretório selecionado")
         item("3.", "Remover todos os diretórios")
         item("X.", "Voltar")
-        choice = input("Opção: ").strip().casefold()
+        choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return data
         if choice == "1":
-            value = input("Diretório a permitir escrita [X cancela]: ").strip()
+            value = prompt("Diretório a permitir escrita [X cancela]: ").strip()
             if value.casefold() in {"x", "\x1b"}: continue
-            if not value: print("Nenhum caminho informado."); continue
+            if not value: result(False, "Nenhum caminho informado."); continue
             candidate = str(Path(value).expanduser())
-            if candidate in directories: print("Esse diretório já está configurado."); continue
+            if candidate in directories: result(False, "Esse diretório já está configurado."); continue
             data = update_system(root, data, "additional_writable_directories", [*directories, candidate])
         elif choice == "2":
-            if not directories: print("Não há diretórios para remover."); continue
-            selected = input("Número do diretório [X cancela]: ").strip().casefold()
+            if not directories: result(False, "Não há diretórios para remover."); continue
+            selected = prompt("Número do diretório [X cancela]: ").strip().casefold()
             if selected in {"x", "\x1b"}: continue
-            if not selected.isdigit() or not 1 <= int(selected) <= len(directories): print("Seleção inválida."); continue
+            if not selected.isdigit() or not 1 <= int(selected) <= len(directories): result(False, "Seleção inválida."); continue
             removed = directories[int(selected) - 1]
             data = update_system(root, data, "additional_writable_directories", [item for item in directories if item != removed])
         elif choice == "3":
-            if not directories: print("Não há diretórios para remover."); continue
-            confirmation = input("Digite REMOVER para apagar toda a lista: ").strip()
+            if not directories: result(False, "Não há diretórios para remover."); continue
+            confirmation = prompt("Digite REMOVER para apagar toda a lista: ").strip()
             if confirmation == "REMOVER": data = update_system(root, data, "additional_writable_directories", [])
-            else: print("Operação cancelada.")
-        else: print("Opção inválida.")
+            else: result(False, "Operação cancelada.")
+        else: result(False, "Opção inválida.")
 
 
 def launch_codex(root: Path, data: dict[str, object], login: bool = False) -> None:
     ready, message = validate_system(data, require_ready=not login)
-    if not ready: print(f"Não iniciado: {message}"); return
+    if not ready: result(False, f"Não iniciado: {message}"); return
     command = [str(data["executable"]), "login"] if login else [
         str(data["executable"]), "-C", str(data["project_directory"]), "-m", str(data["model"]),
         "-c", f"model_reasoning_effort = {json.dumps(data['model_reasoning_effort'])}",
@@ -290,7 +295,7 @@ def launch_codex(root: Path, data: dict[str, object], login: bool = False) -> No
             command.extend(["--add-dir", str(directory)])
     environment = dict(os.environ); environment["CODEX_HOME"] = str(root)
     try: subprocess.run(command, cwd=str(data["project_directory"]) if not login else root, env=environment, check=False)
-    except OSError as error: print(f"Não foi possível iniciar o Codex-CLI: {error}")
+    except OSError as error: result(False, f"Não foi possível iniciar o Codex-CLI: {error}")
 
 
 def codex_menu(root: Path) -> None:
@@ -309,20 +314,20 @@ def codex_menu(root: Path) -> None:
         item("9.", "Login no Codex-CLI")
         print(f"\n  Estado: {'✓ PRONTO' if ready else '○ ' + message}")
         item("X.", "Voltar")
-        choice = input("Opção: ").strip().casefold()
+        choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
         if choice == "1":
-            value = input(f"Executável Codex [{data['executable']}]: ").strip()
+            value = prompt(f"Executável Codex [{data['executable']}]: ").strip()
             if value: data = update_system(root, data, "executable", value)
         elif choice == "2":
             value = choose("Modelo", ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "Outro (informar manualmente)"], data["model"])
-            if value == "Outro (informar manualmente)": value = input("Modelo: ").strip()
+            if value == "Outro (informar manualmente)": value = prompt("Modelo: ").strip()
             if value: data = update_system(root, data, "model", value)
         elif choice == "3":
             value = choose("Esforço de raciocínio", REASONING_EFFORTS, data["model_reasoning_effort"])
             if value: data = update_system(root, data, "model_reasoning_effort", value)
         elif choice == "4":
-            value = input(f"Pasta do projeto [{data['project_directory']}]: ").strip()
+            value = prompt(f"Pasta do projeto [{data['project_directory']}]: ").strip()
             if value: data = update_system(root, data, "project_directory", value)
         elif choice == "5":
             value = choose("Sandbox", SANDBOXES, data["sandbox_mode"])
@@ -333,7 +338,7 @@ def codex_menu(root: Path) -> None:
         elif choice == "7": data = manage_writable_directories(root, data)
         elif choice == "8": launch_codex(root, data)
         elif choice == "9": launch_codex(root, data, login=True)
-        else: print("Opção inválida.")
+        else: result(False, "Opção inválida.")
 
 
 def skill_menu(skill: Skill, root: Path, skills: list[Skill]) -> None:
@@ -345,16 +350,15 @@ def skill_menu(skill: Skill, root: Path, skills: list[Skill]) -> None:
         item("1.", state)
         item("2.", "Configurar")
         item("X.", "Voltar")
-        choice = input("Opção: ").strip().casefold()
+        choice = prompt("Opção: ").strip().casefold()
         if choice == "x": return
         if choice == "1":
             identifiers = enabled_ids(root)
             (identifiers.discard if enabled else identifiers.add)(skill.identifier)
             ok, message = save_enabled(root, identifiers, skills)
-            print(message)
-            if not ok: print("A alteração foi desfeita.")
+            result(ok, message if ok else f"{message} A alteração foi desfeita.")
         elif choice == "2": invoke(skill, root)
-        else: print("Opção inválida.")
+        else: result(False, "Opção inválida.")
 
 
 def menu(skills: list[Skill], root: Path) -> int:
@@ -369,11 +373,11 @@ def menu(skills: list[Skill], root: Path) -> int:
             skill_item(index, skill, state)
         print()
         item("X.", "Sair")
-        choice = input("Selecione uma opção: ").strip().casefold()
+        choice = prompt("Selecione uma opção: ").strip().casefold()
         if choice == "x": return 0
         if choice == "a": codex_menu(root); continue
         if choice.isdigit() and 1 <= int(choice) <= len(skills): skill_menu(skills[int(choice) - 1], root, skills)
-        else: print("Opção inválida.")
+        else: result(False, "Opção inválida.")
 
 
 def main() -> int:
