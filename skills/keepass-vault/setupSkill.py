@@ -107,6 +107,18 @@ def ask_choice(label: str, choices: dict[str, str], current: str) -> str:
         print("Opção inválida.")
 
 
+def choose_profile(profiles: dict[str, Any], action: str) -> str | None:
+    names = sorted(profiles)
+    print(f"\nSelecione o perfil para {action}:")
+    for index, name in enumerate(names, 1): print(f"  {index}. {name}")
+    print("  X. Voltar")
+    while True:
+        choice = input("Opção: ").strip().casefold()
+        if choice in {"x", "\x1b"}: return None
+        if choice.isdigit() and 1 <= int(choice) <= len(names): return names[int(choice) - 1]
+        print("Opção inválida.")
+
+
 def edit_profile(data: dict[str, Any], path: Path, profile_name: str) -> None:
     candidate = json.loads(json.dumps(data))
     profile = candidate["profiles"].get(profile_name, {})
@@ -168,22 +180,22 @@ def configure(root: Path) -> int:
             except WizardCancelled: print("Configuração cancelada; nenhuma alteração foi gravada.")
         elif choice == "2":
             if not data["profiles"]: print("Nenhum perfil criado."); continue
-            print("Perfis: " + ", ".join(sorted(data["profiles"])))
-            try:
-                name = ask("Perfil", required=True)
-                if name in data["profiles"]: edit_profile(data, path, name)
-                else: print("Perfil não encontrado.")
-            except WizardCancelled: print("Configuração cancelada; nenhuma alteração foi gravada.")
+            name = choose_profile(data["profiles"], "editar")
+            if name is not None:
+                try: edit_profile(data, path, name)
+                except WizardCancelled: print("Configuração cancelada; nenhuma alteração foi gravada.")
         elif choice == "3":
-            try:
-                name = ask("Perfil a remover", required=True)
-                if name not in data["profiles"]: print("Perfil não encontrado.")
-                elif input(f"Remover o perfil {name}? [s/N]: ").strip().casefold() == "s":
+            if not data["profiles"]: print("Nenhum perfil criado."); continue
+            name = choose_profile(data["profiles"], "remover")
+            if name is not None:
+                print(f"ATENÇÃO: o perfil '{name}' deixará de poder ser usado nesta instância.")
+                confirmation = input("Digite REMOVER para confirmar: ").strip()
+                if confirmation == "REMOVER":
                     candidate = json.loads(json.dumps(data)); del candidate["profiles"][name]
                     ok, message = save_transactional(path, candidate)
                     if ok: data = candidate
                     print(message if ok else f"Não removido: {message}")
-            except WizardCancelled: print("Configuração cancelada; nenhuma alteração foi gravada.")
+                else: print("Remoção cancelada.")
         elif choice == "4":
             try:
                 value = ask("Timeout em segundos", str(data["defaults"]["timeout_seconds"]), True)
