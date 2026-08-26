@@ -4,6 +4,7 @@ import subprocess
 import os
 import sys
 import tempfile
+import shutil
 import unittest
 from pathlib import Path
 
@@ -41,6 +42,22 @@ class SetupTests(unittest.TestCase):
             content = (Path(temporary) / "configs" / "keepass.toml").read_text(encoding="utf-8")
             self.assertIn("[profiles.pessoal]", content)
             self.assertIn(vault.as_posix(), content)
+
+    def test_configure_removes_legacy_model_example_before_saving_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "configs" / "keepass.toml"
+            config.parent.mkdir()
+            shutil.copy2(SKILL_DIR / "configs" / "keepass.toml.model", config)
+            vault = Path(temporary) / "vault.kdbx"
+            vault.touch()
+            auth_answers = "1\nOnmyoji/KeePass/pessoal\n" if os.name == "nt" else "1\n"
+            answers = f"1\npessoal\npessoal\n{sys.executable}\n{vault.as_posix()}\n1\n{auth_answers}\n\nx\n"
+            result = subprocess.run([sys.executable, str(SKILL_DIR / "setupSkill.py"), "--onmyoji-root", temporary, "--action", "configure"], input=answers, capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            content = config.read_text(encoding="utf-8")
+            self.assertIn("Perfil demonstrativo 'example' removido", result.stdout)
+            self.assertIn("[profiles.pessoal]", content)
+            self.assertNotIn("[profiles.example]", content)
 
     def test_x_cancels_profile_wizard_without_saving_a_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

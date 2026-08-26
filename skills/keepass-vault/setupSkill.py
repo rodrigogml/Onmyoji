@@ -37,6 +37,19 @@ def load_config(path: Path) -> dict[str, Any]:
     except tomllib.TOMLDecodeError as error: raise ValueError(f"TOML inválido: {error}") from error
 
 
+def remove_legacy_model_example(data: dict[str, Any]) -> bool:
+    """Remove apenas o perfil de exemplo literal criado pelos primeiros setups."""
+    profile = data.get("profiles", {}).get("example")
+    vault = data.get("vaults", {}).get("example")
+    if not isinstance(profile, dict) or not isinstance(vault, dict): return False
+    database = vault.get("database", {})
+    matches = profile.get("vault") == "example" and vault.get("cli_command") == ["keepassxc-cli"] and database == {"windows": "C:/caminho/para/cofre.kdbx", "linux": "/caminho/para/cofre.kdbx"}
+    if not matches: return False
+    del data["profiles"]["example"]
+    if not any(item.get("vault") == "example" for item in data["profiles"].values()): del data["vaults"]["example"]
+    return True
+
+
 def render(data: dict[str, Any]) -> str:
     lines = ["schema_version = 1", "", "[defaults]", f"timeout_seconds = {int(data['defaults']['timeout_seconds'])}"]
     for name, vault in sorted(data["vaults"].items()):
@@ -233,6 +246,10 @@ def configure(root: Path) -> int:
     path = config_for(root)
     try: data = load_config(path)
     except ValueError as error: print(error); return 2
+    if remove_legacy_model_example(data):
+        ok, message = save_transactional(path, data)
+        if not ok: print(f"Não foi possível migrar o perfil de exemplo: {message}"); return 2
+        print("Perfil demonstrativo 'example' removido da configuração local.")
     if not path.exists():
         ok, message = save_transactional(path, data)
         if not ok: print(f"Não foi possível criar a configuração inicial: {message}"); return 2
