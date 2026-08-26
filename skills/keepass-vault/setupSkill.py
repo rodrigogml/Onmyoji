@@ -119,7 +119,7 @@ def choose_profile(profiles: dict[str, Any], action: str) -> str | None:
         print("Opção inválida.")
 
 
-def edit_profile(data: dict[str, Any], path: Path, profile_name: str) -> None:
+def create_profile(data: dict[str, Any], path: Path, profile_name: str) -> None:
     candidate = json.loads(json.dumps(data))
     profile = candidate["profiles"].get(profile_name, {})
     current_vault = profile.get("vault", profile_name)
@@ -154,6 +154,81 @@ def edit_profile(data: dict[str, Any], path: Path, profile_name: str) -> None:
     print(message if ok else f"Não salvo: {message}")
 
 
+def commit_profile_change(data: dict[str, Any], path: Path, candidate: dict[str, Any]) -> bool:
+    ok, message = save_transactional(path, candidate)
+    if ok: data.clear(); data.update(candidate)
+    print(message if ok else f"Não salvo: {message}")
+    return ok
+
+
+def edit_profile(data: dict[str, Any], path: Path, profile_name: str) -> None:
+    platform = "windows" if os.name == "nt" else "linux"
+    platform_name = "Windows" if platform == "windows" else "Linux"
+    while True:
+        profile = data["profiles"][profile_name]
+        vault = data["vaults"][profile["vault"]]
+        auth = profile["auth"][platform]
+        auth_value = auth["mode"] if platform == "linux" else f"{auth['mode']} ({auth.get('target') or 'sem target'})"
+        print(f"\nEditar perfil: {profile_name}")
+        print(f"  1. Nome do perfil: {profile_name}")
+        print(f"  2. Identificador do vault: {profile['vault']}")
+        print(f"  3. Executável KeePassXC: {vault['cli_command'][0]}")
+        print(f"  4. Arquivo KDBX no {platform_name}: {vault['database'][platform]}")
+        print(f"  5. Acesso: {profile['access']}")
+        print(f"  6. Autenticação no {platform_name}: {auth_value}")
+        print(f"  7. Raízes de entradas: {'; '.join(profile['allowed_entry_roots']) or 'todas'}")
+        print(f"  8. Diretórios de anexos: {'; '.join(profile['allowed_attachment_roots']) or 'todos'}")
+        print("  X. Voltar")
+        choice = input("Opção: ").strip().casefold()
+        if choice in {"x", "\x1b"}: return
+        candidate = json.loads(json.dumps(data))
+        candidate_profile = candidate["profiles"][profile_name]
+        candidate_vault = candidate["vaults"][candidate_profile["vault"]]
+        try:
+            if choice == "1":
+                new_name = ask("Novo nome do perfil", profile_name, True)
+                if not re.fullmatch(r"[A-Za-z0-9_-]+", new_name): print("Nome inválido."); continue
+                if new_name != profile_name and new_name in candidate["profiles"]: print("Esse perfil já existe."); continue
+                if new_name != profile_name:
+                    candidate["profiles"][new_name] = candidate["profiles"].pop(profile_name)
+                    if commit_profile_change(data, path, candidate): profile_name = new_name
+            elif choice == "2":
+                new_vault = ask("Identificador do vault", candidate_profile["vault"], True)
+                if not re.fullmatch(r"[A-Za-z0-9_-]+", new_vault): print("Nome de vault inválido."); continue
+                if new_vault not in candidate["vaults"]: candidate["vaults"][new_vault] = candidate["vaults"][candidate_profile["vault"]]
+                candidate_profile["vault"] = new_vault
+                commit_profile_change(data, path, candidate)
+            elif choice == "3":
+                candidate_vault["cli_command"] = [ask("Executável do KeePassXC", candidate_vault["cli_command"][0], True)]
+                commit_profile_change(data, path, candidate)
+            elif choice == "4":
+                candidate_vault["database"][platform] = ask(f"Arquivo KDBX no {platform_name}", candidate_vault["database"][platform], True)
+                commit_profile_change(data, path, candidate)
+            elif choice == "5":
+                access = ask_choice("Acesso do perfil", {"1": "Somente leitura", "2": "Leitura e escrita"}, "2" if candidate_profile["access"] == "read_write" else "1")
+                candidate_profile["access"] = "read_write" if access == "2" else "read_only"
+                candidate_profile["allowed_operations"] = WRITE_OPS if access == "2" else READ_OPS
+                commit_profile_change(data, path, candidate)
+            elif choice == "6":
+                if platform == "windows":
+                    selected = ask_choice("Autenticação no Windows", {"1": "Windows Credential Manager", "2": "Senha via stdin", "3": "Prompt interativo"}, {"windows_credential_manager": "1", "stdin": "2", "prompt": "3"}.get(auth["mode"], "1"))
+                    candidate_profile["auth"]["windows"] = {"mode": {"1": "windows_credential_manager", "2": "stdin", "3": "prompt"}[selected], "target": ask("Target da credencial Windows", auth.get("target", f"Onmyoji/KeePass/{candidate_profile['vault']}"), True) if selected == "1" else ""}
+                else:
+                    selected = ask_choice("Autenticação no Linux", {"1": "secret-tool", "2": "Senha via stdin", "3": "Prompt interativo"}, "1" if auth["mode"] == "command" else {"stdin": "2", "prompt": "3"}.get(auth["mode"], "1"))
+                    candidate_profile["auth"]["linux"] = {"mode": "command" if selected == "1" else {"2": "stdin", "3": "prompt"}[selected], "command": ["secret-tool", "lookup", "service", "onmyoji", "vault", candidate_profile["vault"]] if selected == "1" else []}
+                commit_profile_change(data, path, candidate)
+            elif choice == "7":
+                value = ask("Raízes de entradas (separe por ;, vazio = todas)", ";".join(candidate_profile["allowed_entry_roots"]))
+                candidate_profile["allowed_entry_roots"] = [item.strip() for item in value.split(";") if item.strip()]
+                commit_profile_change(data, path, candidate)
+            elif choice == "8":
+                value = ask("Diretórios de anexos (separe por ;, vazio = todos)", ";".join(candidate_profile["allowed_attachment_roots"]))
+                candidate_profile["allowed_attachment_roots"] = [item.strip() for item in value.split(";") if item.strip()]
+                commit_profile_change(data, path, candidate)
+            else: print("Opção inválida.")
+        except WizardCancelled: print("Edição cancelada; nenhuma alteração foi gravada.")
+
+
 def configure(root: Path) -> int:
     path = config_for(root)
     try: data = load_config(path)
@@ -176,7 +251,7 @@ def configure(root: Path) -> int:
                 name = ask("Nome do perfil (letras, números, _ ou -)", required=True)
                 if not re.fullmatch(r"[A-Za-z0-9_-]+", name): print("Nome inválido.")
                 elif name in data["profiles"]: print("Esse perfil já existe.")
-                else: edit_profile(data, path, name)
+                else: create_profile(data, path, name)
             except WizardCancelled: print("Configuração cancelada; nenhuma alteração foi gravada.")
         elif choice == "2":
             if not data["profiles"]: print("Nenhum perfil criado."); continue

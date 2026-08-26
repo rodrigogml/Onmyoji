@@ -50,14 +50,24 @@ class SetupTests(unittest.TestCase):
             self.assertNotIn("[profiles.cancelado]", content)
             self.assertIn("Configuração cancelada", result.stdout)
 
-    def test_edit_menu_lists_profiles_numerically_and_accepts_x(self) -> None:
+    def test_edit_menu_lists_profiles_and_shows_current_fields(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             self.write_profiles(temporary)
-            result = subprocess.run([sys.executable, str(SKILL_DIR / "setupSkill.py"), "--onmyoji-root", temporary, "--action", "configure"], input="2\nx\nx\n", capture_output=True, text=True, check=False)
+            result = subprocess.run([sys.executable, str(SKILL_DIR / "setupSkill.py"), "--onmyoji-root", temporary, "--action", "configure"], input="2\n1\nx\nx\n", capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("1. alpha", result.stdout)
             self.assertIn("2. beta", result.stdout)
+            self.assertIn("1. Nome do perfil: alpha", result.stdout)
+            self.assertIn("8. Diretórios de anexos: todos", result.stdout)
             self.assertIn("X. Voltar", result.stdout)
+
+    def test_edit_menu_changes_only_selected_item(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            self.write_profiles(temporary)
+            result = subprocess.run([sys.executable, str(SKILL_DIR / "setupSkill.py"), "--onmyoji-root", temporary, "--action", "configure"], input="2\n1\n7\nWork;Admin\nx\nx\n", capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            content = (Path(temporary) / "configs" / "keepass.toml").read_text(encoding="utf-8")
+            self.assertIn('allowed_entry_roots = ["Work", "Admin"]', content)
 
     def test_remove_menu_uses_number_and_explicit_confirmation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
