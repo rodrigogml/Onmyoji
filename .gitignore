@@ -10,6 +10,8 @@
 !/docs/**
 !/skills/
 !/skills/**
+!/tests/
+!/tests/**
 
 # Configuração local de uma instância do Onmyōji (CODEX_HOME)
 /config.toml
