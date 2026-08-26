@@ -1,0 +1,5 @@
+interface:
+  display_name: "Notion"
+  short_description: "Operate Notion through secure API profiles"
+  default_prompt: "Use the Notion API skill with the selected profile to inspect or modify Notion content."
+

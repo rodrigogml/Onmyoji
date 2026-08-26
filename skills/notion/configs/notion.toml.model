@@ -1,0 +1,13 @@
+schema_version = 1
+
+[defaults]
+api_base = "https://api.notion.com"
+notion_version = "2026-03-11"
+timeout_seconds = 30
+max_retries = 2
+page_size = 100
+
+[profiles.example]
+vault_profile = "example"
+vault_entry_path = "APIs/Notion"
+vault_field = "password"
