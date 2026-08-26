@@ -216,7 +216,7 @@ def skill_item(index: int, skill: Skill, state: str) -> None:
     value_column = 48
     prefix_width = 8  # margem, opção de quatro caracteres e dois espaços
     fill_width = max(1, value_column - prefix_width - len(name))
-    filler = "·" * fill_width if index % 2 == 0 else " " * fill_width
+    filler = "." * fill_width if index % 2 == 0 else " " * fill_width
     print(f"  {option}  {name}{Ui.text(filler, Ui.slate)}{state}")
 
 
