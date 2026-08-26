@@ -1,0 +1,5 @@
+interface:
+  display_name: "Forward Email"
+  short_description: "Manage Forward Email domains and aliases through secure token profiles"
+  default_prompt: "Use the Forward Email skill with the selected profile to inspect or modify domains and aliases."
+

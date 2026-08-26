@@ -1,0 +1,10 @@
+schema_version = 1
+[defaults]
+api_base = "https://api.forwardemail.net/v1"
+timeout_seconds = 30
+max_retries = 2
+[profiles.example]
+vault_profile = "example"
+vault_entry_path = "APIs/ForwardEmail"
+vault_field = "password"
+domain = ""
