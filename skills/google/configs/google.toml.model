@@ -1,0 +1,18 @@
+schema_version = 1
+[defaults]
+api_base = "https://www.googleapis.com"
+oauth_base = "https://oauth2.googleapis.com"
+scopes = ["openid", "email", "profile", "https://mail.google.com/", "https://www.googleapis.com/auth/contacts", "https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/calendar"]
+timeout_seconds = 30
+max_retries = 2
+page_size = 100
+user_id = "me"
+download_dir = ""
+[profiles.example]
+oauth_profile = "example"
+credentials_file = ""
+vault_profile = "example"
+vault_entry_path = "APIs/Google"
+client_id_field = "username"
+client_secret_field = "password"
+profiles_field = "notes"

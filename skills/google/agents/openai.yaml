@@ -1,0 +1,5 @@
+interface:
+  display_name: "Google"
+  short_description: "Use Gmail, Contacts, Drive and Calendar securely"
+  default_prompt: "Use the Google skill with the selected profile to inspect or modify Gmail, Contacts, Drive or Calendar."
+
