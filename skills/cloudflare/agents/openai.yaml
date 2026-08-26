@@ -1,0 +1,5 @@
+interface:
+  display_name: "Cloudflare DNS"
+  short_description: "Manage Cloudflare DNS through secure token profiles"
+  default_prompt: "Use the Cloudflare DNS skill with the selected profile to inspect or modify DNS zones and records."
+
