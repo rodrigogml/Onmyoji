@@ -15,6 +15,28 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+class Ui:
+    enabled = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+    reset = "\x1b[0m"; bold = "\x1b[1m"; violet = "\x1b[38;5;141m"; cyan = "\x1b[38;5;80m"; slate = "\x1b[38;5;245m"; green = "\x1b[38;5;78m"
+    @classmethod
+    def text(cls, value: str, *styles: str) -> str: return "".join(styles) + value + cls.reset if cls.enabled and styles else value
+
+
+def screen(title: str, subtitle: str = "") -> None:
+    width = max(56, min(shutil.get_terminal_size((78, 24)).columns, 96))
+    print("\n" + Ui.text("╭" + "─" * (width - 2) + "╮", Ui.violet))
+    print("│" + Ui.text(f" KEEPASS VAULT  /  {title.upper()}".ljust(width - 2), Ui.bold, Ui.violet) + "│")
+    if subtitle: print("│ " + Ui.text(subtitle[:width - 4].ljust(width - 4), Ui.slate) + " │")
+    print(Ui.text("╰" + "─" * (width - 2) + "╯", Ui.violet))
+
+
+def menu_item(key: str, label: str, value: str = "") -> None:
+    shortcut = Ui.text(f"{key:>4}", Ui.bold, Ui.cyan)
+    print(f"  {shortcut}  {label:<30}" + (Ui.text(value, Ui.slate) if value else ""))
+
+
+def prompt(label: str) -> str: return input(Ui.text(f"› {label}", Ui.bold, Ui.violet))
+
 SKILL_DIR = Path(__file__).resolve().parent
 MODEL = SKILL_DIR / "configs" / "keepass.toml.model"
 READ_OPS = ["list", "list.totp", "read", "attachment.export"]
@@ -105,7 +127,7 @@ def save_transactional(path: Path, data: dict[str, Any]) -> tuple[bool, str]:
 def ask(label: str, current: str = "", required: bool = False) -> str:
     suffix = f" [{current}]" if current else ""
     while True:
-        value = input(f"{label}{suffix}: ").strip()
+        value = prompt(f"{label}{suffix}: ").strip()
         if value.casefold() == "x" or value == "\x1b": raise WizardCancelled
         if value: return value
         if current: return current
@@ -114,10 +136,10 @@ def ask(label: str, current: str = "", required: bool = False) -> str:
 
 
 def ask_choice(label: str, choices: dict[str, str], current: str) -> str:
-    print(label)
-    for key, value in choices.items(): print(f"  {key}. {value}")
+    screen(label, "Escolha uma opção ou pressione X para cancelar")
+    for key, value in choices.items(): menu_item(f"{key}.", value)
     while True:
-        value = input(f"Opção [{current}]: ").strip() or current
+        value = prompt(f"Opção [{current}]: ").strip() or current
         if value.casefold() == "x" or value == "\x1b": raise WizardCancelled
         if value in choices: return value
         print("Opção inválida.")
@@ -125,11 +147,11 @@ def ask_choice(label: str, choices: dict[str, str], current: str) -> str:
 
 def choose_profile(profiles: dict[str, Any], action: str) -> str | None:
     names = sorted(profiles)
-    print(f"\nSelecione o perfil para {action}:")
-    for index, name in enumerate(names, 1): print(f"  {index}. {name}")
-    print("  X. Voltar")
+    screen(f"Perfil para {action}", "Escolha um perfil ou pressione X para voltar")
+    for index, name in enumerate(names, 1): menu_item(f"{index}.", name)
+    menu_item("X.", "Voltar")
     while True:
-        choice = input("Opção: ").strip().casefold()
+        choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return None
         if choice.isdigit() and 1 <= int(choice) <= len(names): return names[int(choice) - 1]
         print("Opção inválida.")
@@ -236,19 +258,19 @@ def edit_profile(data: dict[str, Any], path: Path, profile_name: str) -> None:
         vault = data["vaults"][profile["vault"]]
         auth = profile["auth"][platform]
         auth_value = auth["mode"] if platform == "linux" else f"{auth['mode']} ({auth.get('target') or 'sem target'})"
-        print(f"\nEditar perfil: {profile_name}")
-        print(f"  1. Nome do perfil: {profile_name}")
-        print(f"  2. Identificador do vault: {profile['vault']}")
-        print(f"  3. Executável KeePassXC: {vault['cli_command'][0]}")
-        print(f"  4. Arquivo KDBX no {platform_name}: {vault['database'][platform]}")
-        print(f"  5. Acesso: {profile['access']}")
-        print(f"  6. Autenticação no {platform_name}: {auth_value}")
-        print(f"  7. Raízes de entradas: {'; '.join(profile['allowed_entry_roots']) or 'todas'}")
-        print(f"  8. Diretórios de anexos: {'; '.join(profile['allowed_attachment_roots']) or 'todos'}")
-        print("  9. Salvar senha no provedor do sistema operacional")
-        print(" 10. Testar acesso ao vault")
-        print("  X. Voltar")
-        choice = input("Opção: ").strip().casefold()
+        screen(f"Editar perfil · {profile_name}", "Selecione o campo a alterar")
+        menu_item("1.", "Nome do perfil", profile_name)
+        menu_item("2.", "Identificador do vault", profile['vault'])
+        menu_item("3.", "Executável KeePassXC", vault['cli_command'][0])
+        menu_item("4.", f"Arquivo KDBX no {platform_name}", vault['database'][platform])
+        menu_item("5.", "Acesso", profile['access'])
+        menu_item("6.", f"Autenticação no {platform_name}", auth_value)
+        menu_item("7.", "Raízes de entradas", '; '.join(profile['allowed_entry_roots']) or 'todas')
+        menu_item("8.", "Diretórios de anexos", '; '.join(profile['allowed_attachment_roots']) or 'todos')
+        menu_item("9.", "Salvar senha no provedor do SO")
+        menu_item("10.", "Testar acesso ao vault")
+        menu_item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
         candidate = json.loads(json.dumps(data))
         candidate_profile = candidate["profiles"][profile_name]
@@ -313,13 +335,13 @@ def configure(root: Path) -> int:
         if not ok: print(f"Não foi possível criar a configuração inicial: {message}"); return 2
         print(f"Configuração inicial criada: {path}")
     while True:
-        print("\nKeePass Vault — configuração")
-        print("  1. Criar perfil")
-        print("  2. Editar perfil")
-        print("  3. Remover perfil")
-        print("  4. Ajustar timeout")
-        print("  X. Voltar")
-        choice = input("Opção: ").strip().casefold()
+        screen("Configuração", "Perfis, vaults e autenticação da instância")
+        menu_item("1.", "Criar perfil")
+        menu_item("2.", "Editar perfil", f"{len(data['profiles'])} configurado(s)")
+        menu_item("3.", "Remover perfil")
+        menu_item("4.", "Ajustar timeout", f"{data['defaults']['timeout_seconds']} segundos")
+        menu_item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
         if choice == "x": return 0
         if choice == "1":
             try:
@@ -339,7 +361,7 @@ def configure(root: Path) -> int:
             name = choose_profile(data["profiles"], "remover")
             if name is not None:
                 print(f"ATENÇÃO: o perfil '{name}' deixará de poder ser usado nesta instância.")
-                confirmation = input("Digite REMOVER para confirmar: ").strip()
+                confirmation = prompt("Digite REMOVER para confirmar: ").strip()
                 if confirmation == "REMOVER":
                     candidate = json.loads(json.dumps(data)); del candidate["profiles"][name]
                     ok, message = save_transactional(path, candidate)

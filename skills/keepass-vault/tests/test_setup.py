@@ -72,7 +72,7 @@ class SetupTests(unittest.TestCase):
             self.write_profiles(temporary)
             result = subprocess.run([sys.executable, str(SKILL_DIR / "setupSkill.py"), "--onmyoji-root", temporary, "--action", "configure"], input="2\n1\nx\nx\n", capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("1. alpha", result.stdout)
+        self.assertIn("1.  alpha", result.stdout)
             self.assertIn("2. beta", result.stdout)
             self.assertIn("1. Nome do perfil: alpha", result.stdout)
             self.assertIn("8. Diretórios de anexos: todos", result.stdout)
