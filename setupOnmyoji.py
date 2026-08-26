@@ -198,16 +198,23 @@ def invoke(skill: Skill, root: Path) -> None:
 def screen(title: str, subtitle: str = "") -> None:
     width = max(56, min(shutil.get_terminal_size((78, 24)).columns, 96))
     print("\n" + Ui.text("╭" + "─" * (width - 2) + "╮", Ui.violet))
-    brand = Ui.text(" ONMYŌJI", Ui.bold, Ui.violet)
-    section = Ui.text(f"  /  {title.upper()}", Ui.bold, Ui.cyan)
-    print("│" + f"{brand}{section}" + " " * max(0, width - 2 - 11 - len(title) - 4) + "│")
+    heading = f" ONMYŌJI  /  {title.upper()}"
+    print("│" + Ui.text(heading.ljust(width - 2), Ui.bold, Ui.violet) + "│")
     if subtitle: print("│ " + Ui.text(subtitle[:width - 4].ljust(width - 4), Ui.slate) + " │")
     print(Ui.text("╰" + "─" * (width - 2) + "╯", Ui.violet))
 
 
 def item(key: str, label: str, value: str = "") -> None:
-    shortcut = Ui.text(f"{key:<3}", Ui.bold, Ui.cyan)
-    print(f"  {shortcut} {label}" + (f"\n       {Ui.text(value, Ui.slate)}" if value else ""))
+    shortcut = Ui.text(f"{key:>4}", Ui.bold, Ui.cyan)
+    print(f"  {shortcut}  {label:<30}" + (f"   {Ui.text(value, Ui.slate)}" if value else ""))
+
+
+def skill_item(index: int, skill: Skill, state: str) -> None:
+    """Renderiza a linha da skill na grade fixa do menu principal."""
+    option = Ui.text(f"{index}.".rjust(4), Ui.bold, Ui.cyan)
+    name = skill.title
+    fill = "·" * max(3, 30 - len(name))
+    print(f"  {option}  {name}{Ui.text(fill, Ui.slate)}   {state}")
 
 
 def choose(label: str, values: list[str], current: str) -> str | None:
@@ -356,7 +363,7 @@ def menu(skills: list[Skill], root: Path) -> int:
         for index, skill in enumerate(skills, 1):
             active = skill.identifier in enabled
             state = Ui.badge("ATIVA", "active") if active else Ui.badge("inativa", "inactive")
-            item(f"{index}.", skill.title, state)
+            skill_item(index, skill, state)
         print()
         item("X.", "Sair")
         choice = input("Selecione uma opção: ").strip().casefold()
