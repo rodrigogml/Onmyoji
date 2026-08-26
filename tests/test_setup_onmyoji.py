@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "setupOnmyoji.py"
 SPEC = importlib.util.spec_from_file_location("onmyoji_setup", SCRIPT)
@@ -25,6 +26,7 @@ class SystemSetupTests(unittest.TestCase):
             codex = MODULE.config_path(root).read_text(encoding="utf-8")
             self.assertIn('model = "gpt-5.6-terra"', codex)
             self.assertIn('model_reasoning_effort = "high"', codex)
+            self.assertIn('[sandbox_workspace_write]', codex)
             self.assertNotIn("project_directory", codex)
 
     def test_invalid_project_path_does_not_replace_saved_system_settings(self) -> None:
@@ -35,6 +37,19 @@ class SystemSetupTests(unittest.TestCase):
             bad = data | {"project_directory": str(root / "missing")}
             self.assertFalse(MODULE.save_system(root, bad)[0])
             self.assertEqual(MODULE.load_system(root)["project_directory"], str(root))
+
+    def test_launch_passes_model_reasoning_and_writable_directories_explicitly(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project = root / "project"; project.mkdir()
+            extra = root / "extra"; extra.mkdir()
+            data = MODULE.default_system() | {"executable": sys.executable, "project_directory": str(project), "model": "gpt-5.6-sol", "model_reasoning_effort": "xhigh", "additional_writable_directories": [str(extra)]}
+            with patch.object(MODULE.subprocess, "run") as run:
+                MODULE.launch_codex(root, data)
+            command = run.call_args.args[0]
+            self.assertEqual(command[:6], [sys.executable, "-C", str(project), "-m", "gpt-5.6-sol", "-c"])
+            self.assertIn('model_reasoning_effort = "xhigh"', command)
+            self.assertEqual(command[-2:], ["--add-dir", str(extra)])
 
 
 if __name__ == "__main__":
