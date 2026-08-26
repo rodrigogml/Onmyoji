@@ -24,10 +24,15 @@ class Ui:
 
 def screen(title: str, subtitle: str = "") -> None:
     width = max(56, min(shutil.get_terminal_size((78, 24)).columns, 96))
-    print("\n" + Ui.text("╭" + "─" * (width - 2) + "╮", Ui.violet))
-    print("│" + Ui.text(f" KEEPASS VAULT  /  {title.upper()}".ljust(width - 2), Ui.bold, Ui.violet) + "│")
-    if subtitle: print("│ " + Ui.text(subtitle[:width - 4].ljust(width - 4), Ui.slate) + " │")
-    print(Ui.text("╰" + "─" * (width - 2) + "╯", Ui.violet))
+    try:
+        "╭─╮│╰╯".encode(sys.stdout.encoding or "utf-8")
+        left, line, right, side, bottom_left, bottom_right = "╭", "─", "╮", "│", "╰", "╯"
+    except UnicodeEncodeError:
+        left, line, right, side, bottom_left, bottom_right = "+", "-", "+", "|", "+", "+"
+    print("\n" + Ui.text(left + line * (width - 2) + right, Ui.violet))
+    print(side + Ui.text(f" KEEPASS VAULT  /  {title.upper()}".ljust(width - 2), Ui.bold, Ui.violet) + side)
+    if subtitle: print(side + " " + Ui.text(subtitle[:width - 4].ljust(width - 4), Ui.slate) + " " + side)
+    print(Ui.text(bottom_left + line * (width - 2) + bottom_right, Ui.violet))
 
 
 def menu_item(key: str, label: str, value: str = "") -> None:

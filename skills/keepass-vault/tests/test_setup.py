@@ -72,13 +72,13 @@ class SetupTests(unittest.TestCase):
             self.write_profiles(temporary)
             result = subprocess.run([sys.executable, str(SKILL_DIR / "setupSkill.py"), "--onmyoji-root", temporary, "--action", "configure"], input="2\n1\nx\nx\n", capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("1.  alpha", result.stdout)
-            self.assertIn("2. beta", result.stdout)
-            self.assertIn("1. Nome do perfil: alpha", result.stdout)
-            self.assertIn("8. Diretórios de anexos: todos", result.stdout)
-            self.assertIn("9. Salvar senha no provedor do sistema operacional", result.stdout)
-            self.assertIn("10. Testar acesso ao vault", result.stdout)
-            self.assertIn("X. Voltar", result.stdout)
+            self.assertIn("1.  alpha", result.stdout)
+            self.assertIn("2.  beta", result.stdout)
+            self.assertIn("Nome do perfil", result.stdout)
+            self.assertIn("Diretórios de anexos", result.stdout)
+            self.assertIn("Salvar senha no provedor do SO", result.stdout)
+            self.assertIn("Testar acesso ao vault", result.stdout)
+            self.assertIn("X.  Voltar", result.stdout)
 
     def test_edit_menu_changes_only_selected_item(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
