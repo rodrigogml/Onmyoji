@@ -1,0 +1,4 @@
+interface:
+  display_name: "MySQL"
+  short_description: "Executar e configurar integrações MySQL"
+  default_prompt: "Use $mysql para conectar e executar operações em um banco MySQL configurado."
