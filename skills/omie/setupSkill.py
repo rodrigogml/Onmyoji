@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Configuração local da skill Omie."""
 from __future__ import annotations
-import argparse, json, sys, tomllib
+import argparse, json, subprocess, sys, tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -25,11 +25,48 @@ def save(file: Path, data: dict) -> tuple[bool, str]:
     ok, message = valid(data)
     if not ok: return ok, message
     file.parent.mkdir(parents=True, exist_ok=True); file.write_text(render(data), encoding="utf-8", newline="\n"); tomllib.loads(file.read_text(encoding="utf-8")); return True, message
+
+def choose_omie_profile(data: dict, action: str) -> str | None:
+    names = sorted(data['profiles'])
+    if not names:
+        result(False, "Nenhum perfil Omie foi configurado.")
+        return None
+    screen("Omie", f"{action} perfil", "Escolha um perfil ou pressione X para voltar")
+    for index, name in enumerate(names, 1): item(f"{index}.", name)
+    item("X.", "Voltar")
+    while True:
+        selected = prompt("Opção: ").strip().casefold()
+        if selected in {'x', '\x1b'}: return None
+        if selected.isdigit() and 1 <= int(selected) <= len(names): return names[int(selected) - 1]
+        result(False, "Opção inválida.")
+
+def test_profile(root: Path, file: Path, data: dict) -> None:
+    name = choose_omie_profile(data, "Testar")
+    if name is None: return
+    ok, message = valid(data)
+    if not ok: result(False, f"Teste não iniciado: {message}"); return
+    defaults = data['defaults']
+    timeout = float(defaults['timeout_seconds']) * (int(defaults['max_retries']) + 1) + 5
+    request = {"version": 1, "operation": "departments.list", "params": {"page": 1, "page_size": 1}}
+    command = [sys.executable, str(Path(__file__).resolve().parent / "scripts" / "omie.py"), "--config", str(file), "--profile", name]
+    try:
+        process = subprocess.run(command, input=json.dumps(request), text=True, capture_output=True, timeout=timeout, check=False)
+        payload = json.loads(process.stdout)
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        result(False, "Não foi possível concluir o teste de acesso à Omie.")
+        return
+    if process.returncode != 0 or payload.get("ok") is not True:
+        error = payload.get("error", {}) if isinstance(payload, dict) else {}
+        detail = error.get("message") if isinstance(error, dict) else None
+        result(False, f"Falha ao testar o perfil '{name}': {detail or 'a API Omie recusou a solicitação.'}")
+        return
+    result(True, f"Acesso à API Omie confirmado para o perfil '{name}'.")
+
 def configure(root: Path) -> None:
     file, data = path(root), load(path(root))
     while True:
         screen("Omie", "Configuração", "Perfis de acesso ao ERP")
-        item("1.", "Criar perfil"); item("2.", "Remover perfil"); item("X.", "Voltar")
+        item("1.", "Criar perfil"); item("2.", "Remover perfil"); item("3.", "Testar perfil"); item("X.", "Voltar")
         choice=prompt("Opção: ").strip().casefold()
         if choice in {'x','\x1b'}: return
         if choice == '1':
@@ -41,10 +78,10 @@ def configure(root: Path) -> None:
             profile={'vault_profile': vault_profile, 'vault_entry_path': prompt(f"Entrada KeePass [{suggested_entry}]: ").strip() or suggested_entry, 'app_key_field': prompt("Campo app_key [username]: ").strip() or 'username', 'app_secret_field': prompt("Campo app_secret [password]: ").strip() or 'password'}
             candidate={**data, 'profiles': {**data['profiles'], name: profile}}; ok,message=save(file,candidate); result(ok, message if ok else f"Não salvo: {message}"); data=candidate if ok else data
         elif choice == '2':
-            names=sorted(data['profiles']); screen("Omie", "Remover perfil", "Escolha um perfil ou pressione X para voltar"); [item(f"{i}.", name) for i,name in enumerate(names,1)]; item("X.", "Voltar")
-            selected=prompt("Número [X cancela]: ").strip().casefold()
-            if selected.isdigit() and 1 <= int(selected) <= len(names) and prompt(f"Digite REMOVER para excluir {names[int(selected)-1]}: ").strip()=='REMOVER':
-                candidate={**data, 'profiles': dict(data['profiles'])}; del candidate['profiles'][names[int(selected)-1]]; ok,message=save(file,candidate); result(ok, message); data=candidate if ok else data
+            name = choose_omie_profile(data, "Remover")
+            if name and prompt(f"Digite REMOVER para excluir {name}: ").strip()=='REMOVER':
+                candidate={**data, 'profiles': dict(data['profiles'])}; del candidate['profiles'][name]; ok,message=save(file,candidate); result(ok, message); data=candidate if ok else data
+        elif choice == '3': test_profile(root, file, data)
         else: result(False, "Opção inválida.")
 def main() -> int:
     parser=argparse.ArgumentParser(); parser.add_argument('--onmyoji-root',type=Path,default=ROOT); parser.add_argument('--action',choices=['describe','status','configure'],default='configure'); parser.add_argument('--json',action='store_true'); args=parser.parse_args()
