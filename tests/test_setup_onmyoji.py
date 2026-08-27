@@ -73,6 +73,15 @@ class SystemSetupTests(unittest.TestCase):
             self.assertTrue(MODULE.save_enabled(root, set(), [skill])[0])
             self.assertFalse(active.exists() or active.is_symlink())
 
+    def test_stale_python_cache_is_replaced_by_an_active_skill_link(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); skill = self.fake_skill(root)
+            stale = MODULE.active_skills_path(root) / "omie" / "scripts" / "__pycache__"
+            stale.mkdir(parents=True)
+            (stale / "omie.cpython-312.pyc").write_bytes(b"cache")
+            self.assertTrue(MODULE.save_enabled(root, {"omie"}, [skill])[0])
+            self.assertEqual((MODULE.active_skills_path(root) / "omie").resolve(), skill.script.parent.resolve())
+
     def test_legacy_skill_config_is_migrated_to_local_state(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); skill = self.fake_skill(root)

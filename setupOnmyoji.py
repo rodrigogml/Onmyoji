@@ -218,6 +218,16 @@ def remove_skill_link(path: Path) -> None:
     else: os.rmdir(path)
 
 
+def is_stale_runtime_cache(path: Path) -> bool:
+    """Reconhece somente os caches .pyc que um git mv pode deixar em skills/."""
+    if not path.is_dir() or is_managed_link(path): return False
+    for item in path.rglob("*"):
+        if item.is_dir(): continue
+        if item.is_file() and item.suffix == ".pyc" and item.parent.name == "__pycache__": continue
+        return False
+    return True
+
+
 def sync_active_skill_links(root: Path, identifiers: set[str], skills: list[Skill]) -> tuple[bool, str]:
     catalog = {skill.identifier: skill.script.parent.resolve() for skill in skills}
     unknown = identifiers - set(catalog)
@@ -230,7 +240,10 @@ def sync_active_skill_links(root: Path, identifiers: set[str], skills: list[Skil
             should_exist = identifier in identifiers
             if should_exist:
                 if destination.exists() or destination.is_symlink():
-                    if destination.resolve() != source: return False, f"O destino da skill {identifier} já está ocupado por um item não gerenciado."
+                    if destination.resolve() != source:
+                        if is_stale_runtime_cache(destination): shutil.rmtree(destination)
+                        else: return False, f"O destino da skill {identifier} já está ocupado por um item não gerenciado."
+                    if not (destination.exists() or destination.is_symlink()): create_skill_link(source, destination)
                 else: create_skill_link(source, destination)
             elif destination.exists() or destination.is_symlink():
                 remove_skill_link(destination)
