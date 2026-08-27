@@ -40,8 +40,8 @@ def telegram_data(root: Path) -> dict:
 def save_telegram(root: Path, profile: str, entry: str, data: dict | None = None) -> None:
     data = data or telegram_data(root)
     telegram = data.setdefault("telegram", {}); telegram["keepass_profile"] = profile; telegram["token_entry"] = entry
-    agent, limits, totp = data.setdefault("agent", {}), data.setdefault("limits", {}), data.setdefault("totp", {})
-    lines = ["schema_version = 1", f"enabled = {str(bool(data.get('enabled', False))).lower()}", "", "[telegram]", f"keepass_profile = {json.dumps(profile, ensure_ascii=False)}", f"token_entry = {json.dumps(entry, ensure_ascii=False)}", f"poll_timeout_seconds = {int(telegram.get('poll_timeout_seconds', 30))}", "", "[agent]", f"max_parallel_conversations = {int(agent.get('max_parallel_conversations', 1))}", f"turn_timeout_seconds = {int(agent.get('turn_timeout_seconds', 900))}", f"developer_file = {json.dumps(str(agent.get('developer_file', '')), ensure_ascii=False)}", "", "[limits]", f"max_attachment_bytes = {int(limits.get('max_attachment_bytes', 20971520))}", f"max_pending_items = {int(limits.get('max_pending_items', 50))}", "", "[totp]", f"enabled = {str(bool(totp.get('enabled', False))).lower()}", f"real_password_entry = {json.dumps(str(totp.get('real_password_entry', '')), ensure_ascii=False)}", f"fake_password_entry = {json.dumps(str(totp.get('fake_password_entry', '')), ensure_ascii=False)}", f"period_seconds = {int(totp.get('period_seconds', 30))}", ""]
+    agent, app_server, limits, totp = data.setdefault("agent", {}), data.setdefault("app_server", {}), data.setdefault("limits", {}), data.setdefault("totp", {})
+    lines = ["schema_version = 1", f"enabled = {str(bool(data.get('enabled', False))).lower()}", "", "[telegram]", f"keepass_profile = {json.dumps(profile, ensure_ascii=False)}", f"token_entry = {json.dumps(entry, ensure_ascii=False)}", f"poll_timeout_seconds = {int(telegram.get('poll_timeout_seconds', 30))}", "", "[agent]", f"max_parallel_conversations = {int(agent.get('max_parallel_conversations', 1))}", f"turn_timeout_seconds = {int(agent.get('turn_timeout_seconds', 900))}", f"developer_file = {json.dumps(str(agent.get('developer_file', '')), ensure_ascii=False)}", "", "[app_server]", f"enabled = {str(bool(app_server.get('enabled', False))).lower()}", f"idle_timeout_seconds = {int(app_server.get('idle_timeout_seconds', 1800))}", "", "[limits]", f"max_attachment_bytes = {int(limits.get('max_attachment_bytes', 20971520))}", f"max_pending_items = {int(limits.get('max_pending_items', 50))}", "", "[totp]", f"enabled = {str(bool(totp.get('enabled', False))).lower()}", f"real_password_entry = {json.dumps(str(totp.get('real_password_entry', '')), ensure_ascii=False)}", f"fake_password_entry = {json.dumps(str(totp.get('fake_password_entry', '')), ensure_ascii=False)}", f"period_seconds = {int(totp.get('period_seconds', 30))}", ""]
     target(root).write_text("\n".join(lines), encoding="utf-8", newline="\n")
 
 
@@ -80,6 +80,15 @@ def save_totp(root: Path, enabled: bool, real_entry: str = "", fake_entry: str =
     telegram = data.get("telegram", {}); save_telegram(root, str(telegram.get("keepass_profile") or ""), str(telegram.get("token_entry") or ""), data)
 
 
+def save_app_server(root: Path, enabled: bool | None, idle_timeout: int | None) -> None:
+    data = telegram_data(root); app_server = data.setdefault("app_server", {})
+    if enabled is not None: app_server["enabled"] = enabled
+    if idle_timeout is not None:
+        if idle_timeout < 60: raise ValueError("O tempo de inatividade deve ser de ao menos 60 segundos.")
+        app_server["idle_timeout_seconds"] = idle_timeout
+    telegram = data.get("telegram", {}); save_telegram(root, str(telegram.get("keepass_profile") or ""), str(telegram.get("token_entry") or ""), data)
+
+
 def test_agent(root: Path) -> tuple[bool, str]:
     import os
     import subprocess
@@ -90,6 +99,37 @@ def test_agent(root: Path) -> tuple[bool, str]:
         environment = dict(os.environ); environment["CODEX_HOME"] = str(root)
         login = subprocess.run([executable, "login", "status"], cwd=workspace, env=environment, text=True, capture_output=True, timeout=30)
         if login.returncode != 0: return False, "Codex-CLI não está autenticado nesta instância. Use Login no menu Codex-CLI."
+        data = telegram_data(root)
+        app_server_enabled = bool(data.get("app_server", {}).get("enabled", False))
+        if app_server_enabled:
+            from onmyoji_daemon.telegram import CodexAppServer, Settings
+            client = CodexAppServer(Settings.load(root.resolve(), target(root).parent))
+            try:
+                client.start()
+                parameters = {"cwd": str(workspace), "approvalPolicy": str(system.get("approval_policy") or "never"), "sandbox": str(system.get("sandbox_mode") or "workspace-write"), "developerInstructions": "Teste controlado do Onmyoji."}
+                if str(system.get("model") or ""): parameters["model"] = str(system["model"])
+                thread = client.request("thread/start", parameters).get("thread", {})
+                thread_id = str(thread.get("id") or "") if isinstance(thread, dict) else ""
+                if not thread_id: return False, "O Codex App Server iniciou, mas não criou uma thread de teste."
+                completed, answer = __import__("threading").Event(), []
+                def notification(method: str, params: dict) -> None:
+                    if method == "item/completed":
+                        item = params.get("item", {})
+                        if isinstance(item, dict) and item.get("type") == "agentMessage" and isinstance(item.get("text"), str): answer.append(item["text"])
+                    if method == "turn/completed": completed.set()
+                client.notification_handler = notification
+                sandbox = str(system.get("sandbox_mode") or "workspace-write")
+                policy = {"type": "dangerFullAccess"} if sandbox == "danger-full-access" else ({"type": "readOnly", "networkAccess": False} if sandbox == "read-only" else {"type": "workspaceWrite", "writableRoots": [str(workspace)], "networkAccess": False})
+                turn_parameters = {"threadId": thread_id, "input": [{"type": "text", "text": "Responda somente com OK."}], "cwd": str(workspace), "approvalPolicy": str(system.get("approval_policy") or "never"), "sandboxPolicy": policy, "effort": str(system.get("model_reasoning_effort") or "medium")}
+                if str(system.get("model") or ""): turn_parameters["model"] = str(system["model"])
+                client.request("turn/start", turn_parameters)
+                if not completed.wait(120) or not answer: return False, "O Codex App Server não retornou a resposta do turno de teste."
+                try: client.request("thread/delete", {"threadId": thread_id})
+                except Exception: pass
+                marker = root / "configs" / "daemon" / "runtime" / "codex-test.json"; marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.write_text(json.dumps({"tested_at": time.time(), "ok": True, "detail": "Codex App Server executou um turno controlado."}), encoding="utf-8")
+                return True, "Codex App Server executou um turno controlado."
+            finally: client.stop()
         command = [executable, "exec", "-C", str(workspace), "--skip-git-repo-check", "-m", str(system.get("model") or ""), "-c", f"model_reasoning_effort={json.dumps(str(system.get('model_reasoning_effort') or 'medium'))}", "-s", str(system.get("sandbox_mode") or "workspace-write"), "Responda somente com OK."]
         run = subprocess.run(command, cwd=workspace, env=environment, text=True, capture_output=True, timeout=120)
         message = (run.stderr or run.stdout or "sem saída").strip().replace("\n", " ")[-500:]
@@ -112,6 +152,9 @@ def validation(root: Path) -> list[dict[str, str]]:
     known = profiles(root)
     add("ok" if profile and profile in known else "error", "Perfil KeePass", f"{profile!r} disponível." if profile in known else ("Selecione um perfil KeePass existente." if not profile else f"Perfil {profile!r} não encontrado."))
     add("ok" if entry and not entry.endswith(":Shikigami") else "pending", "Referência do token", entry if entry and not entry.endswith(":Shikigami") else "Defina a entrada KeePass do token do bot.")
+    app_server = data.get("app_server", {})
+    enabled, idle = bool(app_server.get("enabled", False)), int(app_server.get("idle_timeout_seconds") or 1800)
+    add("ok" if not enabled or idle >= 60 else "error", "Codex App Server", (f"Habilitado; encerra após {idle} segundos sem turnos ativos." if enabled else "Desabilitado; o gateway usará codex exec a cada turno."))
     contacts = root / "configs" / "daemon" / "services" / "telegram" / "contacts.json"
     try:
         values = json.loads(contacts.read_text(encoding="utf-8")); owners = [item for item in values.get("contacts", []) if isinstance(item, dict) and "owner" in item.get("roles", [])]
@@ -159,7 +202,7 @@ def test_telegram(root: Path) -> tuple[bool, str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--onmyoji-root", default=str(ROOT)); parser.add_argument("--action", choices=["bootstrap", "validate", "validation-json", "profiles", "set-credential", "set-totp", "check-entry", "write-token", "test-telegram", "test-agent"], default="bootstrap"); parser.add_argument("--profile"); parser.add_argument("--entry"); parser.add_argument("--real-entry"); parser.add_argument("--fake-entry"); parser.add_argument("--enabled", action="store_true"); args = parser.parse_args()
+    parser = argparse.ArgumentParser(); parser.add_argument("--onmyoji-root", default=str(ROOT)); parser.add_argument("--action", choices=["bootstrap", "validate", "validation-json", "profiles", "set-credential", "set-totp", "set-app-server", "check-entry", "write-token", "test-telegram", "test-agent"], default="bootstrap"); parser.add_argument("--profile"); parser.add_argument("--entry"); parser.add_argument("--real-entry"); parser.add_argument("--fake-entry"); parser.add_argument("--enabled", action="store_true"); parser.add_argument("--disabled", action="store_true"); parser.add_argument("--idle-timeout", type=int); args = parser.parse_args()
     root = Path(args.onmyoji_root).resolve()
     if args.action == "bootstrap": print(bootstrap(root)); return 0
     if args.action == "profiles": print(json.dumps(profiles(root), ensure_ascii=False)); return 0
@@ -168,6 +211,9 @@ def main() -> int:
         bootstrap(root); save_telegram(root, args.profile, args.entry); print("Credencial configurada."); return 0
     if args.action == "set-totp":
         bootstrap(root); save_totp(root, args.enabled, args.real_entry or "", args.fake_entry or ""); print("TOTP configurado."); return 0
+    if args.action == "set-app-server":
+        if args.enabled and args.disabled: parser.error("--enabled e --disabled não podem ser usados juntos")
+        bootstrap(root); save_app_server(root, True if args.enabled else (False if args.disabled else None), args.idle_timeout); print("Configuração do App Server salva."); return 0
     if args.action == "check-entry":
         if not args.profile or not args.entry: parser.error("--profile e --entry são obrigatórios")
         exists, message = entry_exists(root, args.profile, args.entry); print(json.dumps({"exists": exists, "message": message}, ensure_ascii=False)); return 0

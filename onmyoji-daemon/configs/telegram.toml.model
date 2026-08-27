@@ -13,6 +13,13 @@ max_parallel_conversations = 1
 turn_timeout_seconds = 900
 developer_file = ""
 
+[app_server]
+# Mantém um Codex App Server exclusivo desta instância para reutilizar a conversa.
+# Desabilitado por padrão para permitir rollout gradual; o modo legado usa codex exec por turno.
+enabled = false
+# Encerra o processo quando não houver turnos ativos por este período. As threads persistem.
+idle_timeout_seconds = 1800
+
 [limits]
 max_attachment_bytes = 20971520
 max_pending_items = 50

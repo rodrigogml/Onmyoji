@@ -533,8 +533,8 @@ def daemon_menu(root: Path) -> None:
                 enabled = bool(json.loads((root / "configs" / "daemon" / "services.json").read_text(encoding="utf-8")).get("telegram", {}).get("enabled", False))
             except (OSError, ValueError): enabled = False
             try:
-                telegram_settings = tomllib.loads(telegram_path.read_text(encoding="utf-8")); totp_enabled = bool(telegram_settings.get("totp", {}).get("enabled", False))
-            except (OSError, tomllib.TOMLDecodeError): totp_enabled = False
+                telegram_settings = tomllib.loads(telegram_path.read_text(encoding="utf-8")); totp_enabled = bool(telegram_settings.get("totp", {}).get("enabled", False)); app_server_enabled = bool(telegram_settings.get("app_server", {}).get("enabled", False)); app_server_idle = int(telegram_settings.get("app_server", {}).get("idle_timeout_seconds") or 1800)
+            except (OSError, tomllib.TOMLDecodeError): totp_enabled, app_server_enabled, app_server_idle = False, False, 1800
             screen("Gateway Telegram", "Credenciais permanecem exclusivamente no KeePass")
             item("1.", "Desabilitar Telegram" if enabled else "Habilitar Telegram")
             item("2.", "Configurar credencial do bot", "Perfil KeePass e referência da entrada")
@@ -544,6 +544,8 @@ def daemon_menu(root: Path) -> None:
             item("6.", "Desabilitar TOTP" if totp_enabled else "Configurar e habilitar TOTP")
             item("7.", "Testar agente Codex", "Execução controlada, sem mensagem ao bot")
             item("8.", "Atualizar comandos privados", "Regrava e confirma comandos de cada owner")
+            item("9.", "Desabilitar App Server" if app_server_enabled else "Habilitar App Server", "Conversa persistente por Shikigami" if app_server_enabled else "Usa codex exec por turno")
+            item("10.", "Tempo de inatividade do App Server", f"{app_server_idle // 60} min · encerra somente sem turnos ativos")
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
@@ -624,6 +626,18 @@ def daemon_menu(root: Path) -> None:
                     try:
                         data = json.loads(synced.stdout); result(data.get("failed", 1) == 0, f"Comandos confirmados para {data.get('verified', 0)}/{data.get('owners', 0)} owner(s).")
                     except json.JSONDecodeError: result(False, "O Telegram não retornou a confirmação dos comandos.")
+            elif choice == "9":
+                changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-app-server", "--disabled" if app_server_enabled else "--enabled"], quiet=True)
+                result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
+                if changed.returncode == 0: offer_restart()
+            elif choice == "10":
+                raw = prompt(f"Tempo sem turnos antes de encerrar o App Server, em minutos [{max(1, app_server_idle // 60)}]: ").strip()
+                if raw.casefold() in {"x", "\x1b"}: continue
+                try: minutes = int(raw) if raw else max(1, app_server_idle // 60)
+                except ValueError: result(False, "Informe um número inteiro de minutos."); continue
+                changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-app-server", "--idle-timeout", str(minutes * 60)], quiet=True)
+                result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
+                if changed.returncode == 0: offer_restart()
             else: result(False, "Opção inválida.")
 
     while True:

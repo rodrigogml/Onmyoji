@@ -18,6 +18,15 @@ def test_settings_bind_to_instance_codex_home_and_workspace(tmp_path):
     assert settings.root == tmp_path.resolve() and settings.project == tmp_path.resolve()
 
 
+def test_app_server_settings_default_to_disabled_and_enforce_idle_minimum(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    settings = Settings.load(tmp_path, data)
+    assert not settings.app_server_enabled and settings.app_server_idle_seconds == 1800
+    (data / "telegram.toml").write_text((data / "telegram.toml").read_text(encoding="utf-8") + "\n[app_server]\nenabled = true\nidle_timeout_seconds = 120\n", encoding="utf-8")
+    settings = Settings.load(tmp_path, data)
+    assert settings.app_server_enabled and settings.app_server_idle_seconds == 120
+
+
 def test_contacts_are_local_and_do_not_share_owners(tmp_path):
     left, right = Contacts(tmp_path / "left" / "contacts.json"), Contacts(tmp_path / "right" / "contacts.json")
     left.add_owner({"id": 123, "first_name": "owner"})
@@ -46,6 +55,14 @@ def test_config_keyboard_exposes_legacy_conversation_preferences():
     assert title == "Configurações do bot" and top["inline_keyboard"][0][0]["callback_data"] == "cfg:token:thoughts"
     assert thoughts_title == "Configurações › Pensamentos"
     assert "Compartilha Pensamentos" in thoughts["inline_keyboard"][0][0]["text"]
+
+
+def test_new_conversation_forgets_persisted_app_server_thread(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data); gateway = Gateway(Settings.load(tmp_path, data))
+    gateway.database.execute("INSERT INTO conversations(chat_id, updated_at, codex_thread_id) VALUES (?, ?, ?)", ("9", 0, "thread-old")); gateway.database.commit()
+    gateway._new_conversation(9)
+    row = gateway.database.execute("SELECT generation, codex_thread_id FROM conversations WHERE chat_id='9'").fetchone()
+    assert row == (1, None)
 
 
 def test_totp_session_cleanup_removes_all_related_messages(tmp_path):
