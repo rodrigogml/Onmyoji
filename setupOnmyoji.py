@@ -437,9 +437,10 @@ def daemon_menu(root: Path) -> None:
     def command(arguments: list[str], quiet: bool = False) -> subprocess.CompletedProcess[str]:
         return subprocess.run(arguments, cwd=str(project), env=environment, text=True, capture_output=quiet)
 
-    def lifecycle(action: str, extra: list[str] | None = None) -> None:
+    def lifecycle(action: str, extra: list[str] | None = None) -> bool:
         completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), action, *(extra or [])], quiet=True)
         result(completed.returncode == 0, (completed.stdout or completed.stderr or "Operação concluída.").strip())
+        return completed.returncode == 0
 
     def validation() -> list[dict[str, str]]:
         completed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "validation-json"], quiet=True)
@@ -530,10 +531,10 @@ def daemon_menu(root: Path) -> None:
             if choice in {"x", "\x1b"}: return
             if choice == "1":
                 if enabled:
-                    lifecycle("disable", ["telegram"]); result(True, "Telegram desabilitado; a configuração foi preservada.")
+                    if lifecycle("disable", ["telegram"]): result(True, "Telegram desabilitado; a configuração foi preservada.")
                 else:
                     if not show_validation(): result(False, "Corrija os itens marcados antes de habilitar o gateway."); continue
-                    lifecycle("enable", ["telegram"]); result(True, "Telegram habilitado; ele iniciará junto com o daemon.")
+                    if lifecycle("enable", ["telegram"]): result(True, "Telegram habilitado; ele iniciará junto com o daemon.")
             elif choice == "2":
                 listed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "profiles"], quiet=True)
                 try: values = json.loads(listed.stdout)
