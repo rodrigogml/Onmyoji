@@ -6,7 +6,7 @@ from pathlib import Path
 
 SKILL = Path(__file__).resolve().parent
 sys.path.insert(0, str(SKILL.parent))
-from setup_ui import item, prompt, result, screen
+from setup_ui import choose_keepass_profile, item, prompt, result, screen
 DEFAULTS = {"api_base":"https://api.notion.com","notion_version":"2026-03-11","timeout_seconds":30,"max_retries":2,"page_size":100}
 def path(root): return root / "configs" / "notion.toml"
 def load(file): return tomllib.loads(file.read_text(encoding="utf-8")) if file.exists() else {"schema_version":1,"defaults":dict(DEFAULTS),"profiles":{}}
@@ -46,8 +46,10 @@ def configure(root):
             if not name or name.casefold()=="x" or name in profiles or not name.replace("-","").replace("_","").isalnum():result(False, "Nome inválido ou existente.");continue
             p={}
             for key,label,default in (("vault_profile","Perfil KeePass","example"),("vault_entry_path","Entrada KeePass","APIs/Notion"),("vault_field","Campo do token","password")):
-                value=prompt(f"{label} [{default}]: ").strip();p[key]=value or default
-            profiles[name]=p;save(file,data)
+                value=choose_keepass_profile(root) if key=="vault_profile" else (prompt(f"{label} [{default}]: ").strip() or default)
+                if value is None: break
+                p[key]=value
+            else: profiles[name]=p;save(file,data)
         elif c in {"2","3"}:
             if not profiles:result(False, "Não há perfis configurados.");continue
             name=select(profiles)
@@ -59,7 +61,7 @@ def configure(root):
                 p=profiles[name];screen("Notion", "Editar perfil", name);item("1.", "Perfil KeePass", p['vault_profile']);item("2.", "Entrada KeePass", p['vault_entry_path']);item("3.", "Campo", p['vault_field']);item("X.", "Voltar")
                 key={"1":"vault_profile","2":"vault_entry_path","3":"vault_field"}.get(prompt("Editar: ").strip().casefold())
                 if key:
-                    value=prompt("Novo valor [X cancela]: ").strip()
+                    value=choose_keepass_profile(root,p.get(key,"")) if key=="vault_profile" else prompt("Novo valor [X cancela]: ").strip()
                     if value and value.casefold() not in {"x","\x1b"}:p[key]=value;save(file,data)
         else:result(False, "Opção inválida.")
 def main():

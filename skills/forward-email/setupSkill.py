@@ -4,7 +4,7 @@ import argparse,json,sys,tomllib
 from pathlib import Path
 S=Path(__file__).resolve().parent; F=(('vault_profile','Perfil KeePass','example'),('vault_entry_path','Entrada KeePass','APIs/ForwardEmail'),('vault_field','Campo do token','password'),('domain','Domínio (opcional)',''))
 sys.path.insert(0,str(S.parent))
-from setup_ui import item,prompt,result,screen
+from setup_ui import choose_keepass_profile,item,prompt,result,screen
 def path(root):return root/'configs'/'forward-email.toml'
 def load(p):return tomllib.loads(p.read_text(encoding='utf-8')) if p.exists() else {'schema_version':1,'defaults':{'api_base':'https://api.forwardemail.net/v1','timeout_seconds':30,'max_retries':2},'profiles':{}}
 def render(d):
@@ -29,7 +29,12 @@ def configure(root):
   if a=='1':
    n=prompt('Nome [X cancela]: ').strip()
    if not n or n.casefold()=='x' or n in q:result(False,'Nome inválido ou existente.');continue
-   q[n]={k:(prompt(f'{l} [{x}]: ').strip() or x) for k,l,x in F};save(p,d)
+   profile={}
+   for k,l,x in F:
+    value=choose_keepass_profile(root) if k=='vault_profile' else (prompt(f'{l} [{x}]: ').strip() or x)
+    if value is None:break
+    profile[k]=value
+   else:q[n]=profile;save(p,d)
   elif a in {'2','3'}:
    if not q:result(False,'Não há perfis configurados.');continue
    n=select(q)
@@ -38,7 +43,7 @@ def configure(root):
     if prompt(f'Digite EXCLUIR para remover {n}: ').strip()=='EXCLUIR':del q[n];save(p,d)
    else:
     z=q[n];screen('Forward Email','Editar perfil',n);[item(f'{i}.',l,z.get(k,'')) for i,(k,l,_) in enumerate(F,1)];item('X.','Voltar');v=prompt('Editar [X volta]: ').strip()
-    if v.isdigit() and 1<=int(v)<=len(F):k,l,_=F[int(v)-1];x=prompt(f'{l} [X cancela]: ').strip();z[k]=z[k] if not x or x.casefold()=='x' else x;save(p,d)
+    if v.isdigit() and 1<=int(v)<=len(F):k,l,_=F[int(v)-1];x=choose_keepass_profile(root,z.get(k,'')) if k=='vault_profile' else prompt(f'{l} [X cancela]: ').strip();z[k]=z[k] if not x or x.casefold()=='x' else x;save(p,d)
   else:result(False,'Opção inválida.')
 def main():
  p=argparse.ArgumentParser();p.add_argument('--action',default='configure');p.add_argument('--json',action='store_true');p.add_argument('--onmyoji-root',type=Path);a=p.parse_args();r=a.onmyoji_root.resolve() if a.onmyoji_root else S.parents[1];i={'id':'forward-email','title':'Forward Email','description':'Domínios e aliases com token no KeePass Vault.'}

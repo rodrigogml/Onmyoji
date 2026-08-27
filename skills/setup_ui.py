@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import tomllib
+from pathlib import Path
 
 
 class Ui:
@@ -53,3 +55,28 @@ def result(ok: bool, message: str) -> None:
 
 def note(message: str) -> None:
     print("\n    " + Ui.text("i INFO", Ui.bold, Ui.slate) + "  " + Ui.text(message, Ui.slate))
+
+
+def choose_keepass_profile(root: Path, current: str = "") -> str | None:
+    """Permite selecionar um perfil configurado no vault local da instância."""
+    path = root / "configs" / "keepass.toml"
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        profiles = sorted(name for name, value in data.get("profiles", {}).items() if isinstance(name, str) and isinstance(value, dict))
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        result(False, f"Não foi possível ler a configuração do KeePass: {error}")
+        return None
+    if not profiles:
+        result(False, "Nenhum perfil KeePass foi configurado. Configure primeiro a skill KeePass Vault.")
+        return None
+    screen("KeePass Vault", "Selecionar perfil", "Escolha o perfil que fornecerá as credenciais")
+    for index, name in enumerate(profiles, 1):
+        item(f"{index}.", name, "atual" if name == current else "")
+    item("X.", "Cancelar")
+    while True:
+        value = prompt("Perfil: ").strip().casefold()
+        if value in {"x", "\x1b"}:
+            return None
+        if value.isdigit() and 1 <= int(value) <= len(profiles):
+            return profiles[int(value) - 1]
+        result(False, "Opção inválida.")

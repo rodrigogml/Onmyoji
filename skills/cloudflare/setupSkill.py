@@ -4,7 +4,7 @@ import argparse,json,sys,tomllib
 from pathlib import Path
 SKILL=Path(__file__).resolve().parent
 sys.path.insert(0,str(SKILL.parent))
-from setup_ui import item,prompt,result,screen
+from setup_ui import choose_keepass_profile,item,prompt,result,screen
 FIELDS=(('vault_profile','Perfil KeePass','example'),('vault_entry_path','Entrada KeePass','APIs/Cloudflare'),('vault_field','Campo do token','password'),('zone_id','Zone ID (opcional)',''))
 def file(root):return root/'configs'/'cloudflare.toml'
 def load(p):return tomllib.loads(p.read_text(encoding='utf-8')) if p.exists() else {'schema_version':1,'defaults':{'api_base':'https://api.cloudflare.com/client/v4','timeout_seconds':30,'max_retries':2},'profiles':{}}
@@ -34,7 +34,12 @@ def configure(root):
   if a=='1':
    n=prompt('Nome [X cancela]: ').strip()
    if not n or n.casefold()=='x' or n in profiles:result(False,'Nome inválido ou existente.');continue
-   profiles[n]={k:(prompt(f'{l} [{x}]: ').strip() or x) for k,l,x in FIELDS};save(p,d)
+   profile={}
+   for k,l,x in FIELDS:
+    value=choose_keepass_profile(root) if k=='vault_profile' else (prompt(f'{l} [{x}]: ').strip() or x)
+    if value is None:break
+    profile[k]=value
+   else:profiles[n]=profile;save(p,d)
   elif a in {'2','3'}:
    if not profiles:result(False,'Não há perfis configurados.');continue
    n=select(profiles)
@@ -44,7 +49,7 @@ def configure(root):
     else:result(False,'Operação cancelada.')
    else:
     q=profiles[n];screen('Cloudflare','Editar perfil',n);[item(f'{i}.',l,q.get(k,'')) for i,(k,l,_) in enumerate(FIELDS,1)];item('X.','Voltar');v=prompt('Editar [X volta]: ').strip()
-    if v.isdigit() and 1<=int(v)<=len(FIELDS):k,l,_=FIELDS[int(v)-1];x=prompt(f'{l} [X cancela]: ').strip();q[k]=q[k] if not x or x.casefold()=='x' else x;save(p,d)
+    if v.isdigit() and 1<=int(v)<=len(FIELDS):k,l,_=FIELDS[int(v)-1];x=choose_keepass_profile(root,q.get(k,'')) if k=='vault_profile' else prompt(f'{l} [X cancela]: ').strip();q[k]=q[k] if not x or x.casefold()=='x' else x;save(p,d)
   else:result(False,'Opção inválida.')
 def main():
  p=argparse.ArgumentParser();p.add_argument('--action',default='configure');p.add_argument('--json',action='store_true');p.add_argument('--onmyoji-root',type=Path);a=p.parse_args();root=a.onmyoji_root.resolve() if a.onmyoji_root else SKILL.parents[1];info={'id':'cloudflare','title':'Cloudflare','description':'DNS e zonas com token no KeePass Vault.'}

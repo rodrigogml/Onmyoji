@@ -5,7 +5,7 @@ import argparse,json,sys,tomllib
 from pathlib import Path
 SKILL=Path(__file__).resolve().parent
 sys.path.insert(0,str(SKILL.parent))
-from setup_ui import item,prompt,result,screen
+from setup_ui import choose_keepass_profile,item,prompt,result,screen
 DEFAULTS={"timeout_seconds":30,"max_attempts":3}
 FIELDS=(("cli_path","Executável AWS CLI","aws"),("region","Região","sa-east-1"),("expected_account_id","Conta AWS esperada (opcional)",""),("vault_profile","Perfil KeePass","example"),("vault_entry_path","Entrada KeePass","AWS/example"))
 def path(root):return root/'configs'/'aws.toml'
@@ -37,7 +37,12 @@ def configure(root):
   if action=='1':
    name=prompt('Nome [X cancela]: ').strip()
    if not name or name.casefold()=='x' or name in profiles or not name.replace('-','').replace('_','').isalnum():result(False,'Nome inválido ou existente.');continue
-   profiles[name]={key:(prompt(f'{label} [{default}]: ').strip() or default) for key,label,default in FIELDS};save(file,data)
+   profile={}
+   for key,label,default in FIELDS:
+    value=choose_keepass_profile(root) if key=='vault_profile' else (prompt(f'{label} [{default}]: ').strip() or default)
+    if value is None:break
+    profile[key]=value
+   else:profiles[name]=profile;save(file,data)
   elif action in {'2','3'}:
    if not profiles:result(False,'Não há perfis configurados.');continue
    name=choose(profiles)
@@ -50,7 +55,7 @@ def configure(root):
     for i,(key,label,_) in enumerate(FIELDS,1):item(f'{i}.',label,profile.get(key,''))
     item('X.','Voltar');field=prompt('Editar [X volta]: ').strip().casefold()
     if field.isdigit() and 1<=int(field)<=len(FIELDS):
-     key,label,_=FIELDS[int(field)-1];value=prompt(f'{label} [X cancela]: ').strip()
+     key,label,_=FIELDS[int(field)-1];value=choose_keepass_profile(root,profile.get(key,'')) if key=='vault_profile' else prompt(f'{label} [X cancela]: ').strip()
      if value and value.casefold() not in {'x','\x1b'}:profile[key]=value;save(file,data)
   else:result(False,'Opção inválida.')
 def main():
