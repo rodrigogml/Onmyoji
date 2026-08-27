@@ -38,3 +38,11 @@ def test_vault_token_uses_onmyoji_keepass_wrapper_without_token_argument(tmp_pat
 def test_totp_filter_supports_case_insensitive_wildcards():
     entries = ["APIs/MSN/Rodrigo", "APIs/msn/Outro", "Banco/Rodrigo"]
     assert Gateway._filter_totp(entries, "MSN*Rodrigo") == ["APIs/MSN/Rodrigo"]
+
+
+def test_config_keyboard_exposes_legacy_conversation_preferences():
+    title, top = Gateway._config_keyboard("token", {"share_thoughts": True, "delete_thoughts": True})
+    thoughts_title, thoughts = Gateway._config_keyboard("token", {"share_thoughts": False, "delete_thoughts": True}, True)
+    assert title == "Configurações do bot" and top["inline_keyboard"][0][0]["callback_data"] == "cfg:token:thoughts"
+    assert thoughts_title == "Configurações › Pensamentos"
+    assert "Compartilha Pensamentos" in thoughts["inline_keyboard"][0][0]["text"]

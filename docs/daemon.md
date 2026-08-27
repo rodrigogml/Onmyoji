@@ -22,4 +22,6 @@ A validação mostra cada dependência separadamente: instalação do daemon, TO
 
 Quando TOTP é configurado e habilitado, os comandos privados de cada owner incluem `/new`, `/config` e `/totp`. O fluxo TOTP pede uma senha real ou falsa mantida no KeePass, lista entradas paginadas, devolve o código em mensagem copiável e agenda a exclusão das mensagens auxiliares.
 
+`/config` abre um menu efêmero e privado por conversa para controlar `Compartilha Pensamentos` e `Excluir Pensamentos`; ambas começam habilitadas e são persistidas no SQLite do gateway. O executor CLI atual ainda não produz eventos públicos de pensamento, portanto as preferências já são persistidas para a migração do App Server, mas não há pensamentos a exibir ou excluir nesta fase. Comandos desconhecidos, TOTP desabilitado, sessões expiradas e configurações TOTP incompletas recebem uma resposta descritiva em vez de descarte silencioso.
+
 O gateway aceita inicialmente uma identidade Telegram. Pairing, owners e conversas ficam isolados na instância; mensagens de remetentes que não sejam owners em DM são ignoradas.

@@ -90,6 +90,7 @@ class TelegramApi:
     def send(self, chat_id: int, text: str, **values: Any) -> dict[str, Any]: return self.call("sendMessage", {"chat_id": chat_id, "text": text, **values})
     def typing(self, chat_id: int) -> None: self.call("sendChatAction", {"chat_id": chat_id, "action": "typing"})
     def delete(self, chat_id: int, message_id: int) -> None: self.call("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+    def edit(self, chat_id: int, message_id: int, text: str, keyboard: dict[str, Any]) -> None: self.call("editMessageText", {"chat_id": chat_id, "message_id": message_id, "text": text, "reply_markup": keyboard})
     def set_owner_commands(self, owner_id: int, totp_enabled: bool) -> bool:
         commands = [{"command": "new", "description": "Iniciar uma nova conversa"}, {"command": "config", "description": "Configurar esta conversa"}]
         if totp_enabled: commands.append({"command": "totp", "description": "Obter código de autenticação"})
@@ -115,8 +116,12 @@ class Gateway:
     def __init__(self, settings: Settings):
         self.settings, self.stop_event = settings, threading.Event(); self.contacts = Contacts(settings.data_dir / "contacts.json")
         (settings.data_dir / "state").mkdir(parents=True, exist_ok=True); self.database = sqlite3.connect(settings.data_dir / "state" / "gateway.sqlite3", check_same_thread=False)
-        self.database.execute("CREATE TABLE IF NOT EXISTS conversations(chat_id TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL)"); self.database.commit()
-        self.api: TelegramApi | None = None; self.pair: tuple[str, float] | None = None; self.offset = 0; self.work = threading.BoundedSemaphore(settings.parallel); self.totp_sessions: dict[int, dict[str, Any]] = {}; self.last_error: str | None = None
+        self.database.execute("CREATE TABLE IF NOT EXISTS conversations(chat_id TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL, share_thoughts INTEGER NOT NULL DEFAULT 1, delete_thoughts INTEGER NOT NULL DEFAULT 1)")
+        for column in ("share_thoughts", "delete_thoughts"):
+            try: self.database.execute(f"ALTER TABLE conversations ADD COLUMN {column} INTEGER NOT NULL DEFAULT 1")
+            except sqlite3.OperationalError: pass
+        self.database.commit()
+        self.api: TelegramApi | None = None; self.pair: tuple[str, float] | None = None; self.offset = 0; self.work = threading.BoundedSemaphore(settings.parallel); self.totp_sessions: dict[int, dict[str, Any]] = {}; self.config_sessions: dict[str, dict[str, Any]] = {}; self.last_error: str | None = None
     def _totp_enabled(self) -> bool:
         try: return bool(tomllib.loads((self.settings.data_dir / "telegram.toml").read_text(encoding="utf-8")).get("totp", {}).get("enabled", False))
         except (OSError, tomllib.TOMLDecodeError): return False
@@ -155,11 +160,47 @@ class Gateway:
             self.api.send(sender["id"], "Pairing concluído e comandos privados configurados." if synced.get("failed", 1) == 0 else "Pairing concluído, mas a configuração dos comandos falhou. Consulte o diagnóstico."); return
         if sender["id"] not in self.contacts.owners(): return
         if sender["id"] in self.totp_sessions: self._totp_password(sender["id"], message); return
-        if text == "/new": self.database.execute("UPDATE conversations SET generation=generation+1, updated_at=? WHERE chat_id=?", (time.time(), str(sender["id"]))); self.database.commit(); self.api.send(sender["id"], "Conversa reiniciada."); return
-        if text.startswith("/totp") and self._totp_enabled(): self._start_totp(sender["id"], message, text[5:].strip()); return
-        if text == "/config": self.api.send(sender["id"], "As opções de conversa serão disponibilizadas neste gateway em uma próxima atualização."); return
-        if text.startswith("/"): return
+        command = text.split(maxsplit=1)[0].split("@", 1)[0].casefold()
+        if command == "/new": self.database.execute("UPDATE conversations SET generation=generation+1, updated_at=? WHERE chat_id=?", (time.time(), str(sender["id"]))); self.database.commit(); self.api.send(sender["id"], "Conversa reiniciada."); return
+        if command == "/totp":
+            if self._totp_enabled(): self._start_totp(sender["id"], message, text[len(text.split(maxsplit=1)[0]):].strip())
+            else: self._ephemeral(sender["id"], "TOTP não está habilitado para este Shikigami. Configure-o no setup do Gateway Telegram.")
+            return
+        if command == "/config": self._open_config(sender["id"]); return
+        if text.startswith("/"): self._ephemeral(sender["id"], "Comando inválido. Use /new, /config ou /totp quando habilitado."); return
         threading.Thread(target=self._turn, args=(sender["id"], text), daemon=True).start()
+
+    def _conversation_settings(self, chat_id: int) -> dict[str, bool]:
+        self.database.execute("INSERT OR IGNORE INTO conversations(chat_id, updated_at) VALUES (?, ?)", (str(chat_id), time.time())); self.database.commit()
+        row = self.database.execute("SELECT share_thoughts, delete_thoughts FROM conversations WHERE chat_id=?", (str(chat_id),)).fetchone()
+        return {"share_thoughts": bool(row[0]), "delete_thoughts": bool(row[1])} if row else {"share_thoughts": True, "delete_thoughts": True}
+
+    @staticmethod
+    def _config_keyboard(token: str, settings: dict[str, bool], thoughts: bool = False) -> tuple[str, dict[str, Any]]:
+        if not thoughts: return "Configurações do bot", {"inline_keyboard": [[{"text": "Pensamentos", "callback_data": f"cfg:{token}:thoughts"}], [{"text": "Fechar", "callback_data": f"cfg:{token}:close"}]]}
+        shared, deleted = ("☑" if settings["share_thoughts"] else "☐"), ("☑" if settings["delete_thoughts"] else "☐")
+        return "Configurações › Pensamentos", {"inline_keyboard": [[{"text": f"{shared} Compartilha Pensamentos", "callback_data": f"cfg:{token}:share"}], [{"text": f"{deleted} Excluir Pensamentos", "callback_data": f"cfg:{token}:delete"}], [{"text": "‹ Voltar", "callback_data": f"cfg:{token}:back"}], [{"text": "Fechar", "callback_data": f"cfg:{token}:close"}]]}
+
+    def _open_config(self, chat_id: int) -> None:
+        assert self.api
+        token, settings = secrets.token_urlsafe(8), self._conversation_settings(chat_id); text, keyboard = self._config_keyboard(token, settings)
+        sent = self._ephemeral(chat_id, text, 180, reply_markup=keyboard)
+        if isinstance(sent.get("message_id"), int): self.config_sessions[token] = {"chat_id": chat_id, "message_id": sent["message_id"], "expires_at": time.time() + 180}
+
+    def _config_callback(self, chat_id: int, callback: dict[str, Any], parts: list[str]) -> bool:
+        if len(parts) != 3 or parts[0] != "cfg": return False
+        session = self.config_sessions.get(parts[1]); action = parts[2]
+        if not session or session["chat_id"] != chat_id or time.time() > float(session["expires_at"]): self._ephemeral(chat_id, "Esta configuração expirou."); return True
+        if action == "close": self.config_sessions.pop(parts[1], None); self._delete_later(chat_id, int(session["message_id"])); return True
+        settings = self._conversation_settings(chat_id)
+        if action in {"share", "delete"}:
+            column = "share_thoughts" if action == "share" else "delete_thoughts"; self.database.execute(f"UPDATE conversations SET {column} = NOT {column}, updated_at=? WHERE chat_id=?", (time.time(), str(chat_id))); self.database.commit(); settings = self._conversation_settings(chat_id); thoughts = True
+        else: thoughts = action == "thoughts"
+        if action not in {"thoughts", "share", "delete", "back"}: self._ephemeral(chat_id, "Opção de configuração inválida."); return True
+        text, keyboard = self._config_keyboard(parts[1], settings, thoughts)
+        try: assert self.api; self.api.edit(chat_id, int(session["message_id"]), text, keyboard)
+        except Exception as error: self._record_error(error); self._ephemeral(chat_id, "Não foi possível atualizar esta configuração.")
+        return True
     def _turn(self, chat_id: int, text: str) -> None:
         if not self.work.acquire(timeout=1): return
         typing_stop = threading.Event()
@@ -208,11 +249,17 @@ class Gateway:
     def _start_totp(self, chat_id: int, message: dict[str, Any], query: str) -> None:
         assert self.api
         try:
+            profile = tomllib.loads((self.settings.data_dir / "telegram.toml").read_text(encoding="utf-8")).get("totp", {})
+            if not str(profile.get("real_password_entry") or "") or not str(profile.get("fake_password_entry") or ""):
+                self._ephemeral(chat_id, "TOTP está habilitado, mas as entradas de senha real e falsa não foram configuradas."); return
             message_id = message.get("message_id")
             if isinstance(message_id, int): self.api.delete(chat_id, message_id)
-        except Exception: pass
-        self.totp_sessions[chat_id] = {"query": query, "expires_at": time.time() + 180}
-        self._ephemeral(chat_id, "Informe a senha TOTP na próxima mensagem. Ela será apagada.", 180)
+            self.totp_sessions[chat_id] = {"query": query, "expires_at": time.time() + 180}
+            self._ephemeral(chat_id, "Informe a senha TOTP na próxima mensagem. Ela será apagada.", 180)
+        except Exception as error:
+            self._record_error(error)
+            try: self.api.send(chat_id, "Não foi possível iniciar o TOTP. Consulte o diagnóstico do gateway.")
+            except Exception: pass
 
     def _totp_password(self, chat_id: int, message: dict[str, Any]) -> None:
         assert self.api
@@ -222,6 +269,13 @@ class Gateway:
             if isinstance(message_id, int): self.api.delete(chat_id, message_id)
         except Exception: pass
         if not session or time.time() > float(session["expires_at"]): self._ephemeral(chat_id, "Sessão TOTP expirada."); return
+        typing_stop = threading.Event()
+        def renew_typing() -> None:
+            while not typing_stop.is_set():
+                try: self.api.typing(chat_id)
+                except Exception as error: self._record_error(error)
+                typing_stop.wait(4)
+        typing_thread = threading.Thread(target=renew_typing, daemon=True); typing_thread.start()
         try:
             data = tomllib.loads((self.settings.data_dir / "telegram.toml").read_text(encoding="utf-8")); profile = data.get("totp", {})
             real, fake = Vault(self.settings).read(str(profile.get("real_password_entry") or "")), Vault(self.settings).read(str(profile.get("fake_password_entry") or ""))
@@ -235,6 +289,8 @@ class Gateway:
             self._show_totp_page(chat_id, 0)
         except Exception as error:
             self._record_error(error); self._ephemeral(chat_id, "Não foi possível consultar os TOTPs. Consulte o diagnóstico do gateway.")
+        finally:
+            typing_stop.set(); typing_thread.join(timeout=1)
 
     def _show_totp_page(self, chat_id: int, page: int) -> None:
         assert self.api
@@ -256,11 +312,12 @@ class Gateway:
         data = str(callback.get("data") or ""); parts = data.split(":")
         try: self.api.call("answerCallbackQuery", {"callback_query_id": callback["id"]})
         except Exception: pass
-        if len(parts) < 3 or parts[0] != "totp": return
+        if self._config_callback(chat_id, callback, parts): return
+        if len(parts) < 3 or parts[0] != "totp": self._ephemeral(chat_id, "Ação inválida ou expirada."); return
         session = self.totp_sessions.get(chat_id)
-        if not session or not secrets.compare_digest(str(session.get("token", "")), parts[1]) or time.time() > float(session.get("expires_at", 0)): return
+        if not session or not secrets.compare_digest(str(session.get("token", "")), parts[1]) or time.time() > float(session.get("expires_at", 0)): self._ephemeral(chat_id, "Seleção TOTP expirada. Inicie /totp novamente."); return
         if len(parts) == 4 and parts[2] == "p": self._show_totp_page(chat_id, int(parts[3])); return
-        if parts[2] == "x": self.totp_sessions.pop(chat_id, None); return
+        if parts[2] == "x": self.totp_sessions.pop(chat_id, None); self._ephemeral(chat_id, "TOTP cancelado."); return
         try:
             entry = session["entries"][int(parts[2])]; code = Vault(self.settings).read(entry, "totp")
             self.totp_sessions.pop(chat_id, None); remaining = 30 - (int(time.time()) % 30)
