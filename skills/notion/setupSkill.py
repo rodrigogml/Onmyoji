@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Configurador interativo de perfis Notion."""
 from __future__ import annotations
-import argparse, json, tomllib
+import argparse, json, sys, tomllib
 from pathlib import Path
 
 SKILL = Path(__file__).resolve().parent
+sys.path.insert(0, str(SKILL.parent))
+from setup_ui import item, prompt, result, screen
 DEFAULTS = {"api_base":"https://api.notion.com","notion_version":"2026-03-11","timeout_seconds":30,"max_retries":2,"page_size":100}
 def path(root): return root / "configs" / "notion.toml"
 def load(file): return tomllib.loads(file.read_text(encoding="utf-8")) if file.exists() else {"schema_version":1,"defaults":dict(DEFAULTS),"profiles":{}}
@@ -22,41 +24,44 @@ def save(file,data):
     except Exception as e:
         if old is None:file.unlink(missing_ok=True)
         else:file.write_text(old,encoding="utf-8",newline="\n")
-        print(f"Não salvo: {e}");return
-    print("Configuração salva e validada.")
+        result(False, f"Não salvo: {e}");return
+    result(True, "Configuração salva e validada.")
 def select(profiles):
     names=sorted(profiles)
-    for i,name in enumerate(names,1):print(f"  {i}. {name}")
-    c=input("Perfil [X cancela]: ").strip().casefold()
+    screen("Notion", "Selecionar perfil", "Escolha um perfil ou pressione X para voltar")
+    for i,name in enumerate(names,1):item(f"{i}.", name)
+    item("X.", "Voltar")
+    c=prompt("Perfil [X cancela]: ").strip().casefold()
     return names[int(c)-1] if c.isdigit() and 1<=int(c)<=len(names) else None
 def configure(root):
     file=path(root)
     while True:
         data=load(file);profiles=data["profiles"]
-        print("\n══ Notion · configuração ══\n  1. Criar perfil\n  2. Editar perfil\n  3. Excluir perfil\n  X. Voltar")
-        c=input("Opção: ").strip().casefold()
+        screen("Notion", "Configuração", "Perfis de acesso à API")
+        item("1.", "Criar perfil"); item("2.", "Editar perfil"); item("3.", "Excluir perfil"); item("X.", "Voltar")
+        c=prompt("Opção: ").strip().casefold()
         if c in {"x","\x1b"}:return
         if c=="1":
-            name=input("Nome do perfil [X cancela]: ").strip()
-            if not name or name.casefold()=="x" or name in profiles or not name.replace("-","").replace("_","").isalnum():print("Nome inválido ou existente.");continue
+            name=prompt("Nome do perfil [X cancela]: ").strip()
+            if not name or name.casefold()=="x" or name in profiles or not name.replace("-","").replace("_","").isalnum():result(False, "Nome inválido ou existente.");continue
             p={}
             for key,label,default in (("vault_profile","Perfil KeePass","example"),("vault_entry_path","Entrada KeePass","APIs/Notion"),("vault_field","Campo do token","password")):
-                value=input(f"{label} [{default}]: ").strip();p[key]=value or default
+                value=prompt(f"{label} [{default}]: ").strip();p[key]=value or default
             profiles[name]=p;save(file,data)
         elif c in {"2","3"}:
-            if not profiles:print("Não há perfis configurados.");continue
-            print("Perfis:");name=select(profiles)
-            if not name:print("Seleção cancelada.");continue
+            if not profiles:result(False, "Não há perfis configurados.");continue
+            name=select(profiles)
+            if not name:result(False, "Seleção cancelada.");continue
             if c=="3":
-                if input(f"Digite EXCLUIR para remover {name}: ").strip()=="EXCLUIR":del profiles[name];save(file,data)
-                else:print("Operação cancelada.")
+                if prompt(f"Digite EXCLUIR para remover {name}: ").strip()=="EXCLUIR":del profiles[name];save(file,data)
+                else:result(False, "Operação cancelada.")
             else:
-                p=profiles[name];print(f"\n{name}\n  1. Perfil KeePass: {p['vault_profile']}\n  2. Entrada KeePass: {p['vault_entry_path']}\n  3. Campo: {p['vault_field']}\n  X. Voltar")
-                key={"1":"vault_profile","2":"vault_entry_path","3":"vault_field"}.get(input("Editar: ").strip().casefold())
+                p=profiles[name];screen("Notion", "Editar perfil", name);item("1.", "Perfil KeePass", p['vault_profile']);item("2.", "Entrada KeePass", p['vault_entry_path']);item("3.", "Campo", p['vault_field']);item("X.", "Voltar")
+                key={"1":"vault_profile","2":"vault_entry_path","3":"vault_field"}.get(prompt("Editar: ").strip().casefold())
                 if key:
-                    value=input("Novo valor [X cancela]: ").strip()
+                    value=prompt("Novo valor [X cancela]: ").strip()
                     if value and value.casefold() not in {"x","\x1b"}:p[key]=value;save(file,data)
-        else:print("Opção inválida.")
+        else:result(False, "Opção inválida.")
 def main():
     parser=argparse.ArgumentParser();parser.add_argument("--action",default="configure");parser.add_argument("--json",action="store_true");parser.add_argument("--onmyoji-root",type=Path);args=parser.parse_args();root=args.onmyoji_root.resolve() if args.onmyoji_root else SKILL.parents[1];info={"id":"notion","title":"Notion","description":"Páginas, bases e arquivos com token no KeePass Vault."}
     if args.action=="describe":print(json.dumps(info,ensure_ascii=False) if args.json else info["title"]);return

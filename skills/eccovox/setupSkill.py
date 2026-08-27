@@ -9,6 +9,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from setup_ui import item, prompt, result, screen
 
 SKILL = Path(__file__).resolve().parent
 
@@ -67,7 +69,7 @@ def save(path: Path, data: dict) -> tuple[bool, str]:
 
 
 def ask(label: str, current: str = "") -> str | None:
-    value = input(f"{label}" + (f" [{current}]" if current else "") + " (X cancela): ").strip()
+    value = prompt(f"{label}" + (f" [{current}]" if current else "") + " (X cancela): ").strip()
     return None if value.casefold() in {"x", "\x1b"} else (value or current)
 
 
@@ -75,41 +77,42 @@ def configure(root: Path) -> None:
     path = config_path(root)
     while True:
         data = load(path); profiles = data.setdefault("profiles", {})
-        print("\n══ EccoVox · configuração ══")
+        screen("EccoVox", "Configuração", "Perfis do serviço local de voz")
         if profiles:
             print("  Perfis existentes:")
-            for index, name in enumerate(sorted(profiles), 1): print(f"    {index}. {name}")
-        print("  1. Criar perfil\n  2. Editar perfil\n  3. Excluir perfil\n  X. Voltar")
-        choice = input("Opção: ").strip().casefold()
+            for index, name in enumerate(sorted(profiles), 1): item(f"{index}.", name)
+        item("1.", "Criar perfil"); item("2.", "Editar perfil"); item("3.", "Excluir perfil"); item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
         if choice == "1":
             name = ask("Nome do perfil")
-            if not name or name in profiles or not name.replace("-", "").replace("_", "").isalnum(): print("Nome inválido ou já existente."); continue
+            if not name or name in profiles or not name.replace("-", "").replace("_", "").isalnum(): result(False, "Nome inválido ou já existente."); continue
             profile = {"base_url": "http://127.0.0.1:8870", "readable_roots": [], "writable_roots": []}
             for key, label in (("base_url", "URL local"),):
                 value = ask(label, profile[key])
                 if value is None: break
                 profile[key] = value
             else:
-                profiles[name] = profile; print(save(path, data)[1])
+                profiles[name] = profile; ok, message = save(path, data); result(ok, message)
         elif choice in {"2", "3"}:
             names = sorted(profiles)
-            if not names: print("Não há perfis configurados."); continue
+            if not names: result(False, "Não há perfis configurados."); continue
             selected = ask("Número do perfil")
-            if selected is None or not selected.isdigit() or not 1 <= int(selected) <= len(names): print("Seleção inválida."); continue
+            if selected is None or not selected.isdigit() or not 1 <= int(selected) <= len(names): result(False, "Seleção inválida."); continue
             name = names[int(selected) - 1]
             if choice == "3":
-                if input(f"Digite EXCLUIR para remover {name}: ").strip() == "EXCLUIR": del profiles[name]; print(save(path, data)[1])
-                else: print("Operação cancelada.")
+                if prompt(f"Digite EXCLUIR para remover {name}: ").strip() == "EXCLUIR": del profiles[name]; ok, message = save(path, data); result(ok, message)
+                else: result(False, "Operação cancelada.")
             else:
                 profile = profiles[name]
-                print(f"\nPerfil {name}\n  1. URL local: {profile['base_url']}\n  2. Raízes de leitura: {profile['readable_roots']}\n  3. Raízes de escrita: {profile['writable_roots']}\n  X. Voltar")
-                field = input("Editar: ").strip().casefold()
+                screen("EccoVox", "Editar perfil", name)
+                item("1.", "URL local", profile['base_url']); item("2.", "Raízes de leitura", str(profile['readable_roots'])); item("3.", "Raízes de escrita", str(profile['writable_roots'])); item("X.", "Voltar")
+                field = prompt("Editar: ").strip().casefold()
                 keys = {"1": "base_url", "2": "readable_roots", "3": "writable_roots"}
                 if field in keys:
                     raw = ask("Novo valor" if field == "1" else "Diretórios separados por ;", profile[keys[field]] if field == "1" else ";".join(profile[keys[field]]))
-                    if raw is not None: profile[keys[field]] = raw if field == "1" else [part.strip() for part in raw.split(";") if part.strip()]; print(save(path, data)[1])
-        else: print("Opção inválida.")
+                    if raw is not None: profile[keys[field]] = raw if field == "1" else [part.strip() for part in raw.split(";") if part.strip()]; ok, message = save(path, data); result(ok, message)
+        else: result(False, "Opção inválida.")
 
 
 def main() -> int:

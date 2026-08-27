@@ -45,7 +45,10 @@ def result(ok: bool, message: str) -> None:
     print("\n    " + Ui.text(label, Ui.bold, color) + "  " + Ui.text(message, color))
 
 
-def prompt(label: str) -> str: return input(Ui.text(f"› {label}", Ui.bold, Ui.violet))
+def prompt(label: str) -> str:
+    try: "›".encode(sys.stdout.encoding or "utf-8"); marker = "›"
+    except UnicodeEncodeError: marker = ">"
+    return input(Ui.text(f"{marker} {label}", Ui.bold, Ui.violet))
 
 SKILL_DIR = Path(__file__).resolve().parent
 MODEL = SKILL_DIR / "configs" / "keepass.toml.model"

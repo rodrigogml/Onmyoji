@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Configuração local da skill Omie."""
 from __future__ import annotations
-import argparse, json, tomllib
+import argparse, json, sys, tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from setup_ui import item, prompt, result, screen
 def path(root: Path) -> Path: return root / "configs" / "omie.toml"
 def empty() -> dict: return {"schema_version": 1, "defaults": {"timeout_seconds": 30, "max_retries": 2}, "profiles": {}}
 def render(data: dict) -> str:
@@ -26,20 +28,21 @@ def save(file: Path, data: dict) -> tuple[bool, str]:
 def configure(root: Path) -> None:
     file, data = path(root), load(path(root))
     while True:
-        print("\n══ ONMYŌJI · OMIE ══\n  1. Criar perfil\n  2. Remover perfil\n  X. Voltar")
-        choice=input("Opção: ").strip().casefold()
+        screen("Omie", "Configuração", "Perfis de acesso ao ERP")
+        item("1.", "Criar perfil"); item("2.", "Remover perfil"); item("X.", "Voltar")
+        choice=prompt("Opção: ").strip().casefold()
         if choice in {'x','\x1b'}: return
         if choice == '1':
-            name=input("Nome do perfil [X cancela]: ").strip()
-            if not name or name.casefold() in {'x','\x1b'} or name in data['profiles']: print("Nome inválido ou existente."); continue
-            profile={'vault_profile': input("Perfil KeePass: ").strip(), 'vault_entry_path': input("Entrada KeePass: ").strip(), 'app_key_field': input("Campo app_key [username]: ").strip() or 'username', 'app_secret_field': input("Campo app_secret [password]: ").strip() or 'password'}
-            candidate={**data, 'profiles': {**data['profiles'], name: profile}}; ok,message=save(file,candidate); print(message if ok else f"Não salvo: {message}"); data=candidate if ok else data
+            name=prompt("Nome do perfil [X cancela]: ").strip()
+            if not name or name.casefold() in {'x','\x1b'} or name in data['profiles']: result(False, "Nome inválido ou existente."); continue
+            profile={'vault_profile': prompt("Perfil KeePass: ").strip(), 'vault_entry_path': prompt("Entrada KeePass: ").strip(), 'app_key_field': prompt("Campo app_key [username]: ").strip() or 'username', 'app_secret_field': prompt("Campo app_secret [password]: ").strip() or 'password'}
+            candidate={**data, 'profiles': {**data['profiles'], name: profile}}; ok,message=save(file,candidate); result(ok, message if ok else f"Não salvo: {message}"); data=candidate if ok else data
         elif choice == '2':
-            names=sorted(data['profiles']); print('\n'.join(f"  {i}. {name}" for i,name in enumerate(names,1)))
-            selected=input("Número [X cancela]: ").strip().casefold()
-            if selected.isdigit() and 1 <= int(selected) <= len(names) and input(f"Digite REMOVER para excluir {names[int(selected)-1]}: ").strip()=='REMOVER':
-                candidate={**data, 'profiles': dict(data['profiles'])}; del candidate['profiles'][names[int(selected)-1]]; ok,message=save(file,candidate); print(message); data=candidate if ok else data
-        else: print("Opção inválida.")
+            names=sorted(data['profiles']); screen("Omie", "Remover perfil", "Escolha um perfil ou pressione X para voltar"); [item(f"{i}.", name) for i,name in enumerate(names,1)]; item("X.", "Voltar")
+            selected=prompt("Número [X cancela]: ").strip().casefold()
+            if selected.isdigit() and 1 <= int(selected) <= len(names) and prompt(f"Digite REMOVER para excluir {names[int(selected)-1]}: ").strip()=='REMOVER':
+                candidate={**data, 'profiles': dict(data['profiles'])}; del candidate['profiles'][names[int(selected)-1]]; ok,message=save(file,candidate); result(ok, message); data=candidate if ok else data
+        else: result(False, "Opção inválida.")
 def main() -> int:
     parser=argparse.ArgumentParser(); parser.add_argument('--onmyoji-root',type=Path,default=ROOT); parser.add_argument('--action',choices=['describe','status','configure'],default='configure'); parser.add_argument('--json',action='store_true'); args=parser.parse_args()
     if args.action=='describe':

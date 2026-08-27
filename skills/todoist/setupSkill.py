@@ -12,6 +12,8 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 MODEL = Path(__file__).resolve().parent / "configs" / "todoist.toml.model"
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from setup_ui import item, prompt, result, screen
 
 
 def config_path(root: Path) -> Path: return root / "configs" / "todoist.toml"
@@ -63,17 +65,11 @@ def save(path: Path, data: dict[str, Any]) -> tuple[bool, str]:
     return True, message
 
 
-def screen(title: str, subtitle: str = "") -> None:
-    print("\n" + "═" * 66); print(f"  ONMYŌJI  ·  TODOIST  ·  {title.upper()}")
-    if subtitle: print(f"  {subtitle}")
-    print("═" * 66)
-
-
 def choose_profile(profiles: dict[str, Any], action: str) -> str | None:
-    screen(action, "Escolha um perfil")
-    for index, name in enumerate(sorted(profiles), 1): print(f"  {index}. {name}")
-    print("  X. Voltar")
-    value = input("Opção: ").strip().casefold()
+    screen("Todoist", action, "Escolha um perfil ou pressione X para voltar")
+    for index, name in enumerate(sorted(profiles), 1): item(f"{index}.", name)
+    item("X.", "Voltar")
+    value = prompt("Opção: ").strip().casefold()
     if value in {"x", "\x1b"}: return None
     names = sorted(profiles)
     return names[int(value) - 1] if value.isdigit() and 1 <= int(value) <= len(names) else None
@@ -82,61 +78,61 @@ def choose_profile(profiles: dict[str, Any], action: str) -> str | None:
 def edit_profile(data: dict[str, Any], path: Path, name: str) -> bool:
     while True:
         profile = data["profiles"][name]
-        screen("Editar perfil", name)
-        print(f"  1. Nome: {name}\n  2. Perfil KeePass: {profile['vault_profile']}\n  3. Entrada KeePass: {profile['vault_entry_path']}\n  4. Campo KeePass: {profile['vault_field']}\n  5. Acesso: {profile['access']}\n  6. Operações permitidas: {'; '.join(profile['allowed_operations']) or 'todas conforme acesso'}\n  7. Diretórios de upload: {'; '.join(profile['allowed_attachment_roots']) or 'todos'}\n  X. Voltar")
-        choice = input("Opção: ").strip().casefold()
+        screen("Todoist", "Editar perfil", name)
+        item("1.", "Nome", name); item("2.", "Perfil KeePass", profile['vault_profile']); item("3.", "Entrada KeePass", profile['vault_entry_path']); item("4.", "Campo KeePass", profile['vault_field']); item("5.", "Acesso", profile['access']); item("6.", "Operações permitidas", '; '.join(profile['allowed_operations']) or 'todas conforme acesso'); item("7.", "Diretórios de upload", '; '.join(profile['allowed_attachment_roots']) or 'todos'); item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return True
         candidate = copy.deepcopy(data)
         target = candidate["profiles"][name]
         if choice == "1":
-            value = input(f"Novo nome [{name}]: ").strip()
-            if not value or value in candidate["profiles"]: print("Nome vazio ou já existente."); continue
+            value = prompt(f"Novo nome [{name}]: ").strip()
+            if not value or value in candidate["profiles"]: result(False, "Nome vazio ou já existente."); continue
             candidate["profiles"][value] = candidate["profiles"].pop(name); new_name = value
         elif choice in {"2", "3", "4"}:
-            key = {"2": "vault_profile", "3": "vault_entry_path", "4": "vault_field"}[choice]; value = input(f"Novo valor [{target[key]}]: ").strip()
+            key = {"2": "vault_profile", "3": "vault_entry_path", "4": "vault_field"}[choice]; value = prompt(f"Novo valor [{target[key]}]: ").strip()
             if not value: continue
             target[key] = value; new_name = name
         elif choice == "5":
-            value = input("1. Somente leitura  2. Leitura e escrita [1/2]: ").strip(); target["access"] = "read_write" if value == "2" else "read_only" if value == "1" else target["access"]; new_name = name
+            value = prompt("1. Somente leitura  2. Leitura e escrita [1/2]: ").strip(); target["access"] = "read_write" if value == "2" else "read_only" if value == "1" else target["access"]; new_name = name
         elif choice in {"6", "7"}:
-            key = "allowed_operations" if choice == "6" else "allowed_attachment_roots"; value = input("Itens separados por ; (vazio = todos): ").strip(); target[key] = [item.strip() for item in value.split(";") if item.strip()]; new_name = name
-        else: print("Opção inválida."); continue
-        ok, message = save(path, candidate); print(message if ok else f"Não salvo: {message}")
+            key = "allowed_operations" if choice == "6" else "allowed_attachment_roots"; value = prompt("Itens separados por ; (vazio = todos): ").strip(); target[key] = [item.strip() for item in value.split(";") if item.strip()]; new_name = name
+        else: result(False, "Opção inválida."); continue
+        ok, message = save(path, candidate); result(ok, message if ok else f"Não salvo: {message}")
         if ok: data.clear(); data.update(candidate); name = new_name
 
 
 def configure(root: Path) -> None:
     path = config_path(root)
     try: data = load(path)
-    except ValueError as error: print(error); return
+    except ValueError as error: result(False, str(error)); return
     while True:
-        screen("Configuração", "Perfis de acesso ao Todoist")
-        print("  1. Criar perfil\n  2. Editar perfil\n  3. Remover perfil\n  4. Ajustar padrão de rede\n  X. Voltar")
-        choice = input("Opção: ").strip().casefold()
+        screen("Todoist", "Configuração", "Perfis de acesso ao Todoist")
+        item("1.", "Criar perfil"); item("2.", "Editar perfil"); item("3.", "Remover perfil"); item("4.", "Ajustar padrão de rede"); item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
         if choice == "1":
-            name = input("Nome do perfil [X cancela]: ").strip()
-            if not name or name.casefold() in {"x", "\x1b"} or name in data["profiles"]: print("Nome inválido ou já existente."); continue
-            candidate = copy.deepcopy(data); candidate["profiles"][name] = {"vault_profile": input("Perfil KeePass: ").strip(), "vault_entry_path": input("Entrada KeePass [APIs/Todoist]: ").strip() or "APIs/Todoist", "vault_field": "password", "access": "read_only", "allowed_operations": [], "allowed_attachment_roots": []}
-            ok, message = save(path, candidate); print(message if ok else f"Não salvo: {message}")
+            name = prompt("Nome do perfil [X cancela]: ").strip()
+            if not name or name.casefold() in {"x", "\x1b"} or name in data["profiles"]: result(False, "Nome inválido ou já existente."); continue
+            candidate = copy.deepcopy(data); candidate["profiles"][name] = {"vault_profile": prompt("Perfil KeePass: ").strip(), "vault_entry_path": prompt("Entrada KeePass [APIs/Todoist]: ").strip() or "APIs/Todoist", "vault_field": "password", "access": "read_only", "allowed_operations": [], "allowed_attachment_roots": []}
+            ok, message = save(path, candidate); result(ok, message if ok else f"Não salvo: {message}")
             if ok: data = candidate; edit_profile(data, path, name)
         elif choice == "2":
-            if not data["profiles"]: print("Nenhum perfil criado."); continue
+            if not data["profiles"]: result(False, "Nenhum perfil criado."); continue
             name = choose_profile(data["profiles"], "Editar perfil")
             if name: edit_profile(data, path, name)
         elif choice == "3":
-            if not data["profiles"]: print("Nenhum perfil criado."); continue
+            if not data["profiles"]: result(False, "Nenhum perfil criado."); continue
             name = choose_profile(data["profiles"], "Remover perfil")
-            if name and input(f"Digite REMOVER para excluir {name}: ").strip() == "REMOVER":
-                candidate = copy.deepcopy(data); del candidate["profiles"][name]; ok, message = save(path, candidate); print(message if ok else f"Não removido: {message}")
+            if name and prompt(f"Digite REMOVER para excluir {name}: ").strip() == "REMOVER":
+                candidate = copy.deepcopy(data); del candidate["profiles"][name]; ok, message = save(path, candidate); result(ok, message if ok else f"Não removido: {message}")
                 if ok: data = candidate
         elif choice == "4":
             candidate = copy.deepcopy(data)
-            try: candidate["defaults"]["timeout_seconds"] = float(input(f"Timeout [{data['defaults']['timeout_seconds']}]: ").strip() or data["defaults"]["timeout_seconds"]); candidate["defaults"]["max_retries"] = int(input(f"Tentativas [{data['defaults']['max_retries']}]: ").strip() or data["defaults"]["max_retries"])
-            except ValueError: print("Valor numérico inválido."); continue
-            ok, message = save(path, candidate); print(message if ok else f"Não salvo: {message}")
+            try: candidate["defaults"]["timeout_seconds"] = float(prompt(f"Timeout [{data['defaults']['timeout_seconds']}]: ").strip() or data["defaults"]["timeout_seconds"]); candidate["defaults"]["max_retries"] = int(prompt(f"Tentativas [{data['defaults']['max_retries']}]: ").strip() or data["defaults"]["max_retries"])
+            except ValueError: result(False, "Valor numérico inválido."); continue
+            ok, message = save(path, candidate); result(ok, message if ok else f"Não salvo: {message}")
             if ok: data = candidate
-        else: print("Opção inválida.")
+        else: result(False, "Opção inválida.")
 
 
 def main() -> int:
