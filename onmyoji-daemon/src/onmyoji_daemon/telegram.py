@@ -69,7 +69,7 @@ class Vault:
         return str(result["value"])
     def request(self, request: dict[str, Any]) -> dict[str, Any]:
         wrapper = self.settings.root / "available-skills" / "keepass-vault" / "scripts" / "keepass_vault.py"
-        process = subprocess.run([sys.executable, str(wrapper), "--config", str(self.settings.root / "configs" / "keepass.toml"), "--profile", self.settings.keepass_profile], input=json.dumps(request), text=True, capture_output=True, timeout=45)
+        process = subprocess.run([sys.executable, str(wrapper), "--config", str(self.settings.root / "configs" / "keepass.toml"), "--profile", self.settings.keepass_profile], input=json.dumps(request), text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=45)
         try: result = json.loads(process.stdout)
         except ValueError as error: raise RuntimeError("KeePass provider returned invalid response") from error
         if not result.get("ok"):
@@ -88,6 +88,7 @@ class TelegramApi:
         if not payload.get("ok"): raise RuntimeError("Telegram API rejected request")
         return payload.get("result")
     def send(self, chat_id: int, text: str, **values: Any) -> dict[str, Any]: return self.call("sendMessage", {"chat_id": chat_id, "text": text, **values})
+    def typing(self, chat_id: int) -> None: self.call("sendChatAction", {"chat_id": chat_id, "action": "typing"})
     def delete(self, chat_id: int, message_id: int) -> None: self.call("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
     def set_owner_commands(self, owner_id: int, totp_enabled: bool) -> bool:
         commands = [{"command": "new", "description": "Iniciar uma nova conversa"}, {"command": "config", "description": "Configurar esta conversa"}]
@@ -161,12 +162,20 @@ class Gateway:
         threading.Thread(target=self._turn, args=(sender["id"], text), daemon=True).start()
     def _turn(self, chat_id: int, text: str) -> None:
         if not self.work.acquire(timeout=1): return
+        typing_stop = threading.Event()
+        def renew_typing() -> None:
+            while not typing_stop.is_set():
+                try:
+                    if self.api: self.api.typing(chat_id)
+                except Exception as error: self._record_error(error)
+                typing_stop.wait(4)
+        typing_thread = threading.Thread(target=renew_typing, daemon=True); typing_thread.start()
         try:
             # O processo recebe somente o CODEX_HOME desta instância e o workspace configurado.
             environment = dict(__import__("os").environ); environment["CODEX_HOME"] = str(self.settings.root)
             prompt = GATEWAY_INSTRUCTIONS + "\n\nMensagem do owner:\n" + text
             command = [self.settings.executable, "exec", "-C", str(self.settings.project), "--skip-git-repo-check", "-m", self.settings.model, "-c", f"model_reasoning_effort={json.dumps(self.settings.effort)}", "-s", self.settings.sandbox, prompt]
-            result = subprocess.run(command, cwd=self.settings.project, env=environment, text=True, capture_output=True, timeout=self.settings.turn_timeout)
+            result = subprocess.run(command, cwd=self.settings.project, env=environment, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=self.settings.turn_timeout)
             if result.returncode != 0:
                 self._record_error(f"Codex exec exit {result.returncode}: {result.stderr or result.stdout}"); answer = "O agente não conseguiu concluir esta solicitação. Consulte o diagnóstico do Gateway Telegram no setup."
             else: answer = result.stdout.strip()
@@ -174,7 +183,8 @@ class Gateway:
         except Exception as error:
             self._record_error(error)
             if self.api: self.api.send(chat_id, "O agente não conseguiu concluir esta solicitação.")
-        finally: self.work.release()
+        finally:
+            typing_stop.set(); typing_thread.join(timeout=1); self.work.release()
 
     def _ephemeral(self, chat_id: int, text: str, seconds: float = 8, **values: Any) -> dict[str, Any]:
         assert self.api
