@@ -1,6 +1,6 @@
 # Padrão visual dos scripts de setup
 
-Os scripts `setupOnmyoji.py` e `setupSkill.py` formam uma única aplicação de console. Preserve esta linguagem visual em qualquer novo menu ou configuração de skill. Os configuradores de skills devem importar os componentes comuns de `skills/setup_ui.py`; não recrie uma variante local, exceto quando a skill já tiver uma camada compatível e equivalente.
+Os scripts `setupOnmyoji.py` e `setupSkill.py` formam uma única aplicação de console. Preserve esta linguagem visual em qualquer novo menu ou configuração de skill. Os configuradores de skills devem importar os componentes comuns de `available-skills/setup_ui.py`; não recrie uma variante local, exceto quando a skill já tiver uma camada compatível e equivalente.
 
 ## Terminal e cores
 

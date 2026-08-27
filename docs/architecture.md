@@ -2,15 +2,17 @@
 
 ## Papéis
 
-Uma instalação do Onmyōji é o `CODEX_HOME` dedicado a um Shikigami. Ela contém as skills de integração, seus modelos de configuração, scripts de setup e o estado local gerenciado pelo Codex. O repositório versiona somente a base reutilizável; perfis reais, autenticação, caches, logs, bancos de estado e outros dados da instância são ignorados pelo Git.
+Uma instalação do Onmyōji é o `CODEX_HOME` dedicado a um Shikigami. Ela contém o catálogo de skills de integração, seus modelos de configuração, scripts de setup e o estado local gerenciado pelo Codex. O repositório versiona somente a base reutilizável; perfis reais, autenticação, caches, logs, bancos de estado, links ativos e outros dados da instância são ignorados pelo Git.
 
 O diretório do Shikigami é o workspace exclusivo do agente. Ele contém o projeto e o conhecimento operacional próprio daquele Shikigami, incluindo skills de conhecimento e playbooks em `.agents/skills/`. Ele não abriga as skills de integração fornecidas pelo Onmyōji.
 
 ```text
 Onmyōji (CODEX_HOME de uma instância)
-├── skills/                       # skills de integração fornecidas pela base
+├── available-skills/             # catálogo versionado de skills de integração
+├── skills/                       # links locais apenas das skills habilitadas; varrido pelo Codex
+│   └── .system/                  # skills de sistema instaladas pelo Codex
 ├── configs/                      # perfis reais locais; ignorados pelo Git
-├── config.toml                   # skills habilitadas e defaults locais; ignorado pelo Git
+├── config.toml                   # defaults locais do Codex; ignorado pelo Git
 └── estado gerenciado pelo Codex   # autenticação, sessões, logs e cache; ignorado pelo Git
 
 Shikigami (workspace)
@@ -24,7 +26,7 @@ Shikigami (workspace)
 
 Cada skill de integração mantém seu modelo versionado, com extensão `.model`, dentro da própria pasta no Onmyōji. O setup da skill copia ou atualiza esse modelo na pasta `configs/` da instância do Onmyōji. Arquivos reais nunca contêm segredos em texto; eles guardam somente parâmetros, perfis, caminhos e referências a provedores de segredo.
 
-Uma mesma base versionada pode ser usada para preparar várias instâncias. Cada instância possui seu próprio `CODEX_HOME`, seus perfis locais e suas skills habilitadas, sem compartilhar estado com outras.
+Uma mesma base versionada pode ser usada para preparar várias instâncias. Cada instância possui seu próprio `CODEX_HOME`, seus perfis locais e suas skills habilitadas, sem compartilhar estado com outras. O setup registra a habilitação em `configs/onmyoji-skills.toml` e cria junctions no Windows ou links simbólicos no Linux de `skills/<nome>` para `available-skills/<nome>`.
 
 ## Limites de responsabilidade
 

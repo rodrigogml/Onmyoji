@@ -8,13 +8,13 @@
 !/setupOnmyoji.py
 !/docs/
 !/docs/**
-!/skills/
-!/skills/**
+!/available-skills/
+!/available-skills/**
 !/tests/
 !/tests/**
 
-# Skills instaladas/geradas pelo próprio Codex nesta instância.
-/skills/.system/
+# Superfície de skills varrida pelo Codex: contém apenas links locais e skills de sistema.
+/skills/
 
 # Configuração local de uma instância do Onmyōji (CODEX_HOME)
 /config.toml

@@ -16,6 +16,12 @@ SPEC.loader.exec_module(MODULE)
 
 
 class SystemSetupTests(unittest.TestCase):
+    def fake_skill(self, root: Path, identifier: str = "omie") -> object:
+        script = root / "available-skills" / identifier / "setupSkill.py"
+        script.parent.mkdir(parents=True)
+        script.write_text("", encoding="utf-8")
+        return MODULE.Skill(identifier, identifier.title(), script, "")
+
     def test_prompt_uses_the_shared_visual_prefix(self) -> None:
         with patch("builtins.input", return_value="x") as input_mock:
             self.assertEqual(MODULE.prompt("Opção: "), "x")
@@ -55,6 +61,25 @@ class SystemSetupTests(unittest.TestCase):
             self.assertEqual(command[:6], [sys.executable, "-C", str(project), "-m", "gpt-5.6-sol", "-c"])
             self.assertIn('model_reasoning_effort = "xhigh"', command)
             self.assertEqual(command[-2:], ["--add-dir", str(extra)])
+
+    def test_enabled_skills_are_linked_from_the_local_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); skill = self.fake_skill(root)
+            self.assertTrue(MODULE.save_enabled(root, {"omie"}, [skill])[0])
+            active = MODULE.active_skills_path(root) / "omie"
+            self.assertTrue(active.exists())
+            self.assertEqual(active.resolve(), skill.script.parent.resolve())
+            self.assertEqual(MODULE.enabled_ids(root), {"omie"})
+            self.assertTrue(MODULE.save_enabled(root, set(), [skill])[0])
+            self.assertFalse(active.exists() or active.is_symlink())
+
+    def test_legacy_skill_config_is_migrated_to_local_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); skill = self.fake_skill(root)
+            MODULE.config_path(root).write_text(f'{MODULE.MANAGED_BEGIN}\n[[skills.config]]\npath = "{skill.script.parent.as_posix()}"\nenabled = true\n{MODULE.MANAGED_END}\n', encoding="utf-8")
+            self.assertTrue(MODULE.ensure_skill_state(root, [skill])[0])
+            self.assertEqual(MODULE.enabled_ids(root), {"omie"})
+            self.assertNotIn(MODULE.MANAGED_BEGIN, MODULE.config_path(root).read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

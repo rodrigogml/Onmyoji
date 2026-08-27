@@ -22,6 +22,9 @@ MANAGED_BEGIN = "# BEGIN ONMYOJI MANAGED SKILLS"
 MANAGED_END = "# END ONMYOJI MANAGED SKILLS"
 SYSTEM_BEGIN = "# BEGIN ONMYOJI MANAGED CODEX SETTINGS"
 SYSTEM_END = "# END ONMYOJI MANAGED CODEX SETTINGS"
+CATALOG_DIRECTORY = "available-skills"
+ACTIVE_SKILLS_DIRECTORY = "skills"
+SKILL_STATE_FILE = "onmyoji-skills.toml"
 REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"]
 SANDBOXES = ["read-only", "workspace-write", "danger-full-access"]
 APPROVALS = ["untrusted", "on-request", "never"]
@@ -62,7 +65,7 @@ class Skill:
 
 def discover(root: Path = ROOT) -> list[Skill]:
     skills: list[Skill] = []
-    for script in sorted((root / "skills").glob("*/setupSkill.py")):
+    for script in sorted((root / CATALOG_DIRECTORY).glob("*/setupSkill.py")):
         result = subprocess.run([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "describe", "--json"], text=True, capture_output=True)
         try:
             data = json.loads(result.stdout) if result.returncode == 0 else {}
@@ -74,6 +77,8 @@ def discover(root: Path = ROOT) -> list[Skill]:
 
 def config_path(root: Path) -> Path: return root / "config.toml"
 def system_path(root: Path) -> Path: return root / "configs" / "onmyoji-system.toml"
+def skill_state_path(root: Path) -> Path: return root / "configs" / SKILL_STATE_FILE
+def active_skills_path(root: Path) -> Path: return root / ACTIVE_SKILLS_DIRECTORY
 
 
 def default_system() -> dict[str, object]:
@@ -158,7 +163,7 @@ def save_system(root: Path, data: dict[str, object]) -> tuple[bool, str]:
     return True, message
 
 
-def enabled_ids(root: Path) -> set[str]:
+def legacy_enabled_ids(root: Path) -> set[str]:
     path = config_path(root)
     if not path.exists(): return set()
     text = path.read_text(encoding="utf-8")
@@ -167,33 +172,95 @@ def enabled_ids(root: Path) -> set[str]:
     return {Path(line.split('"', 2)[1]).name for line in block.splitlines() if line.strip().startswith("path =") and '"' in line}
 
 
-def render_enabled(old: str, identifiers: set[str], skills: list[Skill]) -> str:
-    locations = {skill.identifier: skill.script.parent.resolve().as_posix() for skill in skills}
-    lines = [MANAGED_BEGIN, "# Gerado por setupOnmyoji.py; preserve as demais configurações deste arquivo."]
-    for identifier in sorted(identifiers):
-        if identifier in locations: lines.extend(["[[skills.config]]", f'path = "{locations[identifier]}"', "enabled = true", ""])
-    lines.append(MANAGED_END)
-    block = "\n".join(lines)
-    if MANAGED_BEGIN in old and MANAGED_END in old:
-        before, remainder = old.split(MANAGED_BEGIN, 1); _, after = remainder.split(MANAGED_END, 1)
-        return before.rstrip() + "\n\n" + block + after
-    return old.rstrip() + ("\n\n" if old.strip() else "") + block + "\n"
+def enabled_ids(root: Path) -> set[str]:
+    path = skill_state_path(root)
+    if not path.exists(): return legacy_enabled_ids(root)
+    try: data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError: return set()
+    values = data.get("skills", {}).get("enabled", [])
+    return set(values) if isinstance(values, list) and all(isinstance(value, str) for value in values) else set()
+
+
+def render_enabled_state(identifiers: set[str]) -> str:
+    return "\n".join(["schema_version = 1", "", "[skills]", f"enabled = {json.dumps(sorted(identifiers), ensure_ascii=False)}"]) + "\n"
+
+
+def remove_legacy_skill_block(root: Path) -> None:
+    path = config_path(root)
+    if not path.exists(): return
+    text = path.read_text(encoding="utf-8")
+    if MANAGED_BEGIN not in text or MANAGED_END not in text: return
+    before, remainder = text.split(MANAGED_BEGIN, 1); _, after = remainder.split(MANAGED_END, 1)
+    path.write_text((before.rstrip() + "\n" + after.lstrip()).rstrip() + "\n", encoding="utf-8", newline="\n")
+    tomllib.loads(path.read_text(encoding="utf-8"))
+
+
+def is_managed_link(path: Path) -> bool:
+    if path.is_symlink(): return True
+    if os.name != "nt" or not path.exists(): return False
+    return bool(getattr(os.lstat(path), "st_file_attributes", 0) & 0x400)
+
+
+def create_skill_link(source: Path, destination: Path) -> None:
+    try:
+        os.symlink(source, destination, target_is_directory=True)
+        return
+    except OSError as first_error:
+        if os.name != "nt": raise first_error
+    command = ["cmd.exe", "/d", "/c", "mklink", "/J", str(destination), str(source)]
+    created = subprocess.run(command, text=True, capture_output=True, check=False)
+    if created.returncode != 0: raise OSError(created.stderr.strip() or created.stdout.strip() or "Não foi possível criar o junction da skill.")
+
+
+def remove_skill_link(path: Path) -> None:
+    if not is_managed_link(path): raise OSError(f"{path} existe e não é um link gerenciado pelo Onmyōji.")
+    if path.is_symlink(): path.unlink()
+    else: os.rmdir(path)
+
+
+def sync_active_skill_links(root: Path, identifiers: set[str], skills: list[Skill]) -> tuple[bool, str]:
+    catalog = {skill.identifier: skill.script.parent.resolve() for skill in skills}
+    unknown = identifiers - set(catalog)
+    if unknown: return False, f"Skills não encontradas no catálogo: {', '.join(sorted(unknown))}."
+    active = active_skills_path(root)
+    try:
+        active.mkdir(parents=True, exist_ok=True)
+        for identifier, source in catalog.items():
+            destination = active / identifier
+            should_exist = identifier in identifiers
+            if should_exist:
+                if destination.exists() or destination.is_symlink():
+                    if destination.resolve() != source: return False, f"O destino da skill {identifier} já está ocupado por um item não gerenciado."
+                else: create_skill_link(source, destination)
+            elif destination.exists() or destination.is_symlink():
+                remove_skill_link(destination)
+    except OSError as error:
+        return False, f"Não foi possível sincronizar as skills ativas: {error}"
+    return True, "Links das skills ativas sincronizados."
 
 
 def save_enabled(root: Path, identifiers: set[str], skills: list[Skill]) -> tuple[bool, str]:
-    path, backup = config_path(root), config_path(root).with_suffix(".toml.backup")
+    path = skill_state_path(root)
+    previous = enabled_ids(root)
     old = path.read_text(encoding="utf-8") if path.exists() else None
+    ok, message = sync_active_skill_links(root, identifiers, skills)
+    if not ok: return False, message
     try:
-        if old is not None: shutil.copy2(path, backup)
-        path.write_text(render_enabled(old or "", identifiers, skills), encoding="utf-8", newline="\n")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(render_enabled_state(identifiers), encoding="utf-8", newline="\n")
         tomllib.loads(path.read_text(encoding="utf-8"))
+        remove_legacy_skill_block(root)
     except (OSError, tomllib.TOMLDecodeError) as error:
+        sync_active_skill_links(root, previous, skills)
         if old is None: path.unlink(missing_ok=True)
-        else: shutil.copy2(backup, path)
-        return False, f"Não foi possível salvar a configuração: {error}"
-    finally:
-        backup.unlink(missing_ok=True)
-    return True, "Configuração atualizada e validada."
+        else: path.write_text(old, encoding="utf-8", newline="\n")
+        return False, f"Não foi possível salvar o estado das skills: {error}"
+    return True, "Configuração atualizada e links das skills sincronizados."
+
+
+def ensure_skill_state(root: Path, skills: list[Skill]) -> tuple[bool, str]:
+    if skill_state_path(root).exists(): return sync_active_skill_links(root, enabled_ids(root), skills)
+    return save_enabled(root, legacy_enabled_ids(root), skills)
 
 
 def invoke(skill: Skill, root: Path) -> None:
@@ -285,6 +352,9 @@ def manage_writable_directories(root: Path, data: dict[str, object]) -> dict[str
 def launch_codex(root: Path, data: dict[str, object], login: bool = False) -> None:
     ready, message = validate_system(data, require_ready=not login)
     if not ready: result(False, f"Não iniciado: {message}"); return
+    if not login:
+        synced, sync_message = sync_active_skill_links(root, enabled_ids(root), discover(root))
+        if not synced: result(False, f"Não iniciado: {sync_message}"); return
     command = [str(data["executable"]), "login"] if login else [
         str(data["executable"]), "-C", str(data["project_directory"]), "-m", str(data["model"]),
         "-c", f"model_reasoning_effort = {json.dumps(data['model_reasoning_effort'])}",
@@ -383,6 +453,10 @@ def menu(skills: list[Skill], root: Path) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(); parser.add_argument("--action", choices=["menu", "list", "enable", "disable", "configure"], default="menu"); parser.add_argument("--skill"); args = parser.parse_args()
     skills = discover(); by_id = {skill.identifier: skill for skill in skills}
+    initialized, initialization_message = ensure_skill_state(ROOT, skills)
+    if not initialized:
+        result(False, initialization_message)
+        return 2
     if args.action == "menu": return menu(skills, ROOT)
     if args.action == "list":
         active = enabled_ids(ROOT)

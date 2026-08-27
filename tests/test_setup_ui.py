@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "setup_ui.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "available-skills" / "setup_ui.py"
 SPEC = importlib.util.spec_from_file_location("onmyoji_setup_ui", SCRIPT)
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)

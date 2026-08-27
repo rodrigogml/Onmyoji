@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "omie" / "setupSkill.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "available-skills" / "omie" / "setupSkill.py"
 SPEC = importlib.util.spec_from_file_location("onmyoji_omie_setup", SCRIPT)
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
