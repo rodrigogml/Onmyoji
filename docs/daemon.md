@@ -16,6 +16,8 @@ No Windows, a instalação do serviço requer privilégios administrativos e `py
 
 Abra `D. Daemon → Gateway Telegram` para criar a configuração local e selecionar um perfil KeePass existente. O token não é solicitado nem armazenado pelo Onmyōji: o menu guarda somente uma referência, sugerida como `APIs/Telegram:<IdentificadorCamelCase>`. O teste de conexão obtém o token pelo KeePass e chama `getMe`, sem exibir o segredo.
 
+Ao definir a referência, o setup tenta ler a entrada. Quando já há token, permite mantê-lo, substituí-lo ou corrigir o caminho. Quando a entrada não existe, permite corrigir o caminho, criar a entrada com token informado por prompt oculto e enviado ao KeePass somente via stdin, ou salvar a referência para preenchimento posterior. A validação também informa a quantidade de owners pareados.
+
 A validação mostra cada dependência separadamente: instalação do daemon, TOML do gateway, perfil KeePass, referência do token, workspace do Shikigami, Codex-CLI e teste de conexão. O gateway não pode ser habilitado enquanto houver uma falha; itens pendentes são mostrados como tal e incluem a orientação de correção.
 
 O gateway aceita inicialmente uma identidade Telegram. Pairing, owners e conversas ficam isolados na instância; mensagens de remetentes que não sejam owners em DM são ignoradas.

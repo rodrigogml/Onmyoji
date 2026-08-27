@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import shutil
@@ -434,8 +435,8 @@ def daemon_menu(root: Path) -> None:
     environment = dict(os.environ); source = str(project / "src")
     environment["PYTHONPATH"] = source + (os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else "")
 
-    def command(arguments: list[str], quiet: bool = False) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(arguments, cwd=str(project), env=environment, text=True, capture_output=quiet)
+    def command(arguments: list[str], quiet: bool = False, input_value: str | None = None) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(arguments, cwd=str(project), env=environment, text=True, capture_output=quiet, input=input_value)
 
     def lifecycle(action: str, extra: list[str] | None = None) -> bool:
         completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), action, *(extra or [])], quiet=True)
@@ -456,6 +457,20 @@ def daemon_menu(root: Path) -> None:
 
     def installed() -> bool: return (root / "configs" / "daemon" / "daemon.toml").is_file()
     def service_installed() -> bool: return (root / "configs" / "daemon" / "service.json").is_file()
+    def daemon_running() -> bool:
+        return command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "list-services"], quiet=True).returncode == 0
+
+    def offer_restart() -> None:
+        if not daemon_running(): return
+        answer = prompt("O daemon está em execução; reiniciar agora para efetivar a alteração? [S/n]: ").strip().casefold()
+        if answer not in {"", "s", "sim"}: result(False, "Alteração salva; reinicie o daemon depois para aplicá-la."); return
+        if service_installed(): lifecycle("service-restart")
+        elif lifecycle("process-stop"): lifecycle("process-start")
+
+    def service_running() -> bool:
+        status = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "service-status"], quiet=True)
+        text = (status.stdout + "\n" + status.stderr).upper()
+        return "RUNNING" in text or "ACTIVE: ACTIVE" in text
 
     def process_menu() -> None:
         while True:
@@ -492,7 +507,7 @@ def daemon_menu(root: Path) -> None:
                 description = prompt(f"Descrição [{f'Shikigami {visible} Daemon'}]: ").strip() or f"Shikigami {visible} Daemon"
                 lifecycle("install-service", ["--name", name, "--description", description]); continue
             item("1.", "Status do serviço")
-            item("2.", "Iniciar / Parar serviço")
+            item("2.", "Parar serviço" if service_running() else "Iniciar serviço")
             item("3.", "Reiniciar serviço")
             item("4.", "Forçar parada do serviço")
             item("5.", "Remover serviço")
@@ -500,11 +515,7 @@ def daemon_menu(root: Path) -> None:
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
             if choice == "1": lifecycle("service-status")
-            elif choice == "2":
-                action = prompt("Digite I para iniciar ou P para parar: ").strip().casefold()
-                if action == "i": lifecycle("service-start")
-                elif action == "p": lifecycle("service-stop")
-                else: result(False, "Escolha I ou P.")
+            elif choice == "2": lifecycle("service-stop" if service_running() else "service-start")
             elif choice == "3": lifecycle("service-restart")
             elif choice == "4": lifecycle("service-force-stop")
             elif choice == "5":
@@ -531,10 +542,12 @@ def daemon_menu(root: Path) -> None:
             if choice in {"x", "\x1b"}: return
             if choice == "1":
                 if enabled:
-                    if lifecycle("disable", ["telegram"]): result(True, "Telegram desabilitado; a configuração foi preservada.")
+                    if lifecycle("disable", ["telegram"]):
+                        result(True, "Telegram desabilitado; a configuração foi preservada."); offer_restart()
                 else:
                     if not show_validation(): result(False, "Corrija os itens marcados antes de habilitar o gateway."); continue
-                    if lifecycle("enable", ["telegram"]): result(True, "Telegram habilitado; ele iniciará junto com o daemon.")
+                    if lifecycle("enable", ["telegram"]):
+                        result(True, "Telegram habilitado; ele iniciará junto com o daemon."); offer_restart()
             elif choice == "2":
                 listed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "profiles"], quiet=True)
                 try: values = json.loads(listed.stdout)
@@ -548,9 +561,30 @@ def daemon_menu(root: Path) -> None:
                 if not selected.isdigit() or not 1 <= int(selected) <= len(values): result(False, "Perfil inválido."); continue
                 instance = "".join(part[:1].upper() + part[1:] for part in root.name.removeprefix("Onmyoji-").split()) or "Shikigami"
                 default_entry = f"APIs/Telegram:{instance}"
-                entry = prompt(f"Entrada KeePass [{default_entry}]: ").strip() or default_entry
-                saved = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-credential", "--profile", values[int(selected)-1], "--entry", entry], quiet=True)
-                result(saved.returncode == 0, (saved.stdout or saved.stderr).strip())
+                profile = values[int(selected)-1]
+                while True:
+                    entry = prompt(f"Entrada KeePass [{default_entry}]: ").strip() or default_entry
+                    saved = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-credential", "--profile", profile, "--entry", entry], quiet=True)
+                    if saved.returncode != 0: result(False, (saved.stdout or saved.stderr).strip()); break
+                    checked = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "check-entry", "--profile", profile, "--entry", entry], quiet=True)
+                    try: probe = json.loads(checked.stdout); exists, detail = bool(probe["exists"]), str(probe["message"])
+                    except (json.JSONDecodeError, KeyError): exists, detail = False, "Não foi possível verificar a entrada no KeePass."
+                    if exists:
+                        result(True, detail)
+                        action = prompt("Utilizar a entrada existente [U], substituir seu token [S] ou corrigir a chave [C]? [U]: ").strip().casefold() or "u"
+                        if action == "u": result(True, "Credencial configurada com a entrada existente."); break
+                        if action == "c": continue
+                        if action != "s": result(False, "Escolha U, S ou C."); continue
+                    else:
+                        result(False, f"A entrada não foi encontrada ou não pôde ser lida: {detail}")
+                        action = prompt("Corrigir chave [C], criar token no KeePass [N] ou configurar e incluir depois [A]? [A]: ").strip().casefold() or "a"
+                        if action == "c": continue
+                        if action == "a": result(True, "Referência salva; inclua o token no KeePass antes de habilitar o gateway."); break
+                        if action != "n": result(False, "Escolha C, N ou A."); continue
+                    token = getpass.getpass(Ui.text("› Token do bot (não será exibido): ", Ui.violet, Ui.bold))
+                    written = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "write-token", "--profile", profile, "--entry", entry], quiet=True, input_value=token)
+                    result(written.returncode == 0, (written.stdout or written.stderr).strip())
+                    if written.returncode == 0: break
             elif choice == "3":
                 tested = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-telegram"], quiet=True)
                 result(tested.returncode == 0, (tested.stdout or tested.stderr).strip())
@@ -566,7 +600,7 @@ def daemon_menu(root: Path) -> None:
     while True:
         status = "INSTALADO" if installed() else "NÃO INSTALADO"
         screen("Daemon", f"Supervisor e serviços da instância · {status}")
-        item("1.", "Instalar / Desinstalar daemon da instância", status)
+        item("1.", "Desinstalar daemon da instância" if installed() else "Instalar daemon da instância", status)
         if installed():
             item("2.", "Serviço do sistema operacional", "Instalado" if service_installed() else "Não instalado")
             if not service_installed(): item("3.", "Gerenciar processo", "Execução local em segundo plano")
@@ -580,7 +614,7 @@ def daemon_menu(root: Path) -> None:
         if choice == "1":
             if not installed(): lifecycle("install-instance")
             else:
-                confirmation = prompt("Digite desinstalar para remover daemon, configurações e estado local: ").strip()
+                confirmation = prompt("ATENÇÃO: isto apagará todas as configurações, credenciais referenciadas, pareamentos, conversas e estado do daemon desta instância. Uma reinstalação exigirá configurar tudo novamente. Digite desinstalar para confirmar: ").strip()
                 if confirmation == "desinstalar": lifecycle("remove-instance")
                 else: result(False, "Desinstalação cancelada; a confirmação deve ser exatamente desinstalar.")
         elif installed() and choice == "2": service_menu()

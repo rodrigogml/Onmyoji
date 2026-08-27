@@ -45,6 +45,35 @@ def save_telegram(root: Path, profile: str, entry: str) -> None:
     target(root).write_text("\n".join(lines), encoding="utf-8", newline="\n")
 
 
+def vault_request(root: Path, profile: str, request: dict) -> tuple[bool, dict | str]:
+    """Chama o wrapper pelo stdin; segredos nunca são colocados na linha de comando."""
+    import subprocess
+    wrapper = root / "available-skills" / "keepass-vault" / "scripts" / "keepass_vault.py"
+    process = subprocess.run([sys.executable, str(wrapper), "--config", str(root / "configs" / "keepass.toml"), "--profile", profile], input=json.dumps(request), text=True, capture_output=True, timeout=45)
+    try: value = json.loads(process.stdout)
+    except ValueError: return False, "O wrapper KeePass retornou uma resposta inválida."
+    if not value.get("ok"):
+        error = value.get("error", {}); message = error.get("message") if isinstance(error, dict) else str(error)
+        return False, str(message or "O KeePass recusou a operação.")
+    return True, value.get("result") or {}
+
+
+def entry_exists(root: Path, profile: str, entry: str) -> tuple[bool, str]:
+    ok, value = vault_request(root, profile, {"operation": "read", "entry": {"path": entry}, "field": "password"})
+    if ok and isinstance(value, dict) and str(value.get("value") or ""):
+        return True, "A entrada e o token foram encontrados no KeePass."
+    if ok: return False, "A entrada existe, mas não contém um token utilizável."
+    # O wrapper deliberadamente não diferencia uma entrada ausente de outras falhas sem expor detalhes do cofre.
+    return False, str(value)
+
+
+def write_token(root: Path, profile: str, entry: str, token: str, exists: bool) -> tuple[bool, str]:
+    operation = "edit" if exists else "add"
+    # O token integra exclusivamente o JSON enviado pelo stdin ao wrapper.
+    ok, value = vault_request(root, profile, {"operation": operation, "path": entry, "values": {"password": token}})
+    return (True, "Token gravado com segurança no KeePass.") if ok else (False, str(value))
+
+
 def validation(root: Path) -> list[dict[str, str]]:
     checks: list[dict[str, str]] = []
     def add(state: str, label: str, detail: str = "") -> None: checks.append({"state": state, "label": label, "detail": detail})
@@ -58,6 +87,11 @@ def validation(root: Path) -> list[dict[str, str]]:
     known = profiles(root)
     add("ok" if profile and profile in known else "error", "Perfil KeePass", f"{profile!r} disponível." if profile in known else ("Selecione um perfil KeePass existente." if not profile else f"Perfil {profile!r} não encontrado."))
     add("ok" if entry and not entry.endswith(":Shikigami") else "pending", "Referência do token", entry if entry and not entry.endswith(":Shikigami") else "Defina a entrada KeePass do token do bot.")
+    contacts = root / "configs" / "daemon" / "services" / "telegram" / "contacts.json"
+    try:
+        values = json.loads(contacts.read_text(encoding="utf-8")); owners = [item for item in values.get("contacts", []) if isinstance(item, dict) and "owner" in item.get("roles", [])]
+        add("ok" if owners else "pending", "Owners pareados", f"{len(owners)} owner(s) autorizado(s)." if owners else "Nenhum owner está pareado; inicie o gateway e escolha Parear owner.")
+    except (OSError, ValueError, AttributeError): add("pending", "Owners pareados", "Nenhum owner está pareado; inicie o gateway e escolha Parear owner.")
     try:
         system = tomllib.loads((root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8")).get("codex", {})
         workspace = Path(str(system.get("project_directory") or ""))
@@ -83,13 +117,22 @@ def test_telegram(root: Path) -> tuple[bool, str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--onmyoji-root", default=str(ROOT)); parser.add_argument("--action", choices=["bootstrap", "validate", "validation-json", "profiles", "set-credential", "test-telegram"], default="bootstrap"); parser.add_argument("--profile"); parser.add_argument("--entry"); args = parser.parse_args()
+    parser = argparse.ArgumentParser(); parser.add_argument("--onmyoji-root", default=str(ROOT)); parser.add_argument("--action", choices=["bootstrap", "validate", "validation-json", "profiles", "set-credential", "check-entry", "write-token", "test-telegram"], default="bootstrap"); parser.add_argument("--profile"); parser.add_argument("--entry"); args = parser.parse_args()
     root = Path(args.onmyoji_root).resolve()
     if args.action == "bootstrap": print(bootstrap(root)); return 0
     if args.action == "profiles": print(json.dumps(profiles(root), ensure_ascii=False)); return 0
     if args.action == "set-credential":
         if not args.profile or not args.entry: parser.error("--profile e --entry são obrigatórios")
         bootstrap(root); save_telegram(root, args.profile, args.entry); print("Credencial configurada."); return 0
+    if args.action == "check-entry":
+        if not args.profile or not args.entry: parser.error("--profile e --entry são obrigatórios")
+        exists, message = entry_exists(root, args.profile, args.entry); print(json.dumps({"exists": exists, "message": message}, ensure_ascii=False)); return 0
+    if args.action == "write-token":
+        if not args.profile or not args.entry: parser.error("--profile e --entry são obrigatórios")
+        token = sys.stdin.read().rstrip("\r\n")
+        if not token: print("Token não informado."); return 2
+        exists, _message = entry_exists(root, args.profile, args.entry)
+        ok, message = write_token(root, args.profile, args.entry, token, exists); print(message); return 0 if ok else 2
     if args.action in {"validate", "validation-json"}:
         values = validation(root); ok = not any(item["state"] == "error" for item in values)
         if args.action == "validation-json": print(json.dumps(values, ensure_ascii=False));
