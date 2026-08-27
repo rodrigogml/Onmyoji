@@ -543,6 +543,7 @@ def daemon_menu(root: Path) -> None:
             item("5.", "Diagnóstico detalhado")
             item("6.", "Desabilitar TOTP" if totp_enabled else "Configurar e habilitar TOTP")
             item("7.", "Testar agente Codex", "Execução controlada, sem mensagem ao bot")
+            item("8.", "Atualizar comandos privados", "Regrava e confirma comandos de cada owner")
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
@@ -616,6 +617,13 @@ def daemon_menu(root: Path) -> None:
             elif choice == "7":
                 tested = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-agent"], quiet=True)
                 result(tested.returncode == 0, (tested.stdout or tested.stderr).strip())
+            elif choice == "8":
+                synced = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "telegram", "sync-commands"], quiet=True)
+                if synced.returncode != 0: result(False, "Inicie o gateway Telegram antes de atualizar seus comandos privados.")
+                else:
+                    try:
+                        data = json.loads(synced.stdout); result(data.get("failed", 1) == 0, f"Comandos confirmados para {data.get('verified', 0)}/{data.get('owners', 0)} owner(s).")
+                    except json.JSONDecodeError: result(False, "O Telegram não retornou a confirmação dos comandos.")
             else: result(False, "Opção inválida.")
 
     while True:

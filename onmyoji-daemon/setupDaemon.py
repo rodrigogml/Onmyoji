@@ -129,6 +129,10 @@ def validation(root: Path) -> list[dict[str, str]]:
     try:
         gateway = json.loads((root / "configs" / "daemon" / "services" / "telegram" / "state" / "gateway-status.json").read_text(encoding="utf-8")); last_error = str(gateway.get("last_error") or "")
         if last_error: add("error", "Último erro do gateway", last_error)
+        commands = gateway.get("commands", {})
+        if isinstance(commands, dict):
+            owners, verified, failed = int(commands.get("owners", 0)), int(commands.get("verified", 0)), int(commands.get("failed", 0))
+            add("ok" if owners and verified == owners and not failed else "pending", "Comandos privados do owner", f"{verified}/{owners} owner(s) confirmados pelo Telegram." if owners else "Reinicie o gateway ou escolha Atualizar comandos privados.")
     except (OSError, ValueError, AttributeError): pass
     try:
         marker = json.loads((root / "configs" / "daemon" / "runtime" / "telegram-test.json").read_text(encoding="utf-8"))

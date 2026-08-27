@@ -89,10 +89,13 @@ class TelegramApi:
         return payload.get("result")
     def send(self, chat_id: int, text: str, **values: Any) -> dict[str, Any]: return self.call("sendMessage", {"chat_id": chat_id, "text": text, **values})
     def delete(self, chat_id: int, message_id: int) -> None: self.call("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
-    def set_owner_commands(self, owner_id: int, totp_enabled: bool) -> None:
+    def set_owner_commands(self, owner_id: int, totp_enabled: bool) -> bool:
         commands = [{"command": "new", "description": "Iniciar uma nova conversa"}, {"command": "config", "description": "Configurar esta conversa"}]
         if totp_enabled: commands.append({"command": "totp", "description": "Obter código de autenticação"})
-        self.call("setMyCommands", {"commands": commands, "scope": {"type": "chat", "chat_id": owner_id}})
+        scope = {"type": "chat", "chat_id": owner_id}
+        self.call("setMyCommands", {"commands": commands, "scope": scope})
+        actual = self.call("getMyCommands", {"scope": scope})
+        return isinstance(actual, list) and {str(item.get("command")) for item in actual if isinstance(item, dict)} == {item["command"] for item in commands}
 
 
 class Contacts:
@@ -119,12 +122,19 @@ class Gateway:
     def _record_error(self, error: Exception | str) -> None:
         message = str(error).replace("\n", " ")[-800:]
         self.last_error = __import__("re").sub(r"(?i)(token|password|secret)\s*[=:]\s*\S+", r"\1=[redacted]", message)
-        write_json(self.settings.data_dir / "state" / "gateway-status.json", {"last_error": self.last_error, "updated_at": time.time()})
-    def _configure_owner_commands(self) -> None:
+        state = json_file(self.settings.data_dir / "state" / "gateway-status.json", {})
+        state.update({"last_error": self.last_error, "updated_at": time.time()}); write_json(self.settings.data_dir / "state" / "gateway-status.json", state)
+    def _configure_owner_commands(self) -> dict[str, int]:
         if not self.api: return
-        for owner in self.contacts.owners():
-            try: self.api.set_owner_commands(owner, self._totp_enabled())
-            except Exception as error: self._record_error(error)
+        owners, verified, failed = self.contacts.owners(), 0, 0
+        for owner in owners:
+            try:
+                if self.api.set_owner_commands(owner, self._totp_enabled()): verified += 1
+                else: failed += 1; self._record_error("Telegram não confirmou os comandos privados do owner.")
+            except Exception as error: failed += 1; self._record_error(error)
+        summary = {"updated_at": time.time(), "owners": len(owners), "verified": verified, "failed": failed, "expected": ["new", "config", *( ["totp"] if self._totp_enabled() else [])]}
+        state = json_file(self.settings.data_dir / "state" / "gateway-status.json", {}); state["commands"] = summary; write_json(self.settings.data_dir / "state" / "gateway-status.json", state)
+        return summary
     def start(self) -> None:
         self.api = TelegramApi(Vault(self.settings).read(self.settings.token_entry)); self._configure_owner_commands(); threading.Thread(target=self._poll, daemon=True).start()
     def _poll(self) -> None:
@@ -139,7 +149,9 @@ class Gateway:
         message = update.get("message") or {}; chat, sender = message.get("chat") or {}, message.get("from") or {}
         if chat.get("type") != "private" or not isinstance(sender.get("id"), int): return
         text = str(message.get("text") or "").strip(); assert self.api
-        if text.startswith("/pair ") and self.pair and time.time() < self.pair[1] and secrets.compare_digest(text[6:].strip(), self.pair[0]): self.contacts.add_owner(sender); self.pair = None; self.api.send(sender["id"], "Pairing concluído."); self._configure_owner_commands(); return
+        if text.startswith("/pair ") and self.pair and time.time() < self.pair[1] and secrets.compare_digest(text[6:].strip(), self.pair[0]):
+            self.contacts.add_owner(sender); self.pair = None; synced = self._configure_owner_commands()
+            self.api.send(sender["id"], "Pairing concluído e comandos privados configurados." if synced.get("failed", 1) == 0 else "Pairing concluído, mas a configuração dos comandos falhou. Consulte o diagnóstico."); return
         if sender["id"] not in self.contacts.owners(): return
         if sender["id"] in self.totp_sessions: self._totp_password(sender["id"], message); return
         if text == "/new": self.database.execute("UPDATE conversations SET generation=generation+1, updated_at=? WHERE chat_id=?", (time.time(), str(sender["id"]))); self.database.commit(); self.api.send(sender["id"], "Conversa reiniciada."); return
@@ -247,7 +259,8 @@ class Gateway:
             self._record_error(error); self._ephemeral(chat_id, "Não foi possível obter este TOTP.")
     def handle(self, method: str, params: dict[str, Any]) -> Any:
         if method == "ping": return {"service": "telegram", "state": "running"}
-        if method == "telegram.status": return {"owners": len(self.contacts.owners()), "listener": "running", "totp_enabled": self._totp_enabled(), "last_error": self.last_error}
+        if method == "telegram.status": return {"owners": len(self.contacts.owners()), "listener": "running", "totp_enabled": self._totp_enabled(), "last_error": self.last_error, "commands": json_file(self.settings.data_dir / "state" / "gateway-status.json", {}).get("commands")}
+        if method == "telegram.sync-commands": return self._configure_owner_commands()
         if method == "telegram.pair-request":
             self.pair = (f"{secrets.randbelow(1_000_000):06d}", time.time() + min(600, max(60, int(params.get("ttl_seconds", 300)))))
             return {"pin": self.pair[0], "expires_at": self.pair[1]}
