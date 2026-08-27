@@ -18,6 +18,8 @@ Abra `D. Daemon → Gateway Telegram` para criar a configuração local e seleci
 
 Ao definir a referência, o setup tenta ler a entrada. Quando já há token, permite mantê-lo, substituí-lo ou corrigir o caminho. Quando a entrada não existe, permite corrigir o caminho, criar a entrada com token informado por prompt oculto e enviado ao KeePass somente via stdin, ou salvar a referência para preenchimento posterior. A validação também informa a quantidade de owners pareados.
 
-A validação mostra cada dependência separadamente: instalação do daemon, TOML do gateway, perfil KeePass, referência do token, workspace do Shikigami, Codex-CLI e teste de conexão. O gateway não pode ser habilitado enquanto houver uma falha; itens pendentes são mostrados como tal e incluem a orientação de correção.
+A validação mostra cada dependência separadamente: instalação do daemon, TOML do gateway, perfil KeePass, referência do token, owners pareados, workspace do Shikigami, Codex-CLI, teste de conexão e execução controlada do agente. O gateway só pode ser habilitado após os testes Telegram e Codex; falhas recentes do gateway também são exibidas sem incluir segredos.
+
+Quando TOTP é configurado e habilitado, os comandos privados de cada owner incluem `/new`, `/config` e `/totp`. O fluxo TOTP pede uma senha real ou falsa mantida no KeePass, lista entradas paginadas, devolve o código em mensagem copiável e agenda a exclusão das mensagens auxiliares.
 
 O gateway aceita inicialmente uma identidade Telegram. Pairing, owners e conversas ficam isolados na instância; mensagens de remetentes que não sejam owners em DM são ignoradas.

@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from onmyoji_daemon.telegram import Contacts, Settings, Vault
+from onmyoji_daemon.telegram import Contacts, Gateway, Settings, Vault
 
 
 def write_settings(root: Path, data_dir: Path) -> None:
@@ -33,3 +33,8 @@ def test_vault_token_uses_onmyoji_keepass_wrapper_without_token_argument(tmp_pat
     with patch("onmyoji_daemon.telegram.subprocess.run", side_effect=run): assert Vault(settings).read(settings.token_entry) == "secret"
     assert "secret" not in " ".join(captured["command"])
     assert json.loads(captured["input"])["entry"]["path"] == "APIs/Telegram:Lavelinha"
+
+
+def test_totp_filter_supports_case_insensitive_wildcards():
+    entries = ["APIs/MSN/Rodrigo", "APIs/msn/Outro", "Banco/Rodrigo"]
+    assert Gateway._filter_totp(entries, "MSN*Rodrigo") == ["APIs/MSN/Rodrigo"]

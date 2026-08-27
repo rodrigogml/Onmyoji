@@ -453,7 +453,8 @@ def daemon_menu(root: Path) -> None:
         for check in checks:
             state = check.get("state", "error"); symbol, color = ({"ok": ("✓", Ui.green), "pending": ("○", Ui.amber), "error": ("✗", Ui.red)}).get(state, ("!", Ui.red))
             print("    " + Ui.text(symbol, Ui.bold, color) + "  " + check.get("label", "Validação") + (Ui.text(" — " + check.get("detail", ""), color) if check.get("detail") else ""))
-        return bool(checks) and not any(check.get("state") == "error" for check in checks)
+        required = {"Daemon da instância", "Estrutura da configuração Telegram", "Perfil KeePass", "Referência do token", "Workspace do Shikigami", "Execução do agente Codex", "Conexão Telegram"}
+        return bool(checks) and all(check.get("state") == "ok" for check in checks if check.get("label") in required)
 
     def installed() -> bool: return (root / "configs" / "daemon" / "daemon.toml").is_file()
     def service_installed() -> bool: return (root / "configs" / "daemon" / "service.json").is_file()
@@ -531,12 +532,17 @@ def daemon_menu(root: Path) -> None:
             try:
                 enabled = bool(json.loads((root / "configs" / "daemon" / "services.json").read_text(encoding="utf-8")).get("telegram", {}).get("enabled", False))
             except (OSError, ValueError): enabled = False
+            try:
+                telegram_settings = tomllib.loads(telegram_path.read_text(encoding="utf-8")); totp_enabled = bool(telegram_settings.get("totp", {}).get("enabled", False))
+            except (OSError, tomllib.TOMLDecodeError): totp_enabled = False
             screen("Gateway Telegram", "Credenciais permanecem exclusivamente no KeePass")
             item("1.", "Desabilitar Telegram" if enabled else "Habilitar Telegram")
             item("2.", "Configurar credencial do bot", "Perfil KeePass e referência da entrada")
             item("3.", "Testar conexão com Telegram")
             item("4.", "Parear owner", "Exige gateway em execução")
             item("5.", "Diagnóstico detalhado")
+            item("6.", "Desabilitar TOTP" if totp_enabled else "Configurar e habilitar TOTP")
+            item("7.", "Testar agente Codex", "Execução controlada, sem mensagem ao bot")
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
@@ -595,6 +601,21 @@ def daemon_menu(root: Path) -> None:
                 except (json.JSONDecodeError, KeyError): result(False, "Não foi possível gerar o código de pareamento."); continue
                 result(True, f"Envie /pair {pin} em uma DM para o bot. O código expira em 5 minutos e só pode ser usado uma vez.")
             elif choice == "5": show_validation()
+            elif choice == "6":
+                if totp_enabled:
+                    changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-totp"], quiet=True)
+                    result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
+                    if changed.returncode == 0: offer_restart()
+                else:
+                    instance = "".join(part[:1].upper() + part[1:] for part in root.name.removeprefix("Onmyoji-").split()) or "Shikigami"
+                    real = prompt(f"Entrada KeePass da senha TOTP real [APIs/TelegramTOTP:{instance}:Real]: ").strip() or f"APIs/TelegramTOTP:{instance}:Real"
+                    fake = prompt(f"Entrada KeePass da senha TOTP falsa [APIs/TelegramTOTP:{instance}:Fake]: ").strip() or f"APIs/TelegramTOTP:{instance}:Fake"
+                    changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-totp", "--enabled", "--real-entry", real, "--fake-entry", fake], quiet=True)
+                    result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
+                    if changed.returncode == 0: offer_restart()
+            elif choice == "7":
+                tested = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-agent"], quiet=True)
+                result(tested.returncode == 0, (tested.stdout or tested.stderr).strip())
             else: result(False, "Opção inválida.")
 
     while True:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -64,13 +65,17 @@ class Settings:
 class Vault:
     def __init__(self, settings: Settings): self.settings = settings
     def read(self, entry: str, field: str = "password") -> str:
+        result = self.request({"operation": "read", "entry": {"path": entry}, "field": field})
+        return str(result["value"])
+    def request(self, request: dict[str, Any]) -> dict[str, Any]:
         wrapper = self.settings.root / "available-skills" / "keepass-vault" / "scripts" / "keepass_vault.py"
-        request = {"operation": "read", "entry": {"path": entry}, "field": field}
         process = subprocess.run([sys.executable, str(wrapper), "--config", str(self.settings.root / "configs" / "keepass.toml"), "--profile", self.settings.keepass_profile], input=json.dumps(request), text=True, capture_output=True, timeout=45)
         try: result = json.loads(process.stdout)
         except ValueError as error: raise RuntimeError("KeePass provider returned invalid response") from error
         if not result.get("ok"): raise RuntimeError("KeePass provider rejected the request")
-        return str(result["result"]["value"])
+        value = result.get("result")
+        if not isinstance(value, dict): raise RuntimeError("KeePass provider returned invalid result")
+        return value
 
 
 class TelegramApi:
@@ -80,7 +85,12 @@ class TelegramApi:
         with urlopen(Request(self.base + method, data=body), timeout=45) as response: payload = json.loads(response.read())
         if not payload.get("ok"): raise RuntimeError("Telegram API rejected request")
         return payload.get("result")
-    def send(self, chat_id: int, text: str) -> None: self.call("sendMessage", {"chat_id": chat_id, "text": text})
+    def send(self, chat_id: int, text: str, **values: Any) -> dict[str, Any]: return self.call("sendMessage", {"chat_id": chat_id, "text": text, **values})
+    def delete(self, chat_id: int, message_id: int) -> None: self.call("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+    def set_owner_commands(self, owner_id: int, totp_enabled: bool) -> None:
+        commands = [{"command": "new", "description": "Iniciar uma nova conversa"}, {"command": "config", "description": "Configurar esta conversa"}]
+        if totp_enabled: commands.append({"command": "totp", "description": "Obter código de autenticação"})
+        self.call("setMyCommands", {"commands": commands, "scope": {"type": "chat", "chat_id": owner_id}})
 
 
 class Contacts:
@@ -100,22 +110,39 @@ class Gateway:
         self.settings, self.stop_event = settings, threading.Event(); self.contacts = Contacts(settings.data_dir / "contacts.json")
         (settings.data_dir / "state").mkdir(parents=True, exist_ok=True); self.database = sqlite3.connect(settings.data_dir / "state" / "gateway.sqlite3", check_same_thread=False)
         self.database.execute("CREATE TABLE IF NOT EXISTS conversations(chat_id TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL)"); self.database.commit()
-        self.api: TelegramApi | None = None; self.pair: tuple[str, float] | None = None; self.offset = 0; self.work = threading.BoundedSemaphore(settings.parallel)
-    def start(self) -> None: self.api = TelegramApi(Vault(self.settings).read(self.settings.token_entry)); threading.Thread(target=self._poll, daemon=True).start()
+        self.api: TelegramApi | None = None; self.pair: tuple[str, float] | None = None; self.offset = 0; self.work = threading.BoundedSemaphore(settings.parallel); self.totp_sessions: dict[int, dict[str, Any]] = {}; self.last_error: str | None = None
+    def _totp_enabled(self) -> bool:
+        try: return bool(tomllib.loads((self.settings.data_dir / "telegram.toml").read_text(encoding="utf-8")).get("totp", {}).get("enabled", False))
+        except (OSError, tomllib.TOMLDecodeError): return False
+    def _record_error(self, error: Exception | str) -> None:
+        message = str(error).replace("\n", " ")[-800:]
+        self.last_error = __import__("re").sub(r"(?i)(token|password|secret)\s*[=:]\s*\S+", r"\1=[redacted]", message)
+        write_json(self.settings.data_dir / "state" / "gateway-status.json", {"last_error": self.last_error, "updated_at": time.time()})
+    def _configure_owner_commands(self) -> None:
+        if not self.api: return
+        for owner in self.contacts.owners():
+            try: self.api.set_owner_commands(owner, self._totp_enabled())
+            except Exception as error: self._record_error(error)
+    def start(self) -> None:
+        self.api = TelegramApi(Vault(self.settings).read(self.settings.token_entry)); self._configure_owner_commands(); threading.Thread(target=self._poll, daemon=True).start()
     def _poll(self) -> None:
         assert self.api
         while not self.stop_event.is_set():
             try:
-                for update in self.api.call("getUpdates", {"offset": self.offset, "timeout": self.settings.poll_timeout, "allowed_updates": ["message"]}) or []:
+                for update in self.api.call("getUpdates", {"offset": self.offset, "timeout": self.settings.poll_timeout, "allowed_updates": ["message", "callback_query"]}) or []:
                     self.offset = int(update.get("update_id", self.offset)) + 1; self._update(update)
-            except Exception: self.stop_event.wait(3)
+            except Exception as error: self._record_error(error); self.stop_event.wait(3)
     def _update(self, update: dict[str, Any]) -> None:
+        if update.get("callback_query"): self._callback(update["callback_query"]); return
         message = update.get("message") or {}; chat, sender = message.get("chat") or {}, message.get("from") or {}
         if chat.get("type") != "private" or not isinstance(sender.get("id"), int): return
         text = str(message.get("text") or "").strip(); assert self.api
-        if text.startswith("/pair ") and self.pair and time.time() < self.pair[1] and secrets.compare_digest(text[6:].strip(), self.pair[0]): self.contacts.add_owner(sender); self.pair = None; self.api.send(sender["id"], "Pairing concluído."); return
+        if text.startswith("/pair ") and self.pair and time.time() < self.pair[1] and secrets.compare_digest(text[6:].strip(), self.pair[0]): self.contacts.add_owner(sender); self.pair = None; self.api.send(sender["id"], "Pairing concluído."); self._configure_owner_commands(); return
         if sender["id"] not in self.contacts.owners(): return
+        if sender["id"] in self.totp_sessions: self._totp_password(sender["id"], message); return
         if text == "/new": self.database.execute("UPDATE conversations SET generation=generation+1, updated_at=? WHERE chat_id=?", (time.time(), str(sender["id"]))); self.database.commit(); self.api.send(sender["id"], "Conversa reiniciada."); return
+        if text.startswith("/totp") and self._totp_enabled(): self._start_totp(sender["id"], message, text[5:].strip()); return
+        if text == "/config": self.api.send(sender["id"], "As opções de conversa serão disponibilizadas neste gateway em uma próxima atualização."); return
         if text.startswith("/"): return
         threading.Thread(target=self._turn, args=(sender["id"], text), daemon=True).start()
     def _turn(self, chat_id: int, text: str) -> None:
@@ -124,16 +151,101 @@ class Gateway:
             # O processo recebe somente o CODEX_HOME desta instância e o workspace configurado.
             environment = dict(__import__("os").environ); environment["CODEX_HOME"] = str(self.settings.root)
             prompt = GATEWAY_INSTRUCTIONS + "\n\nMensagem do owner:\n" + text
-            command = [self.settings.executable, "exec", "-C", str(self.settings.project), "-m", self.settings.model, "-c", f"model_reasoning_effort={json.dumps(self.settings.effort)}", "-s", self.settings.sandbox, "-a", self.settings.approval, prompt]
+            command = [self.settings.executable, "exec", "-C", str(self.settings.project), "--skip-git-repo-check", "-m", self.settings.model, "-c", f"model_reasoning_effort={json.dumps(self.settings.effort)}", "-s", self.settings.sandbox, prompt]
             result = subprocess.run(command, cwd=self.settings.project, env=environment, text=True, capture_output=True, timeout=self.settings.turn_timeout)
-            answer = result.stdout.strip() if result.returncode == 0 else "O agente não conseguiu concluir esta solicitação."
+            if result.returncode != 0:
+                self._record_error(f"Codex exec exit {result.returncode}: {result.stderr or result.stdout}"); answer = "O agente não conseguiu concluir esta solicitação. Consulte o diagnóstico do Gateway Telegram no setup."
+            else: answer = result.stdout.strip()
             if answer and self.api: self.api.send(chat_id, answer[-4000:])
-        except Exception:
+        except Exception as error:
+            self._record_error(error)
             if self.api: self.api.send(chat_id, "O agente não conseguiu concluir esta solicitação.")
         finally: self.work.release()
+
+    def _ephemeral(self, chat_id: int, text: str, seconds: float = 8, **values: Any) -> dict[str, Any]:
+        assert self.api
+        protect_content = bool(values.pop("protect_content", True))
+        message = self.api.send(chat_id, text, protect_content=protect_content, **values)
+        message_id = message.get("message_id")
+        if isinstance(message_id, int):
+            timer = threading.Timer(seconds, lambda: self._delete_later(chat_id, message_id)); timer.daemon = True; timer.start()
+        return message
+
+    def _delete_later(self, chat_id: int, message_id: int) -> None:
+        try:
+            if self.api: self.api.delete(chat_id, message_id)
+        except Exception: pass
+
+    @staticmethod
+    def _filter_totp(entries: list[str], query: str) -> list[str]:
+        pattern = f"*{query.casefold()}*" if query else "*"
+        return sorted(entry for entry in entries if fnmatch.fnmatchcase(entry.casefold(), pattern))
+
+    def _start_totp(self, chat_id: int, message: dict[str, Any], query: str) -> None:
+        assert self.api
+        try:
+            message_id = message.get("message_id")
+            if isinstance(message_id, int): self.api.delete(chat_id, message_id)
+        except Exception: pass
+        self.totp_sessions[chat_id] = {"query": query, "expires_at": time.time() + 180}
+        self._ephemeral(chat_id, "Informe a senha TOTP na próxima mensagem. Ela será apagada.", 180)
+
+    def _totp_password(self, chat_id: int, message: dict[str, Any]) -> None:
+        assert self.api
+        session = self.totp_sessions.pop(chat_id, None)
+        try:
+            message_id = message.get("message_id")
+            if isinstance(message_id, int): self.api.delete(chat_id, message_id)
+        except Exception: pass
+        if not session or time.time() > float(session["expires_at"]): self._ephemeral(chat_id, "Sessão TOTP expirada."); return
+        try:
+            data = tomllib.loads((self.settings.data_dir / "telegram.toml").read_text(encoding="utf-8")); profile = data.get("totp", {})
+            real, fake = Vault(self.settings).read(str(profile.get("real_password_entry") or "")), Vault(self.settings).read(str(profile.get("fake_password_entry") or ""))
+            supplied = str(message.get("text") or "")
+            if secrets.compare_digest(supplied, fake): self._ephemeral(chat_id, "Não existe TOTP cadastrado."); return
+            if not secrets.compare_digest(supplied, real): self._ephemeral(chat_id, "Senha TOTP inválida."); return
+            raw = Vault(self.settings).request({"operation": "list.totp"}).get("entries", [])
+            entries = self._filter_totp([str(item["path"]) for item in raw if isinstance(item, dict) and isinstance(item.get("path"), str)], str(session["query"]))
+            if not entries: self._ephemeral(chat_id, "Nenhuma entrada TOTP encontrada."); return
+            token = secrets.token_urlsafe(8); self.totp_sessions[chat_id] = {"entries": entries, "token": token, "expires_at": time.time() + 180}
+            self._show_totp_page(chat_id, 0)
+        except Exception as error:
+            self._record_error(error); self._ephemeral(chat_id, "Não foi possível consultar os TOTPs. Consulte o diagnóstico do gateway.")
+
+    def _show_totp_page(self, chat_id: int, page: int) -> None:
+        assert self.api
+        session = self.totp_sessions.get(chat_id)
+        if not session or time.time() > float(session["expires_at"]): self.totp_sessions.pop(chat_id, None); return
+        entries, token = session["entries"], session["token"]; size = 10; start = page * size; chunk = entries[start:start + size]
+        keyboard = [[{"text": entry[-48:], "callback_data": f"totp:{token}:{start + index}"}] for index, entry in enumerate(chunk)]
+        navigation = []
+        if page: navigation.append({"text": "‹", "callback_data": f"totp:{token}:p:{page - 1}"})
+        if start + size < len(entries): navigation.append({"text": "›", "callback_data": f"totp:{token}:p:{page + 1}"})
+        if navigation: keyboard.append(navigation)
+        keyboard.append([{"text": "Cancelar", "callback_data": f"totp:{token}:x"}])
+        self._ephemeral(chat_id, "Escolha a entrada TOTP:", 180, reply_markup={"inline_keyboard": keyboard})
+
+    def _callback(self, callback: dict[str, Any]) -> None:
+        assert self.api
+        sender = callback.get("from") or {}; message = callback.get("message") or {}; chat = message.get("chat") or {}; chat_id = sender.get("id")
+        if chat.get("type") != "private" or not isinstance(chat_id, int) or chat_id not in self.contacts.owners(): return
+        data = str(callback.get("data") or ""); parts = data.split(":")
+        try: self.api.call("answerCallbackQuery", {"callback_query_id": callback["id"]})
+        except Exception: pass
+        if len(parts) < 3 or parts[0] != "totp": return
+        session = self.totp_sessions.get(chat_id)
+        if not session or not secrets.compare_digest(str(session.get("token", "")), parts[1]) or time.time() > float(session.get("expires_at", 0)): return
+        if len(parts) == 4 and parts[2] == "p": self._show_totp_page(chat_id, int(parts[3])); return
+        if parts[2] == "x": self.totp_sessions.pop(chat_id, None); return
+        try:
+            entry = session["entries"][int(parts[2])]; code = Vault(self.settings).read(entry, "totp")
+            self.totp_sessions.pop(chat_id, None); remaining = 30 - (int(time.time()) % 30)
+            self._ephemeral(chat_id, code, remaining + 5, protect_content=False); self._ephemeral(chat_id, f"Expira em {remaining} segundos.", remaining + 5)
+        except Exception as error:
+            self._record_error(error); self._ephemeral(chat_id, "Não foi possível obter este TOTP.")
     def handle(self, method: str, params: dict[str, Any]) -> Any:
         if method == "ping": return {"service": "telegram", "state": "running"}
-        if method == "telegram.status": return {"owners": len(self.contacts.owners()), "listener": "running"}
+        if method == "telegram.status": return {"owners": len(self.contacts.owners()), "listener": "running", "totp_enabled": self._totp_enabled(), "last_error": self.last_error}
         if method == "telegram.pair-request":
             self.pair = (f"{secrets.randbelow(1_000_000):06d}", time.time() + min(600, max(60, int(params.get("ttl_seconds", 300)))))
             return {"pin": self.pair[0], "expires_at": self.pair[1]}
