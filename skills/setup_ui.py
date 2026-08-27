@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 import tomllib
@@ -82,5 +83,6 @@ def choose_keepass_profile(root: Path, current: str = "") -> str | None:
         result(False, "Opção inválida.")
 
 
-def suggested_vault_entry(integration: str, profile: str) -> str:
-    return f"APIs/{integration}:{profile}"
+def suggested_vault_entry(integration: str, skill_profile: str) -> str:
+    profile_name = "".join(part[:1].upper() + part[1:] for part in re.findall(r"[A-Za-z0-9]+", skill_profile))
+    return f"APIs/{integration}:{profile_name}"

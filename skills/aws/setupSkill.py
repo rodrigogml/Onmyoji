@@ -39,7 +39,7 @@ def configure(root):
    if not name or name.casefold()=='x' or name in profiles or not name.replace('-','').replace('_','').isalnum():result(False,'Nome inválido ou existente.');continue
    profile={}
    for key,label,default in FIELDS:
-    default=suggested_vault_entry('AWS',profile['vault_profile']) if key=='vault_entry_path' else default
+    default=suggested_vault_entry('AWS',name) if key=='vault_entry_path' else default
     value=choose_keepass_profile(root) if key=='vault_profile' else (prompt(f'{label} [{default}]: ').strip() or default)
     if value is None:break
     profile[key]=value

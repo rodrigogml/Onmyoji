@@ -36,7 +36,7 @@ def configure(root):
    if not n or n.casefold()=='x' or n in profiles:result(False,'Nome inválido ou existente.');continue
    profile={}
    for k,l,x in FIELDS:
-    x=suggested_vault_entry('Cloudflare',profile['vault_profile']) if k=='vault_entry_path' else x
+    x=suggested_vault_entry('Cloudflare',n) if k=='vault_entry_path' else x
     value=choose_keepass_profile(root) if k=='vault_profile' else (prompt(f'{l} [{x}]: ').strip() or x)
     if value is None:break
     profile[k]=value

@@ -115,7 +115,7 @@ def configure(root: Path) -> None:
             if not name or name.casefold() in {"x", "\x1b"} or name in data["profiles"]: result(False, "Nome inválido ou já existente."); continue
             vault_profile = choose_keepass_profile(root)
             if vault_profile is None: continue
-            suggested_entry = suggested_vault_entry("Todoist", vault_profile)
+            suggested_entry = suggested_vault_entry("Todoist", name)
             candidate = copy.deepcopy(data); candidate["profiles"][name] = {"vault_profile": vault_profile, "vault_entry_path": prompt(f"Entrada KeePass [{suggested_entry}]: ").strip() or suggested_entry, "vault_field": "password", "access": "read_only", "allowed_operations": [], "allowed_attachment_roots": []}
             ok, message = save(path, candidate); result(ok, message if ok else f"Não salvo: {message}")
             if ok: data = candidate; edit_profile(data, path, name)

@@ -46,7 +46,7 @@ def configure(root):
             if not name or name.casefold()=="x" or name in profiles or not name.replace("-","").replace("_","").isalnum():result(False, "Nome inválido ou existente.");continue
             p={}
             for key,label,default in (("vault_profile","Perfil KeePass","example"),("vault_entry_path","Entrada KeePass","APIs/Notion"),("vault_field","Campo do token","password")):
-                default=suggested_vault_entry("Notion",p["vault_profile"]) if key=="vault_entry_path" else default
+                default=suggested_vault_entry("Notion",name) if key=="vault_entry_path" else default
                 value=choose_keepass_profile(root) if key=="vault_profile" else (prompt(f"{label} [{default}]: ").strip() or default)
                 if value is None: break
                 p[key]=value

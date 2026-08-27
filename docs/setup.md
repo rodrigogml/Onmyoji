@@ -21,7 +21,7 @@ Cada `setupSkill.py` é responsável exclusivamente pela configuração da sua s
 
 Quando uma skill precisa da referência `vault_profile`, o configurador lê os perfis já definidos em `configs/keepass.toml` e oferece um seletor numérico. Não solicite esse identificador como texto livre; se ainda não houver perfis KeePass, informe que a skill KeePass Vault deve ser configurada primeiro.
 
-Após a escolha do perfil KeePass, sugira a entrada de credencial no formato `APIs/<Integração>:<perfil>`, por exemplo `APIs/Omie:rodrigogml`. O usuário pode ajustar a sugestão ao criar uma configuração; não substitua uma entrada já configurada durante edição.
+Após a escolha do perfil KeePass, sugira a entrada de credencial no formato `APIs/<Integração>:<perfil-da-skill-em-CamelCase>`, por exemplo `APIs/Omie:Laveli` para o perfil local `laveli`. O usuário pode ajustar a sugestão ao criar uma configuração; não substitua uma entrada já configurada durante edição.
 
 ## Protocolo de descoberta
 
