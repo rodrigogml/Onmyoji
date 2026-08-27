@@ -1,0 +1,14 @@
+[Unit]
+Description=Onmyoji daemon for one Shikigami
+After=network.target
+
+[Service]
+Type=simple
+User=__ONMYOJI_USER__
+Environment=ONMYOJI_ROOT=__ONMYOJI_ROOT__
+WorkingDirectory=__ONMYOJI_ROOT__
+ExecStart=__PYTHON__ -m onmyoji_daemon.cli --onmyoji-root __ONMYOJI_ROOT__ run
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

@@ -424,6 +424,30 @@ def codex_menu(root: Path) -> None:
         else: result(False, "Opção inválida.")
 
 
+def daemon_menu(root: Path) -> None:
+    project = root / "onmyoji-daemon"
+    script = project / "setupDaemon.py"
+    if not script.is_file():
+        result(False, "Projeto do daemon não encontrado.")
+        return
+    environment = dict(os.environ)
+    source = str(project / "src")
+    environment["PYTHONPATH"] = source + (os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else "")
+    while True:
+        screen("Daemon", "Supervisor local, gateway Telegram e futuros serviços")
+        item("1.", "Inicializar configuração Telegram")
+        item("2.", "Validar configuração")
+        item("3.", "Executar em primeiro plano")
+        item("4.", "Listar serviços")
+        item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
+        if choice in {"x", "\x1b"}: return
+        action = {"1": [sys.executable, str(script), "--onmyoji-root", str(root), "--action", "bootstrap"], "2": [sys.executable, str(script), "--onmyoji-root", str(root), "--action", "validate"], "3": [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "run"], "4": [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "list-services"]}.get(choice)
+        if not action: result(False, "Opção inválida."); continue
+        try: subprocess.run(action, cwd=str(project), env=environment, check=False)
+        except OSError as error: result(False, f"Não foi possível executar o daemon: {error}")
+
+
 def skill_menu(skill: Skill, root: Path, skills: list[Skill]) -> None:
     while True:
         enabled = skill.identifier in enabled_ids(root)
@@ -449,6 +473,7 @@ def menu(skills: list[Skill], root: Path) -> int:
         enabled = enabled_ids(root)
         screen("Central de configuração", "Onmyōji · integrações do Shikigami")
         item("A.", "Codex-CLI", "Modelo, projeto, sandbox e permissões")
+        item("D.", "Daemon", "Supervisor local e serviços da instância")
         print("\n  SKILLS DE INTEGRAÇÃO")
         for index, skill in enumerate(skills, 1):
             active = skill.identifier in enabled
@@ -459,6 +484,7 @@ def menu(skills: list[Skill], root: Path) -> int:
         choice = prompt("Selecione uma opção: ").strip().casefold()
         if choice == "x": return 0
         if choice == "a": codex_menu(root); continue
+        if choice == "d": daemon_menu(root); continue
         if choice.isdigit() and 1 <= int(choice) <= len(skills): skill_menu(skills[int(choice) - 1], root, skills)
         else: result(False, "Opção inválida.")
 

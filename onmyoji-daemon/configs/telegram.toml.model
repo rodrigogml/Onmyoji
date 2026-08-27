@@ -1,0 +1,24 @@
+schema_version = 1
+enabled = false
+
+[telegram]
+# Perfil KeePass local que contém o token do bot.
+keepass_profile = "telegram"
+token_entry = "APIs/Telegram:Shikigami"
+poll_timeout_seconds = 30
+
+[agent]
+# O workspace, modelo, sandbox e aprovação vêm de configs/onmyoji-system.toml.
+max_parallel_conversations = 1
+turn_timeout_seconds = 900
+developer_file = ""
+
+[limits]
+max_attachment_bytes = 20971520
+max_pending_items = 50
+
+[totp]
+enabled = false
+real_password_entry = ""
+fake_password_entry = ""
+period_seconds = 30

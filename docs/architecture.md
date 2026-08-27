@@ -12,6 +12,7 @@ Onmyōji (CODEX_HOME de uma instância)
 ├── skills/                       # links locais apenas das skills habilitadas; varrido pelo Codex
 │   └── .system/                  # skills de sistema instaladas pelo Codex
 ├── configs/                      # perfis reais locais; ignorados pelo Git
+├── configs/daemon/               # endpoint, estado e dados dos serviços locais; ignorados pelo Git
 ├── config.toml                   # defaults locais do Codex; ignorado pelo Git
 └── estado gerenciado pelo Codex   # autenticação, sessões, logs e cache; ignorado pelo Git
 
@@ -33,4 +34,5 @@ Uma mesma base versionada pode ser usada para preparar várias instâncias. Cada
 - O Onmyōji fornece integrações, modelos, setup, políticas reutilizáveis e estado local do Codex.
 - O Shikigami fornece o workspace, o código de trabalho, conhecimento específico e playbooks.
 - A configuração local do Onmyōji decide quais integrações ficam disponíveis naquele Shikigami.
+- O daemon Onmyōji supervisiona somente serviços registrados para a instância atual; nenhum serviço recebe configuração ou estado de outra instância.
 - ACLs do sistema operacional delimitam o que a identidade de execução pode ler ou gravar em cada diretório.
