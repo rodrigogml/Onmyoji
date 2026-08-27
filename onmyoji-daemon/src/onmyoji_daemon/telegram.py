@@ -72,7 +72,9 @@ class Vault:
         process = subprocess.run([sys.executable, str(wrapper), "--config", str(self.settings.root / "configs" / "keepass.toml"), "--profile", self.settings.keepass_profile], input=json.dumps(request), text=True, capture_output=True, timeout=45)
         try: result = json.loads(process.stdout)
         except ValueError as error: raise RuntimeError("KeePass provider returned invalid response") from error
-        if not result.get("ok"): raise RuntimeError("KeePass provider rejected the request")
+        if not result.get("ok"):
+            error = result.get("error", {}); detail = error.get("message") if isinstance(error, dict) else ""
+            raise RuntimeError(f"KeePass provider rejected the request: {detail or 'erro não detalhado'}")
         value = result.get("result")
         if not isinstance(value, dict): raise RuntimeError("KeePass provider returned invalid result")
         return value

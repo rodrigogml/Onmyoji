@@ -133,20 +133,25 @@ def validation(root: Path) -> list[dict[str, str]]:
     try:
         marker = json.loads((root / "configs" / "daemon" / "runtime" / "telegram-test.json").read_text(encoding="utf-8"))
         age = time.time() - float(marker.get("tested_at", 0))
-        add("ok" if age < 86_400 else "pending", "Conexão Telegram", "Token validado nas últimas 24 horas." if age < 86_400 else "Repita o teste de conexão; a validação anterior expirou.")
+        failed = bool(marker.get("failed"))
+        add("error" if failed else ("ok" if age < 86_400 else "pending"), "Conexão Telegram", str(marker.get("detail") or "Teste de conexão falhou; revise o KeePass e o token.") if failed else ("Token validado nas últimas 24 horas." if age < 86_400 else "Repita o teste de conexão; a validação anterior expirou."))
     except (OSError, ValueError, TypeError): add("pending", "Conexão Telegram", "Execute Testar conexão; o token não é exibido.")
     return checks
 
 
 def test_telegram(root: Path) -> tuple[bool, str]:
     from onmyoji_daemon.telegram import Settings, TelegramApi, Vault
+    marker = root / "configs" / "daemon" / "runtime" / "telegram-test.json"
     try:
         settings = Settings.load(root.resolve(), target(root).parent)
         account = TelegramApi(Vault(settings).read(settings.token_entry)).call("getMe")
-        marker = root / "configs" / "daemon" / "runtime" / "telegram-test.json"; marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(json.dumps({"tested_at": time.time(), "bot": str(account.get("username") or account.get("first_name") or "")}), encoding="utf-8")
         return True, f"Bot autenticado: @{account.get('username') or account.get('first_name') or 'sem username'}"
-    except Exception as error: return False, f"Não foi possível autenticar o bot: {error}"
+    except Exception as error:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({"tested_at": time.time(), "failed": True, "detail": str(error)[-500:]}), encoding="utf-8")
+        return False, f"Não foi possível autenticar o bot: {error}"
 
 
 def main() -> int:
