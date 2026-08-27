@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -430,22 +431,162 @@ def daemon_menu(root: Path) -> None:
     if not script.is_file():
         result(False, "Projeto do daemon não encontrado.")
         return
-    environment = dict(os.environ)
-    source = str(project / "src")
+    environment = dict(os.environ); source = str(project / "src")
     environment["PYTHONPATH"] = source + (os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else "")
+
+    def command(arguments: list[str], quiet: bool = False) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(arguments, cwd=str(project), env=environment, text=True, capture_output=quiet)
+
+    def lifecycle(action: str, extra: list[str] | None = None) -> None:
+        completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), action, *(extra or [])], quiet=True)
+        result(completed.returncode == 0, (completed.stdout or completed.stderr or "Operação concluída.").strip())
+
+    def validation() -> list[dict[str, str]]:
+        completed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "validation-json"], quiet=True)
+        try: return json.loads(completed.stdout)
+        except json.JSONDecodeError: return []
+
+    def show_validation() -> bool:
+        checks = validation(); print()
+        for check in checks:
+            state = check.get("state", "error"); symbol, color = ({"ok": ("✓", Ui.green), "pending": ("○", Ui.amber), "error": ("✗", Ui.red)}).get(state, ("!", Ui.red))
+            print("    " + Ui.text(symbol, Ui.bold, color) + "  " + check.get("label", "Validação") + (Ui.text(" — " + check.get("detail", ""), color) if check.get("detail") else ""))
+        return bool(checks) and not any(check.get("state") == "error" for check in checks)
+
+    def installed() -> bool: return (root / "configs" / "daemon" / "daemon.toml").is_file()
+    def service_installed() -> bool: return (root / "configs" / "daemon" / "service.json").is_file()
+
+    def process_menu() -> None:
+        while True:
+            screen("Processo do daemon", "Execução local em segundo plano; não bloqueia este configurador")
+            item("1.", "Status do processo")
+            item("2.", "Iniciar processo", "Segundo plano")
+            item("3.", "Finalizar processo", "Parada graciosa")
+            item("4.", "Forçar finalização", "Somente se a parada normal falhar")
+            item("X.", "Voltar")
+            choice = prompt("Opção: ").strip().casefold()
+            if choice in {"x", "\x1b"}: return
+            action = {"1": "process-status", "2": "process-start", "3": "process-stop", "4": "process-force-stop"}.get(choice)
+            if not action: result(False, "Opção inválida."); continue
+            if action == "process-status":
+                status = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), action], quiet=True)
+                try:
+                    values = json.loads(status.stdout); message = f"Em execução · PID {values['pid']} · iniciado em {time.ctime(values['started_at'])}" if values.get("pid") else "Processo local parado."
+                    result(True, message)
+                except (json.JSONDecodeError, KeyError): result(False, (status.stdout or status.stderr).strip() or "Não foi possível consultar o processo.")
+            else: lifecycle(action)
+
+    def service_menu() -> None:
+        while True:
+            screen("Serviço do sistema operacional", "O daemon será iniciado e controlado pelo sistema operacional")
+            if not service_installed():
+                item("1.", "Instalar serviço")
+                item("X.", "Voltar")
+                choice = prompt("Opção: ").strip().casefold()
+                if choice in {"x", "\x1b"}: return
+                if choice != "1": result(False, "Opção inválida."); continue
+                default_name = "Shikigami-" + "".join(part[:1].upper() + part[1:] for part in root.name.removeprefix("Onmyoji-").split())
+                visible = root.name.removeprefix("Onmyoji-") or "Shikigami"
+                name = prompt(f"Nome do serviço [{default_name}]: ").strip() or default_name
+                description = prompt(f"Descrição [{f'Shikigami {visible} Daemon'}]: ").strip() or f"Shikigami {visible} Daemon"
+                lifecycle("install-service", ["--name", name, "--description", description]); continue
+            item("1.", "Status do serviço")
+            item("2.", "Iniciar / Parar serviço")
+            item("3.", "Reiniciar serviço")
+            item("4.", "Forçar parada do serviço")
+            item("5.", "Remover serviço")
+            item("X.", "Voltar")
+            choice = prompt("Opção: ").strip().casefold()
+            if choice in {"x", "\x1b"}: return
+            if choice == "1": lifecycle("service-status")
+            elif choice == "2":
+                action = prompt("Digite I para iniciar ou P para parar: ").strip().casefold()
+                if action == "i": lifecycle("service-start")
+                elif action == "p": lifecycle("service-stop")
+                else: result(False, "Escolha I ou P.")
+            elif choice == "3": lifecycle("service-restart")
+            elif choice == "4": lifecycle("service-force-stop")
+            elif choice == "5":
+                confirmation = prompt("Digite remover para confirmar: ").strip()
+                if confirmation == "remover": lifecycle("remove-service")
+                else: result(False, "Remoção cancelada; a confirmação deve ser exatamente remover.")
+            else: result(False, "Opção inválida.")
+
+    def telegram_menu() -> None:
+        while True:
+            telegram_path = root / "configs" / "daemon" / "services" / "telegram" / "telegram.toml"
+            if not telegram_path.exists(): command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "bootstrap"])
+            try:
+                enabled = bool(json.loads((root / "configs" / "daemon" / "services.json").read_text(encoding="utf-8")).get("telegram", {}).get("enabled", False))
+            except (OSError, ValueError): enabled = False
+            screen("Gateway Telegram", "Credenciais permanecem exclusivamente no KeePass")
+            item("1.", "Desabilitar Telegram" if enabled else "Habilitar Telegram")
+            item("2.", "Configurar credencial do bot", "Perfil KeePass e referência da entrada")
+            item("3.", "Testar conexão com Telegram")
+            item("4.", "Parear owner", "Exige gateway em execução")
+            item("5.", "Diagnóstico detalhado")
+            item("X.", "Voltar")
+            choice = prompt("Opção: ").strip().casefold()
+            if choice in {"x", "\x1b"}: return
+            if choice == "1":
+                if enabled:
+                    lifecycle("disable", ["telegram"]); result(True, "Telegram desabilitado; a configuração foi preservada.")
+                else:
+                    if not show_validation(): result(False, "Corrija os itens marcados antes de habilitar o gateway."); continue
+                    lifecycle("enable", ["telegram"]); result(True, "Telegram habilitado; ele iniciará junto com o daemon.")
+            elif choice == "2":
+                listed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "profiles"], quiet=True)
+                try: values = json.loads(listed.stdout)
+                except json.JSONDecodeError: values = []
+                if not values: result(False, "Nenhum perfil KeePass disponível. Configure e habilite primeiro a skill KeePass."); continue
+                print()
+                for index, profile in enumerate(values, 1): item(f"{index}.", profile)
+                item("X.", "Voltar")
+                selected = prompt("Perfil KeePass: ").strip().casefold()
+                if selected in {"x", "\x1b"}: continue
+                if not selected.isdigit() or not 1 <= int(selected) <= len(values): result(False, "Perfil inválido."); continue
+                instance = "".join(part[:1].upper() + part[1:] for part in root.name.removeprefix("Onmyoji-").split()) or "Shikigami"
+                default_entry = f"APIs/Telegram:{instance}"
+                entry = prompt(f"Entrada KeePass [{default_entry}]: ").strip() or default_entry
+                saved = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-credential", "--profile", values[int(selected)-1], "--entry", entry], quiet=True)
+                result(saved.returncode == 0, (saved.stdout or saved.stderr).strip())
+            elif choice == "3":
+                tested = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-telegram"], quiet=True)
+                result(tested.returncode == 0, (tested.stdout or tested.stderr).strip())
+            elif choice == "4":
+                request = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "telegram", "pair-request"], quiet=True)
+                if request.returncode != 0: result(False, "Inicie o daemon e habilite o Telegram antes de parear um owner."); continue
+                try: pin = json.loads(request.stdout)["pin"]
+                except (json.JSONDecodeError, KeyError): result(False, "Não foi possível gerar o código de pareamento."); continue
+                result(True, f"Envie /pair {pin} em uma DM para o bot. O código expira em 5 minutos e só pode ser usado uma vez.")
+            elif choice == "5": show_validation()
+            else: result(False, "Opção inválida.")
+
     while True:
-        screen("Daemon", "Supervisor local, gateway Telegram e futuros serviços")
-        item("1.", "Inicializar configuração Telegram")
-        item("2.", "Validar configuração")
-        item("3.", "Executar em primeiro plano")
-        item("4.", "Listar serviços")
+        status = "INSTALADO" if installed() else "NÃO INSTALADO"
+        screen("Daemon", f"Supervisor e serviços da instância · {status}")
+        item("1.", "Instalar / Desinstalar daemon da instância", status)
+        if installed():
+            item("2.", "Serviço do sistema operacional", "Instalado" if service_installed() else "Não instalado")
+            if not service_installed(): item("3.", "Gerenciar processo", "Execução local em segundo plano")
+            else: print("\n  " + Ui.text("O processo é gerenciado pelo serviço do sistema operacional.", Ui.slate))
+            print()
+            item("4.", "Gateway Telegram", "Configuração, teste e pareamento")
+            item("5.", "Diagnóstico detalhado")
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
-        action = {"1": [sys.executable, str(script), "--onmyoji-root", str(root), "--action", "bootstrap"], "2": [sys.executable, str(script), "--onmyoji-root", str(root), "--action", "validate"], "3": [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "run"], "4": [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "list-services"]}.get(choice)
-        if not action: result(False, "Opção inválida."); continue
-        try: subprocess.run(action, cwd=str(project), env=environment, check=False)
-        except OSError as error: result(False, f"Não foi possível executar o daemon: {error}")
+        if choice == "1":
+            if not installed(): lifecycle("install-instance")
+            else:
+                confirmation = prompt("Digite desinstalar para remover daemon, configurações e estado local: ").strip()
+                if confirmation == "desinstalar": lifecycle("remove-instance")
+                else: result(False, "Desinstalação cancelada; a confirmação deve ser exatamente desinstalar.")
+        elif installed() and choice == "2": service_menu()
+        elif installed() and choice == "3" and not service_installed(): process_menu()
+        elif installed() and choice == "4": telegram_menu()
+        elif installed() and choice == "5": show_validation()
+        else: result(False, "Opção inválida.")
 
 
 def skill_menu(skill: Skill, root: Path, skills: list[Skill]) -> None:

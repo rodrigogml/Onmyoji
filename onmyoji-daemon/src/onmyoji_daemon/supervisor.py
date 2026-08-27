@@ -9,6 +9,7 @@ import subprocess
 import os
 import threading
 import time
+import uuid
 from typing import Any
 
 from .registry import SERVICES, ServiceSpec
@@ -37,11 +38,35 @@ class Supervisor:
         self.root = self.onmyoji_root / "configs" / "daemon"
         self.runtime = self.root / "runtime"; self.runtime.mkdir(parents=True, exist_ok=True)
         self.endpoint_file = self.runtime / "endpoint.json"
+        self.process_file = self.runtime / "process.json"
+        self.lock_file = self.runtime / "supervisor.lock"
         self.state_file = self.root / "services.json"
         self.host, self.token, self.stop_event = "127.0.0.1", secrets.token_urlsafe(32), threading.Event()
         self.rpc = RpcServer(self.host, free_port(), self.token, self.handle)
         self.services = {name: ManagedService(spec) for name, spec in SERVICES.items()}
         self._load_state()
+
+    def _acquire_lock(self) -> None:
+        """Garante um único supervisor por CODEX_HOME, removendo somente lock órfão."""
+        payload = {"pid": os.getpid(), "root": str(self.onmyoji_root), "instance": uuid.uuid4().hex, "started_at": time.time()}
+        try:
+            descriptor = os.open(self.lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try: previous = json.loads(self.lock_file.read_text(encoding="utf-8")); pid = int(previous.get("pid", 0))
+            except (OSError, ValueError, TypeError): pid = 0
+            alive = False
+            if pid > 0:
+                if os.name == "nt":
+                    probe = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], text=True, capture_output=True, check=False)
+                    alive = str(pid) in probe.stdout and "No tasks" not in probe.stdout
+                else:
+                    try: os.kill(pid, 0); alive = True
+                    except OSError: pass
+            if alive: raise RuntimeError("another daemon supervisor is already running for this instance")
+            self.lock_file.unlink(missing_ok=True)
+            descriptor = os.open(self.lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output: json.dump(payload, output)
+        self.process_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     def _load_state(self) -> None:
         try: values = json.loads(self.state_file.read_text(encoding="utf-8"))
@@ -109,13 +134,13 @@ class Supervisor:
         raise ValueError("unknown method")
 
     def run_forever(self) -> None:
-        self._endpoint(); self._save_state()
+        self._acquire_lock(); self._endpoint(); self._save_state()
         for name, service in self.services.items():
             if service.enabled: self.start(name)
         try: self.rpc.serve_forever(self.stop_event)
         finally:
             for name in self.services: self.stop(name)
-            self.endpoint_file.unlink(missing_ok=True); self.rpc.close()
+            self.endpoint_file.unlink(missing_ok=True); self.process_file.unlink(missing_ok=True); self.lock_file.unlink(missing_ok=True); self.rpc.close()
 
 
 def endpoint(onmyoji_root: Path) -> tuple[str, int, str]:

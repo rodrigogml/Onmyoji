@@ -5,6 +5,7 @@ import time
 
 from onmyoji_daemon.rpc import call
 from onmyoji_daemon.supervisor import Supervisor, endpoint
+from onmyoji_daemon.management import default_service_description, default_service_name, install_instance, is_installed, set_enabled
 
 
 def test_supervisor_exposes_only_registered_services(tmp_path):
@@ -25,3 +26,15 @@ def test_supervisor_persists_enablement_and_local_rpc(tmp_path):
     assert Supervisor(tmp_path).services["telegram"].enabled
     call(host, port, token, "shutdown"); thread.join(timeout=5)
     assert not thread.is_alive()
+
+
+def test_instance_installation_and_service_identity_are_local(tmp_path):
+    root = tmp_path / "Onmyoji-Lavelinha"
+    root.mkdir()
+    ok, _message = install_instance(root)
+    assert ok and is_installed(root)
+    assert default_service_name(root) == "Shikigami-Lavelinha"
+    assert default_service_description(root) == "Shikigami Lavelinha Daemon"
+    ok, _message = set_enabled(root, "telegram", True)
+    assert ok
+    assert Supervisor(root).services["telegram"].enabled
