@@ -17,6 +17,9 @@ SPEC.loader.exec_module(MODULE)
 
 
 class KeePassProfileChooserTests(unittest.TestCase):
+    def test_suggests_entry_from_integration_and_vault_profile(self) -> None:
+        self.assertEqual(MODULE.suggested_vault_entry("Omie", "rodrigogml"), "APIs/Omie:rodrigogml")
+
     def test_selects_a_numbered_keepass_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

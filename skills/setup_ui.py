@@ -80,3 +80,7 @@ def choose_keepass_profile(root: Path, current: str = "") -> str | None:
         if value.isdigit() and 1 <= int(value) <= len(profiles):
             return profiles[int(value) - 1]
         result(False, "Opção inválida.")
+
+
+def suggested_vault_entry(integration: str, profile: str) -> str:
+    return f"APIs/{integration}:{profile}"

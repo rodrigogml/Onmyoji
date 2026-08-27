@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from setup_ui import choose_keepass_profile, item, prompt, result, screen
+from setup_ui import choose_keepass_profile, item, prompt, result, screen, suggested_vault_entry
 def path(root: Path) -> Path: return root / "configs" / "omie.toml"
 def empty() -> dict: return {"schema_version": 1, "defaults": {"timeout_seconds": 30, "max_retries": 2}, "profiles": {}}
 def render(data: dict) -> str:
@@ -37,7 +37,7 @@ def configure(root: Path) -> None:
             if not name or name.casefold() in {'x','\x1b'} or name in data['profiles']: result(False, "Nome inválido ou existente."); continue
             vault_profile=choose_keepass_profile(root)
             if vault_profile is None: continue
-            profile={'vault_profile': vault_profile, 'vault_entry_path': prompt("Entrada KeePass: ").strip(), 'app_key_field': prompt("Campo app_key [username]: ").strip() or 'username', 'app_secret_field': prompt("Campo app_secret [password]: ").strip() or 'password'}
+            profile={'vault_profile': vault_profile, 'vault_entry_path': prompt(f"Entrada KeePass [{suggested_vault_entry('Omie', vault_profile)}]: ").strip() or suggested_vault_entry('Omie', vault_profile), 'app_key_field': prompt("Campo app_key [username]: ").strip() or 'username', 'app_secret_field': prompt("Campo app_secret [password]: ").strip() or 'password'}
             candidate={**data, 'profiles': {**data['profiles'], name: profile}}; ok,message=save(file,candidate); result(ok, message if ok else f"Não salvo: {message}"); data=candidate if ok else data
         elif choice == '2':
             names=sorted(data['profiles']); screen("Omie", "Remover perfil", "Escolha um perfil ou pressione X para voltar"); [item(f"{i}.", name) for i,name in enumerate(names,1)]; item("X.", "Voltar")

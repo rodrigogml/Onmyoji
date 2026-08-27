@@ -4,7 +4,7 @@ import argparse,json,sys,tomllib
 from pathlib import Path
 SKILL=Path(__file__).resolve().parent
 sys.path.insert(0,str(SKILL.parent))
-from setup_ui import choose_keepass_profile,item,prompt,result,screen
+from setup_ui import choose_keepass_profile,item,prompt,result,screen,suggested_vault_entry
 FIELDS=(('vault_profile','Perfil KeePass','example'),('vault_entry_path','Entrada KeePass','APIs/Cloudflare'),('vault_field','Campo do token','password'),('zone_id','Zone ID (opcional)',''))
 def file(root):return root/'configs'/'cloudflare.toml'
 def load(p):return tomllib.loads(p.read_text(encoding='utf-8')) if p.exists() else {'schema_version':1,'defaults':{'api_base':'https://api.cloudflare.com/client/v4','timeout_seconds':30,'max_retries':2},'profiles':{}}
@@ -36,6 +36,7 @@ def configure(root):
    if not n or n.casefold()=='x' or n in profiles:result(False,'Nome inválido ou existente.');continue
    profile={}
    for k,l,x in FIELDS:
+    x=suggested_vault_entry('Cloudflare',profile['vault_profile']) if k=='vault_entry_path' else x
     value=choose_keepass_profile(root) if k=='vault_profile' else (prompt(f'{l} [{x}]: ').strip() or x)
     if value is None:break
     profile[k]=value

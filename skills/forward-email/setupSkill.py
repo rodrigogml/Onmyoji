@@ -4,7 +4,7 @@ import argparse,json,sys,tomllib
 from pathlib import Path
 S=Path(__file__).resolve().parent; F=(('vault_profile','Perfil KeePass','example'),('vault_entry_path','Entrada KeePass','APIs/ForwardEmail'),('vault_field','Campo do token','password'),('domain','Domínio (opcional)',''))
 sys.path.insert(0,str(S.parent))
-from setup_ui import choose_keepass_profile,item,prompt,result,screen
+from setup_ui import choose_keepass_profile,item,prompt,result,screen,suggested_vault_entry
 def path(root):return root/'configs'/'forward-email.toml'
 def load(p):return tomllib.loads(p.read_text(encoding='utf-8')) if p.exists() else {'schema_version':1,'defaults':{'api_base':'https://api.forwardemail.net/v1','timeout_seconds':30,'max_retries':2},'profiles':{}}
 def render(d):
@@ -31,6 +31,7 @@ def configure(root):
    if not n or n.casefold()=='x' or n in q:result(False,'Nome inválido ou existente.');continue
    profile={}
    for k,l,x in F:
+    x=suggested_vault_entry('ForwardEmail',profile['vault_profile']) if k=='vault_entry_path' else x
     value=choose_keepass_profile(root) if k=='vault_profile' else (prompt(f'{l} [{x}]: ').strip() or x)
     if value is None:break
     profile[k]=value

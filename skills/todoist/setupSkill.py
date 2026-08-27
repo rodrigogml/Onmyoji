@@ -13,7 +13,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 MODEL = Path(__file__).resolve().parent / "configs" / "todoist.toml.model"
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from setup_ui import choose_keepass_profile, item, prompt, result, screen
+from setup_ui import choose_keepass_profile, item, prompt, result, screen, suggested_vault_entry
 
 
 def config_path(root: Path) -> Path: return root / "configs" / "todoist.toml"
@@ -115,7 +115,8 @@ def configure(root: Path) -> None:
             if not name or name.casefold() in {"x", "\x1b"} or name in data["profiles"]: result(False, "Nome inválido ou já existente."); continue
             vault_profile = choose_keepass_profile(root)
             if vault_profile is None: continue
-            candidate = copy.deepcopy(data); candidate["profiles"][name] = {"vault_profile": vault_profile, "vault_entry_path": prompt("Entrada KeePass [APIs/Todoist]: ").strip() or "APIs/Todoist", "vault_field": "password", "access": "read_only", "allowed_operations": [], "allowed_attachment_roots": []}
+            suggested_entry = suggested_vault_entry("Todoist", vault_profile)
+            candidate = copy.deepcopy(data); candidate["profiles"][name] = {"vault_profile": vault_profile, "vault_entry_path": prompt(f"Entrada KeePass [{suggested_entry}]: ").strip() or suggested_entry, "vault_field": "password", "access": "read_only", "allowed_operations": [], "allowed_attachment_roots": []}
             ok, message = save(path, candidate); result(ok, message if ok else f"Não salvo: {message}")
             if ok: data = candidate; edit_profile(data, path, name)
         elif choice == "2":
