@@ -46,3 +46,13 @@ def test_config_keyboard_exposes_legacy_conversation_preferences():
     assert title == "Configurações do bot" and top["inline_keyboard"][0][0]["callback_data"] == "cfg:token:thoughts"
     assert thoughts_title == "Configurações › Pensamentos"
     assert "Compartilha Pensamentos" in thoughts["inline_keyboard"][0][0]["text"]
+
+
+def test_totp_session_cleanup_removes_all_related_messages(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data))
+    deleted = []
+    gateway.api = type("Api", (), {"delete": lambda _self, chat, message: deleted.append((chat, message))})()
+    gateway.totp_sessions[9] = {"message_ids": [40, 41]}
+    gateway._clear_totp_session(9)
+    assert deleted == [(9, 40), (9, 41)] and 9 not in gateway.totp_sessions
