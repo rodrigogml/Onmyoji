@@ -6,9 +6,17 @@ import sys
 import tempfile
 import shutil
 import unittest
+import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location("keepass_setup", SKILL_DIR / "setupSkill.py")
+assert SPEC and SPEC.loader
+SETUP = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = SETUP
+SPEC.loader.exec_module(SETUP)
 
 
 class SetupTests(unittest.TestCase):
@@ -44,7 +52,7 @@ class SetupTests(unittest.TestCase):
             vault = Path(temporary) / "vault.kdbx"
             vault.touch()
             auth_answers = "1\nOnmyoji/KeePass/pessoal\n" if os.name == "nt" else "1\n"
-            answers = f"1\npessoal\npessoal\n{sys.executable}\n{vault.as_posix()}\n1\n{auth_answers}\n\nx\n"
+            answers = f"1\npessoal\n1\npessoal\n{sys.executable}\n{vault.as_posix()}\n1\n{auth_answers}\n\nx\n"
             result = subprocess.run([sys.executable, str(SKILL_DIR / "setupSkill.py"), "--onmyoji-root", temporary, "--action", "configure"], input=answers, capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
             content = (Path(temporary) / "configs" / "keepass.toml").read_text(encoding="utf-8")
@@ -59,7 +67,7 @@ class SetupTests(unittest.TestCase):
             vault = Path(temporary) / "vault.kdbx"
             vault.touch()
             auth_answers = "1\nOnmyoji/KeePass/pessoal\n" if os.name == "nt" else "1\n"
-            answers = f"1\npessoal\npessoal\n{sys.executable}\n{vault.as_posix()}\n1\n{auth_answers}\n\nx\n"
+            answers = f"1\npessoal\n1\npessoal\n{sys.executable}\n{vault.as_posix()}\n1\n{auth_answers}\n\nx\n"
             result = subprocess.run([sys.executable, str(SKILL_DIR / "setupSkill.py"), "--onmyoji-root", temporary, "--action", "configure"], input=answers, capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
             content = config.read_text(encoding="utf-8")
@@ -74,6 +82,33 @@ class SetupTests(unittest.TestCase):
             content = (Path(temporary) / "configs" / "keepass.toml").read_text(encoding="utf-8")
             self.assertNotIn("[profiles.cancelado]", content)
             self.assertIn("Configuração cancelada", result.stdout)
+
+    def test_local_vault_creation_passes_password_only_through_stdin(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            database = Path(temporary) / "configs" / "vaults" / "lavelinha.kdbx"
+            completed = SimpleNamespace(returncode=0, stdout="", stderr="")
+            def run(command: list[str], **kwargs: object) -> SimpleNamespace:
+                self.assertEqual(command, [sys.executable, "db-create", "--set-password", str(database)])
+                self.assertEqual(kwargs["input"], "senha-secreta\nsenha-secreta\n")
+                database.parent.mkdir(parents=True, exist_ok=True); database.touch()
+                return completed
+            with patch.object(SETUP.subprocess, "run", side_effect=run):
+                ok, _message = SETUP.create_local_vault(sys.executable, database, "senha-secreta")
+            self.assertTrue(ok)
+            self.assertTrue(database.is_file())
+
+    def test_local_profile_creates_isolated_vault_and_stores_password(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); config = root / "configs" / "keepass.toml"; data = SETUP.empty_config()
+            def create(_executable: str, database: Path, _password: str) -> tuple[bool, str]:
+                database.parent.mkdir(parents=True, exist_ok=True); database.touch(); return True, "criado"
+            with patch.object(SETUP, "ask", side_effect=["lavelinha", sys.executable, "", ""]), patch.object(SETUP, "ask_choice", side_effect=["2", "1"]), patch.object(SETUP.getpass, "getpass", side_effect=["senha", "senha"]), patch.object(SETUP, "create_local_vault", side_effect=create), patch.object(SETUP, "write_system_password", return_value=(True, "salva")) as stored:
+                SETUP.create_profile(data, config, root, "lavelinha")
+            database = SETUP.local_vault_for(root, "lavelinha")
+            self.assertTrue(database.is_file())
+            self.assertEqual(data["profiles"]["lavelinha"]["vault"], "lavelinha")
+            self.assertEqual(data["vaults"]["lavelinha"]["database"]["windows" if os.name == "nt" else "linux"], str(database))
+            stored.assert_called_once()
 
     def test_edit_menu_lists_profiles_and_shows_current_fields(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

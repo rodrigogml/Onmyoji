@@ -61,6 +61,7 @@ class WizardCancelled(Exception): pass
 
 def root_for(value: str | None) -> Path: return Path(value).resolve() if value else SKILL_DIR.parents[1]
 def config_for(root: Path) -> Path: return root / "configs" / "keepass.toml"
+def local_vault_for(root: Path, vault_name: str) -> Path: return root / "configs" / "vaults" / f"{vault_name}.kdbx"
 def describe() -> dict[str, object]: return {"id": "keepass-vault", "title": "KeePass Vault", "description": "Cofres KeePassXC, TOTPs e anexos", "actions": ["configure"]}
 def quote(value: str) -> str: return json.dumps(value, ensure_ascii=False)
 def list_toml(values: list[str]) -> str: return "[" + ", ".join(quote(value) for value in values) + "]"
@@ -170,12 +171,48 @@ def choose_profile(profiles: dict[str, Any], action: str) -> str | None:
         result(False, "Opção inválida.")
 
 
-def create_profile(data: dict[str, Any], path: Path, profile_name: str) -> None:
+def authentication_for(vault_name: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    return (
+        {"mode": "windows_credential_manager", "target": f"Onmyoji/KeePass/{vault_name}"},
+        {"mode": "command", "command": ["secret-tool", "lookup", "service", "onmyoji", "vault", vault_name]},
+    )
+
+
+def create_local_vault(executable: str, database: Path, password: str) -> tuple[bool, str]:
+    if not (Path(executable).is_file() or shutil.which(executable)): return False, f"Executável KeePassXC não encontrado: {executable}."
+    if database.exists(): return False, f"Já existe um arquivo no destino: {database}."
+    try:
+        database.parent.mkdir(parents=True, exist_ok=True)
+        created = subprocess.run([executable, "db-create", "--set-password", str(database)], input=password + "\n" + password + "\n", text=True, capture_output=True, check=False, timeout=60)
+        if created.returncode != 0 or not database.is_file():
+            database.unlink(missing_ok=True)
+            detail = created.stderr.strip() or created.stdout.strip() or "KeePassXC não criou o arquivo KDBX."
+            return False, detail
+    except (OSError, subprocess.SubprocessError) as error:
+        database.unlink(missing_ok=True)
+        return False, f"Falha ao criar o vault: {error}"
+    return True, "Vault local criado."
+
+
+def ask_new_password() -> str:
+    try:
+        password = getpass.getpass("Senha mestra do novo vault (não será exibida): ")
+        confirmation = getpass.getpass("Repita a senha mestra: ")
+    except (EOFError, KeyboardInterrupt) as error: raise WizardCancelled from error
+    if not password: raise WizardCancelled
+    if password != confirmation:
+        result(False, "As senhas não conferem; nenhuma alteração foi gravada.")
+        raise WizardCancelled
+    return password
+
+
+def create_profile(data: dict[str, Any], path: Path, root: Path, profile_name: str) -> None:
     candidate = json.loads(json.dumps(data))
     profile = candidate["profiles"].get(profile_name, {})
     current_vault = profile.get("vault", profile_name)
     vault = candidate["vaults"].get(current_vault, {"cli_command": ["keepassxc-cli"], "database": {"windows": "", "linux": ""}})
     print(f"\nPerfil: {profile_name}")
+    vault_origin = ask_choice("Origem do vault", {"1": "Usar um arquivo KDBX existente", "2": "Criar vault local isolado em configs/vaults"}, "1")
     vault_name = ask("Identificador do vault", current_vault, True)
     if not re.fullmatch(r"[A-Za-z0-9_-]+", vault_name):
         result(False, "Nome de vault inválido; nenhuma alteração foi salva.")
@@ -183,14 +220,20 @@ def create_profile(data: dict[str, Any], path: Path, profile_name: str) -> None:
     executable = ask("Executável do KeePassXC", vault["cli_command"][0] if vault["cli_command"] else "keepassxc-cli", True)
     platform = "windows" if os.name == "nt" else "linux"
     platform_name = "Windows" if platform == "windows" else "Linux"
-    current_path = ask(f"Arquivo KDBX no {platform_name}", vault["database"].get(platform, ""), True)
+    creating_local = vault_origin == "2"
+    current_path = str(local_vault_for(root, vault_name)) if creating_local else ask(f"Arquivo KDBX no {platform_name}", vault["database"].get(platform, ""), True)
     windows_path = current_path if platform == "windows" else vault["database"].get("windows", "")
     linux_path = current_path if platform == "linux" else vault["database"].get("linux", "")
     access = ask_choice("Acesso do perfil", {"1": "Somente leitura", "2": "Leitura e escrita"}, "2" if profile.get("access") == "read_write" else "1")
     existing_auth = profile.get("auth", {})
-    windows = existing_auth.get("windows", {"mode": "windows_credential_manager", "target": f"Onmyoji/KeePass/{vault_name}"})
-    linux = existing_auth.get("linux", {"mode": "command", "command": ["secret-tool", "lookup", "service", "onmyoji", "vault", vault_name]})
-    if platform == "windows":
+    default_windows, default_linux = authentication_for(vault_name)
+    windows = existing_auth.get("windows", default_windows)
+    linux = existing_auth.get("linux", default_linux)
+    if creating_local:
+        windows, linux = default_windows, default_linux
+        print(f"Vault local: {current_path}")
+        print(f"A senha será salva no provedor seguro do {platform_name}.")
+    elif platform == "windows":
         selection = ask_choice("Autenticação no Windows", {"1": "Windows Credential Manager", "2": "Senha via stdin", "3": "Prompt interativo"}, {"windows_credential_manager": "1", "stdin": "2", "prompt": "3"}.get(windows.get("mode"), "1"))
         windows = {"mode": {"1": "windows_credential_manager", "2": "stdin", "3": "prompt"}[selection], "target": ask("Target da credencial Windows", windows.get("target", f"Onmyoji/KeePass/{vault_name}"), True) if selection == "1" else ""}
     else:
@@ -200,9 +243,28 @@ def create_profile(data: dict[str, Any], path: Path, profile_name: str) -> None:
     attachment_roots = ask("Diretórios permitidos para anexos (separe por ;, vazio = todos)", ";".join(profile.get("allowed_attachment_roots", [])))
     candidate["vaults"][vault_name] = {"cli_command": [executable], "database": {"windows": windows_path, "linux": linux_path}}
     candidate["profiles"][profile_name] = {"vault": vault_name, "access": "read_write" if access == "2" else "read_only", "allowed_operations": WRITE_OPS if access == "2" else READ_OPS, "allowed_entry_roots": [item.strip() for item in entry_roots.split(";") if item.strip()], "allowed_attachment_roots": [item.strip() for item in attachment_roots.split(";") if item.strip()], "auth": {"allowed_modes": ["configured", "stdin", "prompt", "windows_credential_manager"], "windows": windows, "linux": linux}}
+    password = ask_new_password() if creating_local else None
+    database = Path(current_path)
+    if creating_local:
+        created, message = create_local_vault(executable, database, password or "")
+        if not created:
+            result(False, f"Vault local não criado: {message}")
+            return
     ok, message = save_transactional(path, candidate)
-    if ok: data.clear(); data.update(candidate)
-    result(ok, message if ok else f"Não salvo: {message}")
+    if not ok:
+        if creating_local: database.unlink(missing_ok=True)
+        result(False, f"Não salvo: {message}")
+        return
+    if creating_local:
+        stored, message = write_system_password(profile_name, candidate["profiles"][profile_name], password or "")
+        if not stored:
+            restored, restore_message = save_transactional(path, data)
+            database.unlink(missing_ok=True)
+            suffix = "" if restored else f" Também não foi possível restaurar a configuração: {restore_message}"
+            result(False, f"Vault local removido porque a senha não pôde ser salva no SO: {message}.{suffix}")
+            return
+    data.clear(); data.update(candidate)
+    result(True, "Perfil e vault local criados; senha salva no provedor do SO." if creating_local else message)
 
 
 def commit_profile_change(data: dict[str, Any], path: Path, candidate: dict[str, Any]) -> bool:
@@ -221,27 +283,33 @@ def store_windows_credential(target: str, password: str) -> None:
     if not ctypes.windll.advapi32.CredWriteW(ctypes.byref(credential), 0): raise OSError("CredWriteW falhou.")
 
 
+def write_system_password(profile_name: str, profile: dict[str, Any], password: str) -> tuple[bool, str]:
+    try:
+        if os.name == "nt":
+            auth = profile["auth"]["windows"]
+            if auth.get("mode") != "windows_credential_manager" or not auth.get("target"):
+                return False, "Configure a autenticação Windows como Windows Credential Manager antes de armazenar a senha"
+            store_windows_credential(str(auth["target"]), password)
+            return True, "Senha salva no Windows Credential Manager"
+        else:
+            auth = profile["auth"]["linux"]
+            command = auth.get("command", [])
+            if auth.get("mode") != "command" or not isinstance(command, list) or len(command) < 2 or command[1] != "lookup":
+                return False, "Configure a autenticação Linux como secret-tool antes de armazenar a senha"
+            store_command = [str(command[0]), "store", f"--label=Onmyoji KeePass {profile_name}", *[str(value) for value in command[2:]]]
+            subprocess.run(store_command, input=password + "\n", text=True, capture_output=True, check=True, timeout=20)
+            return True, "Senha salva no keyring Linux"
+    except (OSError, subprocess.SubprocessError): return False, "Não foi possível salvar a senha no provedor do sistema operacional"
+
+
 def store_password(profile_name: str, profile: dict[str, Any]) -> None:
     password = None
     try:
         password = getpass.getpass("Senha mestra KeePass (não será exibida): ")
         if not password: result(False, "Nenhuma senha informada; operação cancelada."); return
-        if os.name == "nt":
-            auth = profile["auth"]["windows"]
-            if auth.get("mode") != "windows_credential_manager" or not auth.get("target"):
-                result(False, "Configure a autenticação Windows como Windows Credential Manager antes de armazenar a senha."); return
-            store_windows_credential(str(auth["target"]), password)
-            result(True, "Senha salva no Windows Credential Manager.")
-        else:
-            auth = profile["auth"]["linux"]
-            command = auth.get("command", [])
-            if auth.get("mode") != "command" or not isinstance(command, list) or len(command) < 2 or command[1] != "lookup":
-                result(False, "Configure a autenticação Linux como secret-tool antes de armazenar a senha."); return
-            store_command = [str(command[0]), "store", f"--label=Onmyoji KeePass {profile_name}", *[str(value) for value in command[2:]]]
-            subprocess.run(store_command, input=password + "\n", text=True, capture_output=True, check=True, timeout=20)
-            result(True, "Senha salva no keyring Linux.")
+        ok, message = write_system_password(profile_name, profile, password)
+        result(ok, message + ".")
     except (EOFError, KeyboardInterrupt): result(False, "Armazenamento da senha cancelado.")
-    except (OSError, subprocess.SubprocessError): result(False, "Não foi possível salvar a senha no provedor do sistema operacional.")
     finally:
         if password is not None: del password
 
@@ -361,7 +429,7 @@ def configure(root: Path) -> int:
                 name = ask("Nome do perfil (letras, números, _ ou -)", required=True)
                 if not re.fullmatch(r"[A-Za-z0-9_-]+", name): result(False, "Nome inválido.")
                 elif name in data["profiles"]: result(False, "Esse perfil já existe.")
-                else: create_profile(data, path, name)
+                else: create_profile(data, path, root, name)
             except WizardCancelled: result(False, "Configuração cancelada; nenhuma alteração foi gravada.")
         elif choice == "2":
             if not data["profiles"]: result(False, "Nenhum perfil criado."); continue
