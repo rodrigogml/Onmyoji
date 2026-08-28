@@ -65,6 +65,22 @@ def test_new_conversation_forgets_persisted_app_server_thread(tmp_path):
     assert row == (1, None)
 
 
+def test_attachments_are_retained_in_workspace_and_removed_by_new(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data); gateway = Gateway(Settings.load(tmp_path, data))
+    archive = gateway.archive_root / "9" / "0" / "entry" / "report.txt"; archive.parent.mkdir(parents=True); archive.write_text("ok", encoding="utf-8")
+    gateway.database.execute("INSERT INTO conversations(chat_id, updated_at) VALUES (?, ?)", ("9", 0))
+    gateway.database.execute("INSERT INTO conversation_attachments(id, chat_id, generation, kind, name, mime_type, size, archive_path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", ("entry", "9", 0, "document", "report.txt", "text/plain", 2, str(archive), 0)); gateway.database.commit()
+    assert gateway._attachment_rows(9)[0]["name"] == "report.txt" and archive.is_file()
+    gateway._new_conversation(9)
+    assert gateway._attachment_rows(9) == [] and not archive.exists()
+
+
+def test_attachment_activity_root_is_never_in_codex_home_configs(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data); gateway = Gateway(Settings.load(tmp_path, data))
+    assert gateway.activity_root == tmp_path / ".onmyoji" / "telegram"
+    assert gateway.activity_root.is_relative_to(tmp_path) and not gateway.activity_root.is_relative_to(data)
+
+
 def test_totp_session_cleanup_removes_all_related_messages(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
     gateway = Gateway(Settings.load(tmp_path, data))

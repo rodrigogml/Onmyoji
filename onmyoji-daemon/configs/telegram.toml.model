@@ -22,7 +22,9 @@ idle_timeout_seconds = 1800
 
 [limits]
 max_attachment_bytes = 20971520
+max_batch_attachment_bytes = 52428800
 max_pending_items = 50
+max_retained_attachment_bytes = 262144000
 
 [totp]
 enabled = false

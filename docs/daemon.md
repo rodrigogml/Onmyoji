@@ -2,7 +2,7 @@
 
 O `onmyoji-daemon` é o único processo residente de uma instância Onmyōji. Ele atende somente o Shikigami cujo workspace foi configurado em `configs/onmyoji-system.toml`.
 
-Os serviços são registrados pelo código, iniciados como subprocessos locais e administrados por RPC autenticado em loopback. O endpoint, o token efêmero, o estado de habilitação, logs, banco SQLite, contatos e staging ficam em `configs/daemon/`.
+Os serviços são registrados pelo código, iniciados como subprocessos locais e administrados por RPC autenticado em loopback. O endpoint, o token efêmero, o estado de habilitação, logs, banco SQLite e contatos ficam em `configs/daemon/`. Arquivos de atividade do agente nunca ficam no `CODEX_HOME`: o gateway usa exclusivamente `<workspace>/.onmyoji/telegram/`.
 
 ## Administração da instância
 
@@ -25,3 +25,11 @@ Quando TOTP é configurado e habilitado, os comandos privados de cada owner incl
 `/config` abre um menu efêmero e privado por conversa para controlar `Compartilha Pensamentos` e `Excluir Pensamentos`; ambas começam habilitadas e são persistidas no SQLite do gateway. O executor CLI atual ainda não produz eventos públicos de pensamento, portanto as preferências já são persistidas para a migração do App Server, mas não há pensamentos a exibir ou excluir nesta fase. Comandos desconhecidos, TOTP desabilitado, sessões expiradas e configurações TOTP incompletas recebem uma resposta descritiva em vez de descarte silencioso.
 
 O gateway aceita inicialmente uma identidade Telegram. Pairing, owners e conversas ficam isolados na instância; mensagens de remetentes que não sejam owners em DM são ignoradas.
+
+## Anexos Telegram
+
+Fotos, documentos e mensagens de voz são baixados de forma limitada e autenticada, com máximo de 20 MiB por arquivo, 50 MiB por mensagem e 250 MiB retidos por conversa, valores ajustáveis em `telegram.toml`. A fila é persistida no SQLite por conversa; um processo interrompido devolve itens em execução à fila ao iniciar novamente, e cada conversa é atendida serialmente.
+
+Os arquivos retidos ficam em `<workspace>/.onmyoji/telegram/attachments/<chat>/<geração>/`. O App Server recebe fotos como `localImage`; documentos e vozes recebem um caminho temporário. Quando uma configuração EccoVox local autoriza essa área de staging, mensagens de voz também recebem transcrição local. O agente pode listar os metadados da conversa e materializar um anexo de forma explícita pela ferramenta dinâmica `telegram_gateway`, sempre restrita ao owner, à conversa e à geração atuais. O staging é removido ao fim do turno, e `/new` remove a fila e todos os anexos retidos da geração anterior.
+
+O envio de anexos requer o modo App Server habilitado. No modo `codex exec`, o gateway recusa o anexo explicitamente, em vez de expor caminhos ou executar uma importação insegura.

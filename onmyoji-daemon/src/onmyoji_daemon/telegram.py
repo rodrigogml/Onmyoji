@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
 import queue
 import re
 import secrets
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -52,13 +53,17 @@ class Settings:
     developer_file: str
     app_server_enabled: bool
     app_server_idle_seconds: int
+    max_attachment_bytes: int
+    max_batch_attachment_bytes: int
+    max_pending_items: int
+    max_retained_attachment_bytes: int
 
     @classmethod
     def load(cls, root: Path, data_dir: Path) -> "Settings":
         path = data_dir / "telegram.toml"
         data = tomllib.loads(path.read_text(encoding="utf-8"))
         if data.get("schema_version") != 1: raise ValueError("unsupported telegram schema")
-        telegram, agent, app_server = data.get("telegram", {}), data.get("agent", {}), data.get("app_server", {})
+        telegram, agent, app_server, limits = data.get("telegram", {}), data.get("agent", {}), data.get("app_server", {}), data.get("limits", {})
         system = tomllib.loads((root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8")).get("codex", {})
         project = Path(str(system.get("project_directory") or "")).resolve()
         if not project.is_dir(): raise ValueError("configured Shikigami workspace does not exist")
@@ -66,7 +71,9 @@ class Settings:
         if not profile or not entry: raise ValueError("KeePass profile and token entry are required")
         idle = int(app_server.get("idle_timeout_seconds") or 1800)
         if idle < 60: raise ValueError("App Server idle timeout must be at least 60 seconds")
-        return cls(root, data_dir, profile, entry, project, str(system.get("executable") or "codex"), str(system.get("model") or ""), str(system.get("model_reasoning_effort") or "medium"), str(system.get("sandbox_mode") or "workspace-write"), str(system.get("approval_policy") or "never"), int(telegram.get("poll_timeout_seconds") or 30), int(agent.get("turn_timeout_seconds") or 900), max(1, int(agent.get("max_parallel_conversations") or 1)), str(agent.get("developer_file") or ""), bool(app_server.get("enabled", False)), idle)
+        per_file, batch, pending, retained = int(limits.get("max_attachment_bytes") or 20 * 1024 * 1024), int(limits.get("max_batch_attachment_bytes") or 50 * 1024 * 1024), int(limits.get("max_pending_items") or 50), int(limits.get("max_retained_attachment_bytes") or 250 * 1024 * 1024)
+        if not 1 <= per_file <= batch <= retained: raise ValueError("Telegram attachment limits are invalid")
+        return cls(root, data_dir, profile, entry, project, str(system.get("executable") or "codex"), str(system.get("model") or ""), str(system.get("model_reasoning_effort") or "medium"), str(system.get("sandbox_mode") or "workspace-write"), str(system.get("approval_policy") or "never"), int(telegram.get("poll_timeout_seconds") or 30), int(agent.get("turn_timeout_seconds") or 900), max(1, int(agent.get("max_parallel_conversations") or 1)), str(agent.get("developer_file") or ""), bool(app_server.get("enabled", False)), idle, per_file, batch, max(1, pending), retained)
 
 
 class CodexProtocolError(RuntimeError): pass
@@ -77,7 +84,7 @@ class CodexAppServer:
     def __init__(self, settings: Settings):
         self.settings, self.process, self.reader, self.stderr_reader = settings, None, None, None
         self.write_lock, self.pending_lock, self.pending, self.next_id = threading.Lock(), threading.Lock(), {}, 1
-        self.notification_handler: Any = None; self.last_error: str | None = None
+        self.notification_handler: Any = None; self.request_handler: Any = None; self.last_error: str | None = None
     def running(self) -> bool: return bool(self.process and self.process.poll() is None)
     def start(self) -> None:
         if self.running(): return
@@ -118,8 +125,12 @@ class CodexAppServer:
                 with self.pending_lock: target = self.pending.get(request_id)
                 if target: target.put(message)
             elif isinstance(request_id, (int, str)) and isinstance(message.get("method"), str):
-                try: self._send({"id": request_id, "error": {"code": -32000, "message": "Interactive gateway requests are disabled"}})
-                except Exception: pass
+                try:
+                    if self.request_handler: self._send({"id": request_id, "result": self.request_handler(message["method"], message.get("params") if isinstance(message.get("params"), dict) else {})})
+                    else: self._send({"id": request_id, "error": {"code": -32000, "message": "Interactive gateway requests are disabled"}})
+                except Exception as error:
+                    try: self._send({"id": request_id, "error": {"code": -32000, "message": str(error)[:300]}})
+                    except Exception: pass
             elif isinstance(message.get("method"), str) and isinstance(message.get("params"), dict) and self.notification_handler: self.notification_handler(message["method"], message["params"])
         if self.process and self.process.poll() not in {None, 0}: self.last_error = f"Codex App Server encerrou com código {self.process.poll()}"
     def _read_stderr(self) -> None:
@@ -137,6 +148,7 @@ class AppServerTurn:
     turn_id: str | None = None
     status: str = "inProgress"
     final_text: str = ""
+    staging: list[Path] = field(default_factory=list)
 
 
 class Vault:
@@ -158,7 +170,7 @@ class Vault:
 
 
 class TelegramApi:
-    def __init__(self, token: str): self.base = f"https://api.telegram.org/bot{token}/"
+    def __init__(self, token: str): self.base, self.files = f"https://api.telegram.org/bot{token}/", f"https://api.telegram.org/file/bot{token}/"
     def call(self, method: str, values: dict[str, Any] | None = None) -> Any:
         body = urlencode({key: json.dumps(value) if isinstance(value, (dict, list)) else value for key, value in (values or {}).items()}).encode()
         with urlopen(Request(self.base + method, data=body), timeout=45) as response: payload = json.loads(response.read())
@@ -168,6 +180,21 @@ class TelegramApi:
     def typing(self, chat_id: int) -> None: self.call("sendChatAction", {"chat_id": chat_id, "action": "typing"})
     def delete(self, chat_id: int, message_id: int) -> None: self.call("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
     def edit(self, chat_id: int, message_id: int, text: str, keyboard: dict[str, Any]) -> None: self.call("editMessageText", {"chat_id": chat_id, "message_id": message_id, "text": text, "reply_markup": keyboard})
+    def download(self, file_id: str, destination: Path, maximum: int) -> Path:
+        metadata = self.call("getFile", {"file_id": file_id}) or {}; declared = metadata.get("file_size")
+        if isinstance(declared, int) and declared > maximum: raise RuntimeError("O anexo excede o limite configurado.")
+        relative = metadata.get("file_path")
+        if not isinstance(relative, str) or not relative or relative.startswith(("/", "\\")) or ".." in Path(relative).parts: raise RuntimeError("Telegram não retornou um caminho de arquivo válido.")
+        destination.parent.mkdir(parents=True, exist_ok=True); written = 0
+        try:
+            with urlopen(Request(self.files + relative), timeout=45) as response, destination.open("xb") as output:
+                while chunk := response.read(64 * 1024):
+                    written += len(chunk)
+                    if written > maximum: raise RuntimeError("O anexo excede o limite configurado.")
+                    output.write(chunk)
+        except Exception:
+            destination.unlink(missing_ok=True); raise
+        return destination
     def set_owner_commands(self, owner_id: int, totp_enabled: bool) -> bool:
         commands = [{"command": "new", "description": "Iniciar uma nova conversa"}, {"command": "config", "description": "Configurar esta conversa"}]
         if totp_enabled: commands.append({"command": "totp", "description": "Obter código de autenticação"})
@@ -189,16 +216,33 @@ class Contacts:
                 write_json(self.path, data)
 
 
+def safe_name(value: str, fallback: str) -> str:
+    name = re.sub(r"[^\w.() -]+", "_", Path(value).name, flags=re.UNICODE).strip(" .")
+    return (name or fallback)[:180]
+
+
+def under(path: Path, root: Path) -> bool:
+    try: path.resolve().relative_to(root.resolve()); return True
+    except ValueError: return False
+
+
 class Gateway:
     def __init__(self, settings: Settings):
         self.settings, self.stop_event = settings, threading.Event(); self.contacts = Contacts(settings.data_dir / "contacts.json")
-        (settings.data_dir / "state").mkdir(parents=True, exist_ok=True); self.database = sqlite3.connect(settings.data_dir / "state" / "gateway.sqlite3", check_same_thread=False)
+        (settings.data_dir / "state").mkdir(parents=True, exist_ok=True); self.database = sqlite3.connect(settings.data_dir / "state" / "gateway.sqlite3", check_same_thread=False); self.database_lock = threading.RLock()
         self.database.execute("CREATE TABLE IF NOT EXISTS conversations(chat_id TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL, share_thoughts INTEGER NOT NULL DEFAULT 1, delete_thoughts INTEGER NOT NULL DEFAULT 1, codex_thread_id TEXT)")
         for column, definition in (("share_thoughts", "INTEGER NOT NULL DEFAULT 1"), ("delete_thoughts", "INTEGER NOT NULL DEFAULT 1"), ("codex_thread_id", "TEXT")):
             try: self.database.execute(f"ALTER TABLE conversations ADD COLUMN {column} {definition}")
             except sqlite3.OperationalError: pass
+        self.database.execute("CREATE TABLE IF NOT EXISTS conversation_attachments(id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, generation INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, mime_type TEXT, size INTEGER NOT NULL, archive_path TEXT NOT NULL, created_at REAL NOT NULL)")
+        self.database.execute("CREATE INDEX IF NOT EXISTS attachment_scope ON conversation_attachments(chat_id, generation, created_at)")
+        self.database.execute("CREATE TABLE IF NOT EXISTS inbox_items(id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, generation INTEGER NOT NULL, text TEXT NOT NULL, attachment_ids TEXT NOT NULL, state TEXT NOT NULL, created_at REAL NOT NULL)")
+        self.database.execute("CREATE INDEX IF NOT EXISTS inbox_scope ON inbox_items(chat_id, generation, state, created_at)")
+        self.database.execute("UPDATE inbox_items SET state='pending' WHERE state='running'")
         self.database.commit()
-        self.api: TelegramApi | None = None; self.pair: tuple[str, float] | None = None; self.offset = 0; self.work = threading.BoundedSemaphore(settings.parallel); self.totp_sessions: dict[int, dict[str, Any]] = {}; self.config_sessions: dict[str, dict[str, Any]] = {}; self.last_error: str | None = None; self.cleanup_path = settings.data_dir / "state" / "totp-cleanup.json"; self.pending_deletions = json_file(self.cleanup_path, {}); self.app_server: CodexAppServer | None = None; self.app_server_lock = threading.RLock(); self.app_turns: dict[str, AppServerTurn] = {}; self.last_app_activity = time.monotonic()
+        self.activity_root = settings.project / ".onmyoji" / "telegram"; self.archive_root = self.activity_root / "attachments"; self.staging_root = self.activity_root / "staging"
+        self.archive_root.mkdir(parents=True, exist_ok=True); self.staging_root.mkdir(parents=True, exist_ok=True)
+        self.api: TelegramApi | None = None; self.pair: tuple[str, float] | None = None; self.offset = 0; self.work = threading.BoundedSemaphore(settings.parallel); self.totp_sessions: dict[int, dict[str, Any]] = {}; self.config_sessions: dict[str, dict[str, Any]] = {}; self.last_error: str | None = None; self.cleanup_path = settings.data_dir / "state" / "totp-cleanup.json"; self.pending_deletions = json_file(self.cleanup_path, {}); self.app_server: CodexAppServer | None = None; self.app_server_lock = threading.RLock(); self.app_turns: dict[str, AppServerTurn] = {}; self.last_app_activity = time.monotonic(); self.turn_locks: dict[int, threading.Lock] = {}; self.turn_locks_lock = threading.Lock(); self.workers: set[int] = set(); self.workers_lock = threading.Lock()
     def _totp_enabled(self) -> bool:
         try: return bool(tomllib.loads((self.settings.data_dir / "telegram.toml").read_text(encoding="utf-8")).get("totp", {}).get("enabled", False))
         except (OSError, tomllib.TOMLDecodeError): return False
@@ -220,6 +264,10 @@ class Gateway:
         return summary
     def start(self) -> None:
         self.api = TelegramApi(Vault(self.settings).read(self.settings.token_entry)); self._restore_totp_cleanup(); self._configure_owner_commands(); threading.Thread(target=self._poll, daemon=True).start()
+        with self.database_lock: queued = [int(row[0]) for row in self.database.execute("SELECT DISTINCT chat_id FROM inbox_items WHERE state='pending'").fetchall()]
+        for chat_id in queued:
+            with self.workers_lock:
+                if chat_id not in self.workers: self.workers.add(chat_id); threading.Thread(target=self._worker, args=(chat_id,), daemon=True).start()
         if self.settings.app_server_enabled: threading.Thread(target=self._app_server_idle_watch, daemon=True).start()
 
     def _app_server_idle_watch(self) -> None:
@@ -231,8 +279,113 @@ class Gateway:
 
     def _app_client(self) -> CodexAppServer:
         with self.app_server_lock:
-            if not self.app_server: self.app_server = CodexAppServer(self.settings); self.app_server.notification_handler = self._app_notification
+            if not self.app_server:
+                self.app_server = CodexAppServer(self.settings); self.app_server.notification_handler = self._app_notification; self.app_server.request_handler = self._app_server_request
             self.app_server.start(); self.last_app_activity = time.monotonic(); return self.app_server
+
+    def _generation(self, chat_id: int) -> int:
+        with self.database_lock:
+            self.database.execute("INSERT OR IGNORE INTO conversations(chat_id, updated_at) VALUES (?, ?)", (str(chat_id), time.time()))
+            row = self.database.execute("SELECT generation FROM conversations WHERE chat_id=?", (str(chat_id),)).fetchone(); self.database.commit()
+        return int(row[0]) if row else 0
+
+    def _attachment_rows(self, chat_id: int, limit: int = 50) -> list[dict[str, Any]]:
+        generation = self._generation(chat_id)
+        with self.database_lock:
+            rows = self.database.execute("SELECT id, kind, name, mime_type, size, archive_path, created_at FROM conversation_attachments WHERE chat_id=? AND generation=? ORDER BY created_at DESC LIMIT ?", (str(chat_id), generation, max(1, min(limit, 50)))).fetchall()
+        return [{"id": str(row[0]), "kind": str(row[1]), "name": str(row[2]), "mime_type": row[3], "size": int(row[4]), "archive_path": str(row[5]), "created_at": float(row[6])} for row in rows]
+
+    def _remove_attachments(self, chat_id: int, generation: int) -> None:
+        with self.database_lock:
+            rows = self.database.execute("SELECT archive_path FROM conversation_attachments WHERE chat_id=? AND generation=?", (str(chat_id), generation)).fetchall()
+            self.database.execute("DELETE FROM conversation_attachments WHERE chat_id=? AND generation=?", (str(chat_id), generation)); self.database.commit()
+        for row in rows:
+            path = Path(str(row[0]))
+            if under(path, self.archive_root): shutil.rmtree(path.parent, ignore_errors=True)
+
+    def _collect_attachments(self, chat_id: int, message: dict[str, Any]) -> list[dict[str, Any]]:
+        assert self.api
+        candidates: list[tuple[str, dict[str, Any], str]] = []
+        if isinstance(message.get("photo"), list) and message["photo"]:
+            photo = message["photo"][-1]
+            if isinstance(photo, dict): candidates.append(("photo", photo, f"photo-{message.get('message_id', 'telegram')}.jpg"))
+        if isinstance(message.get("document"), dict):
+            document = message["document"]; candidates.append(("document", document, safe_name(str(document.get("file_name") or "document"), "document")))
+        if isinstance(message.get("voice"), dict):
+            voice = message["voice"]; candidates.append(("voice", voice, f"voice-{message.get('message_id', 'telegram')}.ogg"))
+        declared = sum(int(item.get("file_size") or 0) for _, item, _ in candidates)
+        if declared > self.settings.max_batch_attachment_bytes: raise RuntimeError("O conjunto de anexos excede o limite configurado.")
+        result: list[dict[str, Any]] = []; generation = self._generation(chat_id)
+        for kind, item, filename in candidates:
+            file_id = item.get("file_id")
+            if not isinstance(file_id, str) or not file_id: continue
+            attachment_id, incoming = secrets.token_urlsafe(12), self.staging_root / "incoming" / secrets.token_urlsafe(10) / safe_name(filename, "attachment")
+            self.api.download(file_id, incoming, self.settings.max_attachment_bytes)
+            size = incoming.stat().st_size
+            if sum(entry["size"] for entry in result) + size > self.settings.max_batch_attachment_bytes: incoming.unlink(missing_ok=True); raise RuntimeError("O conjunto de anexos excede o limite configurado.")
+            with self.database_lock:
+                total = self.database.execute("SELECT COALESCE(SUM(size), 0) FROM conversation_attachments WHERE chat_id=? AND generation=?", (str(chat_id), generation)).fetchone()[0]
+            if int(total) + size > self.settings.max_retained_attachment_bytes: incoming.unlink(missing_ok=True); raise RuntimeError("A retenção de anexos desta conversa atingiu o limite configurado.")
+            archive = self.archive_root / str(chat_id) / str(generation) / attachment_id / safe_name(filename, "attachment"); archive.parent.mkdir(parents=True, exist_ok=True); shutil.move(str(incoming), str(archive)); shutil.rmtree(incoming.parent, ignore_errors=True)
+            record = {"id": attachment_id, "kind": kind, "name": archive.name, "mime_type": str(item.get("mime_type") or ""), "size": size, "archive_path": str(archive), "created_at": time.time()}
+            with self.database_lock:
+                self.database.execute("INSERT INTO conversation_attachments(id, chat_id, generation, kind, name, mime_type, size, archive_path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (attachment_id, str(chat_id), generation, kind, record["name"], record["mime_type"], size, str(archive), record["created_at"])); self.database.commit()
+            result.append(record)
+        return result
+
+    def _stage_attachment(self, chat_id: int, attachment: dict[str, Any], turn: AppServerTurn) -> Path:
+        source = Path(str(attachment["archive_path"])).resolve()
+        if not under(source, self.archive_root) or not source.is_file() or source.is_symlink(): raise RuntimeError("O anexo retido não está disponível com segurança.")
+        destination = self.staging_root / str(chat_id) / turn.thread_id / secrets.token_urlsafe(8) / safe_name(str(attachment["name"]), "attachment")
+        destination.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(source, destination); turn.staging.append(destination)
+        return destination
+
+    def _enqueue_turn(self, chat_id: int, text: str, attachments: list[dict[str, Any]]) -> None:
+        generation = self._generation(chat_id)
+        with self.database_lock:
+            pending = self.database.execute("SELECT COUNT(*) FROM inbox_items WHERE chat_id=? AND generation=? AND state IN ('pending', 'running')", (str(chat_id), generation)).fetchone()[0]
+            if int(pending) >= self.settings.max_pending_items: raise RuntimeError("A fila desta conversa atingiu o limite configurado.")
+            self.database.execute("INSERT INTO inbox_items(id, chat_id, generation, text, attachment_ids, state, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)", (secrets.token_urlsafe(12), str(chat_id), generation, text, json.dumps([item["id"] for item in attachments]), time.time())); self.database.commit()
+        with self.workers_lock:
+            if chat_id in self.workers: return
+            self.workers.add(chat_id); threading.Thread(target=self._worker, args=(chat_id,), daemon=True).start()
+
+    def _worker(self, chat_id: int) -> None:
+        try:
+            while not self.stop_event.is_set():
+                generation = self._generation(chat_id)
+                with self.database_lock:
+                    row = self.database.execute("SELECT id, text, attachment_ids FROM inbox_items WHERE chat_id=? AND generation=? AND state='pending' ORDER BY created_at LIMIT 1", (str(chat_id), generation)).fetchone()
+                    if row: self.database.execute("UPDATE inbox_items SET state='running' WHERE id=?", (str(row[0]),)); self.database.commit()
+                if not row: return
+                try:
+                    wanted = json.loads(str(row[2])); available = {item["id"]: item for item in self._attachment_rows(chat_id, 50)}; attachments = [available[item] for item in wanted if item in available]
+                    self._turn(chat_id, str(row[1]), attachments)
+                    with self.database_lock: self.database.execute("DELETE FROM inbox_items WHERE id=?", (str(row[0]),)); self.database.commit()
+                except Exception as error:
+                    self._record_error(error)
+                    with self.database_lock: self.database.execute("DELETE FROM inbox_items WHERE id=?", (str(row[0]),)); self.database.commit()
+        finally:
+            with self.workers_lock: self.workers.discard(chat_id)
+
+    def _app_server_request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        if method != "item/tool/call" or params.get("namespace") != "telegram_gateway": raise RuntimeError("Ferramenta do gateway não autorizada.")
+        thread_id, tool = params.get("threadId"), params.get("tool")
+        if not isinstance(thread_id, str) or not isinstance(tool, str): raise RuntimeError("Chamada de ferramenta inválida.")
+        with self.app_server_lock: active = self.app_turns.get(thread_id)
+        if not active: raise RuntimeError("Turno do Telegram não está ativo.")
+        arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
+        if tool == "list_attachments":
+            entries = [{key: entry[key] for key in ("id", "kind", "name", "mime_type", "size", "created_at")} for entry in self._attachment_rows(active.chat_id, int(arguments.get("limit", 20)))]
+            return {"contentItems": [{"type": "inputText", "text": json.dumps(entries, ensure_ascii=False)}], "success": True}
+        if tool == "materialize_attachment":
+            wanted = str(arguments.get("attachment_id") or "")
+            entry = next((item for item in self._attachment_rows(active.chat_id, 50) if item["id"] == wanted), None)
+            if not entry: raise RuntimeError("Anexo não encontrado na conversa atual.")
+            path = self._stage_attachment(active.chat_id, entry, active)
+            data = {key: entry[key] for key in ("id", "kind", "name", "mime_type", "size")}; data["local_path"] = str(path)
+            return {"contentItems": [{"type": "inputText", "text": json.dumps(data, ensure_ascii=False)}], "success": True}
+        raise RuntimeError("Ferramenta do gateway desconhecida.")
 
     def _app_notification(self, method: str, params: dict[str, Any]) -> None:
         thread_id = params.get("threadId")
@@ -255,7 +408,8 @@ class Gateway:
         if thread_id:
             try: client.request("thread/resume", {"threadId": thread_id, **params}); return thread_id
             except CodexProtocolError: self.database.execute("UPDATE conversations SET codex_thread_id=NULL WHERE chat_id=?", (str(chat_id),)); self.database.commit()
-        started = client.request("thread/start", {**params, "serviceName": "onmyoji_telegram"}); thread = started.get("thread") if isinstance(started.get("thread"), dict) else started; thread_id = str(thread.get("id") or "") if isinstance(thread, dict) else ""
+        tools = [{"type": "namespace", "name": "telegram_gateway", "description": "Anexos retidos e restritos à conversa Telegram atual.", "tools": [{"type": "function", "name": "list_attachments", "description": "Lista os metadados dos anexos retidos na conversa atual.", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False}}, {"type": "function", "name": "materialize_attachment", "description": "Copia um anexo retido para o staging seguro do turno atual.", "inputSchema": {"type": "object", "properties": {"attachment_id": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["attachment_id"], "additionalProperties": False}}]}]
+        started = client.request("thread/start", {**params, "serviceName": "onmyoji_telegram", "dynamicTools": tools}); thread = started.get("thread") if isinstance(started.get("thread"), dict) else started; thread_id = str(thread.get("id") or "") if isinstance(thread, dict) else ""
         if not thread_id: raise CodexProtocolError("Codex App Server não retornou uma thread")
         self.database.execute("UPDATE conversations SET codex_thread_id=?, updated_at=? WHERE chat_id=?", (thread_id, time.time(), str(chat_id))); self.database.commit(); return thread_id
 
@@ -269,11 +423,33 @@ class Gateway:
         except (OSError, tomllib.TOMLDecodeError, AttributeError): pass
         return {"type": "workspaceWrite", "writableRoots": list(dict.fromkeys(roots)), "networkAccess": False}
 
-    def _app_turn(self, chat_id: int, text: str) -> str:
+    def _transcribe_voice(self, path: Path) -> str | None:
+        config = self.settings.root / "configs" / "eccovox.toml"; wrapper = self.settings.root / "available-skills" / "eccovox" / "scripts" / "eccovox.py"
+        if not config.is_file() or not wrapper.is_file(): return None
+        try:
+            data = tomllib.loads(config.read_text(encoding="utf-8")); profiles = data.get("profiles", {})
+            profile = next((name for name, value in profiles.items() if isinstance(name, str) and isinstance(value, dict) and name != "example"), "")
+            if not profile: return None
+            process = subprocess.run([sys.executable, str(wrapper), "--config", str(config), "--profile", profile], input=json.dumps({"version": 1, "operation": "stt.transcribe", "audio_path": str(path)}, ensure_ascii=False), text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=150)
+            result = json.loads(process.stdout)
+            value = result.get("result", {}) if isinstance(result, dict) else {}
+            return str(value.get("text") or "").strip() or None
+        except Exception as error:
+            self._record_error(f"Transcrição de voz indisponível: {error}"); return None
+
+    def _app_turn(self, chat_id: int, text: str, attachments: list[dict[str, Any]] | None = None) -> str:
         client = self._app_client(); thread_id = self._app_thread(chat_id, client); active = AppServerTurn(chat_id, thread_id, threading.Event())
         with self.app_server_lock: self.app_turns[thread_id] = active
         try:
-            parameters: dict[str, Any] = {"threadId": thread_id, "input": [{"type": "text", "text": text}], "cwd": str(self.settings.project), "approvalPolicy": self.settings.approval, "sandboxPolicy": self._app_sandbox_policy(), "effort": self.settings.effort}
+            inputs: list[dict[str, Any]] = [{"type": "text", "text": text or "O owner enviou anexos sem mensagem textual."}]
+            for attachment in attachments or []:
+                staged = self._stage_attachment(chat_id, attachment, active)
+                if attachment["kind"] == "photo": inputs.append({"type": "localImage", "path": str(staged)})
+                elif attachment["kind"] == "voice":
+                    transcript = self._transcribe_voice(staged); detail = f"\nTranscrição local: {transcript}" if transcript else "\nTranscrição local indisponível; trate o arquivo de voz diretamente."
+                    inputs.append({"type": "text", "text": f"Mensagem de voz recebida: {attachment['name']}\nArquivo local temporário: {staged}{detail}"})
+                else: inputs.append({"type": "text", "text": f"Anexo recebido ({attachment['kind']}): {attachment['name']}\nArquivo local temporário: {staged}"})
+            parameters: dict[str, Any] = {"threadId": thread_id, "input": inputs, "cwd": str(self.settings.project), "approvalPolicy": self.settings.approval, "sandboxPolicy": self._app_sandbox_policy(), "effort": self.settings.effort}
             if self.settings.model: parameters["model"] = self.settings.model
             result = client.request("turn/start", parameters)
             turn = result.get("turn") if isinstance(result.get("turn"), dict) else result
@@ -286,6 +462,7 @@ class Gateway:
             raise CodexProtocolError(f"O turno do Codex terminou com estado {active.status}")
         finally:
             with self.app_server_lock: self.app_turns.pop(thread_id, None); self.last_app_activity = time.monotonic()
+            for staged in active.staging: shutil.rmtree(staged.parent, ignore_errors=True)
     def _poll(self) -> None:
         assert self.api
         while not self.stop_event.is_set():
@@ -297,7 +474,7 @@ class Gateway:
         if update.get("callback_query"): self._callback(update["callback_query"]); return
         message = update.get("message") or {}; chat, sender = message.get("chat") or {}, message.get("from") or {}
         if chat.get("type") != "private" or not isinstance(sender.get("id"), int): return
-        text = str(message.get("text") or "").strip(); assert self.api
+        text = str(message.get("text") or message.get("caption") or "").strip(); assert self.api
         if text.startswith("/pair ") and self.pair and time.time() < self.pair[1] and secrets.compare_digest(text[6:].strip(), self.pair[0]):
             self.contacts.add_owner(sender); self.pair = None; synced = self._configure_owner_commands()
             self.api.send(sender["id"], "Pairing concluído e comandos privados configurados." if synced.get("failed", 1) == 0 else "Pairing concluído, mas a configuração dos comandos falhou. Consulte o diagnóstico."); return
@@ -315,10 +492,21 @@ class Gateway:
             return
         if command == "/config": self._open_config(sender["id"]); return
         if text.startswith("/"): self._ephemeral(sender["id"], "Comando inválido. Use /new, /config ou /totp quando habilitado."); return
-        threading.Thread(target=self._turn, args=(sender["id"], text), daemon=True).start()
+        contains_attachment = any(isinstance(message.get(name), (dict, list)) and message.get(name) for name in ("photo", "document", "voice"))
+        if not text and not contains_attachment: self._ephemeral(sender["id"], "Mensagem sem texto ou anexo reconhecido."); return
+        if contains_attachment and not self.settings.app_server_enabled:
+            self._ephemeral(sender["id"], "Anexos exigem que o App Server esteja habilitado na configuração do Gateway Telegram."); return
+        try: attachments = self._collect_attachments(sender["id"], message) if contains_attachment else []
+        except Exception as error:
+            self._record_error(error); self._ephemeral(sender["id"], f"Não foi possível receber o anexo: {error}"); return
+        try: self._enqueue_turn(sender["id"], text, attachments)
+        except Exception as error: self._record_error(error); self._ephemeral(sender["id"], f"Não foi possível enfileirar a mensagem: {error}")
 
     def _new_conversation(self, chat_id: int) -> None:
-        row = self.database.execute("SELECT codex_thread_id FROM conversations WHERE chat_id=?", (str(chat_id),)).fetchone(); old = str(row[0]) if row and row[0] else ""
+        row = self.database.execute("SELECT codex_thread_id, generation FROM conversations WHERE chat_id=?", (str(chat_id),)).fetchone(); old = str(row[0]) if row and row[0] else ""; generation = int(row[1]) if row else 0
+        self._remove_attachments(chat_id, generation)
+        with self.database_lock:
+            self.database.execute("DELETE FROM inbox_items WHERE chat_id=?", (str(chat_id),)); self.database.commit()
         self.database.execute("INSERT OR IGNORE INTO conversations(chat_id, updated_at) VALUES (?, ?)", (str(chat_id), time.time()))
         self.database.execute("UPDATE conversations SET generation=generation+1, codex_thread_id=NULL, updated_at=? WHERE chat_id=?", (time.time(), str(chat_id))); self.database.commit()
         if old and self.app_server and self.app_server.running():
@@ -356,8 +544,12 @@ class Gateway:
         try: assert self.api; self.api.edit(chat_id, int(session["message_id"]), text, keyboard)
         except Exception as error: self._record_error(error); self._ephemeral(chat_id, "Não foi possível atualizar esta configuração.")
         return True
-    def _turn(self, chat_id: int, text: str) -> None:
-        if not self.work.acquire(timeout=1): return
+    def _turn(self, chat_id: int, text: str, attachments: list[dict[str, Any]] | None = None) -> None:
+        with self.turn_locks_lock: lock = self.turn_locks.setdefault(chat_id, threading.Lock())
+        with lock: self._turn_serial(chat_id, text, attachments or [])
+
+    def _turn_serial(self, chat_id: int, text: str, attachments: list[dict[str, Any]]) -> None:
+        self.work.acquire()
         typing_stop = threading.Event()
         def renew_typing() -> None:
             while not typing_stop.is_set():
@@ -368,8 +560,9 @@ class Gateway:
         typing_thread = threading.Thread(target=renew_typing, daemon=True); typing_thread.start()
         try:
             if self.settings.app_server_enabled:
-                answer = self._app_turn(chat_id, text)
+                answer = self._app_turn(chat_id, text, attachments)
             else:
+                if attachments: raise RuntimeError("Anexos exigem o App Server habilitado.")
                 # O processo recebe somente o CODEX_HOME desta instância e o workspace configurado.
                 environment = dict(os.environ); environment["CODEX_HOME"] = str(self.settings.root)
                 prompt = GATEWAY_INSTRUCTIONS + "\n\nMensagem do owner:\n" + text
