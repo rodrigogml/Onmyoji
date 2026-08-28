@@ -99,6 +99,9 @@ def configure(root: Path) -> None:
         elif choice in {"2", "3"}:
             names = sorted(profiles)
             if not names: result(False, "Não há perfis configurados."); continue
+            screen("EccoVox", "Selecionar perfil", "Escolha o perfil para editar" if choice == "2" else "Escolha o perfil para excluir")
+            for index, name in enumerate(names, 1): item(f"{index}.", name)
+            item("X.", "Voltar")
             selected = ask("Número do perfil")
             if selected is None or not selected.isdigit() or not 1 <= int(selected) <= len(names): result(False, "Seleção inválida."); continue
             name = names[int(selected) - 1]
