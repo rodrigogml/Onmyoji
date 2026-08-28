@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import secrets
 import shutil
 import sys
 import tomllib
@@ -13,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from setup_ui import item, prompt, result, screen
 
 SKILL = Path(__file__).resolve().parent
+sys.path.insert(0, str(SKILL))
 
 
 def root_from(args: argparse.Namespace) -> Path:
@@ -73,6 +75,55 @@ def ask(label: str, current: str = "") -> str | None:
     return None if value.casefold() in {"x", "\x1b"} else (value or current)
 
 
+def select_profile(profiles: dict, action: str) -> str | None:
+    names = sorted(profiles)
+    if not names:
+        result(False, "Não há perfis configurados.")
+        return None
+    screen("EccoVox", "Selecionar perfil", action)
+    for index, name in enumerate(names, 1): item(f"{index}.", name)
+    item("X.", "Voltar")
+    selected = ask("Número do perfil")
+    if selected is None: return None
+    if not selected.isdigit() or not 1 <= int(selected) <= len(names):
+        result(False, "Seleção inválida.")
+        return None
+    return names[int(selected) - 1]
+
+
+def test_profile(path: Path, name: str, audio_path: str = "") -> None:
+    """Exercita o wrapper, o runtime e as raízes permitidas sem reter áudio de teste."""
+    from scripts.eccovox import SafeError, execute, load_config
+    generated: Path | None = None
+    try:
+        config = load_config(str(path), name)
+        health = execute(config, {"version": 1, "operation": "health.get"})
+        status = str(health.get("data", {}).get("status") or "desconhecido")
+        result(status == "ready", f"Health do EccoVox: {status}.")
+        if status != "ready": return
+        writable = config["writable"]
+        if writable:
+            generated = writable[0] / f".onmyoji-eccovox-test-{secrets.token_hex(8)}.wav"
+            response = execute(config, {"version": 1, "operation": "tts.synthesize", "text": "Teste de áudio do Onmyoji.", "output_path": str(generated), "response_format": "wav", "confirm": True})
+            result(generated.is_file(), f"TTS aceitou a chamada e gerou {int(response.get('data', {}).get('bytes') or 0)} bytes.")
+        else:
+            result(False, "TTS não testado: configure ao menos uma raiz de escrita no perfil.")
+        candidate = Path(audio_path).resolve() if audio_path else generated
+        if candidate and candidate.is_file() and any(candidate.is_relative_to(root) for root in config["readable"]):
+            execute(config, {"version": 1, "operation": "stt.transcribe", "audio_path": str(candidate)})
+            result(True, "STT aceitou o áudio e retornou uma transcrição.")
+        elif candidate and candidate.is_file():
+            result(False, "STT não testado: o áudio não está em uma raiz de leitura autorizada.")
+        else:
+            result(False, "STT não testado: informe um áudio autorizado ou configure uma raiz comum de leitura e escrita.")
+    except SafeError as error:
+        result(False, f"Teste recusado: {error.message}")
+    except (OSError, ValueError) as error:
+        result(False, f"Teste falhou: {error}")
+    finally:
+        if generated: generated.unlink(missing_ok=True)
+
+
 def configure(root: Path) -> None:
     path = config_path(root)
     while True:
@@ -83,7 +134,7 @@ def configure(root: Path) -> None:
             for name in sorted(profiles): print(f"    • {name}")
             print()
         print("  AÇÕES")
-        item("1.", "Criar novo perfil"); item("2.", "Editar perfil existente"); item("3.", "Excluir perfil existente"); item("X.", "Voltar")
+        item("1.", "Criar novo perfil"); item("2.", "Editar perfil existente"); item("3.", "Excluir perfil existente"); item("4.", "Testar perfil", "Health, TTS e STT"); item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
         if choice == "1":
@@ -97,14 +148,8 @@ def configure(root: Path) -> None:
             else:
                 profiles[name] = profile; ok, message = save(path, data); result(ok, message)
         elif choice in {"2", "3"}:
-            names = sorted(profiles)
-            if not names: result(False, "Não há perfis configurados."); continue
-            screen("EccoVox", "Selecionar perfil", "Escolha o perfil para editar" if choice == "2" else "Escolha o perfil para excluir")
-            for index, name in enumerate(names, 1): item(f"{index}.", name)
-            item("X.", "Voltar")
-            selected = ask("Número do perfil")
-            if selected is None or not selected.isdigit() or not 1 <= int(selected) <= len(names): result(False, "Seleção inválida."); continue
-            name = names[int(selected) - 1]
+            name = select_profile(profiles, "Escolha o perfil para editar" if choice == "2" else "Escolha o perfil para excluir")
+            if not name: continue
             if choice == "3":
                 if prompt(f"Digite EXCLUIR para remover {name}: ").strip() == "EXCLUIR": del profiles[name]; ok, message = save(path, data); result(ok, message)
                 else: result(False, "Operação cancelada.")
@@ -117,6 +162,11 @@ def configure(root: Path) -> None:
                 if field in keys:
                     raw = ask("Novo valor" if field == "1" else "Diretórios separados por ;", profile[keys[field]] if field == "1" else ";".join(profile[keys[field]]))
                     if raw is not None: profile[keys[field]] = raw if field == "1" else [part.strip() for part in raw.split(";") if part.strip()]; ok, message = save(path, data); result(ok, message)
+        elif choice == "4":
+            name = select_profile(profiles, "Escolha o perfil para testar")
+            if not name: continue
+            audio = ask("Áudio local para teste STT (vazio = usar o áudio TTS, se autorizado)")
+            if audio is not None: test_profile(path, name, audio)
         else: result(False, "Opção inválida.")
 
 
