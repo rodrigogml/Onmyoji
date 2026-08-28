@@ -240,6 +240,7 @@ class Gateway:
         self.database.execute("CREATE INDEX IF NOT EXISTS inbox_scope ON inbox_items(chat_id, generation, state, created_at)")
         self.database.execute("UPDATE inbox_items SET state='pending' WHERE state='running'")
         self.database.commit()
+        self.identity = settings.root.name.removeprefix("Onmyoji-").strip() or "Shikigami"
         self.activity_root = settings.project / ".onmyoji" / "telegram"; self.archive_root = self.activity_root / "attachments"; self.staging_root = self.activity_root / "staging"
         self.archive_root.mkdir(parents=True, exist_ok=True); self.staging_root.mkdir(parents=True, exist_ok=True)
         self.api: TelegramApi | None = None; self.pair: tuple[str, float] | None = None; self.offset = 0; self.work = threading.BoundedSemaphore(settings.parallel); self.totp_sessions: dict[int, dict[str, Any]] = {}; self.config_sessions: dict[str, dict[str, Any]] = {}; self.last_error: str | None = None; self.cleanup_path = settings.data_dir / "state" / "totp-cleanup.json"; self.pending_deletions = json_file(self.cleanup_path, {}); self.app_server: CodexAppServer | None = None; self.app_server_lock = threading.RLock(); self.app_turns: dict[str, AppServerTurn] = {}; self.last_app_activity = time.monotonic(); self.turn_locks: dict[int, threading.Lock] = {}; self.turn_locks_lock = threading.Lock(); self.workers: set[int] = set(); self.workers_lock = threading.Lock()
@@ -403,7 +404,8 @@ class Gateway:
 
     def _app_thread(self, chat_id: int, client: CodexAppServer) -> str:
         row = self.database.execute("SELECT codex_thread_id FROM conversations WHERE chat_id=?", (str(chat_id),)).fetchone(); thread_id = str(row[0]) if row and row[0] else ""
-        params = {"cwd": str(self.settings.project), "approvalPolicy": self.settings.approval, "sandbox": self.settings.sandbox, "developerInstructions": GATEWAY_INSTRUCTIONS}
+        instructions = GATEWAY_INSTRUCTIONS + f"\n\nYour Shikigami identity is {self.identity}. When asked who you are, identify yourself as {self.identity}, not as Codex."
+        params = {"cwd": str(self.settings.project), "approvalPolicy": self.settings.approval, "sandbox": self.settings.sandbox, "developerInstructions": instructions}
         if self.settings.model: params["model"] = self.settings.model
         if thread_id:
             try: client.request("thread/resume", {"threadId": thread_id, **params}); return thread_id
@@ -484,7 +486,7 @@ class Gateway:
                 self._clear_totp_session(sender["id"]); self._ephemeral(sender["id"], "Fluxo TOTP cancelado por um novo comando.")
             else: self._totp_password(sender["id"], message)
             return
-        command = text.split(maxsplit=1)[0].split("@", 1)[0].casefold()
+        command = text.split(maxsplit=1)[0].split("@", 1)[0].casefold() if text else ""
         if command == "/new": self._new_conversation(sender["id"]); self.api.send(sender["id"], "Conversa reiniciada."); return
         if command == "/totp":
             if self._totp_enabled(): self._start_totp(sender["id"], message, text[len(text.split(maxsplit=1)[0]):].strip())

@@ -81,6 +81,14 @@ def test_attachment_activity_root_is_never_in_codex_home_configs(tmp_path):
     assert gateway.activity_root.is_relative_to(tmp_path) and not gateway.activity_root.is_relative_to(data)
 
 
+def test_voice_without_caption_never_attempts_to_parse_an_empty_command(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data); gateway = Gateway(Settings.load(tmp_path, data)); gateway.contacts.add_owner({"id": 9, "first_name": "owner"})
+    sent = []
+    gateway.api = type("Api", (), {"send": lambda _self, chat, text, **_values: sent.append((chat, text)) or {"message_id": 1}})()
+    gateway._update({"message": {"chat": {"type": "private"}, "from": {"id": 9}, "voice": {"file_id": "voice-id"}}})
+    assert sent == [(9, "Anexos exigem que o App Server esteja habilitado na configuração do Gateway Telegram.")]
+
+
 def test_totp_session_cleanup_removes_all_related_messages(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
     gateway = Gateway(Settings.load(tmp_path, data))
