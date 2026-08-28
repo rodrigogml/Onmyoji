@@ -79,13 +79,15 @@ def configure(root: Path) -> None:
         data = load(path); profiles = data.setdefault("profiles", {})
         screen("EccoVox", "Configuração", "Perfis do serviço local de voz")
         if profiles:
-            print("  Perfis existentes:")
+            print("  PERFIS CONFIGURADOS")
             for index, name in enumerate(sorted(profiles), 1): item(f"{index}.", name)
-        item("1.", "Criar perfil"); item("2.", "Editar perfil"); item("3.", "Excluir perfil"); item("X.", "Voltar")
+            print()
+        print("  AÇÕES")
+        item("N.", "Criar novo perfil"); item("E.", "Editar perfil existente"); item("R.", "Excluir perfil existente"); item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
-        if choice == "1":
-            name = ask("Nome do perfil")
+        if choice == "n":
+            name = ask("Nome do perfil", "eccovox")
             if not name or name in profiles or not name.replace("-", "").replace("_", "").isalnum(): result(False, "Nome inválido ou já existente."); continue
             profile = {"base_url": "http://127.0.0.1:8870", "readable_roots": [], "writable_roots": []}
             for key, label in (("base_url", "URL local"),):
@@ -94,13 +96,13 @@ def configure(root: Path) -> None:
                 profile[key] = value
             else:
                 profiles[name] = profile; ok, message = save(path, data); result(ok, message)
-        elif choice in {"2", "3"}:
+        elif choice in {"e", "r"}:
             names = sorted(profiles)
             if not names: result(False, "Não há perfis configurados."); continue
             selected = ask("Número do perfil")
             if selected is None or not selected.isdigit() or not 1 <= int(selected) <= len(names): result(False, "Seleção inválida."); continue
             name = names[int(selected) - 1]
-            if choice == "3":
+            if choice == "r":
                 if prompt(f"Digite EXCLUIR para remover {name}: ").strip() == "EXCLUIR": del profiles[name]; ok, message = save(path, data); result(ok, message)
                 else: result(False, "Operação cancelada.")
             else:
