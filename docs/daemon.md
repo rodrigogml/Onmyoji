@@ -33,3 +33,11 @@ Fotos, documentos e mensagens de voz são baixados de forma limitada e autentica
 Os arquivos retidos ficam em `<workspace>/.onmyoji/telegram/attachments/<chat>/<geração>/`. O App Server recebe fotos como `localImage`; documentos e vozes recebem um caminho temporário. Quando uma configuração EccoVox local autoriza essa área de staging, mensagens de voz também recebem transcrição local. O agente pode listar os metadados da conversa e materializar um anexo de forma explícita pela ferramenta dinâmica `telegram_gateway`, sempre restrita ao owner, à conversa e à geração atuais. O staging é removido ao fim do turno, e `/new` remove a fila e todos os anexos retidos da geração anterior.
 
 O envio de anexos requer o modo App Server habilitado. No modo `codex exec`, o gateway recusa o anexo explicitamente, em vez de expor caminhos ou executar uma importação insegura.
+
+## Respostas em áudio e mídia de saída
+
+O menu `Gateway Telegram → Configurar respostas em áudio` seleciona um perfil EccoVox, o desligamento automático por inatividade e, separadamente, a permissão de mídia enviada pelo agente. O modo texto/áudio é persistido por conversa e volta para texto após o tempo configurado sem nova mensagem do owner. O menu `/config` alterna esse modo; o agente também pode consultar e alterá-lo pela ferramenta dinâmica `telegram_gateway.set_reply_mode` na conversa ativa.
+
+Quando o modo é áudio, o gateway inclui uma orientação transitória para resposta falável no turno e sintetiza a resposta final localmente pelo EccoVox. A falha de síntese é informada e, por padrão, entrega a resposta em texto. O áudio e qualquer arquivo de saída vivem somente no staging/outbox do turno, dentro do workspace, e são apagados ao fim.
+
+Se `agent_outbound_media` estiver habilitado, o agente pode solicitar `get_outbox` e `send_file`; o gateway aceita exclusivamente arquivos regulares do outbox daquele turno, limita tamanho e envia somente à DM ativa. O modelo nunca informa chat, owner ou um caminho arbitrário ao gateway.

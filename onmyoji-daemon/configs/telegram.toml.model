@@ -25,6 +25,21 @@ max_attachment_bytes = 20971520
 max_batch_attachment_bytes = 52428800
 max_pending_items = 50
 max_retained_attachment_bytes = 262144000
+max_outbound_media_bytes = 20971520
+max_outbound_media_per_turn = 3
+
+[voice_reply]
+# Disponibiliza voz local ao gateway; a escolha texto/áudio é persistida por conversa.
+enabled = false
+eccovox_profile = ""
+language = "pt-BR"
+voice = ""
+speed = 1.0
+response_format = "opus"
+max_text_characters = 3500
+auto_off_minutes = 15
+fallback_to_text = true
+agent_outbound_media = false
 
 [totp]
 enabled = false

@@ -533,8 +533,8 @@ def daemon_menu(root: Path) -> None:
                 enabled = bool(json.loads((root / "configs" / "daemon" / "services.json").read_text(encoding="utf-8")).get("telegram", {}).get("enabled", False))
             except (OSError, ValueError): enabled = False
             try:
-                telegram_settings = tomllib.loads(telegram_path.read_text(encoding="utf-8")); totp_enabled = bool(telegram_settings.get("totp", {}).get("enabled", False)); app_server_enabled = bool(telegram_settings.get("app_server", {}).get("enabled", False)); app_server_idle = int(telegram_settings.get("app_server", {}).get("idle_timeout_seconds") or 1800)
-            except (OSError, tomllib.TOMLDecodeError): totp_enabled, app_server_enabled, app_server_idle = False, False, 1800
+                telegram_settings = tomllib.loads(telegram_path.read_text(encoding="utf-8")); totp_enabled = bool(telegram_settings.get("totp", {}).get("enabled", False)); app_server_enabled = bool(telegram_settings.get("app_server", {}).get("enabled", False)); app_server_idle = int(telegram_settings.get("app_server", {}).get("idle_timeout_seconds") or 1800); voice_enabled = bool(telegram_settings.get("voice_reply", {}).get("enabled", False)); voice_profile = str(telegram_settings.get("voice_reply", {}).get("eccovox_profile") or ""); voice_auto_off = int(telegram_settings.get("voice_reply", {}).get("auto_off_minutes") or 15); outbound_media = bool(telegram_settings.get("voice_reply", {}).get("agent_outbound_media", False))
+            except (OSError, tomllib.TOMLDecodeError): totp_enabled, app_server_enabled, app_server_idle, voice_enabled, voice_profile, voice_auto_off, outbound_media = False, False, 1800, False, "", 15, False
             screen("Gateway Telegram", "Credenciais permanecem exclusivamente no KeePass")
             item("1.", "Desabilitar Telegram" if enabled else "Habilitar Telegram")
             item("2.", "Configurar credencial do bot", "Perfil KeePass e referência da entrada")
@@ -546,6 +546,7 @@ def daemon_menu(root: Path) -> None:
             item("8.", "Atualizar comandos privados", "Regrava e confirma comandos de cada owner")
             item("9.", "Desabilitar App Server" if app_server_enabled else "Habilitar App Server", "Conversa persistente por Shikigami" if app_server_enabled else "Usa codex exec por turno")
             item("10.", "Tempo de inatividade do App Server", f"{app_server_idle // 60} min · encerra somente sem turnos ativos")
+            item("11.", "Configurar respostas em áudio", (f"EccoVox: {voice_profile} · auto-off: {voice_auto_off} min" if voice_enabled else "Desabilitadas"))
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
@@ -637,6 +638,16 @@ def daemon_menu(root: Path) -> None:
                 except ValueError: result(False, "Informe um número inteiro de minutos."); continue
                 changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-app-server", "--idle-timeout", str(minutes * 60)], quiet=True)
                 result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
+                if changed.returncode == 0: offer_restart()
+            elif choice == "11":
+                active = prompt("Habilitar respostas em áudio? [S/n]: ").strip().casefold() not in {"n", "x", "\x1b"}
+                profile = prompt(f"Perfil EccoVox [{voice_profile or 'eccovox'}]: ").strip() or voice_profile or "eccovox"
+                raw = prompt(f"Desligar áudio após minutos sem interação [{voice_auto_off}]: ").strip()
+                try: minutes = int(raw) if raw else voice_auto_off
+                except ValueError: result(False, "Informe minutos inteiros."); continue
+                media = prompt(f"Permitir que o agente envie arquivos e fotos? [{'S' if outbound_media else 'n'}]: ").strip().casefold() or ("s" if outbound_media else "n")
+                arguments = [sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-voice-reply", "--profile", profile, "--auto-off-minutes", str(minutes)] + (["--enabled"] if active else []) + (["--agent-outbound-media"] if media == "s" else [])
+                changed = command(arguments, quiet=True); result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
                 if changed.returncode == 0: offer_restart()
             else: result(False, "Opção inválida.")
 

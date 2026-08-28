@@ -57,13 +57,25 @@ class Settings:
     max_batch_attachment_bytes: int
     max_pending_items: int
     max_retained_attachment_bytes: int
+    max_outbound_media_bytes: int
+    max_outbound_media_per_turn: int
+    voice_enabled: bool
+    voice_profile: str
+    voice_language: str
+    voice_name: str
+    voice_speed: float
+    voice_format: str
+    voice_max_text: int
+    voice_auto_off_minutes: int
+    voice_fallback_to_text: bool
+    agent_outbound_media: bool
 
     @classmethod
     def load(cls, root: Path, data_dir: Path) -> "Settings":
         path = data_dir / "telegram.toml"
         data = tomllib.loads(path.read_text(encoding="utf-8"))
         if data.get("schema_version") != 1: raise ValueError("unsupported telegram schema")
-        telegram, agent, app_server, limits = data.get("telegram", {}), data.get("agent", {}), data.get("app_server", {}), data.get("limits", {})
+        telegram, agent, app_server, limits, voice = data.get("telegram", {}), data.get("agent", {}), data.get("app_server", {}), data.get("limits", {}), data.get("voice_reply", {})
         system = tomllib.loads((root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8")).get("codex", {})
         project = Path(str(system.get("project_directory") or "")).resolve()
         if not project.is_dir(): raise ValueError("configured Shikigami workspace does not exist")
@@ -73,7 +85,11 @@ class Settings:
         if idle < 60: raise ValueError("App Server idle timeout must be at least 60 seconds")
         per_file, batch, pending, retained = int(limits.get("max_attachment_bytes") or 20 * 1024 * 1024), int(limits.get("max_batch_attachment_bytes") or 50 * 1024 * 1024), int(limits.get("max_pending_items") or 50), int(limits.get("max_retained_attachment_bytes") or 250 * 1024 * 1024)
         if not 1 <= per_file <= batch <= retained: raise ValueError("Telegram attachment limits are invalid")
-        return cls(root, data_dir, profile, entry, project, str(system.get("executable") or "codex"), str(system.get("model") or ""), str(system.get("model_reasoning_effort") or "medium"), str(system.get("sandbox_mode") or "workspace-write"), str(system.get("approval_policy") or "never"), int(telegram.get("poll_timeout_seconds") or 30), int(agent.get("turn_timeout_seconds") or 900), max(1, int(agent.get("max_parallel_conversations") or 1)), str(agent.get("developer_file") or ""), bool(app_server.get("enabled", False)), idle, per_file, batch, max(1, pending), retained)
+        output_bytes, output_count = int(limits.get("max_outbound_media_bytes") or 20 * 1024 * 1024), max(1, int(limits.get("max_outbound_media_per_turn") or 3))
+        enabled, voice_profile = bool(voice.get("enabled", False)), str(voice.get("eccovox_profile") or "")
+        voice_format, voice_text, auto_off = str(voice.get("response_format") or "opus").casefold(), int(voice.get("max_text_characters") or 3500), int(voice.get("auto_off_minutes") or 15)
+        if enabled and (not voice_profile or voice_format not in {"opus", "mp3", "wav", "flac"} or not 1 <= voice_text <= 4000 or not 1 <= auto_off <= 1440): raise ValueError("Telegram voice reply configuration is invalid")
+        return cls(root, data_dir, profile, entry, project, str(system.get("executable") or "codex"), str(system.get("model") or ""), str(system.get("model_reasoning_effort") or "medium"), str(system.get("sandbox_mode") or "workspace-write"), str(system.get("approval_policy") or "never"), int(telegram.get("poll_timeout_seconds") or 30), int(agent.get("turn_timeout_seconds") or 900), max(1, int(agent.get("max_parallel_conversations") or 1)), str(agent.get("developer_file") or ""), bool(app_server.get("enabled", False)), idle, per_file, batch, max(1, pending), retained, output_bytes, output_count, enabled, voice_profile, str(voice.get("language") or "pt-BR"), str(voice.get("voice") or ""), float(voice.get("speed") or 1.0), voice_format, voice_text, auto_off, bool(voice.get("fallback_to_text", True)), bool(voice.get("agent_outbound_media", False)))
 
 
 class CodexProtocolError(RuntimeError): pass
@@ -149,6 +165,8 @@ class AppServerTurn:
     status: str = "inProgress"
     final_text: str = ""
     staging: list[Path] = field(default_factory=list)
+    reply_mode: str = "text"
+    outbox: Path | None = None
 
 
 class Vault:
@@ -195,6 +213,17 @@ class TelegramApi:
         except Exception:
             destination.unlink(missing_ok=True); raise
         return destination
+    def send_file(self, method: str, chat_id: int, path: Path, field: str, caption: str = "", reply_to: int | None = None) -> dict[str, Any]:
+        boundary = "----Onmyoji" + secrets.token_hex(16); chunks: list[bytes] = []
+        values = {"chat_id": str(chat_id), "protect_content": "true"}
+        if caption: values["caption"] = caption[:1024]
+        if reply_to: values["reply_parameters"] = json.dumps({"message_id": reply_to})
+        for key, value in values.items(): chunks.extend((f"--{boundary}\r\n".encode(), f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode(), value.encode("utf-8"), b"\r\n"))
+        chunks.extend((f"--{boundary}\r\n".encode(), f'Content-Disposition: form-data; name="{field}"; filename="{path.name}"\r\n'.encode(), b"Content-Type: application/octet-stream\r\n\r\n", path.read_bytes(), b"\r\n", f"--{boundary}--\r\n".encode()))
+        request = Request(self.base + method, data=b"".join(chunks), headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+        with urlopen(request, timeout=90) as response: payload = json.loads(response.read())
+        if not payload.get("ok"): raise RuntimeError("Telegram API rejected media upload")
+        return payload.get("result") if isinstance(payload.get("result"), dict) else {}
     def set_owner_commands(self, owner_id: int, totp_enabled: bool) -> bool:
         commands = [{"command": "new", "description": "Iniciar uma nova conversa"}, {"command": "config", "description": "Configurar esta conversa"}]
         if totp_enabled: commands.append({"command": "totp", "description": "Obter código de autenticação"})
@@ -231,13 +260,14 @@ class Gateway:
         self.settings, self.stop_event = settings, threading.Event(); self.contacts = Contacts(settings.data_dir / "contacts.json")
         (settings.data_dir / "state").mkdir(parents=True, exist_ok=True); self.database = sqlite3.connect(settings.data_dir / "state" / "gateway.sqlite3", check_same_thread=False); self.database_lock = threading.RLock()
         self.database.execute("CREATE TABLE IF NOT EXISTS conversations(chat_id TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL, share_thoughts INTEGER NOT NULL DEFAULT 1, delete_thoughts INTEGER NOT NULL DEFAULT 1, codex_thread_id TEXT)")
-        for column, definition in (("share_thoughts", "INTEGER NOT NULL DEFAULT 1"), ("delete_thoughts", "INTEGER NOT NULL DEFAULT 1"), ("codex_thread_id", "TEXT")):
+        for column, definition in (("share_thoughts", "INTEGER NOT NULL DEFAULT 1"), ("delete_thoughts", "INTEGER NOT NULL DEFAULT 1"), ("codex_thread_id", "TEXT"), ("reply_mode", "TEXT NOT NULL DEFAULT 'text'"), ("voice_expires_at", "REAL"), ("last_interaction_at", "REAL NOT NULL DEFAULT 0"), ("settings_revision", "INTEGER NOT NULL DEFAULT 0")):
             try: self.database.execute(f"ALTER TABLE conversations ADD COLUMN {column} {definition}")
             except sqlite3.OperationalError: pass
         self.database.execute("CREATE TABLE IF NOT EXISTS conversation_attachments(id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, generation INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, mime_type TEXT, size INTEGER NOT NULL, archive_path TEXT NOT NULL, created_at REAL NOT NULL)")
         self.database.execute("CREATE INDEX IF NOT EXISTS attachment_scope ON conversation_attachments(chat_id, generation, created_at)")
         self.database.execute("CREATE TABLE IF NOT EXISTS inbox_items(id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, generation INTEGER NOT NULL, text TEXT NOT NULL, attachment_ids TEXT NOT NULL, state TEXT NOT NULL, created_at REAL NOT NULL)")
         self.database.execute("CREATE INDEX IF NOT EXISTS inbox_scope ON inbox_items(chat_id, generation, state, created_at)")
+        self.database.execute("CREATE TABLE IF NOT EXISTS outbound_intents(id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, generation INTEGER NOT NULL, kind TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, telegram_message_id INTEGER, created_at REAL NOT NULL, completed_at REAL)")
         self.database.execute("UPDATE inbox_items SET state='pending' WHERE state='running'")
         self.database.commit()
         self.identity = settings.root.name.removeprefix("Onmyoji-").strip() or "Shikigami"
@@ -283,6 +313,38 @@ class Gateway:
             if not self.app_server:
                 self.app_server = CodexAppServer(self.settings); self.app_server.notification_handler = self._app_notification; self.app_server.request_handler = self._app_server_request
             self.app_server.start(); self.last_app_activity = time.monotonic(); return self.app_server
+
+    def _channel_state(self, chat_id: int, renew: bool = False) -> dict[str, Any]:
+        now = time.time()
+        with self.database_lock:
+            self.database.execute("INSERT OR IGNORE INTO conversations(chat_id, updated_at, last_interaction_at) VALUES (?, ?, ?)", (str(chat_id), now, now))
+            row = self.database.execute("SELECT reply_mode, voice_expires_at, settings_revision FROM conversations WHERE chat_id=?", (str(chat_id),)).fetchone()
+            mode, expiry, revision = str(row[0] or "text"), row[1], int(row[2] or 0)
+            expired = mode == "audio" and (not expiry or float(expiry) <= now)
+            if expired: mode, expiry = "text", None; self.database.execute("UPDATE conversations SET reply_mode='text', voice_expires_at=NULL, settings_revision=settings_revision+1 WHERE chat_id=?", (str(chat_id),)); revision += 1
+            if renew: self.database.execute("UPDATE conversations SET last_interaction_at=?, voice_expires_at=? WHERE chat_id=?", (now, now + self.settings.voice_auto_off_minutes * 60 if mode == "audio" else expiry, str(chat_id)))
+            self.database.commit()
+        return {"reply_mode": mode, "voice_expires_at": expiry, "settings_revision": revision, "expired": expired, "voice_available": self.settings.voice_enabled}
+
+    def _set_reply_mode(self, chat_id: int, mode: str) -> dict[str, Any]:
+        if mode not in {"text", "audio"}: raise RuntimeError("Modo de resposta inválido.")
+        if mode == "audio" and not self.settings.voice_enabled: raise RuntimeError("Respostas em áudio não estão configuradas para esta instância.")
+        now = time.time(); expiry = now + self.settings.voice_auto_off_minutes * 60 if mode == "audio" else None
+        with self.database_lock: self.database.execute("INSERT OR IGNORE INTO conversations(chat_id, updated_at, last_interaction_at) VALUES (?, ?, ?)", (str(chat_id), now, now)); self.database.execute("UPDATE conversations SET reply_mode=?, voice_expires_at=?, settings_revision=settings_revision+1, updated_at=? WHERE chat_id=?", (mode, expiry, now, str(chat_id))); self.database.commit()
+        return self._channel_state(chat_id)
+
+    def _outbox(self, chat_id: int, turn_id: str) -> Path:
+        value = self.staging_root / "outbox" / str(chat_id) / turn_id
+        value.mkdir(parents=True, exist_ok=True); return value
+
+    def _tts(self, text: str, output: Path) -> None:
+        if not self.settings.voice_enabled: raise RuntimeError("Resposta em áudio não está disponível.")
+        wrapper, config = self.settings.root / "available-skills" / "eccovox" / "scripts" / "eccovox.py", self.settings.root / "configs" / "eccovox.toml"
+        request = {"version": 1, "operation": "tts.synthesize", "text": text[:self.settings.voice_max_text], "output_path": str(output), "response_format": self.settings.voice_format, "confirm": True, "language": self.settings.voice_language, "profile": self.settings.voice_profile, "speed": self.settings.voice_speed}
+        process = subprocess.run([sys.executable, str(wrapper), "--config", str(config), "--profile", self.settings.voice_profile], input=json.dumps(request, ensure_ascii=False), text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=180)
+        try: result = json.loads(process.stdout)
+        except ValueError as error: raise RuntimeError("EccoVox retornou resposta inválida.") from error
+        if not result.get("ok") or not output.is_file() or output.is_symlink(): raise RuntimeError("EccoVox não conseguiu sintetizar a resposta.")
 
     def _generation(self, chat_id: int) -> int:
         with self.database_lock:
@@ -376,6 +438,22 @@ class Gateway:
         with self.app_server_lock: active = self.app_turns.get(thread_id)
         if not active: raise RuntimeError("Turno do Telegram não está ativo.")
         arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
+        if tool == "get_channel_state": return {"contentItems": [{"type": "inputText", "text": json.dumps(self._channel_state(active.chat_id), ensure_ascii=False)}], "success": True}
+        if tool == "set_reply_mode":
+            state = self._set_reply_mode(active.chat_id, str(arguments.get("mode") or "")); active.reply_mode = state["reply_mode"]
+            return {"contentItems": [{"type": "inputText", "text": json.dumps(state, ensure_ascii=False)}], "success": True}
+        if tool == "get_outbox":
+            if not self.settings.agent_outbound_media: raise RuntimeError("Envio de mídia pelo agente está desabilitado.")
+            active.outbox = active.outbox or self._outbox(active.chat_id, active.thread_id)
+            return {"contentItems": [{"type": "inputText", "text": json.dumps({"outbox": str(active.outbox)}, ensure_ascii=False)}], "success": True}
+        if tool == "send_file":
+            if not self.settings.agent_outbound_media: raise RuntimeError("Envio de mídia pelo agente está desabilitado.")
+            active.outbox = active.outbox or self._outbox(active.chat_id, active.thread_id); name = safe_name(str(arguments.get("file_name") or ""), "")
+            path = (active.outbox / name).resolve()
+            if not name or not under(path, active.outbox) or not path.is_file() or path.is_symlink() or path.stat().st_size > self.settings.max_outbound_media_bytes: raise RuntimeError("Arquivo do outbox inválido ou excede o limite.")
+            kind = str(arguments.get("kind") or "document"); method, field = {"photo": ("sendPhoto", "photo"), "document": ("sendDocument", "document"), "audio": ("sendAudio", "audio")}[kind]
+            result = self.api.send_file(method, active.chat_id, path, field, str(arguments.get("caption") or "")) if self.api else {}
+            return {"contentItems": [{"type": "inputText", "text": json.dumps({"sent": True, "message_id": result.get("message_id")}, ensure_ascii=False)}], "success": True}
         if tool == "list_attachments":
             entries = [{key: entry[key] for key in ("id", "kind", "name", "mime_type", "size", "created_at")} for entry in self._attachment_rows(active.chat_id, int(arguments.get("limit", 20)))]
             return {"contentItems": [{"type": "inputText", "text": json.dumps(entries, ensure_ascii=False)}], "success": True}
@@ -410,7 +488,7 @@ class Gateway:
         if thread_id:
             try: client.request("thread/resume", {"threadId": thread_id, **params}); return thread_id
             except CodexProtocolError: self.database.execute("UPDATE conversations SET codex_thread_id=NULL WHERE chat_id=?", (str(chat_id),)); self.database.commit()
-        tools = [{"type": "namespace", "name": "telegram_gateway", "description": "Anexos retidos e restritos à conversa Telegram atual.", "tools": [{"type": "function", "name": "list_attachments", "description": "Lista os metadados dos anexos retidos na conversa atual.", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False}}, {"type": "function", "name": "materialize_attachment", "description": "Copia um anexo retido para o staging seguro do turno atual.", "inputSchema": {"type": "object", "properties": {"attachment_id": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["attachment_id"], "additionalProperties": False}}]}]
+        tools = [{"type": "namespace", "name": "telegram_gateway", "description": "Interface restrita à DM Telegram ativa.", "tools": [{"type": "function", "name": "get_channel_state", "description": "Consulta o modo de resposta da conversa ativa.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "set_reply_mode", "description": "Define a resposta final como texto ou áudio nesta conversa.", "inputSchema": {"type": "object", "properties": {"mode": {"type": "string", "enum": ["text", "audio"]}}, "required": ["mode"], "additionalProperties": False}}, {"type": "function", "name": "get_outbox", "description": "Retorna o diretório temporário seguro para arquivos que serão enviados neste turno.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "send_file", "description": "Envia um arquivo do outbox do turno à conversa ativa.", "inputSchema": {"type": "object", "properties": {"file_name": {"type": "string"}, "kind": {"type": "string", "enum": ["photo", "document", "audio"]}, "caption": {"type": "string"}}, "required": ["file_name", "kind"], "additionalProperties": False}}, {"type": "function", "name": "list_attachments", "description": "Lista os metadados dos anexos retidos na conversa atual.", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False}}, {"type": "function", "name": "materialize_attachment", "description": "Copia um anexo retido para o staging seguro do turno atual.", "inputSchema": {"type": "object", "properties": {"attachment_id": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["attachment_id"], "additionalProperties": False}}]}]
         started = client.request("thread/start", {**params, "serviceName": "onmyoji_telegram", "dynamicTools": tools}); thread = started.get("thread") if isinstance(started.get("thread"), dict) else started; thread_id = str(thread.get("id") or "") if isinstance(thread, dict) else ""
         if not thread_id: raise CodexProtocolError("Codex App Server não retornou uma thread")
         self.database.execute("UPDATE conversations SET codex_thread_id=?, updated_at=? WHERE chat_id=?", (thread_id, time.time(), str(chat_id))); self.database.commit(); return thread_id
@@ -439,11 +517,12 @@ class Gateway:
         except Exception as error:
             self._record_error(f"Transcrição de voz indisponível: {error}"); return None
 
-    def _app_turn(self, chat_id: int, text: str, attachments: list[dict[str, Any]] | None = None) -> str:
-        client = self._app_client(); thread_id = self._app_thread(chat_id, client); active = AppServerTurn(chat_id, thread_id, threading.Event())
+    def _app_turn(self, chat_id: int, text: str, attachments: list[dict[str, Any]] | None = None) -> tuple[str, str]:
+        client = self._app_client(); thread_id = self._app_thread(chat_id, client); state = self._channel_state(chat_id); active = AppServerTurn(chat_id, thread_id, threading.Event(), reply_mode=state["reply_mode"])
         with self.app_server_lock: self.app_turns[thread_id] = active
         try:
-            inputs: list[dict[str, Any]] = [{"type": "text", "text": text or "O owner enviou anexos sem mensagem textual."}]
+            channel = "[Controle confiável do gateway Telegram] Modo da resposta final: " + active.reply_mode + ". " + ("A resposta será falada: escreva em linguagem natural, breve, sem Markdown, código, tabelas ou diagramas." if active.reply_mode == "audio" else "Responda normalmente.")
+            inputs: list[dict[str, Any]] = [{"type": "text", "text": channel}, {"type": "text", "text": text or "O owner enviou anexos sem mensagem textual."}]
             for attachment in attachments or []:
                 staged = self._stage_attachment(chat_id, attachment, active)
                 if attachment["kind"] == "photo": inputs.append({"type": "localImage", "path": str(staged)})
@@ -459,12 +538,13 @@ class Gateway:
             if not active.completed.wait(self.settings.turn_timeout):
                 if active.turn_id: client.request("turn/interrupt", {"threadId": thread_id, "turnId": active.turn_id})
                 raise CodexProtocolError("O turno do Codex excedeu o tempo configurado")
-            if active.final_text: return active.final_text
-            if active.status == "completed": return "O agente concluiu o turno sem uma resposta textual."
+            if active.final_text: return active.final_text, active.reply_mode
+            if active.status == "completed": return "O agente concluiu o turno sem uma resposta textual.", active.reply_mode
             raise CodexProtocolError(f"O turno do Codex terminou com estado {active.status}")
         finally:
             with self.app_server_lock: self.app_turns.pop(thread_id, None); self.last_app_activity = time.monotonic()
             for staged in active.staging: shutil.rmtree(staged.parent, ignore_errors=True)
+            if active.outbox: shutil.rmtree(active.outbox, ignore_errors=True)
     def _poll(self) -> None:
         assert self.api
         while not self.stop_event.is_set():
@@ -481,6 +561,8 @@ class Gateway:
             self.contacts.add_owner(sender); self.pair = None; synced = self._configure_owner_commands()
             self.api.send(sender["id"], "Pairing concluído e comandos privados configurados." if synced.get("failed", 1) == 0 else "Pairing concluído, mas a configuração dos comandos falhou. Consulte o diagnóstico."); return
         if sender["id"] not in self.contacts.owners(): return
+        channel = self._channel_state(sender["id"], renew=True)
+        if channel["expired"]: self._ephemeral(sender["id"], "O modo de respostas em áudio foi desligado por inatividade.")
         if sender["id"] in self.totp_sessions:
             if text.startswith("/"):
                 self._clear_totp_session(sender["id"]); self._ephemeral(sender["id"], "Fluxo TOTP cancelado por um novo comando.")
@@ -515,20 +597,23 @@ class Gateway:
             try: self.app_server.request("thread/delete", {"threadId": old})
             except Exception: pass
 
-    def _conversation_settings(self, chat_id: int) -> dict[str, bool]:
+    def _conversation_settings(self, chat_id: int) -> dict[str, Any]:
         self.database.execute("INSERT OR IGNORE INTO conversations(chat_id, updated_at) VALUES (?, ?)", (str(chat_id), time.time())); self.database.commit()
-        row = self.database.execute("SELECT share_thoughts, delete_thoughts FROM conversations WHERE chat_id=?", (str(chat_id),)).fetchone()
-        return {"share_thoughts": bool(row[0]), "delete_thoughts": bool(row[1])} if row else {"share_thoughts": True, "delete_thoughts": True}
+        row = self.database.execute("SELECT share_thoughts, delete_thoughts, reply_mode, voice_expires_at FROM conversations WHERE chat_id=?", (str(chat_id),)).fetchone()
+        return {"share_thoughts": bool(row[0]), "delete_thoughts": bool(row[1]), "reply_mode": str(row[2] or "text"), "voice_expires_at": row[3]} if row else {"share_thoughts": True, "delete_thoughts": True, "reply_mode": "text", "voice_expires_at": None}
 
     @staticmethod
-    def _config_keyboard(token: str, settings: dict[str, bool], thoughts: bool = False) -> tuple[str, dict[str, Any]]:
-        if not thoughts: return "Configurações do bot", {"inline_keyboard": [[{"text": "Pensamentos", "callback_data": f"cfg:{token}:thoughts"}], [{"text": "Fechar", "callback_data": f"cfg:{token}:close"}]]}
+    def _config_keyboard(token: str, settings: dict[str, Any], thoughts: bool = False, voice_available: bool = False) -> tuple[str, dict[str, Any]]:
+        if not thoughts:
+            rows = [[{"text": "Pensamentos", "callback_data": f"cfg:{token}:thoughts"}]]
+            if voice_available: rows.append([{"text": ("🔊 Respostas em áudio" if settings["reply_mode"] == "audio" else "💬 Respostas em texto"), "callback_data": f"cfg:{token}:audio"}])
+            rows.append([{"text": "Fechar", "callback_data": f"cfg:{token}:close"}]); return "Configurações do bot", {"inline_keyboard": rows}
         shared, deleted = ("☑" if settings["share_thoughts"] else "☐"), ("☑" if settings["delete_thoughts"] else "☐")
         return "Configurações › Pensamentos", {"inline_keyboard": [[{"text": f"{shared} Compartilha Pensamentos", "callback_data": f"cfg:{token}:share"}], [{"text": f"{deleted} Excluir Pensamentos", "callback_data": f"cfg:{token}:delete"}], [{"text": "‹ Voltar", "callback_data": f"cfg:{token}:back"}], [{"text": "Fechar", "callback_data": f"cfg:{token}:close"}]]}
 
     def _open_config(self, chat_id: int) -> None:
         assert self.api
-        token, settings = secrets.token_urlsafe(8), self._conversation_settings(chat_id); text, keyboard = self._config_keyboard(token, settings)
+        token, settings = secrets.token_urlsafe(8), self._conversation_settings(chat_id); text, keyboard = self._config_keyboard(token, settings, voice_available=self.settings.voice_enabled)
         sent = self._ephemeral(chat_id, text, 180, reply_markup=keyboard)
         if isinstance(sent.get("message_id"), int): self.config_sessions[token] = {"chat_id": chat_id, "message_id": sent["message_id"], "expires_at": time.time() + 180}
 
@@ -537,12 +622,15 @@ class Gateway:
         session = self.config_sessions.get(parts[1]); action = parts[2]
         if not session or session["chat_id"] != chat_id or time.time() > float(session["expires_at"]): self._ephemeral(chat_id, "Esta configuração expirou."); return True
         if action == "close": self.config_sessions.pop(parts[1], None); self._delete_later(chat_id, int(session["message_id"])); return True
+        if action == "audio":
+            try: self._set_reply_mode(chat_id, "text" if self._conversation_settings(chat_id)["reply_mode"] == "audio" else "audio")
+            except Exception as error: self._ephemeral(chat_id, str(error)); return True
         settings = self._conversation_settings(chat_id)
         if action in {"share", "delete"}:
             column = "share_thoughts" if action == "share" else "delete_thoughts"; self.database.execute(f"UPDATE conversations SET {column} = NOT {column}, updated_at=? WHERE chat_id=?", (time.time(), str(chat_id))); self.database.commit(); settings = self._conversation_settings(chat_id); thoughts = True
         else: thoughts = action == "thoughts"
-        if action not in {"thoughts", "share", "delete", "back"}: self._ephemeral(chat_id, "Opção de configuração inválida."); return True
-        text, keyboard = self._config_keyboard(parts[1], settings, thoughts)
+        if action not in {"thoughts", "share", "delete", "back", "audio"}: self._ephemeral(chat_id, "Opção de configuração inválida."); return True
+        text, keyboard = self._config_keyboard(parts[1], settings, thoughts, self.settings.voice_enabled)
         try: assert self.api; self.api.edit(chat_id, int(session["message_id"]), text, keyboard)
         except Exception as error: self._record_error(error); self._ephemeral(chat_id, "Não foi possível atualizar esta configuração.")
         return True
@@ -561,19 +649,30 @@ class Gateway:
                 typing_stop.wait(4)
         typing_thread = threading.Thread(target=renew_typing, daemon=True); typing_thread.start()
         try:
+            mode = self._channel_state(chat_id)["reply_mode"]
             if self.settings.app_server_enabled:
-                answer = self._app_turn(chat_id, text, attachments)
+                answer, mode = self._app_turn(chat_id, text, attachments)
             else:
                 if attachments: raise RuntimeError("Anexos exigem o App Server habilitado.")
                 # O processo recebe somente o CODEX_HOME desta instância e o workspace configurado.
                 environment = dict(os.environ); environment["CODEX_HOME"] = str(self.settings.root)
-                prompt = GATEWAY_INSTRUCTIONS + "\n\nMensagem do owner:\n" + text
+                prompt = GATEWAY_INSTRUCTIONS + ("\nResponda para ser ouvido: linguagem natural, breve, sem Markdown, código ou tabelas." if mode == "audio" else "") + "\n\nMensagem do owner:\n" + text
                 command = [self.settings.executable, "exec", "-C", str(self.settings.project), "--skip-git-repo-check", "-m", self.settings.model, "-c", f"model_reasoning_effort={json.dumps(self.settings.effort)}", "-s", self.settings.sandbox, prompt]
                 result = subprocess.run(command, cwd=self.settings.project, env=environment, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=self.settings.turn_timeout)
                 if result.returncode != 0:
                     self._record_error(f"Codex exec exit {result.returncode}: {result.stderr or result.stdout}"); answer = "O agente não conseguiu concluir esta solicitação. Consulte o diagnóstico do Gateway Telegram no setup."
                 else: answer = result.stdout.strip()
-            if answer and self.api: self.api.send(chat_id, answer[-4000:])
+            if answer and self.api:
+                if mode == "audio":
+                    output = self._outbox(chat_id, secrets.token_urlsafe(10)) / f"resposta.{self.settings.voice_format}"
+                    try:
+                        self._tts(answer, output); self.api.send_file("sendVoice", chat_id, output, "voice")
+                    except Exception as voice_error:
+                        self._record_error(voice_error)
+                        if self.settings.voice_fallback_to_text: self.api.send(chat_id, "Não consegui gerar a resposta em áudio.\n\n" + answer[-3500:])
+                        else: self._ephemeral(chat_id, "Não consegui gerar a resposta em áudio. Tente novamente ou altere o modo para texto.")
+                    finally: shutil.rmtree(output.parent, ignore_errors=True)
+                else: self.api.send(chat_id, answer[-4000:])
         except Exception as error:
             self._record_error(error)
             if self.api: self.api.send(chat_id, "O agente não conseguiu concluir esta solicitação.")
