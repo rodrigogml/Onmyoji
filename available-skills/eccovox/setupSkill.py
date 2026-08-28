@@ -11,7 +11,7 @@ import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from setup_ui import item, prompt, result, screen
+from setup_ui import item, note, prompt, result, screen
 
 SKILL = Path(__file__).resolve().parent
 sys.path.insert(0, str(SKILL))
@@ -23,6 +23,20 @@ def root_from(args: argparse.Namespace) -> Path:
 
 def config_path(root: Path) -> Path:
     return root / "configs" / "eccovox.toml"
+
+
+def workspace(root: Path) -> Path | None:
+    try:
+        data = tomllib.loads((root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8"))
+        candidate = Path(str(data.get("codex", {}).get("project_directory") or "")).resolve()
+        return candidate if candidate.is_dir() else None
+    except (OSError, tomllib.TOMLDecodeError, AttributeError):
+        return None
+
+
+def activity_directory(root: Path) -> Path | None:
+    current = workspace(root)
+    return current / ".onmyoji" / "eccovox" if current else None
 
 
 def load(path: Path) -> dict:
@@ -49,6 +63,12 @@ def render(data: dict) -> str:
 
 def valid(path: Path, data: dict) -> tuple[bool, str]:
     try:
+        workpath = workspace(path.parent.parent)
+        for profile in data.get("profiles", {}).values():
+            for raw in profile.get("writable_roots", []):
+                candidate = Path(str(raw)).resolve()
+                if not workpath or not candidate.is_relative_to(workpath):
+                    return False, "As raízes de escrita do EccoVox devem estar dentro do workspace configurado do Shikigami."
         from scripts.eccovox import load_config
         for name in data.get("profiles", {}):
             load_config(str(path), name)
@@ -91,11 +111,47 @@ def select_profile(profiles: dict, action: str) -> str | None:
     return names[int(selected) - 1]
 
 
-def test_profile(path: Path, name: str, audio_path: str = "") -> None:
+def ensure_activity_area(root: Path, path: Path, data: dict, name: str) -> bool:
+    """Oferece a área padrão dentro do workpath sem usar CODEX_HOME para artefatos."""
+    profile = data["profiles"][name]; suggested = activity_directory(root)
+    if not suggested:
+        note("O workspace do Shikigami não está configurado; TTS só poderá ser testado após configurá-lo no menu Codex-CLI.")
+        return True
+    readable = [Path(value).resolve() for value in profile.get("readable_roots", [])]
+    writable = [Path(value).resolve() for value in profile.get("writable_roots", [])]
+    if suggested.resolve() in readable and suggested.resolve() in writable:
+        return True
+    screen("EccoVox", "Área de atividade", "TTS/STT usam arquivos temporários dentro do workspace do Shikigami")
+    note(f"Diretório sugerido: {suggested}")
+    note("Nenhum arquivo de atividade do agente será criado em CODEX_HOME/configs.")
+    item("1.", "Configurar área recomendada", "Leitura e escrita")
+    item("2.", "Continuar sem configurar")
+    item("X.", "Voltar")
+    choice = prompt("Opção: ").strip().casefold()
+    if choice in {"x", "\x1b"}: return False
+    if choice == "2": return True
+    if choice != "1": result(False, "Opção inválida."); return False
+    try:
+        suggested.mkdir(parents=True, exist_ok=True)
+        value = str(suggested)
+        if value not in profile["readable_roots"]: profile["readable_roots"].append(value)
+        if value not in profile["writable_roots"]: profile["writable_roots"].append(value)
+        ok, message = save(path, data); result(ok, message)
+        return ok
+    except OSError as error:
+        result(False, f"Não foi possível criar a área de atividade: {error}")
+        return False
+
+
+def test_profile(root: Path, path: Path, name: str) -> None:
     """Exercita o wrapper, o runtime e as raízes permitidas sem reter áudio de teste."""
     from scripts.eccovox import SafeError, execute, load_config
     generated: Path | None = None
     try:
+        data = load(path); accepted, message = valid(path, data)
+        if not accepted:
+            result(False, f"Teste não iniciado: {message}")
+            return
         config = load_config(str(path), name)
         health = execute(config, {"version": 1, "operation": "health.get"})
         status = str(health.get("data", {}).get("status") or "desconhecido")
@@ -107,15 +163,19 @@ def test_profile(path: Path, name: str, audio_path: str = "") -> None:
             response = execute(config, {"version": 1, "operation": "tts.synthesize", "text": "Teste de áudio do Onmyoji.", "output_path": str(generated), "response_format": "wav", "confirm": True})
             result(generated.is_file(), f"TTS aceitou a chamada e gerou {int(response.get('data', {}).get('bytes') or 0)} bytes.")
         else:
-            result(False, "TTS não testado: configure ao menos uma raiz de escrita no perfil.")
-        candidate = Path(audio_path).resolve() if audio_path else generated
+            note("TTS não testado: configure ao menos uma raiz de escrita no workspace do Shikigami.")
+        candidate = generated
+        if not candidate or not candidate.is_file() or not any(candidate.is_relative_to(root) for root in config["readable"]):
+            audio = ask("Áudio local para teste STT (vazio = não testar STT)")
+            if audio is None: return
+            candidate = Path(audio).resolve() if audio else None
         if candidate and candidate.is_file() and any(candidate.is_relative_to(root) for root in config["readable"]):
             execute(config, {"version": 1, "operation": "stt.transcribe", "audio_path": str(candidate)})
             result(True, "STT aceitou o áudio e retornou uma transcrição.")
         elif candidate and candidate.is_file():
             result(False, "STT não testado: o áudio não está em uma raiz de leitura autorizada.")
         else:
-            result(False, "STT não testado: informe um áudio autorizado ou configure uma raiz comum de leitura e escrita.")
+            note("STT não testado: informe um áudio autorizado ou configure uma raiz comum de leitura e escrita.")
     except SafeError as error:
         result(False, f"Teste recusado: {error.message}")
     except (OSError, ValueError) as error:
@@ -140,12 +200,14 @@ def configure(root: Path) -> None:
         if choice == "1":
             name = ask("Nome do perfil", "eccovox")
             if not name or name in profiles or not name.replace("-", "").replace("_", "").isalnum(): result(False, "Nome inválido ou já existente."); continue
-            profile = {"base_url": "http://127.0.0.1:8870", "readable_roots": [], "writable_roots": []}
+            activity = activity_directory(root)
+            profile = {"base_url": "http://127.0.0.1:8870", "readable_roots": [str(activity)] if activity else [], "writable_roots": [str(activity)] if activity else []}
             for key, label in (("base_url", "URL local"),):
                 value = ask(label, profile[key])
                 if value is None: break
                 profile[key] = value
             else:
+                if activity: activity.mkdir(parents=True, exist_ok=True)
                 profiles[name] = profile; ok, message = save(path, data); result(ok, message)
         elif choice in {"2", "3"}:
             name = select_profile(profiles, "Escolha o perfil para editar" if choice == "2" else "Escolha o perfil para excluir")
@@ -165,8 +227,7 @@ def configure(root: Path) -> None:
         elif choice == "4":
             name = select_profile(profiles, "Escolha o perfil para testar")
             if not name: continue
-            audio = ask("Áudio local para teste STT (vazio = usar o áudio TTS, se autorizado)")
-            if audio is not None: test_profile(path, name, audio)
+            if ensure_activity_area(root, path, data, name): test_profile(root, path, name)
         else: result(False, "Opção inválida.")
 
 

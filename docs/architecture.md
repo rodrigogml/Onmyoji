@@ -6,6 +6,10 @@ Uma instalação do Onmyōji é o `CODEX_HOME` dedicado a um Shikigami. Ela cont
 
 O diretório do Shikigami é o workspace exclusivo do agente. Ele contém o projeto e o conhecimento operacional próprio daquele Shikigami, incluindo skills de conhecimento e playbooks em `.agents/skills/`. Ele não abriga as skills de integração fornecidas pelo Onmyōji.
 
+## Arquivos de atividade do agente
+
+`CODEX_HOME` abriga definições, modelos, configurações locais e estado de integração; não é o destino de arquivos produzidos pelo trabalho do agente. Toda skill que gerar, baixar, transcrever, exportar, materializar ou usar arquivos temporários deve direcioná-los a uma subpasta dedicada dentro do workspace do Shikigami. A subpasta deve ser específica da integração e incluída explicitamente nas raízes permitidas da skill e no sandbox quando necessário. Esse padrão permite que Shikigamis sem permissão de escrita em seu próprio `CODEX_HOME` continuem trabalhando normalmente e impede que dados operacionais se confundam com configurações. A skill EccoVox usa por padrão `WORKPATH/.onmyoji/eccovox` como sua área de leitura e escrita.
+
 ```text
 Onmyōji (CODEX_HOME de uma instância)
 ├── available-skills/             # catálogo versionado de skills de integração
