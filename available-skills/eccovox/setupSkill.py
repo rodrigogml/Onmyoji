@@ -80,13 +80,13 @@ def configure(root: Path) -> None:
         screen("EccoVox", "Configuração", "Perfis do serviço local de voz")
         if profiles:
             print("  PERFIS CONFIGURADOS")
-            for index, name in enumerate(sorted(profiles), 1): item(f"{index}.", name)
+            for name in sorted(profiles): print(f"    • {name}")
             print()
         print("  AÇÕES")
-        item("N.", "Criar novo perfil"); item("E.", "Editar perfil existente"); item("R.", "Excluir perfil existente"); item("X.", "Voltar")
+        item("1.", "Criar novo perfil"); item("2.", "Editar perfil existente"); item("3.", "Excluir perfil existente"); item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
-        if choice == "n":
+        if choice == "1":
             name = ask("Nome do perfil", "eccovox")
             if not name or name in profiles or not name.replace("-", "").replace("_", "").isalnum(): result(False, "Nome inválido ou já existente."); continue
             profile = {"base_url": "http://127.0.0.1:8870", "readable_roots": [], "writable_roots": []}
@@ -96,13 +96,13 @@ def configure(root: Path) -> None:
                 profile[key] = value
             else:
                 profiles[name] = profile; ok, message = save(path, data); result(ok, message)
-        elif choice in {"e", "r"}:
+        elif choice in {"2", "3"}:
             names = sorted(profiles)
             if not names: result(False, "Não há perfis configurados."); continue
             selected = ask("Número do perfil")
             if selected is None or not selected.isdigit() or not 1 <= int(selected) <= len(names): result(False, "Seleção inválida."); continue
             name = names[int(selected) - 1]
-            if choice == "r":
+            if choice == "3":
                 if prompt(f"Digite EXCLUIR para remover {name}: ").strip() == "EXCLUIR": del profiles[name]; ok, message = save(path, data); result(ok, message)
                 else: result(False, "Operação cancelada.")
             else:
