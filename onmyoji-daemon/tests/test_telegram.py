@@ -35,6 +35,18 @@ def test_gateway_sandbox_includes_only_configured_activity_root(tmp_path):
     assert policy["type"] == "workspaceWrite" and str(staging.resolve()) in policy["writableRoots"]
 
 
+def test_tts_uses_local_eccovox_profile_only_for_wrapper_selection(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    (data / "telegram.toml").write_text((data / "telegram.toml").read_text(encoding="utf-8") + "\n[voice_reply]\nenabled = true\neccovox_profile = \"eccovox\"\n", encoding="utf-8")
+    gateway = Gateway(Settings.load(tmp_path, data)); output = tmp_path / "voice.opus"; captured = {}
+    def run(command, **kwargs):
+        captured["command"], captured["request"] = command, json.loads(kwargs["input"])
+        output.write_bytes(b"audio")
+        return type("Result", (), {"stdout": json.dumps({"ok": True})})()
+    with patch("onmyoji_daemon.telegram.subprocess.run", side_effect=run): gateway._tts("Teste", output)
+    assert captured["command"][-1] == "eccovox" and "profile" not in captured["request"]
+
+
 def test_contacts_are_local_and_do_not_share_owners(tmp_path):
     left, right = Contacts(tmp_path / "left" / "contacts.json"), Contacts(tmp_path / "right" / "contacts.json")
     left.add_owner({"id": 123, "first_name": "owner"})

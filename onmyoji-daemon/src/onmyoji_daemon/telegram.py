@@ -340,11 +340,17 @@ class Gateway:
     def _tts(self, text: str, output: Path) -> None:
         if not self.settings.voice_enabled: raise RuntimeError("Resposta em áudio não está disponível.")
         wrapper, config = self.settings.root / "available-skills" / "eccovox" / "scripts" / "eccovox.py", self.settings.root / "configs" / "eccovox.toml"
-        request = {"version": 1, "operation": "tts.synthesize", "text": text[:self.settings.voice_max_text], "output_path": str(output), "response_format": self.settings.voice_format, "confirm": True, "language": self.settings.voice_language, "profile": self.settings.voice_profile, "speed": self.settings.voice_speed}
+        # ``voice_profile`` seleciona o perfil local da skill (endpoint e ACLs).
+        # Ele não é um perfil interno do EccoVox; reenviá-lo faria o runtime
+        # rejeitar nomes locais como "eccovox" com HTTP 400.
+        request = {"version": 1, "operation": "tts.synthesize", "text": text[:self.settings.voice_max_text], "output_path": str(output), "response_format": self.settings.voice_format, "confirm": True, "language": self.settings.voice_language, "speed": self.settings.voice_speed}
         process = subprocess.run([sys.executable, str(wrapper), "--config", str(config), "--profile", self.settings.voice_profile], input=json.dumps(request, ensure_ascii=False), text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=180)
         try: result = json.loads(process.stdout)
         except ValueError as error: raise RuntimeError("EccoVox retornou resposta inválida.") from error
-        if not result.get("ok") or not output.is_file() or output.is_symlink(): raise RuntimeError("EccoVox não conseguiu sintetizar a resposta.")
+        if not result.get("ok") or not output.is_file() or output.is_symlink():
+            error = result.get("error", {}) if isinstance(result, dict) else {}
+            detail = str(error.get("message") or "sem detalhe seguro") if isinstance(error, dict) else "sem detalhe seguro"
+            raise RuntimeError(f"EccoVox não conseguiu sintetizar a resposta: {detail}")
 
     def _generation(self, chat_id: int) -> int:
         with self.database_lock:
