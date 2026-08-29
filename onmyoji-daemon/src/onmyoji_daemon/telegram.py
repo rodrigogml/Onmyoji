@@ -87,8 +87,12 @@ class Settings:
         if not 1 <= per_file <= batch <= retained: raise ValueError("Telegram attachment limits are invalid")
         output_bytes, output_count = int(limits.get("max_outbound_media_bytes") or 20 * 1024 * 1024), max(1, int(limits.get("max_outbound_media_per_turn") or 3))
         enabled, voice_profile = bool(voice.get("enabled", False)), str(voice.get("eccovox_profile") or "")
-        voice_format, voice_text, auto_off = str(voice.get("response_format") or "opus").casefold(), int(voice.get("max_text_characters") or 3500), int(voice.get("auto_off_minutes") or 15)
-        if enabled and (not voice_profile or voice_format not in {"opus", "mp3", "wav", "flac"} or not 1 <= voice_text <= 4000 or not 1 <= auto_off <= 1440): raise ValueError("Telegram voice reply configuration is invalid")
+        requested_format, voice_text, auto_off = str(voice.get("response_format") or "mp3").casefold(), int(voice.get("max_text_characters") or 3500), int(voice.get("auto_off_minutes") or 15)
+        # A primeira configuração-modelo usava opus, mas o motor EccoVox atual
+        # ainda o rejeita apesar de anunciá-lo no health. MP3 é suportado pelo
+        # runtime e pelo Telegram; preservamos configurações já criadas.
+        voice_format = "mp3" if requested_format == "opus" else requested_format
+        if enabled and (not voice_profile or voice_format not in {"mp3", "wav", "flac"} or not 1 <= voice_text <= 4000 or not 1 <= auto_off <= 1440): raise ValueError("Telegram voice reply configuration is invalid")
         return cls(root, data_dir, profile, entry, project, str(system.get("executable") or "codex"), str(system.get("model") or ""), str(system.get("model_reasoning_effort") or "medium"), str(system.get("sandbox_mode") or "workspace-write"), str(system.get("approval_policy") or "never"), int(telegram.get("poll_timeout_seconds") or 30), int(agent.get("turn_timeout_seconds") or 900), max(1, int(agent.get("max_parallel_conversations") or 1)), str(agent.get("developer_file") or ""), bool(app_server.get("enabled", False)), idle, per_file, batch, max(1, pending), retained, output_bytes, output_count, enabled, voice_profile, str(voice.get("language") or "pt-BR"), str(voice.get("voice") or ""), float(voice.get("speed") or 1.0), voice_format, voice_text, auto_off, bool(voice.get("fallback_to_text", True)), bool(voice.get("agent_outbound_media", False)))
 
 

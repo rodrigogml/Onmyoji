@@ -20,7 +20,7 @@ import tomllib
 VERSION = 1
 ALLOWED_AUDIO_SUFFIXES = {".wav", ".mp3", ".m4a", ".mp4", ".ogg", ".opus", ".webm", ".flac"}
 ALLOWED_TTS_FORMATS = {"mp3", "wav", "opus", "flac"}
-CONTENT_TYPES = {"mp3": "audio/mpeg", "wav": "audio/wav", "opus": "audio/ogg", "flac": "audio/flac"}
+CONTENT_TYPES = {"mp3": {"audio/mpeg", "audio/mp3"}, "wav": {"audio/wav", "audio/x-wav"}, "opus": {"audio/ogg", "audio/opus"}, "flac": {"audio/flac"}}
 
 
 class SafeError(Exception):
@@ -194,7 +194,7 @@ def synthesize(config: dict[str, Any], request: dict[str, Any]) -> dict[str, Any
     if not audio:
         raise SafeError("runtime_error", "EccoVox returned an empty audio response.")
     expected = CONTENT_TYPES[response_format]
-    if content_type != expected:
+    if content_type not in expected:
         raise SafeError("runtime_error", "EccoVox returned an unexpected audio format.")
     output.write_bytes(audio)
     return {"output_path": str(output), "content_type": content_type, "bytes": len(audio)}
