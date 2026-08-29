@@ -1,0 +1,4 @@
+interface:
+  display_name: Onmyōji Control
+  short_description: Administra skills por ações oficiais do setup
+  default_prompt: Liste as skills de integração e seu estado nesta instância.

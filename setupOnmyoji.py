@@ -72,7 +72,7 @@ class Skill:
 def discover(root: Path = ROOT) -> list[Skill]:
     skills: list[Skill] = []
     for script in sorted((root / CATALOG_DIRECTORY).glob("*/setupSkill.py")):
-        result = subprocess.run([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "describe", "--json"], text=True, capture_output=True)
+        result = subprocess.run([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "describe", "--json"], text=True, encoding="utf-8", errors="replace", capture_output=True)
         try:
             data = json.loads(result.stdout) if result.returncode == 0 else {}
             skills.append(Skill(data["id"], data["title"], script, data.get("description", "")))
@@ -747,7 +747,7 @@ def menu(skills: list[Skill], root: Path) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--action", choices=["menu", "list", "enable", "disable", "configure"], default="menu"); parser.add_argument("--skill"); args = parser.parse_args()
+    parser = argparse.ArgumentParser(); parser.add_argument("--action", choices=["menu", "list", "enable", "disable", "configure", "status"], default="menu"); parser.add_argument("--skill"); parser.add_argument("--json", action="store_true"); args = parser.parse_args()
     skills = discover(); by_id = {skill.identifier: skill for skill in skills}
     initialized, initialization_message = ensure_skill_state(ROOT, skills)
     if not initialized:
@@ -756,13 +756,22 @@ def main() -> int:
     if args.action == "menu": return menu(skills, ROOT)
     if args.action == "list":
         active = enabled_ids(ROOT)
-        for skill in skills: print(f"{skill.identifier}\t{'enabled' if skill.identifier in active else 'disabled'}\t{skill.description}")
+        values = [{"id": skill.identifier, "title": skill.title, "enabled": skill.identifier in active, "description": skill.description} for skill in skills]
+        if args.json: print(json.dumps({"ok": True, "skills": values}, ensure_ascii=False))
+        else:
+            for skill in skills: print(f"{skill.identifier}\t{'enabled' if skill.identifier in active else 'disabled'}\t{skill.description}")
+        return 0
+    if args.action == "status":
+        if args.json: print(json.dumps({"ok": True, "skills": sorted(active) if (active := enabled_ids(ROOT)) else []}, ensure_ascii=False))
+        else: print("\n".join(sorted(enabled_ids(ROOT))))
         return 0
     if args.skill not in by_id: parser.error("--skill deve identificar uma skill descoberta")
-    if args.action == "configure": invoke(by_id[args.skill], ROOT); return 0
+    if args.action == "configure":
+        if args.json: print(json.dumps({"ok": False, "error": {"code": "interactive_only", "message": "Use as ações não interativas declaradas pela própria skill."}}, ensure_ascii=False)); return 2
+        invoke(by_id[args.skill], ROOT); return 0
     active = enabled_ids(ROOT)
     (active.add if args.action == "enable" else active.discard)(args.skill)
-    ok, message = save_enabled(ROOT, active, skills); print(message)
+    ok, message = save_enabled(ROOT, active, skills); print(json.dumps({"ok": ok, "skill": args.skill, "enabled": args.action == "enable", "message": message}, ensure_ascii=False) if args.json else message)
     return 0 if ok else 2
 
 
