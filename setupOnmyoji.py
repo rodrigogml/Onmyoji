@@ -57,6 +57,10 @@ def result(ok: bool, message: str) -> None:
     print("\n    " + Ui.text(label, Ui.bold, color) + "  " + Ui.text(message, color))
 
 
+def note(message: str) -> None:
+    print("    " + Ui.text("›", Ui.cyan, Ui.bold) + "  " + Ui.text(message, Ui.slate))
+
+
 @dataclass(frozen=True)
 class Skill:
     identifier: str
