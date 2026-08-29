@@ -23,24 +23,44 @@ def call(arguments: list[str]) -> dict:
     return value
 
 
-def profile_status(skill: str) -> dict:
+def profile_call(skill: str, action: str, arguments: list[str]) -> dict:
     script = ROOT / "available-skills" / skill / "setupSkill.py"
     if not script.is_file(): return {"ok": False, "error": {"code": "unknown_skill", "message": "Skill não encontrada."}}
-    process = subprocess.run([sys.executable, str(script), "--onmyoji-root", str(ROOT), "--action", "status", "--json"], cwd=ROOT, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=60)
+    try: process = subprocess.run([sys.executable, str(script), "--onmyoji-root", str(ROOT), "--action", action, *arguments, "--json"], cwd=ROOT, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=60)
+    except subprocess.TimeoutExpired: return {"ok": False, "error": {"code": "setup_timeout", "message": "A ação de configuração excedeu 60 segundos."}}
     try:
         value = json.loads(process.stdout)
-        return {"ok": bool(value.get("valid", False)), "skill": skill, "profile_status": value}
-    except json.JSONDecodeError: return {"ok": False, "error": {"code": "unsupported_action", "message": "Esta skill ainda não declara status não interativo."}}
+    except json.JSONDecodeError: return {"ok": False, "error": {"code": "setup_protocol_error", "message": "A skill não retornou JSON válido."}}
+    if action == "status": return {"ok": bool(value.get("valid", False)), "skill": skill, "profile_status": value}
+    if process.returncode and value.get("ok", False): return {"ok": False, "error": {"code": "setup_failed", "message": "A ação de perfil falhou."}}
+    return {"skill": skill, **value}
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("area", choices=["skills", "profiles"]); parser.add_argument("action", choices=["list", "status", "enable", "disable"]); parser.add_argument("skill", nargs="?"); args = parser.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("area", choices=["skills", "profiles"])
+    parser.add_argument("action")
+    parser.add_argument("skill", nargs="?")
+    parser.add_argument("--profile")
+    parser.add_argument("--vault-profile")
+    parser.add_argument("--vault-entry")
+    parser.add_argument("--vault-field", choices=["password", "notes"])
+    parser.add_argument("--access", choices=["read_only", "read_write"])
+    parser.add_argument("--operations")
+    parser.add_argument("--attachment-roots")
+    parser.add_argument("--confirm-delete")
+    args = parser.parse_args()
     if args.area == "skills":
+        if args.action not in {"list", "status", "enable", "disable"}: parser.error("skills aceita: list, status, enable ou disable")
         if args.action in {"enable", "disable"} and not args.skill: parser.error("skill é obrigatória para habilitar ou desabilitar")
-        result = call(["--action", args.action, *( ["--skill", args.skill] if args.skill else [])])
+        result = call(["--action", args.action, *(["--skill", args.skill] if args.skill else [])])
     else:
-        if args.action != "status" or not args.skill: parser.error("profiles aceita somente: profiles status <skill>")
-        result = profile_status(args.skill)
+        actions = {"status": "status", "list": "profile-list", "create": "profile-create", "update": "profile-update", "delete": "profile-delete", "test": "profile-test"}
+        if args.action not in actions or not args.skill: parser.error("profiles aceita: status, list, create, update, delete ou test; informe a skill")
+        command = []
+        for flag, value in (("--profile", args.profile), ("--vault-profile", args.vault_profile), ("--vault-entry", args.vault_entry), ("--vault-field", args.vault_field), ("--access", args.access), ("--operations", args.operations), ("--attachment-roots", args.attachment_roots), ("--confirm-delete", args.confirm_delete)):
+            if value is not None: command += [flag, value]
+        result = profile_call(args.skill, actions[args.action], command)
     print(json.dumps(result, ensure_ascii=False)); return 0 if result.get("ok", False) else 2
 
 

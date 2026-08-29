@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import re
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -14,6 +16,9 @@ ROOT = Path(__file__).resolve().parents[2]
 MODEL = Path(__file__).resolve().parent / "configs" / "todoist.toml.model"
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from setup_ui import choose_keepass_profile, item, prompt, result, screen, suggested_vault_entry
+
+if hasattr(sys.stdout, "reconfigure"): sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"): sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 
 def config_path(root: Path) -> Path: return root / "configs" / "todoist.toml"
@@ -63,6 +68,70 @@ def save(path: Path, data: dict[str, Any]) -> tuple[bool, str]:
         else: path.write_text(old, encoding="utf-8", newline="\n")
         return False, f"Falha ao salvar; alteração desfeita: {error}"
     return True, message
+
+
+def public_profile(name: str, profile: dict[str, Any]) -> dict[str, Any]:
+    """Return only operator-safe profile metadata; never resolve the Vault secret."""
+    return {"name": name, "vault_profile": profile["vault_profile"], "vault_entry_path": profile["vault_entry_path"], "vault_field": profile["vault_field"], "access": profile["access"], "allowed_operations": profile["allowed_operations"], "allowed_attachment_roots": profile["allowed_attachment_roots"]}
+
+
+def profile_name(value: str | None) -> str:
+    name = (value or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", name): raise ValueError("O nome do perfil deve usar somente letras, números, hífen ou sublinhado.")
+    return name
+
+
+def split_values(value: str | None) -> list[str]:
+    return [item.strip() for item in (value or "").split(";") if item.strip()]
+
+
+def profile_result(path: Path, args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    """Official non-interactive profile contract used by onmyoji-control."""
+    try: data = load(path)
+    except ValueError as error: return 2, {"ok": False, "error": {"code": "invalid_config", "message": str(error)}}
+    action = args.action
+    if action == "profile-list":
+        valid, message = validate(data)
+        return (0 if valid else 2), {"ok": valid, "configured": bool(data["profiles"]), "profiles": [public_profile(name, profile) for name, profile in sorted(data["profiles"].items())], "message": message}
+    try: name = profile_name(args.profile)
+    except ValueError as error: return 2, {"ok": False, "error": {"code": "invalid_profile_name", "message": str(error)}}
+    exists = name in data["profiles"]
+    if action == "profile-test":
+        if not exists: return 2, {"ok": False, "error": {"code": "profile_not_found", "message": "Perfil Todoist não encontrado."}}
+        wrapper = Path(__file__).resolve().parent / "scripts" / "todoist.py"
+        try:
+            process = subprocess.run([sys.executable, str(wrapper), "--config", str(path), "--profile", name], input=json.dumps({"version": 1, "operation": "user.get"}), text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=45)
+            payload = json.loads(process.stdout)
+        except subprocess.TimeoutExpired: return 2, {"ok": False, "error": {"code": "timeout", "message": "O teste Todoist excedeu 45 segundos."}}
+        except (OSError, json.JSONDecodeError): return 2, {"ok": False, "error": {"code": "test_protocol_error", "message": "O teste Todoist não retornou JSON válido."}}
+        if process.returncode or not payload.get("ok", False):
+            error = payload.get("error", {}) if isinstance(payload, dict) else {}
+            return 2, {"ok": False, "profile": name, "error": {"code": error.get("code", "test_failed"), "message": error.get("message", "O teste de conexão Todoist falhou.")}}
+        return 0, {"ok": True, "profile": name, "message": "Conexão e credencial Todoist confirmadas."}
+    if action == "profile-create":
+        if exists: return 2, {"ok": False, "error": {"code": "profile_exists", "message": "Já existe um perfil com este nome."}}
+        if not args.vault_profile or not args.vault_entry: return 2, {"ok": False, "error": {"code": "missing_required_field", "message": "vault-profile e vault-entry são obrigatórios para criar um perfil."}}
+        candidate = copy.deepcopy(data)
+        candidate["profiles"][name] = {"vault_profile": args.vault_profile.strip(), "vault_entry_path": args.vault_entry.strip(), "vault_field": args.vault_field or "password", "access": args.access or "read_only", "allowed_operations": split_values(args.operations), "allowed_attachment_roots": split_values(args.attachment_roots)}
+    elif action == "profile-update":
+        if not exists: return 2, {"ok": False, "error": {"code": "profile_not_found", "message": "Perfil Todoist não encontrado."}}
+        candidate = copy.deepcopy(data); profile = candidate["profiles"][name]
+        fields = {"vault_profile": args.vault_profile, "vault_entry_path": args.vault_entry, "vault_field": args.vault_field, "access": args.access}
+        for key, value in fields.items():
+            if value is not None:
+                profile[key] = value.strip() if isinstance(value, str) else value
+        if args.operations is not None: profile["allowed_operations"] = split_values(args.operations)
+        if args.attachment_roots is not None: profile["allowed_attachment_roots"] = split_values(args.attachment_roots)
+    elif action == "profile-delete":
+        if not exists: return 2, {"ok": False, "error": {"code": "profile_not_found", "message": "Perfil Todoist não encontrado."}}
+        if args.confirm_delete != "DELETE": return 2, {"ok": False, "error": {"code": "confirmation_required", "message": "Confirme a exclusão com --confirm-delete DELETE após pedido explícito do usuário."}}
+        candidate = copy.deepcopy(data); del candidate["profiles"][name]
+    else: return 2, {"ok": False, "error": {"code": "unsupported_action", "message": "Ação de perfil não suportada."}}
+    ok, message = save(path, candidate)
+    if not ok: return 2, {"ok": False, "error": {"code": "validation_failed", "message": message}}
+    response: dict[str, Any] = {"ok": True, "message": message, "profile": name}
+    if action != "profile-delete": response["configuration"] = public_profile(name, candidate["profiles"][name])
+    return 0, response
 
 
 def choose_profile(profiles: dict[str, Any], action: str) -> str | None:
@@ -139,13 +208,29 @@ def configure(root: Path) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--onmyoji-root", type=Path, default=ROOT); parser.add_argument("--action", choices=["describe", "status", "configure"], default="configure"); parser.add_argument("--json", action="store_true"); args = parser.parse_args(); path = config_path(args.onmyoji_root)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--onmyoji-root", type=Path, default=ROOT)
+    parser.add_argument("--action", choices=["describe", "status", "configure", "profile-list", "profile-create", "profile-update", "profile-delete", "profile-test"], default="configure")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--profile")
+    parser.add_argument("--vault-profile")
+    parser.add_argument("--vault-entry")
+    parser.add_argument("--vault-field", choices=["password", "notes"])
+    parser.add_argument("--access", choices=["read_only", "read_write"])
+    parser.add_argument("--operations", help="Operações separadas por ponto e vírgula; vazio limpa a restrição.")
+    parser.add_argument("--attachment-roots", help="Raízes separadas por ponto e vírgula; vazio libera todas.")
+    parser.add_argument("--confirm-delete")
+    args = parser.parse_args(); path = config_path(args.onmyoji_root)
     if args.action == "describe":
         value = {"id": "todoist", "title": "Todoist", "description": "Tarefas, projetos e sincronização com token no KeePass Vault."}; print(json.dumps(value, ensure_ascii=False) if args.json else value["title"]); return 0
     if args.action == "status":
         try: data = load(path)
         except ValueError as error: print(json.dumps({"configured": False, "valid": False, "message": str(error)}, ensure_ascii=False) if args.json else error); return 2
-        valid, message = validate(data); value = {"configured": bool(data["profiles"]), "valid": valid, "message": message}; print(json.dumps(value, ensure_ascii=False) if args.json else message); return 0 if valid else 2
+        valid, message = validate(data); value = {"configured": bool(data["profiles"]), "valid": valid, "profiles": sorted(data["profiles"]), "message": message}; print(json.dumps(value, ensure_ascii=False) if args.json else message); return 0 if valid else 2
+    if args.action.startswith("profile-"):
+        code, value = profile_result(path, args)
+        print(json.dumps(value, ensure_ascii=False) if args.json else value.get("message", value.get("error", {}).get("message", "Falha ao processar perfil.")))
+        return code
     configure(args.onmyoji_root); return 0
 
 
