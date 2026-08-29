@@ -180,6 +180,16 @@ class AppServerTurn:
     seen_thoughts: set[str] = field(default_factory=set)
 
 
+@dataclass
+class MenuSession:
+    token: str
+    chat_id: int
+    message_id: int
+    options: list[dict[str, str]]
+    completed: threading.Event = field(default_factory=threading.Event)
+    selected: dict[str, str] | None = None
+
+
 class Vault:
     def __init__(self, settings: Settings): self.settings = settings
     def read(self, entry: str, field: str = "password") -> str:
@@ -284,7 +294,7 @@ class Gateway:
         self.identity = settings.root.name.removeprefix("Onmyoji-").strip() or "Shikigami"
         self.activity_root = settings.project / ".onmyoji" / "telegram"; self.archive_root = self.activity_root / "attachments"; self.staging_root = self.activity_root / "staging"
         self.archive_root.mkdir(parents=True, exist_ok=True); self.staging_root.mkdir(parents=True, exist_ok=True)
-        self.api: TelegramApi | None = None; self.pair: tuple[str, float] | None = None; self.offset = 0; self.work = threading.BoundedSemaphore(settings.parallel); self.totp_sessions: dict[int, dict[str, Any]] = {}; self.config_sessions: dict[str, dict[str, Any]] = {}; self.last_error: str | None = None; self.cleanup_path = settings.data_dir / "state" / "totp-cleanup.json"; self.pending_deletions = json_file(self.cleanup_path, {}); self.app_server: CodexAppServer | None = None; self.app_server_lock = threading.RLock(); self.app_turns: dict[str, AppServerTurn] = {}; self.last_app_activity = time.monotonic(); self.turn_locks: dict[int, threading.Lock] = {}; self.turn_locks_lock = threading.Lock(); self.workers: set[int] = set(); self.workers_lock = threading.Lock()
+        self.api: TelegramApi | None = None; self.pair: tuple[str, float] | None = None; self.offset = 0; self.work = threading.BoundedSemaphore(settings.parallel); self.totp_sessions: dict[int, dict[str, Any]] = {}; self.config_sessions: dict[str, dict[str, Any]] = {}; self.menu_sessions: dict[str, MenuSession] = {}; self.menu_lock = threading.RLock(); self.last_error: str | None = None; self.cleanup_path = settings.data_dir / "state" / "totp-cleanup.json"; self.pending_deletions = json_file(self.cleanup_path, {}); self.app_server: CodexAppServer | None = None; self.app_server_lock = threading.RLock(); self.app_turns: dict[str, AppServerTurn] = {}; self.last_app_activity = time.monotonic(); self.turn_locks: dict[int, threading.Lock] = {}; self.turn_locks_lock = threading.Lock(); self.workers: set[int] = set(); self.workers_lock = threading.Lock()
     def _totp_enabled(self) -> bool:
         try: return bool(tomllib.loads((self.settings.data_dir / "telegram.toml").read_text(encoding="utf-8")).get("totp", {}).get("enabled", False))
         except (OSError, tomllib.TOMLDecodeError): return False
@@ -459,6 +469,35 @@ class Gateway:
         if tool == "set_reply_mode":
             state = self._set_reply_mode(active.chat_id, str(arguments.get("mode") or "")); active.reply_mode = state["reply_mode"]
             return {"contentItems": [{"type": "inputText", "text": json.dumps(state, ensure_ascii=False)}], "success": True}
+        if tool == "send_message":
+            text, ttl = arguments.get("text"), arguments.get("ttl_seconds", 0)
+            if not isinstance(text, str) or not 1 <= len(text.strip()) <= 4000: raise RuntimeError("text deve ter entre 1 e 4000 caracteres.")
+            if not isinstance(ttl, int) or isinstance(ttl, bool) or not 0 <= ttl <= 86400: raise RuntimeError("ttl_seconds deve estar entre 0 e 86400.")
+            if not self.api: raise RuntimeError("Gateway Telegram indisponível.")
+            sent = self.api.send(active.chat_id, text, protect_content=bool(arguments.get("protect_content", False))); message_id = sent.get("message_id")
+            if ttl and isinstance(message_id, int): self._schedule_delete(active.chat_id, message_id, ttl)
+            return {"contentItems": [{"type": "inputText", "text": json.dumps({"sent": True, "ephemeral": bool(ttl)}, ensure_ascii=False)}], "success": True}
+        if tool == "ask_menu":
+            question, options, timeout = arguments.get("question"), arguments.get("options"), arguments.get("timeout_seconds", 120)
+            if not isinstance(question, str) or not 1 <= len(question.strip()) <= 4000: raise RuntimeError("question deve ter entre 1 e 4000 caracteres.")
+            if not isinstance(options, list) or not 2 <= len(options) <= 20 or not isinstance(timeout, int) or not 10 <= timeout <= 300: raise RuntimeError("Menu inválido.")
+            normalized, ids = [], set()
+            for option in options:
+                if not isinstance(option, dict) or not isinstance(option.get("id"), str) or not isinstance(option.get("label"), str) or not 1 <= len(option["id"]) <= 64 or not 1 <= len(option["label"]) <= 64 or option["id"] in ids: raise RuntimeError("Cada opção exige id e label únicos de até 64 caracteres.")
+                ids.add(option["id"]); normalized.append({"id": option["id"], "label": option["label"]})
+            if not self.api: raise RuntimeError("Gateway Telegram indisponível.")
+            token = secrets.token_urlsafe(12); keyboard = {"inline_keyboard": [[{"text": option["label"], "callback_data": f"ag:{token}:{index}"}] for index, option in enumerate(normalized)]}
+            sent = self.api.send(active.chat_id, question, reply_markup=keyboard, protect_content=bool(arguments.get("protect_content", False))); message_id = sent.get("message_id")
+            if not isinstance(message_id, int): raise RuntimeError("Telegram não retornou o identificador do menu.")
+            session = MenuSession(token, active.chat_id, message_id, normalized)
+            with self.menu_lock: self.menu_sessions[token] = session
+            try:
+                if not session.completed.wait(timeout): raise RuntimeError("O menu expirou sem seleção.")
+                return {"contentItems": [{"type": "inputText", "text": json.dumps({"selected": session.selected}, ensure_ascii=False)}], "success": True}
+            finally:
+                with self.menu_lock: self.menu_sessions.pop(token, None)
+                try: self.api.delete(active.chat_id, message_id)
+                except Exception: pass
         if tool == "get_outbox":
             if not self.settings.agent_outbound_media: raise RuntimeError("Envio de mídia pelo agente está desabilitado.")
             active.outbox = active.outbox or self._outbox(active.chat_id, active.thread_id)
@@ -530,6 +569,7 @@ class Gateway:
             try: client.request("thread/resume", {"threadId": thread_id, **params}); return thread_id
             except CodexProtocolError: self.database.execute("UPDATE conversations SET codex_thread_id=NULL WHERE chat_id=?", (str(chat_id),)); self.database.commit()
         tools = [{"type": "namespace", "name": "telegram_gateway", "description": "Interface restrita à DM Telegram ativa.", "tools": [{"type": "function", "name": "get_channel_state", "description": "Consulta o modo de resposta da conversa ativa.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "set_reply_mode", "description": "Define a resposta final como texto ou áudio nesta conversa.", "inputSchema": {"type": "object", "properties": {"mode": {"type": "string", "enum": ["text", "audio"]}}, "required": ["mode"], "additionalProperties": False}}, {"type": "function", "name": "get_outbox", "description": "Retorna o diretório temporário seguro para arquivos que serão enviados neste turno.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "send_file", "description": "Envia um arquivo do outbox do turno à conversa ativa.", "inputSchema": {"type": "object", "properties": {"file_name": {"type": "string"}, "kind": {"type": "string", "enum": ["photo", "document", "audio"]}, "caption": {"type": "string"}}, "required": ["file_name", "kind"], "additionalProperties": False}}, {"type": "function", "name": "list_attachments", "description": "Lista os metadados dos anexos retidos na conversa atual.", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False}}, {"type": "function", "name": "materialize_attachment", "description": "Copia um anexo retido para o staging seguro do turno atual.", "inputSchema": {"type": "object", "properties": {"attachment_id": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["attachment_id"], "additionalProperties": False}}]}]
+        tools[0]["tools"].extend([{"type": "function", "name": "send_message", "description": "Envia mensagem adicional somente à DM Telegram ativa; pode expirar automaticamente.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "minLength": 1, "maxLength": 4000}, "ttl_seconds": {"type": "integer", "minimum": 0, "maximum": 86400}, "protect_content": {"type": "boolean"}}, "required": ["text"], "additionalProperties": False}}, {"type": "function", "name": "ask_menu", "description": "Exibe opções ao owner da DM ativa e aguarda a seleção com prazo limitado.", "inputSchema": {"type": "object", "properties": {"question": {"type": "string", "minLength": 1, "maxLength": 4000}, "options": {"type": "array", "minItems": 2, "maxItems": 20, "items": {"type": "object", "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 64}, "label": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["id", "label"], "additionalProperties": False}}, "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": 300}, "protect_content": {"type": "boolean"}}, "required": ["question", "options"], "additionalProperties": False}}])
         started = client.request("thread/start", {**params, "serviceName": "onmyoji_telegram", "dynamicTools": tools}); thread = started.get("thread") if isinstance(started.get("thread"), dict) else started; thread_id = str(thread.get("id") or "") if isinstance(thread, dict) else ""
         if not thread_id: raise CodexProtocolError("Codex App Server não retornou uma thread")
         self.database.execute("UPDATE conversations SET codex_thread_id=?, updated_at=? WHERE chat_id=?", (thread_id, time.time(), str(chat_id))); self.database.commit(); return thread_id
@@ -850,6 +890,12 @@ class Gateway:
         data = str(callback.get("data") or ""); parts = data.split(":")
         try: self.api.call("answerCallbackQuery", {"callback_query_id": callback["id"]})
         except Exception: pass
+        if len(parts) == 3 and parts[0] == "ag":
+            with self.menu_lock: session = self.menu_sessions.get(parts[1])
+            try: index = int(parts[2])
+            except ValueError: index = -1
+            if not session or session.chat_id != chat_id or session.message_id != message.get("message_id") or not 0 <= index < len(session.options): self._ephemeral(chat_id, "Seleção inválida ou expirada."); return
+            session.selected = session.options[index]; session.completed.set(); return
         if self._config_callback(chat_id, callback, parts): return
         if len(parts) < 3 or parts[0] != "totp": self._ephemeral(chat_id, "Ação inválida ou expirada."); return
         session = self.totp_sessions.get(chat_id)
