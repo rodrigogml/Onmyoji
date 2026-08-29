@@ -12,6 +12,11 @@ poll_timeout_seconds = 30
 max_parallel_conversations = 1
 turn_timeout_seconds = 900
 developer_file = ""
+# Preferências por conversa que owners podem escolher em /config. Listas vazias
+# restringem a escolha ao modelo e esforço padrão definidos pelo administrador.
+owner_execution_preferences = true
+owner_allowed_models = []
+owner_allowed_reasoning_efforts = []
 
 [app_server]
 # Mantém um Codex App Server exclusivo desta instância para reutilizar a conversa.

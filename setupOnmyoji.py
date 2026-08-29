@@ -538,7 +538,9 @@ def daemon_menu(root: Path) -> None:
             except (OSError, ValueError): enabled = False
             try:
                 telegram_settings = tomllib.loads(telegram_path.read_text(encoding="utf-8")); totp_enabled = bool(telegram_settings.get("totp", {}).get("enabled", False)); app_server_enabled = bool(telegram_settings.get("app_server", {}).get("enabled", False)); app_server_idle = int(telegram_settings.get("app_server", {}).get("idle_timeout_seconds") or 1800); voice_enabled = bool(telegram_settings.get("voice_reply", {}).get("enabled", False)); voice_profile = str(telegram_settings.get("voice_reply", {}).get("eccovox_profile") or ""); voice_auto_off = int(telegram_settings.get("voice_reply", {}).get("auto_off_minutes") or 15); outbound_media = bool(telegram_settings.get("voice_reply", {}).get("agent_outbound_media", False))
-            except (OSError, tomllib.TOMLDecodeError): totp_enabled, app_server_enabled, app_server_idle, voice_enabled, voice_profile, voice_auto_off, outbound_media = False, False, 1800, False, "", 15, False
+            except (OSError, tomllib.TOMLDecodeError): telegram_settings = {}; totp_enabled, app_server_enabled, app_server_idle, voice_enabled, voice_profile, voice_auto_off, outbound_media = False, False, 1800, False, "", 15, False
+            agent_preferences = telegram_settings.get("agent", {}) if "telegram_settings" in locals() and isinstance(telegram_settings.get("agent", {}), dict) else {}
+            owner_preferences = bool(agent_preferences.get("owner_execution_preferences", True)); owner_models = ";".join(str(value) for value in agent_preferences.get("owner_allowed_models", []) if isinstance(value, str)); owner_efforts = ";".join(str(value) for value in agent_preferences.get("owner_allowed_reasoning_efforts", []) if isinstance(value, str))
             screen("Gateway Telegram", "Credenciais permanecem exclusivamente no KeePass")
             item("1.", "Desabilitar Telegram" if enabled else "Habilitar Telegram")
             item("2.", "Configurar credencial do bot", "Perfil KeePass e referência da entrada")
@@ -551,6 +553,7 @@ def daemon_menu(root: Path) -> None:
             item("9.", "Desabilitar App Server" if app_server_enabled else "Habilitar App Server", "Conversa persistente por Shikigami" if app_server_enabled else "Usa codex exec por turno")
             item("10.", "Tempo de inatividade do App Server", f"{app_server_idle // 60} min · encerra somente sem turnos ativos")
             item("11.", "Configurar respostas em áudio", (f"EccoVox: {voice_profile} · auto-off: {voice_auto_off} min" if voice_enabled else "Desabilitadas"))
+            item("12.", "Preferências de execução do owner", "Habilitadas" if owner_preferences else "Desabilitadas")
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
@@ -664,6 +667,13 @@ def daemon_menu(root: Path) -> None:
                     confirm = prompt("Aplicar essa autorização agora? [S/n]: ").strip().casefold()
                     if confirm not in {"", "s", "sim"}: result(False, "Configuração cancelada; nenhuma permissão foi alterada."); continue
                 arguments = [sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-voice-reply", "--profile", profile, "--auto-off-minutes", str(minutes)] + (["--enabled"] if active else []) + (["--agent-outbound-media"] if media == "s" else [])
+                changed = command(arguments, quiet=True); result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
+                if changed.returncode == 0: offer_restart()
+            elif choice == "12":
+                enabled = prompt(f"Permitir que o owner escolha modelo e raciocínio por conversa? [{'S' if owner_preferences else 'n'}]: ").strip().casefold() or ("s" if owner_preferences else "n")
+                models = prompt(f"Modelos permitidos, separados por ; (vazio = padrão do setup) [{owner_models}]: ").strip() or owner_models
+                efforts = prompt(f"Esforços permitidos, separados por ; (vazio = padrão do setup) [{owner_efforts}]: ").strip() or owner_efforts
+                arguments = [sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-owner-execution-preferences", "--models", models, "--efforts", efforts] + (["--disabled"] if enabled != "s" else [])
                 changed = command(arguments, quiet=True); result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
                 if changed.returncode == 0: offer_restart()
             else: result(False, "Opção inválida.")

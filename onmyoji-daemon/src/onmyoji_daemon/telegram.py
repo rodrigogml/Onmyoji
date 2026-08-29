@@ -51,6 +51,9 @@ class Settings:
     turn_timeout: int
     parallel: int
     developer_file: str
+    owner_execution_preferences: bool
+    owner_allowed_models: tuple[str, ...]
+    owner_allowed_efforts: tuple[str, ...]
     app_server_enabled: bool
     app_server_idle_seconds: int
     max_attachment_bytes: int
@@ -86,6 +89,8 @@ class Settings:
         per_file, batch, pending, retained = int(limits.get("max_attachment_bytes") or 20 * 1024 * 1024), int(limits.get("max_batch_attachment_bytes") or 50 * 1024 * 1024), int(limits.get("max_pending_items") or 50), int(limits.get("max_retained_attachment_bytes") or 250 * 1024 * 1024)
         if not 1 <= per_file <= batch <= retained: raise ValueError("Telegram attachment limits are invalid")
         output_bytes, output_count = int(limits.get("max_outbound_media_bytes") or 20 * 1024 * 1024), max(1, int(limits.get("max_outbound_media_per_turn") or 3))
+        permitted_models = tuple(dict.fromkeys(str(value).strip() for value in agent.get("owner_allowed_models", []) if isinstance(value, str) and value.strip())) or (str(system.get("model") or ""),)
+        permitted_efforts = tuple(dict.fromkeys(str(value).strip() for value in agent.get("owner_allowed_reasoning_efforts", []) if isinstance(value, str) and value.strip())) or (str(system.get("model_reasoning_effort") or "medium"),)
         enabled, voice_profile = bool(voice.get("enabled", False)), str(voice.get("eccovox_profile") or "")
         requested_format, voice_text, auto_off = str(voice.get("response_format") or "mp3").casefold(), int(voice.get("max_text_characters") or 3500), int(voice.get("auto_off_minutes") or 15)
         # A primeira configuração-modelo usava opus, mas o motor EccoVox atual
@@ -93,7 +98,7 @@ class Settings:
         # runtime e pelo Telegram; preservamos configurações já criadas.
         voice_format = "mp3" if requested_format == "opus" else requested_format
         if enabled and (not voice_profile or voice_format not in {"mp3", "wav", "flac"} or not 1 <= voice_text <= 4000 or not 1 <= auto_off <= 1440): raise ValueError("Telegram voice reply configuration is invalid")
-        return cls(root, data_dir, profile, entry, project, str(system.get("executable") or "codex"), str(system.get("model") or ""), str(system.get("model_reasoning_effort") or "medium"), str(system.get("sandbox_mode") or "workspace-write"), str(system.get("approval_policy") or "never"), int(telegram.get("poll_timeout_seconds") or 30), int(agent.get("turn_timeout_seconds") or 900), max(1, int(agent.get("max_parallel_conversations") or 1)), str(agent.get("developer_file") or ""), bool(app_server.get("enabled", False)), idle, per_file, batch, max(1, pending), retained, output_bytes, output_count, enabled, voice_profile, str(voice.get("language") or "pt-BR"), str(voice.get("voice") or ""), float(voice.get("speed") or 1.0), voice_format, voice_text, auto_off, bool(voice.get("fallback_to_text", True)), bool(voice.get("agent_outbound_media", False)))
+        return cls(root, data_dir, profile, entry, project, str(system.get("executable") or "codex"), str(system.get("model") or ""), str(system.get("model_reasoning_effort") or "medium"), str(system.get("sandbox_mode") or "workspace-write"), str(system.get("approval_policy") or "never"), int(telegram.get("poll_timeout_seconds") or 30), int(agent.get("turn_timeout_seconds") or 900), max(1, int(agent.get("max_parallel_conversations") or 1)), str(agent.get("developer_file") or ""), bool(agent.get("owner_execution_preferences", True)), permitted_models, permitted_efforts, bool(app_server.get("enabled", False)), idle, per_file, batch, max(1, pending), retained, output_bytes, output_count, enabled, voice_profile, str(voice.get("language") or "pt-BR"), str(voice.get("voice") or ""), float(voice.get("speed") or 1.0), voice_format, voice_text, auto_off, bool(voice.get("fallback_to_text", True)), bool(voice.get("agent_outbound_media", False)))
 
 
 class CodexProtocolError(RuntimeError): pass
@@ -266,7 +271,7 @@ class Gateway:
         self.settings, self.stop_event = settings, threading.Event(); self.contacts = Contacts(settings.data_dir / "contacts.json")
         (settings.data_dir / "state").mkdir(parents=True, exist_ok=True); self.database = sqlite3.connect(settings.data_dir / "state" / "gateway.sqlite3", check_same_thread=False); self.database_lock = threading.RLock()
         self.database.execute("CREATE TABLE IF NOT EXISTS conversations(chat_id TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL, share_thoughts INTEGER NOT NULL DEFAULT 1, delete_thoughts INTEGER NOT NULL DEFAULT 1, codex_thread_id TEXT)")
-        for column, definition in (("share_thoughts", "INTEGER NOT NULL DEFAULT 1"), ("delete_thoughts", "INTEGER NOT NULL DEFAULT 1"), ("codex_thread_id", "TEXT"), ("reply_mode", "TEXT NOT NULL DEFAULT 'text'"), ("voice_expires_at", "REAL"), ("last_interaction_at", "REAL NOT NULL DEFAULT 0"), ("settings_revision", "INTEGER NOT NULL DEFAULT 0")):
+        for column, definition in (("share_thoughts", "INTEGER NOT NULL DEFAULT 1"), ("delete_thoughts", "INTEGER NOT NULL DEFAULT 1"), ("codex_thread_id", "TEXT"), ("reply_mode", "TEXT NOT NULL DEFAULT 'text'"), ("voice_expires_at", "REAL"), ("last_interaction_at", "REAL NOT NULL DEFAULT 0"), ("settings_revision", "INTEGER NOT NULL DEFAULT 0"), ("owner_model", "TEXT"), ("owner_effort", "TEXT")):
             try: self.database.execute(f"ALTER TABLE conversations ADD COLUMN {column} {definition}")
             except sqlite3.OperationalError: pass
         self.database.execute("CREATE TABLE IF NOT EXISTS conversation_attachments(id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, generation INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, mime_type TEXT, size INTEGER NOT NULL, archive_path TEXT NOT NULL, created_at REAL NOT NULL)")
@@ -519,7 +524,8 @@ class Gateway:
         row = self.database.execute("SELECT codex_thread_id FROM conversations WHERE chat_id=?", (str(chat_id),)).fetchone(); thread_id = str(row[0]) if row and row[0] else ""
         instructions = GATEWAY_INSTRUCTIONS + f"\n\nYour Shikigami identity is {self.identity}. When asked who you are, identify yourself as {self.identity}, not as Codex."
         params = {"cwd": str(self.settings.project), "approvalPolicy": self.settings.approval, "sandbox": self.settings.sandbox, "developerInstructions": instructions}
-        if self.settings.model: params["model"] = self.settings.model
+        model, _effort = self._execution_preferences(chat_id)
+        if model: params["model"] = model
         if thread_id:
             try: client.request("thread/resume", {"threadId": thread_id, **params}); return thread_id
             except CodexProtocolError: self.database.execute("UPDATE conversations SET codex_thread_id=NULL WHERE chat_id=?", (str(chat_id),)); self.database.commit()
@@ -565,8 +571,9 @@ class Gateway:
                     transcript = self._transcribe_voice(staged); detail = f"\nTranscrição local: {transcript}" if transcript else "\nTranscrição local indisponível; trate o arquivo de voz diretamente."
                     inputs.append({"type": "text", "text": f"Mensagem de voz recebida: {attachment['name']}\nArquivo local temporário: {staged}{detail}"})
                 else: inputs.append({"type": "text", "text": f"Anexo recebido ({attachment['kind']}): {attachment['name']}\nArquivo local temporário: {staged}"})
-            parameters: dict[str, Any] = {"threadId": thread_id, "input": inputs, "cwd": str(self.settings.project), "approvalPolicy": self.settings.approval, "sandboxPolicy": self._app_sandbox_policy(), "effort": self.settings.effort}
-            if self.settings.model: parameters["model"] = self.settings.model
+            model, effort = self._execution_preferences(chat_id)
+            parameters: dict[str, Any] = {"threadId": thread_id, "input": inputs, "cwd": str(self.settings.project), "approvalPolicy": self.settings.approval, "sandboxPolicy": self._app_sandbox_policy(), "effort": effort}
+            if model: parameters["model"] = model
             result = client.request("turn/start", parameters)
             turn = result.get("turn") if isinstance(result.get("turn"), dict) else result
             if isinstance(turn, dict): active.turn_id = str(turn.get("id") or "") or None
@@ -628,28 +635,38 @@ class Gateway:
         with self.database_lock:
             self.database.execute("DELETE FROM inbox_items WHERE chat_id=?", (str(chat_id),)); self.database.commit()
         self.database.execute("INSERT OR IGNORE INTO conversations(chat_id, updated_at) VALUES (?, ?)", (str(chat_id), time.time()))
-        self.database.execute("UPDATE conversations SET generation=generation+1, codex_thread_id=NULL, updated_at=? WHERE chat_id=?", (time.time(), str(chat_id))); self.database.commit()
+        self.database.execute("UPDATE conversations SET generation=generation+1, codex_thread_id=NULL, owner_model=NULL, owner_effort=NULL, updated_at=? WHERE chat_id=?", (time.time(), str(chat_id))); self.database.commit()
         if old and self.app_server and self.app_server.running():
             try: self.app_server.request("thread/delete", {"threadId": old})
             except Exception: pass
 
     def _conversation_settings(self, chat_id: int) -> dict[str, Any]:
         self.database.execute("INSERT OR IGNORE INTO conversations(chat_id, updated_at) VALUES (?, ?)", (str(chat_id), time.time())); self.database.commit()
-        row = self.database.execute("SELECT share_thoughts, delete_thoughts, reply_mode, voice_expires_at FROM conversations WHERE chat_id=?", (str(chat_id),)).fetchone()
-        return {"share_thoughts": bool(row[0]), "delete_thoughts": bool(row[1]), "reply_mode": str(row[2] or "text"), "voice_expires_at": row[3]} if row else {"share_thoughts": True, "delete_thoughts": True, "reply_mode": "text", "voice_expires_at": None}
+        row = self.database.execute("SELECT share_thoughts, delete_thoughts, reply_mode, voice_expires_at, owner_model, owner_effort FROM conversations WHERE chat_id=?", (str(chat_id),)).fetchone()
+        return {"share_thoughts": bool(row[0]), "delete_thoughts": bool(row[1]), "reply_mode": str(row[2] or "text"), "voice_expires_at": row[3], "owner_model": str(row[4] or ""), "owner_effort": str(row[5] or "")} if row else {"share_thoughts": True, "delete_thoughts": True, "reply_mode": "text", "voice_expires_at": None, "owner_model": "", "owner_effort": ""}
+
+    def _execution_preferences(self, chat_id: int) -> tuple[str, str]:
+        settings = self._conversation_settings(chat_id)
+        model = settings["owner_model"] if self.settings.owner_execution_preferences and settings["owner_model"] in self.settings.owner_allowed_models else self.settings.model
+        effort = settings["owner_effort"] if self.settings.owner_execution_preferences and settings["owner_effort"] in self.settings.owner_allowed_efforts else self.settings.effort
+        return model, effort
 
     @staticmethod
-    def _config_keyboard(token: str, settings: dict[str, Any], thoughts: bool = False, voice_available: bool = False) -> tuple[str, dict[str, Any]]:
+    def _config_keyboard(token: str, settings: dict[str, Any], thoughts: bool = False, voice_available: bool = False, execution_available: bool = False, allowed_models: tuple[str, ...] = (), allowed_efforts: tuple[str, ...] = ()) -> tuple[str, dict[str, Any]]:
         if not thoughts:
             rows = [[{"text": "💭 Pensamentos", "callback_data": f"cfg:{token}:thoughts"}]]
             if voice_available: rows.append([{"text": ("🔊 Respostas em áudio" if settings["reply_mode"] == "audio" else "💬 Respostas em texto"), "callback_data": f"cfg:{token}:audio"}])
+            if execution_available: rows.append([{"text": "⚙️ Execução", "callback_data": f"cfg:{token}:execution"}])
             rows.append([{"text": "Fechar", "callback_data": f"cfg:{token}:close"}]); return "Configurações do bot", {"inline_keyboard": rows}
+        if thoughts == "execution":
+            model = settings["owner_model"] or allowed_models[0]; effort = settings["owner_effort"] or allowed_efforts[0]
+            return "Configurações › Execução", {"inline_keyboard": [[{"text": f"Modelo: {model}", "callback_data": f"cfg:{token}:model"}], [{"text": f"Raciocínio: {effort}", "callback_data": f"cfg:{token}:effort"}], [{"text": "↺ Padrão do setup", "callback_data": f"cfg:{token}:execution-reset"}], [{"text": "‹ Voltar", "callback_data": f"cfg:{token}:back"}], [{"text": "Fechar", "callback_data": f"cfg:{token}:close"}]]}
         shared, deleted = ("☑" if settings["share_thoughts"] else "☐"), ("☑" if settings["delete_thoughts"] else "☐")
         return "Configurações › Pensamentos", {"inline_keyboard": [[{"text": f"{shared} Compartilha Pensamentos", "callback_data": f"cfg:{token}:share"}], [{"text": f"{deleted} Excluir Pensamentos", "callback_data": f"cfg:{token}:delete"}], [{"text": "‹ Voltar", "callback_data": f"cfg:{token}:back"}], [{"text": "Fechar", "callback_data": f"cfg:{token}:close"}]]}
 
     def _open_config(self, chat_id: int) -> None:
         assert self.api
-        token, settings = secrets.token_urlsafe(8), self._conversation_settings(chat_id); text, keyboard = self._config_keyboard(token, settings, voice_available=self.settings.voice_enabled)
+        token, settings = secrets.token_urlsafe(8), self._conversation_settings(chat_id); text, keyboard = self._config_keyboard(token, settings, voice_available=self.settings.voice_enabled, execution_available=self.settings.owner_execution_preferences, allowed_models=self.settings.owner_allowed_models, allowed_efforts=self.settings.owner_allowed_efforts)
         sent = self._ephemeral(chat_id, text, 180, reply_markup=keyboard)
         if isinstance(sent.get("message_id"), int): self.config_sessions[token] = {"chat_id": chat_id, "message_id": sent["message_id"], "expires_at": time.time() + 180}
 
@@ -664,9 +681,17 @@ class Gateway:
         settings = self._conversation_settings(chat_id)
         if action in {"share", "delete"}:
             column = "share_thoughts" if action == "share" else "delete_thoughts"; self.database.execute(f"UPDATE conversations SET {column} = NOT {column}, updated_at=? WHERE chat_id=?", (time.time(), str(chat_id))); self.database.commit(); settings = self._conversation_settings(chat_id); thoughts = True
-        else: thoughts = action == "thoughts"
-        if action not in {"thoughts", "share", "delete", "back", "audio"}: self._ephemeral(chat_id, "Opção de configuração inválida."); return True
-        text, keyboard = self._config_keyboard(parts[1], settings, thoughts, self.settings.voice_enabled)
+        elif action in {"model", "effort", "execution-reset"}:
+            if not self.settings.owner_execution_preferences: self._ephemeral(chat_id, "Preferências de execução não estão liberadas pelo setup."); return True
+            if action == "execution-reset": self.database.execute("UPDATE conversations SET owner_model=NULL, owner_effort=NULL, updated_at=? WHERE chat_id=?", (time.time(), str(chat_id)))
+            else:
+                column, permitted, current = ("owner_model", self.settings.owner_allowed_models, str(settings["owner_model"] or "")) if action == "model" else ("owner_effort", self.settings.owner_allowed_efforts, str(settings["owner_effort"] or ""))
+                value = permitted[(permitted.index(current) + 1) % len(permitted)] if current in permitted else permitted[0]
+                self.database.execute(f"UPDATE conversations SET {column}=?, updated_at=? WHERE chat_id=?", (value, time.time(), str(chat_id)))
+            self.database.commit(); settings = self._conversation_settings(chat_id); thoughts = "execution"
+        else: thoughts = "execution" if action == "execution" else action == "thoughts"
+        if action not in {"thoughts", "share", "delete", "back", "audio", "execution", "model", "effort", "execution-reset"}: self._ephemeral(chat_id, "Opção de configuração inválida."); return True
+        text, keyboard = self._config_keyboard(parts[1], settings, thoughts, self.settings.voice_enabled, self.settings.owner_execution_preferences, self.settings.owner_allowed_models, self.settings.owner_allowed_efforts)
         try: assert self.api; self.api.edit(chat_id, int(session["message_id"]), text, keyboard)
         except Exception as error: self._record_error(error); self._ephemeral(chat_id, "Não foi possível atualizar esta configuração.")
         return True
@@ -693,7 +718,8 @@ class Gateway:
                 # O processo recebe somente o CODEX_HOME desta instância e o workspace configurado.
                 environment = dict(os.environ); environment["CODEX_HOME"] = str(self.settings.root)
                 prompt = GATEWAY_INSTRUCTIONS + ("\nResponda para ser ouvido: linguagem natural, breve, sem Markdown, código ou tabelas." if mode == "audio" else "") + "\n\nMensagem do owner:\n" + text
-                command = [self.settings.executable, "exec", "-C", str(self.settings.project), "--skip-git-repo-check", "-m", self.settings.model, "-c", f"model_reasoning_effort={json.dumps(self.settings.effort)}", "-s", self.settings.sandbox, prompt]
+                model, effort = self._execution_preferences(chat_id)
+                command = [self.settings.executable, "exec", "-C", str(self.settings.project), "--skip-git-repo-check", "-m", model, "-c", f"model_reasoning_effort={json.dumps(effort)}", "-s", self.settings.sandbox, prompt]
                 result = subprocess.run(command, cwd=self.settings.project, env=environment, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=self.settings.turn_timeout)
                 if result.returncode != 0:
                     self._record_error(f"Codex exec exit {result.returncode}: {result.stderr or result.stdout}"); answer = "O agente não conseguiu concluir esta solicitação. Consulte o diagnóstico do Gateway Telegram no setup."
