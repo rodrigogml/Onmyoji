@@ -27,6 +27,14 @@ def test_app_server_settings_default_to_disabled_and_enforce_idle_minimum(tmp_pa
     assert settings.app_server_enabled and settings.app_server_idle_seconds == 120
 
 
+def test_gateway_sandbox_includes_only_configured_activity_root(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    staging = tmp_path / ".onmyoji" / "telegram" / "staging"
+    (tmp_path / "configs" / "onmyoji-system.toml").write_text((tmp_path / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8") + f'additional_writable_directories = ["{staging.as_posix()}"]\n', encoding="utf-8")
+    policy = Gateway(Settings.load(tmp_path, data))._app_sandbox_policy()
+    assert policy["type"] == "workspaceWrite" and str(staging.resolve()) in policy["writableRoots"]
+
+
 def test_contacts_are_local_and_do_not_share_owners(tmp_path):
     left, right = Contacts(tmp_path / "left" / "contacts.json"), Contacts(tmp_path / "right" / "contacts.json")
     left.add_owner({"id": 123, "first_name": "owner"})

@@ -498,7 +498,7 @@ class Gateway:
         if self.settings.sandbox == "read-only": return {"type": "readOnly", "networkAccess": False}
         roots = [str(self.settings.project)]
         try:
-            system = tomllib.loads((self.settings.root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8")); extra = system.get("sandbox_workspace_write", {}).get("writable_roots", [])
+            system = tomllib.loads((self.settings.root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8")); extra = system.get("codex", {}).get("additional_writable_directories", [])
             roots.extend(str(Path(value).resolve()) for value in extra if isinstance(value, str))
         except (OSError, tomllib.TOMLDecodeError, AttributeError): pass
         return {"type": "workspaceWrite", "writableRoots": list(dict.fromkeys(roots)), "networkAccess": False}

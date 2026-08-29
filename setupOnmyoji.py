@@ -646,6 +646,19 @@ def daemon_menu(root: Path) -> None:
                 try: minutes = int(raw) if raw else voice_auto_off
                 except ValueError: result(False, "Informe minutos inteiros."); continue
                 media = prompt(f"Permitir que o agente envie arquivos e fotos? [{'S' if outbound_media else 'n'}]: ").strip().casefold() or ("s" if outbound_media else "n")
+                if active or media == "s":
+                    try:
+                        system = load_system(root); project_directory = Path(str(system["project_directory"])).resolve()
+                        if not project_directory.is_dir(): raise ValueError("Configure primeiro a pasta de projeto no menu Codex-CLI.")
+                        staging = project_directory / ".onmyoji" / "telegram" / "staging"
+                    except ValueError as error: result(False, str(error)); continue
+                    print()
+                    note("Para áudios, anexos e respostas com arquivos, o Onmyōji precisa de uma área temporária restrita no workspace.")
+                    note("O setup criará e autorizará somente este diretório, para leitura e escrita do perfil EccoVox e para o sandbox do agente:")
+                    print("      " + Ui.text(str(staging), Ui.cyan))
+                    note("Nada será gravado em CODEX_HOME/configs; nenhum diretório mais amplo será liberado.")
+                    confirm = prompt("Aplicar essa autorização agora? [S/n]: ").strip().casefold()
+                    if confirm not in {"", "s", "sim"}: result(False, "Configuração cancelada; nenhuma permissão foi alterada."); continue
                 arguments = [sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-voice-reply", "--profile", profile, "--auto-off-minutes", str(minutes)] + (["--enabled"] if active else []) + (["--agent-outbound-media"] if media == "s" else [])
                 changed = command(arguments, quiet=True); result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
                 if changed.returncode == 0: offer_restart()
