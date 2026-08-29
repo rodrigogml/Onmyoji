@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from onmyoji_daemon.telegram import Contacts, Gateway, Settings, Vault
+from onmyoji_daemon.telegram import AppServerTurn, Contacts, Gateway, Settings, Vault
 
 
 def write_settings(root: Path, data_dir: Path) -> None:
@@ -72,9 +72,21 @@ def test_totp_filter_supports_case_insensitive_wildcards():
 def test_config_keyboard_exposes_legacy_conversation_preferences():
     title, top = Gateway._config_keyboard("token", {"share_thoughts": True, "delete_thoughts": True})
     thoughts_title, thoughts = Gateway._config_keyboard("token", {"share_thoughts": False, "delete_thoughts": True}, True)
-    assert title == "Configurações do bot" and top["inline_keyboard"][0][0]["callback_data"] == "cfg:token:thoughts"
+    assert title == "Configurações do bot" and top["inline_keyboard"][0][0]["text"] == "💭 Pensamentos" and top["inline_keyboard"][0][0]["callback_data"] == "cfg:token:thoughts"
     assert thoughts_title == "Configurações › Pensamentos"
     assert "Compartilha Pensamentos" in thoughts["inline_keyboard"][0][0]["text"]
+
+
+def test_app_server_thoughts_are_shared_deduplicated_and_cleaned(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data); gateway = Gateway(Settings.load(tmp_path, data))
+    sent, deleted = [], []
+    gateway.api = type("Api", (), {"send": lambda _self, chat, text, **values: sent.append((chat, text, values)) or {"message_id": 71}, "delete": lambda _self, chat, message: deleted.append((chat, message))})()
+    active = AppServerTurn(9, "thread", __import__("threading").Event()); gateway.app_turns["thread"] = active
+    notification = {"threadId": "thread", "item": {"type": "reasoning", "summary": ["Plano seguro."]}}
+    gateway._app_notification("item/completed", notification); gateway._app_notification("item/completed", notification)
+    assert sent == [(9, "💭 Plano seguro.", {"protect_content": True})] and active.thought_ids == [71]
+    gateway._cleanup_thoughts(active)
+    assert deleted == [(9, 71)]
 
 
 def test_new_conversation_forgets_persisted_app_server_thread(tmp_path):

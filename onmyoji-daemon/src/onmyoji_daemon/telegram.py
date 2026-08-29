@@ -171,6 +171,8 @@ class AppServerTurn:
     staging: list[Path] = field(default_factory=list)
     reply_mode: str = "text"
     outbox: Path | None = None
+    thought_ids: list[int] = field(default_factory=list)
+    seen_thoughts: set[str] = field(default_factory=set)
 
 
 class Vault:
@@ -486,9 +488,32 @@ class Gateway:
         if method != "item/completed": return
         item = params.get("item")
         if not isinstance(item, dict): return
-        if item.get("type") == "agentMessage" and item.get("phase") in {None, "final_answer"}:
-            text = item.get("text")
-            if isinstance(text, str): active.final_text = text
+        item_type = item.get("type")
+        if item_type == "reasoning":
+            fragments = item.get("summary") or item.get("content") or []
+            if isinstance(fragments, str): text = fragments
+            elif isinstance(fragments, list):
+                text = "\n".join(fragment if isinstance(fragment, str) else str(fragment.get("text") or "") for fragment in fragments if isinstance(fragment, (str, dict)))
+            else: text = ""
+        else: text = item.get("text")
+        if not isinstance(text, str) or not text.strip(): return
+        if item_type == "agentMessage" and item.get("phase") in {None, "final_answer"}:
+            active.final_text = text; return
+        if item_type not in {"reasoning", "agentMessage"} or (item_type == "agentMessage" and item.get("phase") != "commentary"): return
+        normalized = " ".join(text.split())
+        if normalized in active.seen_thoughts: return
+        active.seen_thoughts.add(normalized)
+        if not self._conversation_settings(active.chat_id)["share_thoughts"] or not self.api: return
+        try:
+            sent = self.api.send(active.chat_id, f"💭 {text}", protect_content=True)
+            if isinstance(sent.get("message_id"), int): active.thought_ids.append(sent["message_id"])
+        except Exception as error: self._record_error(error)
+
+    def _cleanup_thoughts(self, active: AppServerTurn) -> None:
+        if not self._conversation_settings(active.chat_id)["delete_thoughts"] or not self.api: return
+        for message_id in active.thought_ids:
+            try: self.api.delete(active.chat_id, message_id)
+            except Exception as error: self._record_error(error)
 
     def _app_thread(self, chat_id: int, client: CodexAppServer) -> str:
         row = self.database.execute("SELECT codex_thread_id FROM conversations WHERE chat_id=?", (str(chat_id),)).fetchone(); thread_id = str(row[0]) if row and row[0] else ""
@@ -553,6 +578,7 @@ class Gateway:
             raise CodexProtocolError(f"O turno do Codex terminou com estado {active.status}")
         finally:
             with self.app_server_lock: self.app_turns.pop(thread_id, None); self.last_app_activity = time.monotonic()
+            self._cleanup_thoughts(active)
             for staged in active.staging: shutil.rmtree(staged.parent, ignore_errors=True)
             if active.outbox: shutil.rmtree(active.outbox, ignore_errors=True)
     def _poll(self) -> None:
@@ -615,7 +641,7 @@ class Gateway:
     @staticmethod
     def _config_keyboard(token: str, settings: dict[str, Any], thoughts: bool = False, voice_available: bool = False) -> tuple[str, dict[str, Any]]:
         if not thoughts:
-            rows = [[{"text": "Pensamentos", "callback_data": f"cfg:{token}:thoughts"}]]
+            rows = [[{"text": "💭 Pensamentos", "callback_data": f"cfg:{token}:thoughts"}]]
             if voice_available: rows.append([{"text": ("🔊 Respostas em áudio" if settings["reply_mode"] == "audio" else "💬 Respostas em texto"), "callback_data": f"cfg:{token}:audio"}])
             rows.append([{"text": "Fechar", "callback_data": f"cfg:{token}:close"}]); return "Configurações do bot", {"inline_keyboard": rows}
         shared, deleted = ("☑" if settings["share_thoughts"] else "☐"), ("☑" if settings["delete_thoughts"] else "☐")

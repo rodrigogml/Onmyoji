@@ -27,10 +27,12 @@ Esta lista compara o código legado do Akuma com os componentes nativos do Onmy�
 
 | Área | Situação atual | Próximo ajuste recomendado |
 | --- | --- | --- |
+| Resposta final em áudio | EccoVox e Telegram foram homologados com resposta final em MP3 e fallback seguro para texto. | Concluído. |
 | Gateway Telegram em produção | O fluxo nativo está implementado, mas requer teste real de foto, documento, voz, `/new`, reinício do processo e reinício pelo serviço em cada instância. | Executar o roteiro de homologação descrito abaixo e corrigir diferenças observadas. |
 | Anexos e EccoVox | Foto, documento e voz são retidos no workspace; a transcrição de voz é usada quando o perfil EccoVox autoriza a área de staging. | O setup EccoVox deve facilitar a inclusão de `<workspace>/.onmyoji/telegram/staging` em `readable_roots`, quando essa integração for desejada. |
 | Pensamentos do agente | `/config` já persiste `Compartilha Pensamentos` e `Excluir Pensamentos`. | Ligar essas opções aos eventos de raciocínio/itens intermediários do App Server, com mensagens temporárias e limpeza confiável. |
 | Ferramentas do canal | `telegram_gateway` fornece listagem e materialização segura de anexos. | Migrar, se ainda necessários, os recursos legados de envio controlado de mensagem e menus interativos. |
+| Pensamentos | Summaries de reasoning e mensagens commentary do App Server são exibidos com deduplicação e podem ser apagados ao fim do turno. | Concluído. |
 | Observabilidade | O diagnóstico mostra configuração, comandos privados e último erro sanitizado. | Adicionar health check de fila/anexos e teste controlado do App Server com ferramenta dinâmica. |
 
 ## Pendente de migração
