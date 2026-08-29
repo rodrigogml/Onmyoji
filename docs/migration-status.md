@@ -33,6 +33,7 @@ Esta lista compara o código legado do Akuma com os componentes nativos do Onmy�
 | Pensamentos do agente | `/config` já persiste `Compartilha Pensamentos` e `Excluir Pensamentos`. | Ligar essas opções aos eventos de raciocínio/itens intermediários do App Server, com mensagens temporárias e limpeza confiável. |
 | Ferramentas do canal | `telegram_gateway` fornece listagem e materialização segura de anexos. | Migrar, se ainda necessários, os recursos legados de envio controlado de mensagem e menus interativos. |
 | Pensamentos | Summaries de reasoning e mensagens commentary do App Server são exibidos com deduplicação e podem ser apagados ao fim do turno. | Concluído. |
+| Preferências de execução por canal | O legado permitia ao usuário Telegram ajustar modelo, esforço de raciocínio e demais parâmetros de execução. | Reintroduzir em `/config` exclusivamente para owners, com persistência por canal; validar cada valor contra a política máxima da instância, para que nunca amplie modelo, sandbox, aprovações ou limites definidos pelo administrador. O gateway atual aceita somente DMs de owners; menu para grupos/threads dependerá primeiro de autorização e roteamento próprios para esses contextos. |
 | Observabilidade | O diagnóstico mostra configuração, comandos privados e último erro sanitizado. | Adicionar health check de fila/anexos e teste controlado do App Server com ferramenta dinâmica. |
 
 ## Pendente de migração
