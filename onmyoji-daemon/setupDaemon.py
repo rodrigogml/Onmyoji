@@ -12,6 +12,11 @@ import time
 import tomllib
 from pathlib import Path
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 PROJECT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT / "src"))
 from onmyoji_daemon.management import is_installed
