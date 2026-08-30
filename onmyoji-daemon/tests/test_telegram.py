@@ -89,6 +89,14 @@ def test_app_server_thoughts_are_shared_deduplicated_and_cleaned(tmp_path):
     assert deleted == [(9, 71)]
 
 
+def test_failed_app_server_turn_preserves_sanitized_protocol_reason(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data); gateway = Gateway(Settings.load(tmp_path, data))
+    active = AppServerTurn(9, "thread", __import__("threading").Event()); gateway.app_turns["thread"] = active
+    gateway._app_notification("turn/completed", {"threadId": "thread", "turn": {"status": "failed", "error": {"code": "invalid_model", "message": "token=abc modelo indisponível"}}})
+    assert active.completed.is_set() and active.status == "failed"
+    assert "invalid_model" in active.failure_detail and "modelo indisponível" in active.failure_detail and "abc" not in active.failure_detail
+
+
 def test_new_conversation_forgets_persisted_app_server_thread(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data); gateway = Gateway(Settings.load(tmp_path, data))
     gateway.database.execute("INSERT INTO conversations(chat_id, updated_at, codex_thread_id) VALUES (?, ?, ?)", ("9", 0, "thread-old")); gateway.database.commit()

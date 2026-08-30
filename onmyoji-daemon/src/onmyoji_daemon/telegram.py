@@ -174,6 +174,7 @@ class AppServerTurn:
     completed: threading.Event
     turn_id: str | None = None
     status: str = "inProgress"
+    failure_detail: str = ""
     final_text: str = ""
     staging: list[Path] = field(default_factory=list)
     reply_mode: str = "text"
@@ -530,7 +531,10 @@ class Gateway:
         with self.app_server_lock: active = self.app_turns.get(thread_id)
         if not active: return
         if method == "turn/completed":
-            turn = params.get("turn") if isinstance(params.get("turn"), dict) else params; active.status = str(turn.get("status") or "completed"); active.completed.set(); return
+            turn = params.get("turn") if isinstance(params.get("turn"), dict) else params
+            active.status = str(turn.get("status") or "completed")
+            if active.status != "completed": active.failure_detail = self._turn_failure_detail(turn)
+            active.completed.set(); return
         if method != "item/completed": return
         item = params.get("item")
         if not isinstance(item, dict): return
@@ -554,6 +558,22 @@ class Gateway:
             sent = self.api.send(active.chat_id, f"💭 {text}", protect_content=True)
             if isinstance(sent.get("message_id"), int): active.thought_ids.append(sent["message_id"])
         except Exception as error: self._record_error(error)
+
+    @staticmethod
+    def _turn_failure_detail(turn: dict[str, Any]) -> str:
+        """Retém apenas o diagnóstico protocolar, sem input, instruções ou segredos do turno."""
+        error = turn.get("error")
+        parts: list[str] = []
+        if isinstance(error, dict):
+            for key in ("code", "type", "message"):
+                value = error.get(key)
+                if value not in {None, ""}: parts.append(f"{key}: {value}")
+        elif isinstance(error, str) and error.strip(): parts.append(error)
+        for key in ("errorMessage", "message"):
+            value = turn.get(key)
+            if isinstance(value, str) and value.strip(): parts.append(value)
+        text = " · ".join(dict.fromkeys(parts)).replace("\n", " ")[:800]
+        return re.sub(r"(?i)(token|password|secret)\s*[=:]\s*\S+", r"\1=[redacted]", text)
 
     def _cleanup_thoughts(self, active: AppServerTurn) -> None:
         if not self._conversation_settings(active.chat_id)["delete_thoughts"] or not self.api: return
@@ -625,7 +645,9 @@ class Gateway:
                 raise CodexProtocolError("O turno do Codex excedeu o tempo configurado")
             if active.final_text: return active.final_text, active.reply_mode
             if active.status == "completed": return "O agente concluiu o turno sem uma resposta textual.", active.reply_mode
-            raise CodexProtocolError(f"O turno do Codex terminou com estado {active.status}")
+            detail = active.failure_detail or client.last_error
+            suffix = f": {detail}" if detail else ""
+            raise CodexProtocolError(f"O turno do Codex terminou com estado {active.status}{suffix}")
         finally:
             with self.app_server_lock: self.app_turns.pop(thread_id, None); self.last_app_activity = time.monotonic()
             self._cleanup_thoughts(active)
