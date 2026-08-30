@@ -97,6 +97,12 @@ def test_failed_app_server_turn_preserves_sanitized_protocol_reason(tmp_path):
     assert "invalid_model" in active.failure_detail and "modelo indisponível" in active.failure_detail and "abc" not in active.failure_detail
 
 
+def test_credit_exhaustion_has_a_safe_public_telegram_message():
+    error = RuntimeError("O turno do Codex terminou com estado failed: Your workspace is out of credits. Add credits to continue.")
+    assert Gateway._public_turn_error(error) == "O workspace do Codex está sem créditos. Adicione créditos ao workspace e tente novamente."
+    assert Gateway._public_turn_error(RuntimeError("falha interna token=abc")) == "O agente não conseguiu concluir esta solicitação."
+
+
 def test_new_conversation_forgets_persisted_app_server_thread(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data); gateway = Gateway(Settings.load(tmp_path, data))
     gateway.database.execute("INSERT INTO conversations(chat_id, updated_at, codex_thread_id) VALUES (?, ?, ?)", ("9", 0, "thread-old")); gateway.database.commit()

@@ -774,6 +774,14 @@ class Gateway:
         with self.turn_locks_lock: lock = self.turn_locks.setdefault(chat_id, threading.Lock())
         with lock: self._turn_serial(chat_id, text, attachments or [])
 
+    @staticmethod
+    def _public_turn_error(error: Exception | str) -> str:
+        """Traduz apenas condições operacionais seguras; nunca entrega o erro bruto ao chat."""
+        detail = str(error).casefold()
+        if "out of credits" in detail or "insufficient credits" in detail:
+            return "O workspace do Codex está sem créditos. Adicione créditos ao workspace e tente novamente."
+        return "O agente não conseguiu concluir esta solicitação."
+
     def _turn_serial(self, chat_id: int, text: str, attachments: list[dict[str, Any]]) -> None:
         self.work.acquire()
         typing_stop = threading.Event()
@@ -802,7 +810,7 @@ class Gateway:
                 else: self.api.send(chat_id, answer[-4000:])
         except Exception as error:
             self._record_error(error)
-            if self.api: self.api.send(chat_id, "O agente não conseguiu concluir esta solicitação.")
+            if self.api: self.api.send(chat_id, self._public_turn_error(error))
         finally:
             typing_stop.set(); typing_thread.join(timeout=1); self.work.release()
 
