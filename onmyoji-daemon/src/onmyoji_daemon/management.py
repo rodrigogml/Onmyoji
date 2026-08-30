@@ -16,6 +16,7 @@ import uuid
 import shutil
 
 from .rpc import call
+from .instance import identity
 from .supervisor import endpoint
 
 
@@ -41,7 +42,7 @@ def _read_json(path: Path) -> dict:
 
 
 def instance_label(root: Path) -> str:
-    return root.resolve().name.removeprefix("Onmyoji-").removeprefix("Onmyōji-") or "Shikigami"
+    return identity(root)
 
 
 def camel_name(value: str) -> str:
