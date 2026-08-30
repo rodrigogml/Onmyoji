@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 import io
 import json
+import sqlite3
 
 from memory_store import StoreError, dispatch, main
 
@@ -16,13 +17,13 @@ MANIFEST = {
         {"op": "create_table", "table": "projects", "columns": [
             {"name": "id", "type": "integer", "primary_key": True},
             {"name": "code", "type": "text", "required": True},
-            {"name": "name", "type": "text", "required": True},
+            {"name": "name", "type": "text", "required": True, "searchable": True},
             {"name": "state", "type": "text", "required": True, "enum": ["open", "closed"]},
         ], "unique": [["code"]], "indexes": [{"name": "projects_state", "columns": ["state"]}]},
         {"op": "create_table", "table": "tasks", "columns": [
             {"name": "id", "type": "integer", "primary_key": True},
             {"name": "project_id", "type": "integer", "required": True, "reference": {"table": "projects", "column": "id"}},
-            {"name": "title", "type": "text", "required": True},
+            {"name": "title", "type": "text", "required": True, "searchable": True},
             {"name": "priority", "type": "integer", "min": 1, "max": 5},
         ], "indexes": [{"name": "tasks_project", "columns": ["project_id"]}]},
     ]}],
@@ -56,6 +57,38 @@ class MemoryStoreTests(unittest.TestCase):
         self.call("record.restore", table="tasks", id=task, confirm=True)
         self.assertEqual(len(self.call("record.list", table="tasks", filters=[{"field": "priority", "op": "gte", "value": 3}])["items"]), 1)
         with self.assertRaises(StoreError): self.call("record.create", table="projects", data={"code": "P2", "name": "Erro", "state": "wrong"}, confirm=True)
+
+    def test_unified_search_returns_text_and_searchable_record_fields(self):
+        self.call("schema.apply", manifest=MANIFEST, confirm=True)
+        memory = self.call("text.add", text="Decisão sobre a medição da Laveli", confirm=True)["id"]
+        project = self.call("record.create", table="projects", data={"code": "P1", "name": "Laveli Engenharia", "state": "open"}, confirm=True)["id"]
+        task = self.call("record.create", table="tasks", data={"project_id": project, "title": "Medição Laveli", "priority": 3}, confirm=True)["id"]
+        found = self.call("search.query", query="laveli")["items"]
+        self.assertEqual({(item["source"], item["id"]) for item in found}, {("text", memory), ("record", str(project)), ("record", str(task))})
+        records = [item for item in found if item["source"] == "record"]
+        self.assertTrue(all(item["matched_fields"] in (["name"], ["title"]) and item["matches"] for item in records))
+        self.call("record.update", table="projects", id=project, data={"name": "Akuma Engenharia"}, confirm=True)
+        self.assertEqual([item["id"] for item in self.call("search.query", query="akuma", sources="records")["items"]], [str(project)])
+        self.call("record.archive", table="tasks", id=task, confirm=True)
+        active = self.call("search.query", query="laveli", sources="records", tables=["tasks"])["items"]
+        self.assertEqual(active, [])
+        archived = self.call("search.query", query="laveli", sources=["records"], tables=["tasks"], include_archived=True)["items"]
+        self.assertEqual([item["id"] for item in archived], [str(task)])
+        self.call("record.restore", table="tasks", id=task, confirm=True)
+        self.assertEqual([item["id"] for item in self.call("search.query", query="laveli", sources="records", tables=["tasks"])["items"]], [str(task)])
+
+    def test_search_status_and_rebuild_repair_a_stale_index(self):
+        self.call("schema.apply", manifest=MANIFEST, confirm=True)
+        self.call("record.create", table="projects", data={"code": "P1", "name": "Laveli Engenharia", "state": "open"}, confirm=True)
+        database = self.workspace / ".onmyoji" / "memory" / "example__projects.sqlite3"
+        con = sqlite3.connect(database)
+        try: con.execute("DELETE FROM search_index"); con.commit()
+        finally: con.close()
+        self.assertFalse(self.call("search.status")["valid"])
+        with self.assertRaises(StoreError) as error: self.call("search.query", query="laveli")
+        self.assertEqual(error.exception.code, "search_index_stale")
+        self.assertEqual(self.call("search.rebuild", confirm=True)["documents"], 1)
+        self.assertTrue(self.call("search.status")["valid"])
 
     def test_migration_checksum_confirmation_and_backup(self):
         with self.assertRaises(StoreError): self.call("schema.apply", manifest=MANIFEST)

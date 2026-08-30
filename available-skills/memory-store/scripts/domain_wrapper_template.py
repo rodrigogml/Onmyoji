@@ -10,7 +10,7 @@ MANIFEST = {
         {"op": "create_table", "table": "items", "columns": [
             {"name": "id", "type": "integer", "primary_key": True},
             {"name": "code", "type": "text", "required": True},
-            {"name": "name", "type": "text", "required": True},
+            {"name": "name", "type": "text", "required": True, "searchable": True},
             {"name": "status", "type": "text", "required": True, "enum": ["active", "inactive"]},
         ], "unique": [["code"]], "indexes": [{"name": "items_status", "columns": ["status"]}]},
     ]}],

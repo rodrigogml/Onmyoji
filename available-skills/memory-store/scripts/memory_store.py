@@ -11,6 +11,7 @@ import shutil
 import sqlite3
 import sys
 import uuid
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -77,7 +78,7 @@ def text_audit(con: sqlite3.Connection, namespace: str, operation: str, target: 
     con.execute("INSERT INTO text_audit(namespace,operation,target_id,payload_hash,created_at) VALUES(?,?,?,?,?)", (namespace, operation, target, checksum(payload), now()))
 
 
-def text_operation(path: Path, namespace: str, operation: str, request: dict[str, Any]) -> Any:
+def text_operation(path: Path, structured_path: Path, namespace: str, operation: str, request: dict[str, Any]) -> Any:
     con = text_db(path)
     try:
         if operation == "text.add":
@@ -87,7 +88,7 @@ def text_operation(path: Path, namespace: str, operation: str, request: dict[str
             if not isinstance(tags, list) or not all(isinstance(item, str) and item for item in tags): fail("invalid_request", "tags deve ser uma lista de textos.")
             identifier = str(uuid.uuid4()); stamp = now()
             con.execute("INSERT INTO text_memories VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (identifier, namespace, str(request.get("kind", "note")), text, canonical(tags), request.get("source_ref"), request.get("confidence"), stamp, stamp, request.get("expires_at"), None, None))
-            con.execute("INSERT INTO text_search(id,namespace,text) VALUES(?,?,?)", (identifier, namespace, text)); text_audit(con, namespace, operation, identifier, request); con.commit()
+            con.execute("INSERT INTO text_search(id,namespace,text) VALUES(?,?,?)", (identifier, namespace, text)); text_audit(con, namespace, operation, identifier, request); con.commit(); sync_text_index(structured_path, path, namespace, identifier)
             return {"id": identifier}
         if operation == "text.search":
             query = request.get("query")
@@ -113,7 +114,7 @@ def text_operation(path: Path, namespace: str, operation: str, request: dict[str
         elif operation in {"text.archive", "text.restore"}:
             con.execute("UPDATE text_memories SET archived_at=?,updated_at=? WHERE id=?", (now() if operation.endswith("archive") else None, now(), identifier))
         else: fail("unsupported_operation", "Operação textual não suportada.")
-        text_audit(con, namespace, operation, identifier, request); con.commit(); return {"id": identifier}
+        text_audit(con, namespace, operation, identifier, request); con.commit(); sync_text_index(structured_path, path, namespace, identifier); return {"id": identifier}
     finally: con.close()
 
 
@@ -121,6 +122,15 @@ SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, checksum TEXT NOT NULL, applied_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS schema_tables(name TEXT PRIMARY KEY, columns_json TEXT NOT NULL, keys_json TEXT NOT NULL, indexes_json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS audit_events(id INTEGER PRIMARY KEY, operation TEXT NOT NULL, target_id TEXT, payload_hash TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
+ content,
+ source UNINDEXED,
+ table_name UNINDEXED,
+ item_id UNINDEXED,
+ field_name UNINDEXED,
+ archived UNINDEXED,
+ tokenize='unicode61 remove_diacritics 2'
+);
 """
 
 
@@ -131,6 +141,8 @@ def structured_db(path: Path) -> sqlite3.Connection:
 def column_spec(spec: dict[str, Any]) -> str:
     name = quoted(str(spec.get("name", ""))); kind = spec.get("type")
     if kind not in TYPES: fail("invalid_schema", "Tipo de coluna inválido.")
+    if "searchable" in spec and (not isinstance(spec["searchable"], bool) or spec["searchable"] and kind != "text"):
+        fail("invalid_schema", "searchable must be a boolean on text columns.")
     sql = f"{name} {TYPES[kind]}"
     if spec.get("primary_key"): sql += " PRIMARY KEY"
     if spec.get("required"): sql += " NOT NULL"
@@ -215,7 +227,7 @@ def validate_manifest(manifest: Any) -> list[dict[str, Any]]:
     return migrations
 
 
-def apply_migrations(path: Path, request: dict[str, Any], dry_run: bool) -> Any:
+def apply_migrations(path: Path, text_path: Path, namespace: str, request: dict[str, Any], dry_run: bool) -> Any:
     migrations = validate_manifest(request.get("manifest")); con = structured_db(path)
     try:
         applied = {row["version"]: row["checksum"] for row in con.execute("SELECT * FROM schema_migrations")}; pending = []
@@ -246,7 +258,9 @@ def apply_migrations(path: Path, request: dict[str, Any], dry_run: bool) -> Any:
                     else: fail("invalid_schema", "Operação de migration não suportada.")
                 con.execute("INSERT INTO schema_migrations VALUES(?,?,?)", (migration["version"], checksum(migration), now()))
             audit(con, "schema.apply", None, request)
-        return {"applied": [item["version"] for item in pending]}
+        result = {"applied": [item["version"] for item in pending]}
+        if pending: result["search_index"] = rebuild_search_index(con, text_path, namespace)
+        return result
     finally: con.close()
 
 
@@ -339,8 +353,114 @@ def record_operation(path: Path, operation: str, request: dict[str, Any]) -> Any
             if not cur.rowcount: fail("not_found", "Registro não encontrado.")
             identifier = request.get("id")
         else: fail("unsupported_operation", "Operação de registro não suportada.")
+        sync_record_index(con, table, columns, identifier)
         audit(con, operation, str(identifier), request); con.commit(); return {"id": identifier}
     finally: con.close()
+
+
+def searchable_fields(columns: list[dict[str, Any]]) -> list[str]:
+    return [str(column["name"]) for column in columns if column.get("searchable") is True and column.get("type") == "text"]
+
+
+def insert_search_document(con: sqlite3.Connection, content: str, source: str, table: str, identifier: Any, field: str, archived: bool) -> None:
+    if content.strip():
+        con.execute("INSERT INTO search_index(content,source,table_name,item_id,field_name,archived) VALUES(?,?,?,?,?,?)", (content, source, table, str(identifier), field, int(archived)))
+
+
+def expected_search_documents(con: sqlite3.Connection, text_path: Path, namespace: str) -> list[tuple[str, str, str, str, str, int]]:
+    documents: list[tuple[str, str, str, str, str, int]] = []
+    text = text_db(text_path)
+    try:
+        for row in text.execute("SELECT id,text,archived_at FROM text_memories WHERE namespace=?", (namespace,)):
+            if row["text"].strip(): documents.append((row["text"], "text", "", str(row["id"]), "text", int(row["archived_at"] is not None)))
+    finally:
+        text.close()
+    for row in con.execute("SELECT name,columns_json FROM schema_tables"):
+        fields = searchable_fields(json.loads(row["columns_json"]))
+        if not fields: continue
+        table = str(row["name"]); selected = ",".join([quoted("id"), '"__archived_at"', *(quoted(field) for field in fields)])
+        for record in con.execute(f"SELECT {selected} FROM {quoted(table)}"):
+            for field in fields:
+                value = record[field]
+                if isinstance(value, str) and value.strip(): documents.append((value, "record", table, str(record["id"]), field, int(record["__archived_at"] is not None)))
+    return documents
+
+
+def rebuild_search_index(con: sqlite3.Connection, text_path: Path, namespace: str) -> dict[str, int]:
+    documents = expected_search_documents(con, text_path, namespace)
+    with con:
+        con.execute("DELETE FROM search_index")
+        for document in documents: insert_search_document(con, *document)
+    return {"documents": len(documents)}
+
+
+def search_status(con: sqlite3.Connection, text_path: Path, namespace: str) -> dict[str, Any]:
+    expected = Counter(expected_search_documents(con, text_path, namespace))
+    indexed = Counter(tuple(row) for row in con.execute("SELECT content,source,table_name,item_id,field_name,archived FROM search_index"))
+    return {"valid": expected == indexed, "expected_documents": sum(expected.values()), "indexed_documents": sum(indexed.values()), "missing_documents": sum((expected - indexed).values()), "stale_documents": sum((indexed - expected).values())}
+
+
+def sync_record_index(con: sqlite3.Connection, table: str, columns: list[dict[str, Any]], identifier: Any) -> None:
+    con.execute("DELETE FROM search_index WHERE source='record' AND table_name=? AND item_id=?", (table, str(identifier)))
+    fields = searchable_fields(columns)
+    if not fields: return
+    selected = ",".join([quoted("id"), '"__archived_at"', *(quoted(field) for field in fields)])
+    row = con.execute(f"SELECT {selected} FROM {quoted(table)} WHERE id=?", (identifier,)).fetchone()
+    if not row: return
+    for field in fields:
+        value = row[field]
+        if isinstance(value, str): insert_search_document(con, value, "record", table, row["id"], field, row["__archived_at"] is not None)
+
+
+def sync_text_index(path: Path, text_path: Path, namespace: str, identifier: str) -> None:
+    text = text_db(text_path)
+    try:
+        row = text.execute("SELECT id,text,archived_at FROM text_memories WHERE id=? AND namespace=?", (identifier, namespace)).fetchone()
+    finally:
+        text.close()
+    con = structured_db(path)
+    try:
+        with con:
+            con.execute("DELETE FROM search_index WHERE source='text' AND item_id=?", (identifier,))
+            if row: insert_search_document(con, row["text"], "text", "", row["id"], "text", row["archived_at"] is not None)
+    finally:
+        con.close()
+
+
+def search_query(path: Path, text_path: Path, namespace: str, request: dict[str, Any]) -> Any:
+    query = request.get("query")
+    if not isinstance(query, str) or not query.strip(): fail("invalid_request", "query is required.")
+    raw_sources = request.get("sources", ["text", "records"])
+    sources = [raw_sources] if isinstance(raw_sources, str) else raw_sources
+    if not isinstance(sources, list) or not sources or not all(source in {"text", "records"} for source in sources): fail("invalid_request", "sources must contain text and/or records.")
+    source_values = ["record" if source == "records" else source for source in dict.fromkeys(sources)]
+    tables = request.get("tables")
+    if tables is not None and ("record" not in source_values or not isinstance(tables, list) or not tables or not all(isinstance(table, str) and NAME.fullmatch(table) for table in tables)):
+        fail("invalid_request", "tables requires records and must contain valid table names.")
+    limit = min(max(int(request.get("limit", 20)), 1), 100)
+    con = structured_db(path)
+    try:
+        if tables is not None:
+            known_tables = {str(row[0]) for row in con.execute("SELECT name FROM schema_tables")}
+            if set(tables) - known_tables: fail("unknown_table", "tables contains a table not declared in this namespace.")
+        status = search_status(con, text_path, namespace)
+        if not status["valid"]: fail("search_index_stale", "Search index is stale; run search.rebuild with confirm: true.")
+        clauses = ["source IN (" + ",".join("?" for _ in source_values) + ")"]; params: list[Any] = [query, *source_values]
+        if not request.get("include_archived"): clauses.append("archived=0")
+        if tables is not None: clauses.append("table_name IN (" + ",".join("?" for _ in tables) + ")"); params.extend(tables)
+        rows = con.execute("SELECT source,table_name,item_id,field_name,snippet(search_index,0,'[',']','â€¦',12) excerpt,bm25(search_index) score FROM search_index WHERE search_index MATCH ? AND " + " AND ".join(clauses) + " ORDER BY score LIMIT ?", [*params, min(limit * 10, 1000)]).fetchall()
+        grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for row in rows:
+            key = (row["source"], row["table_name"], row["item_id"])
+            item = grouped.setdefault(key, {"source": row["source"], "id": row["item_id"], "matched_fields": [], "matches": [], "score": row["score"], "excerpt": row["excerpt"]})
+            if row["table_name"]: item["table"] = row["table_name"]
+            if row["field_name"] not in item["matched_fields"]: item["matched_fields"].append(row["field_name"])
+            item["matches"].append({"field": row["field_name"], "excerpt": row["excerpt"]})
+            item["score"] = min(item["score"], row["score"])
+        items = sorted(grouped.values(), key=lambda item: item["score"])[:limit]
+        return {"items": items, "score_order": "ascending"}
+    finally:
+        con.close()
 
 
 def backup(path: Path, label: str) -> Path:
@@ -379,6 +499,16 @@ def restore_text(path: Path, namespace: str, source: Path) -> None:
 
 
 def admin(path: Path, text_path: Path, namespace: str, operation: str, request: dict[str, Any]) -> Any:
+    if operation in {"search.status", "search.rebuild"}:
+        con = structured_db(path)
+        try:
+            if operation == "search.status": return search_status(con, text_path, namespace)
+            require_confirmation(request)
+            result = rebuild_search_index(con, text_path, namespace)
+            audit(con, operation, None, request); con.commit()
+            return {**result, "valid": search_status(con, text_path, namespace)["valid"]}
+        finally:
+            con.close()
     if operation == "health.check":
         con = structured_db(path)
         try:
@@ -412,6 +542,9 @@ def admin(path: Path, text_path: Path, namespace: str, operation: str, request: 
             Path(str(path) + suffix).unlink(missing_ok=True)
         shutil.copy2(source, path)
         restore_text(text_path, namespace, source)
+        con = structured_db(path)
+        try: rebuild_search_index(con, text_path, namespace)
+        finally: con.close()
         return {"restored": str(source)}
     fail("unsupported_operation", "Operação administrativa não suportada.")
 
@@ -421,10 +554,11 @@ def dispatch(workspace: Path, namespace: str, request: dict[str, Any]) -> tuple[
     operation = request.get("operation")
     if not isinstance(operation, str): fail("invalid_request", "operation é obrigatório.")
     text_path, structured_path, _ = paths(workspace, namespace)
-    if operation.startswith("text."): return operation, text_operation(text_path, namespace, operation, request)
-    if operation == "schema.plan": return operation, apply_migrations(structured_path, request, True)
-    if operation == "schema.apply": return operation, apply_migrations(structured_path, request, False)
+    if operation.startswith("text."): return operation, text_operation(text_path, structured_path, namespace, operation, request)
+    if operation == "schema.plan": return operation, apply_migrations(structured_path, text_path, namespace, request, True)
+    if operation == "schema.apply": return operation, apply_migrations(structured_path, text_path, namespace, request, False)
     if operation.startswith("record."): return operation, record_operation(structured_path, operation, request)
+    if operation == "search.query": return operation, search_query(structured_path, text_path, namespace, request)
     return operation, admin(structured_path, text_path, namespace, operation, request)
 
 
