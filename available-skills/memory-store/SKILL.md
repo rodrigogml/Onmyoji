@@ -15,6 +15,8 @@ Use `schema.*` e `record.*` quando houver itens homogêneos com qualquer um dest
 
 Use ambos quando um registro estruturado precisar conservar evidência ou contexto narrativo: guarde a evidência em `text.*` e vincule seu ID ao registro. Preserve fonte e confiança para fatos externos.
 
+Use `search.query` como ponto de descoberta quando a busca puder estar tanto em memórias textuais quanto em registros estruturados. A operação devolve candidatos e evidências; confira o item completo com `text.get` ou `record.get` antes de interpretar contexto, atualizar dados ou tomar uma decisão.
+
 Para uma investigação pontual sem modelo estável, use texto indexado e não crie tabela. Para dados estruturados persistentes de um domínio, crie um wrapper da skill de domínio: ele fixa namespace, manifesto, migrations e regras de negócio. O uso direto de `schema.*` é reservado à criação ou manutenção desse wrapper, não à operação cotidiana do domínio.
 
 Leia [api-contract.md](references/api-contract.md) para o contrato e [wrapper-authoring.md](references/wrapper-authoring.md) antes de criar um wrapper.

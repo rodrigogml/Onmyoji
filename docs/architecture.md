@@ -4,7 +4,7 @@
 
 Uma instalação do Onmyōji é o `CODEX_HOME` dedicado a um Shikigami e é um repositório Git próprio, derivado do upstream `Onmyoji`. Ela contém o catálogo de skills de integração, seus modelos de configuração, scripts de setup, a definição versionada da identidade e o estado local gerenciado pelo Codex. A base reutilizável e `shikigami/` são versionados; autenticação, caches, logs, bancos de estado, links ativos e demais dados operacionais permanecem ignorados pelo Git.
 
-O workspace do Shikigami é externo ao `CODEX_HOME`, não é versionado por este projeto e é exclusivo para o trabalho do agente. Ele pode conter projeto, conhecimento operacional, skills de conhecimento e playbooks, mas não abriga as skills de integração fornecidas pelo Onmyōji.
+O workspace do Shikigami é externo ao `CODEX_HOME`, não é versionado por este projeto e é exclusivo para o trabalho do agente. A organização canônica das camadas — inclusive fontes versionadas de skills próprias em `shikigami/skills/` e links ativos em `skills/` — está no [README](../README.md#camadas-da-instância). Esta arquitetura não a replica para evitar duas fontes de verdade.
 
 ## Arquivos de atividade do agente
 
@@ -22,10 +22,7 @@ Shikigami-<Nome> (CODEX_HOME e repositório da instância)
 └── estado gerenciado pelo Codex   # autenticação, sessões, logs e cache; ignorado pelo Git
 
 Shikigami-<Nome>-Work (workspace externo)
-├── projeto e arquivos de trabalho
-└── .agents/skills/
-    ├── knowledge/                # conhecimento próprio do Shikigami
-    └── playbooks/                # procedimentos próprios do Shikigami
+└── projeto e arquivos de trabalho
 ```
 
 ## Configurações
@@ -34,12 +31,12 @@ Cada skill de integração mantém seu modelo versionado, com extensão `.model`
 
 Cada instância possui seu próprio `origin`, seu próprio `CODEX_HOME`, seus perfis locais e suas skills habilitadas, sem compartilhar estado com outras. O setup registra a habilitação em `configs/onmyoji-skills.toml` e cria junctions no Windows ou links simbólicos no Linux de `skills/<nome>` para `available-skills/<nome>`. Atualizações da base são recebidas com `git fetch upstream` e `git merge upstream/main`; uma instância nunca faz `git push upstream`.
 
-O workspace pode conter conhecimento e playbooks próprios, mas não é a definição versionada da instância. Para manter ou reconstruir um Shikigami, use seu repositório e `shikigami/`; trate o workspace como área de trabalho descartável ou administrada por uma política de backup independente.
+O workspace não é a definição versionada da instância. Para manter ou reconstruir um Shikigami, use seu repositório e `shikigami/`; trate o workspace como área de trabalho descartável ou administrada por uma política de backup independente.
 
 ## Limites de responsabilidade
 
 - O Onmyōji fornece integrações, modelos, setup, políticas reutilizáveis e estado local do Codex.
-- O Shikigami fornece o workspace, o código de trabalho, conhecimento específico e playbooks.
+- O Shikigami fornece o workspace e o código de trabalho; sua definição portátil, conhecimento próprio e playbooks versionados seguem a organização definida no README.
 - A configuração local do Onmyōji decide quais integrações ficam disponíveis naquele Shikigami.
 - O daemon Onmyōji supervisiona somente serviços registrados para a instância atual; nenhum serviço recebe configuração ou estado de outra instância.
 - ACLs do sistema operacional delimitam o que a identidade de execução pode ler ou gravar em cada diretório.
