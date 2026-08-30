@@ -34,6 +34,8 @@ Cada skill de integração mantém seu modelo versionado, com extensão `.model`
 
 Cada instância possui seu próprio `origin`, seu próprio `CODEX_HOME`, seus perfis locais e suas skills habilitadas, sem compartilhar estado com outras. O setup registra a habilitação em `configs/onmyoji-skills.toml` e cria junctions no Windows ou links simbólicos no Linux de `skills/<nome>` para `available-skills/<nome>`. Atualizações da base são recebidas com `git fetch upstream` e `git merge upstream/main`; uma instância nunca faz `git push upstream`.
 
+O workspace pode conter conhecimento e playbooks próprios, mas não é a definição versionada da instância. Para manter ou reconstruir um Shikigami, use seu repositório e `shikigami/`; trate o workspace como área de trabalho descartável ou administrada por uma política de backup independente.
+
 ## Limites de responsabilidade
 
 - O Onmyōji fornece integrações, modelos, setup, políticas reutilizáveis e estado local do Codex.

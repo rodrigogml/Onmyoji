@@ -1,6 +1,6 @@
 # Configuração
 
-Cada instância Onmyōji mantém `configs/eccovox.toml` local, fora do versionamento, e cada chamada informa também `--profile`. O modelo `configs/eccovox.toml.model` contém todas as chaves aceitas.
+Cada instância mantém `<CODEX_HOME>/configs/eccovox.toml` local, fora do versionamento, e cada chamada informa também `--profile`. O modelo `configs/eccovox.toml.model` contém todas as chaves aceitas.
 
 `server.base_url` deve ser uma URL HTTP de loopback, sem caminho, credenciais, query ou fragmento. O wrapper rejeita hosts remotos e HTTPS para impedir que áudio, transcrições ou texto sejam enviados a terceiros por engano. `request_timeout_seconds` deve estar entre 1 e 300.
 

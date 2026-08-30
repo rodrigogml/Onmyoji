@@ -1,6 +1,6 @@
 # Configuração
 
-Crie `configs/bis2cmd.toml` a partir de `configs/bis2cmd.toml.model` e informe o perfil em cada chamada.
+Crie `<CODEX_HOME>/configs/bis2cmd.toml` a partir de `configs/bis2cmd.toml.model` e informe `--config <CODEX_HOME>/configs/bis2cmd.toml` em cada chamada.
 
 ```toml
 [defaults]

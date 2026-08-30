@@ -9,7 +9,7 @@ Use `scripts/notion.py` como wrapper JSON determinístico para a API pública do
 
 ## Execução
 
-Sempre informe `--config configs/notion.toml --profile <perfil>` e envie JSON pelo stdin.
+Sempre informe `--config <CODEX_HOME>/configs/notion.toml --profile <perfil>` e envie JSON pelo stdin.
 
 - Use `version: 1`.
 - Use `operation` pertencente ao registro documentado em `references/api-contracts.md`.
@@ -21,7 +21,7 @@ Sempre informe `--config configs/notion.toml --profile <perfil>` e envie JSON pe
 
 ## Perfis
 
-Os perfis reais ficam em `configs/notion.toml`, são ignorados pelo Git. Use `configs/notion.toml.model` como modelo.
+Os perfis reais ficam em `<CODEX_HOME>/configs/notion.toml`, são ignorados pelo Git. Use `configs/notion.toml.model` como modelo.
 
 O perfil aponta para a KeePassVault. O token é lido por pipe entre processos, mantido apenas em memória e nunca reproduzido na saída.
 

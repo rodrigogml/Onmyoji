@@ -11,6 +11,15 @@ Base de integração local para Shikigamis. Cada instância é um repositório p
 
 O conteúdo de `shikigami/` nunca pode conter tokens, senhas, chaves privadas, bancos de dados, logs ou state. Segredos ficam no KeePass e os dados operacionais em `configs/`.
 
+| Classe de conteúdo | Local | Git |
+| --- | --- | --- |
+| Base comum, setup e skills de integração | raiz do repositório | versionado no upstream Onmyōji |
+| Identidade, instruções e política Telegram | `shikigami/` | versionado no repositório do Shikigami |
+| Perfis de integração, caminhos dependentes da máquina e referências locais | `configs/` | privado e ignorado |
+| Tokens, senhas e chaves | KeePass e provedor seguro do SO | nunca versionado |
+| Conversas, logs, endpoint, PID, cache e staging | `configs/` e workspace | privado e ignorado |
+| Arquivos produzidos pelo agente | `Shikigami-<Nome>-Work/` | fora deste repositório |
+
 ## Padrão de nomes e repositórios
 
 O repositório da base é `git@github.com:rodrigogml/Onmyoji.git` e é mantido em `C:\x\Onmyoji`. Cada Shikigami possui um repositório próprio, que também é seu `CODEX_HOME`; o workspace não pertence ao repositório.

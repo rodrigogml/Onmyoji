@@ -43,7 +43,7 @@ Entrada:
 Invocação:
 
 ```text
-python scripts/bis2cmd.py --config configs/bis2cmd.toml --profile turing
+python scripts/bis2cmd.py --config <CODEX_HOME>/configs/bis2cmd.toml --profile turing
 ```
 
 O wrapper inicializa automaticamente `-facade`, executa o comando BISCMD solicitado e converte linhas `BISJSON` e `BISMETA` para JSON.

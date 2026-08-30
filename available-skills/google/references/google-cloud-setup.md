@@ -49,7 +49,7 @@ Use os campos padrão da entrada para a identidade compartilhada da aplicação:
 
 ## 6. Criar o perfil
 
-Copiar `configs/google.toml.model` para `configs/google.toml` e criar um perfil local, como:
+Copiar `configs/google.toml.model` para `<CODEX_HOME>/configs/google.toml` e criar um perfil local, como:
 
 ```text
 [profiles.pessoal]
@@ -76,7 +76,7 @@ Não colocar access token, refresh token ou client secret no INI.
 Executar:
 
 ```text
-python scripts/oauth_bootstrap.py --config configs/google.toml --profile pessoal
+python scripts/oauth_bootstrap.py --config <CODEX_HOME>/configs/google.toml --profile pessoal
 ```
 
 O bootstrap abrirá o consentimento no navegador e iniciará um callback temporário em `127.0.0.1`. Se o navegador não abrir, copiar a URL exibida para o navegador da mesma máquina.
