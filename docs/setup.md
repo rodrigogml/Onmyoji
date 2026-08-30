@@ -11,6 +11,8 @@ python available-skills/<nome-da-skill>/setupSkill.py
 
 `setupOnmyoji.py` é o configurador geral da instância. Ele descobre dinamicamente as skills procurando por `setupSkill.py` dentro de `available-skills/`; nenhum nome de skill é codificado no menu central. O menu principal usa `X` para sair. Ao escolher uma skill, o submenu oferece somente habilitar/desabilitar conforme o estado atual, configurar e `X` para voltar. A habilitação é registrada localmente em `configs/onmyoji-skills.toml` e cria ou remove links em `skills/`, que é o único diretório de skills varrido pelo Codex.
 
+Na primeira execução, inclusive com `--action list` ou `--action status`, o setup materializa a definição mínima e portátil em `shikigami/` quando ela ainda não existe, e inicializa o estado local das skills quando necessário. Isso mantém o fluxo de instalação sem uma etapa de inicialização separada. Os arquivos de `shikigami/` pertencem ao repositório da instância e devem ser revisados e versionados pelo operador; `configs/onmyoji-skills.toml` e os links em `skills/` são locais e ignorados pelo Git. Consulte o [README](../README.md#camadas-da-instância) para a classificação completa de cada área.
+
 O menu `A. Configurar Codex-CLI` administra o sistema da instância: executável, modelo, esforço de raciocínio, pasta do projeto, sandbox, política de aprovação, diretórios adicionais de escrita, login e início interativo do Codex. Seus dados locais ficam em `configs/onmyoji-system.toml`; os campos compatíveis são aplicados ao `config.toml` do `CODEX_HOME`.
 
 `Executar Codex-CLI` inicia o executável configurado com o diretório de trabalho igual à pasta do projeto e `CODEX_HOME` apontando para a instância atual. Modelo, esforço de raciocínio, sandbox e aprovação vêm do bloco gerenciado em `config.toml`; cada diretório adicional de escrita também é enviado por `--add-dir`. Esse é o CLI nativo do Codex. `Console interativo Onmyōji` é uma opção diferente: inicia o App Server e aplica a composição de developer instructions do Onmyōji.
@@ -25,15 +27,22 @@ Após a escolha do perfil KeePass, sugira a entrada de credencial no formato `AP
 
 Quando uma skill oferecer teste de perfil, ele deve selecionar um perfil existente e executar somente uma operação de leitura mínima. O resultado deve confirmar a autenticação ou descrever a falha sem imprimir credenciais, tokens nem a resposta completa da API.
 
-## Protocolo de descoberta
+## Protocolo de discovery e perfis
 
-Todo `setupSkill.py` deve aceitar a ação `describe` e retornar metadados estruturados da skill, incluindo identificador, nome de exibição, ações disponíveis, nome do modelo e caminho do perfil local esperado. O configurador geral usa esses dados para montar o menu e o status.
+Todo `setupSkill.py` aceita `--action describe --json` e retorna, no mínimo, os campos `id`, `title` e `description`. O configurador geral usa somente esses campos para descobrir e exibir a skill. Campos adicionais são opcionais e não fazem parte do contrato consumido pelo setup central.
 
-As ações mínimas são:
+Todas as skills do catálogo também aceitam estas ações:
 
-- `describe`: informa os metadados usados pelo menu.
-- `status`: informa a situação da configuração sem alterá-la.
-- `configure`: abre o menu próprio da skill; ele cria os arquivos necessários ao salvar uma configuração válida e nunca sobrescreve um perfil sem confirmação.
+- `status`: faz um diagnóstico sem gravar a configuração da skill; retorna ao menos `configured` e `valid` em JSON.
+- `configure`: abre o menu interativo da própria skill. Ele cria ou altera arquivos somente após a confirmação e a validação apropriadas.
+
+As skills que mantêm perfis de integração — AWS, BISCMD, Cloudflare, EccoVox, Forward Email, Google, MySQL, Notion, Omie, SSH e Todoist — também expõem a API não interativa `profile-schema`, `profile-list`, `profile-create`, `profile-update`, `profile-delete` e `profile-test`. A entrada e a saída são JSON; mutações exigem os campos de perfil válidos e a exclusão exige confirmação explícita. Essa é a API usada por `onmyoji-control`.
+
+Há três variações deliberadas:
+
+- KeePass Vault expõe somente `profile-schema` e `profile-list`; criar, editar ou remover um perfil exige o menu interativo do operador.
+- Memory Store não possui perfil nem credencial: seu `status` apenas verifica o SQLite com FTS5.
+- Onmyōji Control não possui configuração própria: seu `configure` orienta a habilitação, e a administração efetiva é delegada ao setup central.
 
 ## Funções do setup geral
 

@@ -6,6 +6,8 @@
 !/AGENTS.md
 !/README.md
 !/setupOnmyoji.py
+!/pytest.ini
+!/conftest.py
 !/shikigami/
 !/shikigami/**
 !/docs/
