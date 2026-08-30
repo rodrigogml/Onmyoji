@@ -92,6 +92,14 @@ class MemoryStoreTests(unittest.TestCase):
         with self.assertRaises(StoreError) as error: self.call("text.add", text="sem confirmação")
         self.assertEqual(error.exception.code, "confirmation_required")
 
+    def test_skill_instructions_require_model_selection_and_wrappers(self):
+        skill = Path(__file__).resolve().parents[1] / "SKILL.md"
+        text = skill.read_text(encoding="utf-8").casefold()
+        self.assertIn("escolher o modelo antes de gravar", text)
+        self.assertIn("promova-o para uma coluna", text)
+        self.assertIn("wrapper da skill de domínio", text)
+        self.assertIn("não à operação cotidiana do domínio", text)
+
     def test_restore_replaces_data_and_cli_emits_protocol_response(self):
         self.call("schema.apply", manifest=MANIFEST, confirm=True)
         record = self.call("record.create", table="projects", data={"code": "P1", "name": "Antes", "state": "open"}, confirm=True)["id"]
