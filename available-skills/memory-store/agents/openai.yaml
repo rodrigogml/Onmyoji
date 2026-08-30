@@ -1,0 +1,4 @@
+interface:
+  display_name: "Memória Estruturada"
+  short_description: "Memórias locais, busca e tabelas tipadas"
+  default_prompt: "Use $memory-store para guardar e consultar memória textual ou tabelas estruturadas no workspace."

@@ -49,7 +49,7 @@ class SystemSetupTests(unittest.TestCase):
             self.assertFalse(MODULE.save_system(root, bad)[0])
             self.assertEqual(MODULE.load_system(root)["project_directory"], str(root))
 
-    def test_launch_passes_model_reasoning_and_writable_directories_explicitly(self) -> None:
+    def test_launches_daemon_with_workspace_and_writable_directories(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             project = root / "project"; project.mkdir()
@@ -58,9 +58,13 @@ class SystemSetupTests(unittest.TestCase):
             with patch.object(MODULE.subprocess, "run") as run:
                 MODULE.launch_codex(root, data)
             command = run.call_args.args[0]
-            self.assertEqual(command[:6], [sys.executable, "-C", str(project), "-m", "gpt-5.6-sol", "-c"])
-            self.assertIn('model_reasoning_effort = "xhigh"', command)
+            self.assertEqual(command[:5], [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root)])
+            self.assertEqual(command[5], "interactive")
             self.assertEqual(command[-2:], ["--add-dir", str(extra)])
+            self.assertEqual(run.call_args.kwargs["cwd"], str(project))
+            environment = run.call_args.kwargs["env"]
+            self.assertEqual(environment["CODEX_HOME"], str(root))
+            self.assertTrue(environment["PYTHONPATH"].split(MODULE.os.pathsep)[0].endswith("onmyoji-daemon\\src"))
 
     def test_enabled_skills_are_linked_from_the_local_catalog(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
