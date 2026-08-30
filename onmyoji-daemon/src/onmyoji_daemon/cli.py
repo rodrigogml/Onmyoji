@@ -7,11 +7,12 @@ from pathlib import Path
 from .rpc import call
 from .supervisor import Supervisor, endpoint
 from . import management
+from .launcher import main as interactive_main
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="onmyoji-daemon"); parser.add_argument("--onmyoji-root", required=True, type=Path)
-    sub = parser.add_subparsers(dest="action", required=True); sub.add_parser("run"); sub.add_parser("list-services")
+    sub = parser.add_subparsers(dest="action", required=True); sub.add_parser("run"); sub.add_parser("interactive"); sub.add_parser("list-services")
     sub.add_parser("install-instance"); sub.add_parser("remove-instance")
     sub.add_parser("process-status"); sub.add_parser("process-start")
     for action in ("process-stop", "process-force-stop"): sub.add_parser(action)
@@ -25,6 +26,7 @@ def main(argv: list[str] | None = None) -> int:
     send = telegram_sub.add_parser("send"); send.add_argument("chat_id", type=int); send.add_argument("text")
     args = parser.parse_args(argv); root = args.onmyoji_root.resolve()
     if args.action == "run": Supervisor(root).run_forever(); return 0
+    if args.action == "interactive": return interactive_main(["--onmyoji-root", str(root)])
     direct = {
         "install-instance": lambda: management.install_instance(root),
         "remove-instance": lambda: management.remove_instance(root),

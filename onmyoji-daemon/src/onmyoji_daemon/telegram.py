@@ -21,6 +21,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from .rpc import RpcServer
+from .instructions import InstructionComposer
 
 GATEWAY_INSTRUCTIONS = """You are operating through a private Telegram owner DM. Reply normally to the active conversation. Do not expose local paths, bot tokens, chat IDs, owners or gateway state. Native /new, pairing and TOTP commands are handled by the gateway before your turn. Treat gateway failures as failures."""
 
@@ -50,7 +51,8 @@ class Settings:
     poll_timeout: int
     turn_timeout: int
     parallel: int
-    developer_file: str
+    instructions_file: str
+    instructions_enabled: bool
     owner_execution_preferences: bool
     owner_allowed_models: tuple[str, ...]
     owner_allowed_efforts: tuple[str, ...]
@@ -78,7 +80,7 @@ class Settings:
         path = data_dir / "telegram.toml"
         data = tomllib.loads(path.read_text(encoding="utf-8"))
         if data.get("schema_version") != 1: raise ValueError("unsupported telegram schema")
-        telegram, agent, app_server, limits, voice = data.get("telegram", {}), data.get("agent", {}), data.get("app_server", {}), data.get("limits", {}), data.get("voice_reply", {})
+        telegram, agent, app_server, limits, voice, instructions = data.get("telegram", {}), data.get("agent", {}), data.get("app_server", {}), data.get("limits", {}), data.get("voice_reply", {}), data.get("instructions", {})
         system = tomllib.loads((root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8")).get("codex", {})
         project = Path(str(system.get("project_directory") or "")).resolve()
         if not project.is_dir(): raise ValueError("configured Shikigami workspace does not exist")
@@ -98,7 +100,7 @@ class Settings:
         # runtime e pelo Telegram; preservamos configurações já criadas.
         voice_format = "mp3" if requested_format == "opus" else requested_format
         if enabled and (not voice_profile or voice_format not in {"mp3", "wav", "flac"} or not 1 <= voice_text <= 4000 or not 1 <= auto_off <= 1440): raise ValueError("Telegram voice reply configuration is invalid")
-        return cls(root, data_dir, profile, entry, project, str(system.get("executable") or "codex"), str(system.get("model") or ""), str(system.get("model_reasoning_effort") or "medium"), str(system.get("sandbox_mode") or "workspace-write"), str(system.get("approval_policy") or "never"), int(telegram.get("poll_timeout_seconds") or 30), int(agent.get("turn_timeout_seconds") or 900), max(1, int(agent.get("max_parallel_conversations") or 1)), str(agent.get("developer_file") or ""), bool(agent.get("owner_execution_preferences", True)), permitted_models, permitted_efforts, bool(app_server.get("enabled", False)), idle, per_file, batch, max(1, pending), retained, output_bytes, output_count, enabled, voice_profile, str(voice.get("language") or "pt-BR"), str(voice.get("voice") or ""), float(voice.get("speed") or 1.0), voice_format, voice_text, auto_off, bool(voice.get("fallback_to_text", True)), bool(voice.get("agent_outbound_media", False)))
+        return cls(root, data_dir, profile, entry, project, str(system.get("executable") or "codex"), str(system.get("model") or ""), str(system.get("model_reasoning_effort") or "medium"), str(system.get("sandbox_mode") or "workspace-write"), str(system.get("approval_policy") or "never"), int(telegram.get("poll_timeout_seconds") or 30), int(agent.get("turn_timeout_seconds") or 900), max(1, int(agent.get("max_parallel_conversations") or 1)), str(instructions.get("shikigami_file") or "shikigami.md"), bool(instructions.get("enabled", True)), bool(agent.get("owner_execution_preferences", True)), permitted_models, permitted_efforts, bool(app_server.get("enabled", False)), idle, per_file, batch, max(1, pending), retained, output_bytes, output_count, enabled, voice_profile, str(voice.get("language") or "pt-BR"), str(voice.get("voice") or ""), float(voice.get("speed") or 1.0), voice_format, voice_text, auto_off, bool(voice.get("fallback_to_text", True)), bool(voice.get("agent_outbound_media", False)))
 
 
 class CodexProtocolError(RuntimeError): pass
@@ -280,8 +282,8 @@ class Gateway:
     def __init__(self, settings: Settings):
         self.settings, self.stop_event = settings, threading.Event(); self.contacts = Contacts(settings.data_dir / "contacts.json")
         (settings.data_dir / "state").mkdir(parents=True, exist_ok=True); self.database = sqlite3.connect(settings.data_dir / "state" / "gateway.sqlite3", check_same_thread=False); self.database_lock = threading.RLock()
-        self.database.execute("CREATE TABLE IF NOT EXISTS conversations(chat_id TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL, share_thoughts INTEGER NOT NULL DEFAULT 1, delete_thoughts INTEGER NOT NULL DEFAULT 1, codex_thread_id TEXT)")
-        for column, definition in (("share_thoughts", "INTEGER NOT NULL DEFAULT 1"), ("delete_thoughts", "INTEGER NOT NULL DEFAULT 1"), ("codex_thread_id", "TEXT"), ("reply_mode", "TEXT NOT NULL DEFAULT 'text'"), ("voice_expires_at", "REAL"), ("last_interaction_at", "REAL NOT NULL DEFAULT 0"), ("settings_revision", "INTEGER NOT NULL DEFAULT 0"), ("owner_model", "TEXT"), ("owner_effort", "TEXT")):
+        self.database.execute("CREATE TABLE IF NOT EXISTS conversations(chat_id TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL, share_thoughts INTEGER NOT NULL DEFAULT 1, delete_thoughts INTEGER NOT NULL DEFAULT 1, codex_thread_id TEXT, instruction_baseline_hash TEXT)")
+        for column, definition in (("share_thoughts", "INTEGER NOT NULL DEFAULT 1"), ("delete_thoughts", "INTEGER NOT NULL DEFAULT 1"), ("codex_thread_id", "TEXT"), ("instruction_baseline_hash", "TEXT"), ("reply_mode", "TEXT NOT NULL DEFAULT 'text'"), ("voice_expires_at", "REAL"), ("last_interaction_at", "REAL NOT NULL DEFAULT 0"), ("settings_revision", "INTEGER NOT NULL DEFAULT 0"), ("owner_model", "TEXT"), ("owner_effort", "TEXT")):
             try: self.database.execute(f"ALTER TABLE conversations ADD COLUMN {column} {definition}")
             except sqlite3.OperationalError: pass
         self.database.execute("CREATE TABLE IF NOT EXISTS conversation_attachments(id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, generation INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, mime_type TEXT, size INTEGER NOT NULL, archive_path TEXT NOT NULL, created_at REAL NOT NULL)")
@@ -291,7 +293,7 @@ class Gateway:
         self.database.execute("CREATE TABLE IF NOT EXISTS outbound_intents(id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, generation INTEGER NOT NULL, kind TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, telegram_message_id INTEGER, created_at REAL NOT NULL, completed_at REAL)")
         self.database.execute("UPDATE inbox_items SET state='pending' WHERE state='running'")
         self.database.commit()
-        self.identity = settings.root.name.removeprefix("Onmyoji-").strip() or "Shikigami"
+        self.identity = settings.root.name.removeprefix("Onmyoji-").strip() or "Shikigami"; self.instructions = InstructionComposer(settings.root, settings.data_dir, settings.instructions_file, settings.instructions_enabled)
         self.activity_root = settings.project / ".onmyoji" / "telegram"; self.archive_root = self.activity_root / "attachments"; self.staging_root = self.activity_root / "staging"
         self.archive_root.mkdir(parents=True, exist_ok=True); self.staging_root.mkdir(parents=True, exist_ok=True)
         self.api: TelegramApi | None = None; self.pair: tuple[str, float] | None = None; self.offset = 0; self.work = threading.BoundedSemaphore(settings.parallel); self.totp_sessions: dict[int, dict[str, Any]] = {}; self.config_sessions: dict[str, dict[str, Any]] = {}; self.menu_sessions: dict[str, MenuSession] = {}; self.menu_lock = threading.RLock(); self.last_error: str | None = None; self.cleanup_path = settings.data_dir / "state" / "totp-cleanup.json"; self.pending_deletions = json_file(self.cleanup_path, {}); self.app_server: CodexAppServer | None = None; self.app_server_lock = threading.RLock(); self.app_turns: dict[str, AppServerTurn] = {}; self.last_app_activity = time.monotonic(); self.turn_locks: dict[int, threading.Lock] = {}; self.turn_locks_lock = threading.Lock(); self.workers: set[int] = set(); self.workers_lock = threading.Lock()
@@ -560,9 +562,11 @@ class Gateway:
             except Exception as error: self._record_error(error)
 
     def _app_thread(self, chat_id: int, client: CodexAppServer) -> str:
-        row = self.database.execute("SELECT codex_thread_id FROM conversations WHERE chat_id=?", (str(chat_id),)).fetchone(); thread_id = str(row[0]) if row and row[0] else ""
-        instructions = GATEWAY_INSTRUCTIONS + f"\n\nYour Shikigami identity is {self.identity}. When asked who you are, identify yourself as {self.identity}, not as Codex."
-        params = {"cwd": str(self.settings.project), "approvalPolicy": self.settings.approval, "sandbox": self.settings.sandbox, "developerInstructions": instructions}
+        state = self._channel_state(chat_id); bundle = self.instructions.compose(identity=self.identity, telegram=True, reply_mode=str(state["reply_mode"]), outbound_media=self.settings.agent_outbound_media)
+        row = self.database.execute("SELECT codex_thread_id, instruction_baseline_hash FROM conversations WHERE chat_id=?", (str(chat_id),)).fetchone(); thread_id = str(row[0]) if row and row[0] else ""
+        if thread_id and str(row[1] or "") != bundle.baseline_hash:
+            self.database.execute("UPDATE conversations SET codex_thread_id=NULL, instruction_baseline_hash=NULL, updated_at=? WHERE chat_id=?", (time.time(), str(chat_id))); self.database.commit(); thread_id = ""
+        params = {"cwd": str(self.settings.project), "approvalPolicy": self.settings.approval, "sandbox": self.settings.sandbox, "developerInstructions": bundle.text}
         model, _effort = self._execution_preferences(chat_id)
         if model: params["model"] = model
         if thread_id:
@@ -572,7 +576,7 @@ class Gateway:
         tools[0]["tools"].extend([{"type": "function", "name": "send_message", "description": "Envia mensagem adicional somente à DM Telegram ativa; pode expirar automaticamente.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "minLength": 1, "maxLength": 4000}, "ttl_seconds": {"type": "integer", "minimum": 0, "maximum": 86400}, "protect_content": {"type": "boolean"}}, "required": ["text"], "additionalProperties": False}}, {"type": "function", "name": "ask_menu", "description": "Exibe opções ao owner da DM ativa e aguarda a seleção com prazo limitado.", "inputSchema": {"type": "object", "properties": {"question": {"type": "string", "minLength": 1, "maxLength": 4000}, "options": {"type": "array", "minItems": 2, "maxItems": 20, "items": {"type": "object", "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 64}, "label": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["id", "label"], "additionalProperties": False}}, "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": 300}, "protect_content": {"type": "boolean"}}, "required": ["question", "options"], "additionalProperties": False}}])
         started = client.request("thread/start", {**params, "serviceName": "onmyoji_telegram", "dynamicTools": tools}); thread = started.get("thread") if isinstance(started.get("thread"), dict) else started; thread_id = str(thread.get("id") or "") if isinstance(thread, dict) else ""
         if not thread_id: raise CodexProtocolError("Codex App Server não retornou uma thread")
-        self.database.execute("UPDATE conversations SET codex_thread_id=?, updated_at=? WHERE chat_id=?", (thread_id, time.time(), str(chat_id))); self.database.commit(); return thread_id
+        self.database.execute("UPDATE conversations SET codex_thread_id=?, instruction_baseline_hash=?, updated_at=? WHERE chat_id=?", (thread_id, bundle.baseline_hash, time.time(), str(chat_id))); self.database.commit(); return thread_id
 
     def _app_sandbox_policy(self) -> dict[str, Any]:
         if self.settings.sandbox == "danger-full-access": return {"type": "dangerFullAccess"}
@@ -602,8 +606,7 @@ class Gateway:
         client = self._app_client(); thread_id = self._app_thread(chat_id, client); state = self._channel_state(chat_id); active = AppServerTurn(chat_id, thread_id, threading.Event(), reply_mode=state["reply_mode"])
         with self.app_server_lock: self.app_turns[thread_id] = active
         try:
-            channel = "[Controle confiável do gateway Telegram] Modo da resposta final: " + active.reply_mode + ". " + ("A resposta será falada: escreva em linguagem natural, breve, sem Markdown, código, tabelas ou diagramas." if active.reply_mode == "audio" else "Responda normalmente.")
-            inputs: list[dict[str, Any]] = [{"type": "text", "text": channel}, {"type": "text", "text": text or "O owner enviou anexos sem mensagem textual."}]
+            inputs: list[dict[str, Any]] = [{"type": "text", "text": text or "O owner enviou anexos sem mensagem textual."}]
             for attachment in attachments or []:
                 staged = self._stage_attachment(chat_id, attachment, active)
                 if attachment["kind"] == "photo": inputs.append({"type": "localImage", "path": str(staged)})
@@ -753,17 +756,7 @@ class Gateway:
             mode = self._channel_state(chat_id)["reply_mode"]
             if self.settings.app_server_enabled:
                 answer, mode = self._app_turn(chat_id, text, attachments)
-            else:
-                if attachments: raise RuntimeError("Anexos exigem o App Server habilitado.")
-                # O processo recebe somente o CODEX_HOME desta instância e o workspace configurado.
-                environment = dict(os.environ); environment["CODEX_HOME"] = str(self.settings.root)
-                prompt = GATEWAY_INSTRUCTIONS + ("\nResponda para ser ouvido: linguagem natural, breve, sem Markdown, código ou tabelas." if mode == "audio" else "") + "\n\nMensagem do owner:\n" + text
-                model, effort = self._execution_preferences(chat_id)
-                command = [self.settings.executable, "exec", "-C", str(self.settings.project), "--skip-git-repo-check", "-m", model, "-c", f"model_reasoning_effort={json.dumps(effort)}", "-s", self.settings.sandbox, prompt]
-                result = subprocess.run(command, cwd=self.settings.project, env=environment, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=self.settings.turn_timeout)
-                if result.returncode != 0:
-                    self._record_error(f"Codex exec exit {result.returncode}: {result.stderr or result.stdout}"); answer = "O agente não conseguiu concluir esta solicitação. Consulte o diagnóstico do Gateway Telegram no setup."
-                else: answer = result.stdout.strip()
+            else: raise RuntimeError("O Gateway Telegram exige que o App Server esteja habilitado.")
             if answer and self.api:
                 if mode == "audio":
                     output = self._outbox(chat_id, secrets.token_urlsafe(10)) / f"resposta.{self.settings.voice_format}"

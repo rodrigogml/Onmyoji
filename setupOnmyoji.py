@@ -374,15 +374,12 @@ def launch_codex(root: Path, data: dict[str, object], login: bool = False) -> No
     if not login:
         synced, sync_message = sync_active_skill_links(root, enabled_ids(root), discover(root))
         if not synced: result(False, f"Não iniciado: {sync_message}"); return
-    command = [str(data["executable"]), "login"] if login else [
-        str(data["executable"]), "-C", str(data["project_directory"]), "-m", str(data["model"]),
-        "-c", f"model_reasoning_effort = {json.dumps(data['model_reasoning_effort'])}",
-        "-s", str(data["sandbox_mode"]), "-a", str(data["approval_policy"]),
-    ]
+    command = [str(data["executable"]), "login"] if login else [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "interactive"]
     if not login:
         for directory in data["additional_writable_directories"]:
             command.extend(["--add-dir", str(directory)])
     environment = dict(os.environ); environment["CODEX_HOME"] = str(root)
+    if not login: environment["PYTHONPATH"] = str(root / "onmyoji-daemon" / "src") + os.pathsep + environment.get("PYTHONPATH", "")
     try: subprocess.run(command, cwd=str(data["project_directory"]) if not login else root, env=environment, check=False)
     except OSError as error: result(False, f"Não foi possível iniciar o Codex-CLI: {error}")
 
