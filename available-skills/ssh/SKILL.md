@@ -22,7 +22,7 @@ vault_entry_path = "Servidores/Turing:SSH:servidor"
 known_hosts = "C:/Users/usuario/.ssh/known_hosts"
 ```
 
-Para `auth_mode = key`, informe também `key_attachment` com o nome exato do anexo da chave privada e, opcionalmente, `key_passphrase_field = password`. A chave é exportada para um arquivo temporário, usada somente na sessão e removida em `finally`.
+Para `auth_mode = key`, informe também `keepass_key_attachment` com o nome exato do anexo da chave privada e, opcionalmente, `keepass_key_passphrase_field = password`. A chave é exportada para um diretório temporário dentro do workspace, usada somente na sessão e removida em `finally`.
 
 ## Operações
 
