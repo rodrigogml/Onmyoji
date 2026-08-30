@@ -11,3 +11,12 @@ Os arquivos da base — `available-skills/`, `onmyoji-daemon/`, `setupOnmyoji.py
 `configs/`, `skills/`, `sessions/`, `state/`, `log/`, `tmp/` e diretórios equivalentes são locais e não versionados. Nunca coloque segredos, tokens, credenciais, bancos de conversas, logs ou staging em `shikigami/`.
 
 O workspace do agente é externo ao `CODEX_HOME`. Arquivos de trabalho, saídas, anexos temporários e dados de atividade devem permanecer no workspace configurado, nunca em `configs/` nem em `shikigami/`.
+
+## Alteração de instruções e skills
+
+Antes de alterar `README.md`, `AGENTS.md`, `SKILL.md` ou qualquer arquivo de skill:
+	1. Exiba a alteração proposta em formato diff.
+	2. Aguarde autorização explícita do usuário.
+	3. Só então aplique a alteração.
+
+No diff, apresente as remoções com `-` e as adições com `+`. Ordene os blocos pelo número da linha e, quando houver substituição na mesma linha, mostre primeiro a remoção e depois a adição. Use cores, quando a interface suportar.
