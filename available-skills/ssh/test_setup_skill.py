@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parent / "setupSkill.py"
@@ -41,6 +42,13 @@ class SshSetupTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertIn("workspace", message)
             self.assertFalse(path.exists())
+
+    @patch.object(SETUP, "prompt", return_value="n")
+    @patch.object(SETUP.importlib, "import_module", side_effect=ModuleNotFoundError("paramiko"))
+    def test_missing_paramiko_offers_installation_instead_of_crashing(self, _import_module, _prompt):
+        module, message = SETUP.require_paramiko()
+        self.assertIsNone(module)
+        self.assertIn("cancelada", message)
 
 
 if __name__ == "__main__":

@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import importlib
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import tomllib
@@ -68,10 +70,34 @@ def host_key_name(host: str, port: int) -> str:
     return host if port == 22 else f"[{host}]:{port}"
 
 
+def require_paramiko() -> tuple[object | None, str | None]:
+    """Instala a dependência no mesmo Python que executa setup e wrapper."""
+    try:
+        return importlib.import_module("paramiko"), None
+    except ModuleNotFoundError:
+        note("A dependência Python paramiko é necessária para validar a identidade e conectar por SSH.")
+        if prompt("Instalar a dependência SSH neste Python agora? [S/n]: ").strip().casefold() not in {"", "s", "sim"}:
+            return None, "A instalação de paramiko foi cancelada; o perfil não pode ser criado sem a dependência SSH."
+        try:
+            process = subprocess.run([sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--requirement", str(SKILL / "requirements.txt")], text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=180)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            return None, f"Não foi possível instalar paramiko: {error}"
+        if process.returncode:
+            detail = (process.stderr or process.stdout or "pip não retornou detalhes.").strip().replace("\n", " ")[-500:]
+            return None, f"A instalação de paramiko falhou: {detail}"
+        try:
+            importlib.invalidate_caches()
+            return importlib.import_module("paramiko"), None
+        except ModuleNotFoundError:
+            return None, "O pip terminou, mas paramiko ainda não está disponível neste Python."
+
+
 def verify_or_add_host_key(profile: dict) -> tuple[bool, str]:
     """Usa TOFU explícito: nunca grava uma chave do servidor sem confirmação visual."""
     try:
-        import paramiko
+        paramiko, dependency_error = require_paramiko()
+        if dependency_error: return False, dependency_error
+        assert paramiko is not None
         host, port = str(profile["host"]), int(profile["port"])
         known_hosts = Path(str(profile["known_hosts"])).expanduser()
         transport = paramiko.Transport((host, port))
@@ -287,6 +313,8 @@ def test_profile_json(name: str, path: Path, data: dict) -> tuple[bool, str]:
     """Autentica e encerra: não executa nenhum comando remoto no teste."""
     accepted, message = valid(path, data)
     if not accepted: return False, message
+    _paramiko, dependency_error = require_paramiko()
+    if dependency_error: return False, dependency_error
     from scripts.ssh import connect, export_key, load_profile
     temporary_directory: str | None = None; client = None
     try:
