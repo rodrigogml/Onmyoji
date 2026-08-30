@@ -529,7 +529,7 @@ def daemon_menu(root: Path) -> None:
     def telegram_menu() -> None:
         while True:
             telegram_path = root / "configs" / "daemon" / "services" / "telegram" / "telegram.toml"
-            if not telegram_path.exists(): command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "bootstrap"])
+            command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "bootstrap"], quiet=True)
             try:
                 enabled = bool(json.loads((root / "configs" / "daemon" / "services.json").read_text(encoding="utf-8")).get("telegram", {}).get("enabled", False))
             except (OSError, ValueError): enabled = False
