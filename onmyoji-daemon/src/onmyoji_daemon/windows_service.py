@@ -5,6 +5,7 @@ import argparse
 from pathlib import Path
 import threading
 
+from .instance import identity
 from .supervisor import Supervisor
 
 try:
@@ -20,7 +21,7 @@ def main(argv: list[str] | None = None) -> int:
     root, name = args.onmyoji_root.resolve(), args.service_name
 
     class InstanceService(win32serviceutil.ServiceFramework):
-        _svc_name_ = name; _svc_display_name_ = name; _svc_description_ = f"Shikigami {root.name} Daemon"
+        _svc_name_ = name; _svc_display_name_ = name; _svc_description_ = f"Shikigami {identity(root)} Daemon"
         def __init__(self, values): super().__init__(values); self.stop_event = threading.Event()
         def SvcStop(self): self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING); self.stop_event.set()
         def SvcDoRun(self):
