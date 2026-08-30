@@ -72,7 +72,7 @@ class Skill:
 def discover(root: Path = ROOT) -> list[Skill]:
     skills: list[Skill] = []
     for script in sorted((root / CATALOG_DIRECTORY).glob("*/setupSkill.py")):
-        result = subprocess.run([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "describe", "--json"], text=True, encoding="utf-8", errors="replace", capture_output=True)
+        result = subprocess.run([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "describe", "--json"], text=True, encoding="utf-8", errors="replace", capture_output=True, env={**os.environ, "PYTHONUTF8": "1"})
         try:
             data = json.loads(result.stdout) if result.returncode == 0 else {}
             skills.append(Skill(data["id"], data["title"], script, data.get("description", "")))

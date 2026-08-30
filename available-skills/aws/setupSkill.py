@@ -6,8 +6,10 @@ from pathlib import Path
 SKILL=Path(__file__).resolve().parent
 sys.path.insert(0,str(SKILL.parent))
 from setup_ui import choose_keepass_profile,item,prompt,result,screen,suggested_vault_entry
+from setup_profile_api import Field,handle as handle_profile,simple_save,wrapper_test
 DEFAULTS={"timeout_seconds":30,"max_attempts":3}
 FIELDS=(("cli_path","Executável AWS CLI","aws"),("region","Região","sa-east-1"),("expected_account_id","Conta AWS esperada (opcional)",""),("vault_profile","Perfil KeePass","example"),("vault_entry_path","Entrada KeePass","AWS/example"))
+PROFILE_FIELDS=tuple(Field(key,label,default,key in {'vault_profile','vault_entry_path'}) for key,label,default in FIELDS)
 def path(root):return root/'configs'/'aws.toml'
 def load(file):return tomllib.loads(file.read_text(encoding='utf-8')) if file.exists() else {'schema_version':1,'defaults':dict(DEFAULTS),'profiles':{}}
 def render(data):
@@ -29,6 +31,7 @@ def choose(profiles):
  item('X.','Voltar')
  raw=prompt('Perfil [X cancela]: ').strip().casefold()
  return names[int(raw)-1] if raw.isdigit() and 1<=int(raw)<=len(names) else None
+def profile_test(name,file,data):return wrapper_test(SKILL/'scripts'/'aws.py',file,name,{'version':1,'operation':'identity.get'},'AWS')
 def configure(root):
  file=path(root)
  while True:
@@ -60,8 +63,10 @@ def configure(root):
      if value and value.casefold() not in {'x','\x1b'}:profile[key]=value;save(file,data)
   else:result(False,'Opção inválida.')
 def main():
- parser=argparse.ArgumentParser();parser.add_argument('--onmyoji-root',type=Path);parser.add_argument('--action',default='configure');parser.add_argument('--json',action='store_true');args=parser.parse_args();root=args.onmyoji_root.resolve() if args.onmyoji_root else SKILL.parents[1];info={'id':'aws','title':'AWS','description':'S3 e IAM com credenciais no KeePass Vault.'}
+ parser=argparse.ArgumentParser();parser.add_argument('--onmyoji-root',type=Path);parser.add_argument('--action',default='configure');parser.add_argument('--json',action='store_true');parser.add_argument('--profile');parser.add_argument('--set',action='append');parser.add_argument('--confirm-delete');args=parser.parse_args();root=args.onmyoji_root.resolve() if args.onmyoji_root else SKILL.parents[1];info={'id':'aws','title':'AWS','description':'S3 e IAM com credenciais no KeePass Vault.'}
  if args.action=='describe':print(json.dumps(info,ensure_ascii=False) if args.json else info['title']);return
  if args.action=='status':print(json.dumps({'configured':bool(load(path(root))['profiles']),'valid':True}));return
+ if args.action.startswith('profile-'):
+  code,value=handle_profile(action=args.action,profile_name=args.profile,values=args.set,confirm_delete=args.confirm_delete,path=path(root),load=load,save=simple_save,fields=PROFILE_FIELDS,test=profile_test);print(json.dumps(value,ensure_ascii=False));return code
  configure(root)
 if __name__=='__main__':main()

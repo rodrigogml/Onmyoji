@@ -462,13 +462,25 @@ def configure(root: Path) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--onmyoji-root"); parser.add_argument("--action", choices=["describe", "status", "configure"], default="configure"); parser.add_argument("--json", action="store_true"); args = parser.parse_args()
+    parser = argparse.ArgumentParser(); parser.add_argument("--onmyoji-root"); parser.add_argument("--action", choices=["describe", "status", "configure", "profile-schema", "profile-list"], default="configure"); parser.add_argument("--json", action="store_true"); args = parser.parse_args()
     root = root_for(args.onmyoji_root)
     if args.action == "describe": print(json.dumps(describe(), ensure_ascii=False) if args.json else describe()["title"]); return 0
     if args.action == "status":
         try: ok, message = validate(load_config(config_for(root)))
         except ValueError as error: ok, message = False, str(error)
-        print(message); return 0 if ok else 2
+        value = {"configured": bool(load_config(config_for(root)).get("profiles", {})) if ok else False, "valid": ok, "message": message}
+        print(json.dumps(value, ensure_ascii=False) if args.json else message); return 0 if ok else 2
+    if args.action == "profile-schema":
+        value = {"ok": True, "read_only": True, "message": "O controle automático do KeePass permite somente consulta de perfis; criação, edição e remoção exigem o setup interativo do operador.", "fields": [{"name": "vault", "description": "Vault associado"}, {"name": "access", "description": "Nível de acesso"}, {"name": "allowed_operations", "description": "Operações permitidas"}, {"name": "allowed_entry_roots", "description": "Raízes de entradas permitidas"}, {"name": "allowed_attachment_roots", "description": "Raízes de anexos permitidas"}]}
+        print(json.dumps(value, ensure_ascii=False) if args.json else value["message"]); return 0
+    if args.action == "profile-list":
+        try: data = load_config(config_for(root)); ok, message = validate(data)
+        except ValueError as error: data, ok, message = empty_config(), False, str(error)
+        profiles = []
+        for name, profile in sorted(data.get("profiles", {}).items()):
+            if isinstance(profile, dict): profiles.append({"name": name, "vault": profile.get("vault"), "access": profile.get("access"), "allowed_operations": profile.get("allowed_operations", []), "allowed_entry_roots": profile.get("allowed_entry_roots", []), "allowed_attachment_roots": profile.get("allowed_attachment_roots", [])})
+        value = {"ok": ok, "configured": bool(profiles), "profiles": profiles, "message": message}
+        print(json.dumps(value, ensure_ascii=False) if args.json else message); return 0 if ok else 2
     return configure(root)
 
 

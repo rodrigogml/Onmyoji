@@ -7,11 +7,13 @@ description: Administra, por meio das ações não interativas oficiais do setup
 
 Use exclusivamente `scripts/onmyoji_control.py`. Não edite `configs/`, links em `skills/` ou arquivos TOML diretamente.
 
-Execute primeiro `skills list` ou `skills status`. Habilite e desabilite somente quando o pedido do usuário for explícito. Não tente administrar sandbox, ACLs, KeePass, daemon, serviços do SO, segredos ou configurações do Codex-CLI.
+Execute primeiro `skills list` ou `skills status`. Habilite e desabilite somente quando o pedido do usuário for explícito. Nunca habilite ou desabilite `onmyoji-control` por esta própria skill. Não tente administrar sandbox, ACLs, KeePass, daemon, serviços do SO, segredos ou configurações do Codex-CLI.
 
-Para perfis, use `profiles status <skill>` para consultar a validação que a própria skill expõe e `profiles list <skill>` para listar a configuração não sensível. Quando uma skill declarar suporte, use `profiles create|update|delete|test <skill>` com `--profile` e os demais argumentos descritos pelo `--help`; nunca simule entrada em menu interativo.
+Para perfis, use `profiles status <skill>` para consultar a validação e `profiles schema <skill>` antes de criar ou alterar um perfil. Use `profiles list <skill>` para listar a configuração não sensível. Crie e altere com `profiles create|update <skill> --profile <nome> --set campo=valor`; listas devem ser JSON, por exemplo `--set readable_roots='["C:/work/.onmyoji/eccovox"]'`. Nunca simule entrada em menu interativo.
 
-No momento, o contrato completo de perfil está disponível para `todoist`. Para criar, informe `--vault-profile` e `--vault-entry`; `--vault-field`, `--access`, `--operations` e `--attachment-roots` são opcionais. Em atualizações, envie apenas os campos a alterar. `--operations` e `--attachment-roots` aceitam valores separados por `;`; vazios limpam a respectiva restrição. Teste um perfil com `profiles test todoist --profile <nome>`.
+O contrato de perfil está disponível para `todoist`, `omie`, `eccovox`, `cloudflare`, `forward-email`, `notion`, `mysql`, `ssh`, `aws`, `google` e `bis2cmd`. Em Todoist, os campos também podem ser informados pelos argumentos específicos existentes; prefira `--set` para um fluxo uniforme. Teste perfis somente nas skills que retornarem suporte para isso; o teste sempre é uma leitura inofensiva pelo wrapper oficial.
+
+`keepass-vault` é deliberadamente somente consulta: use `profiles status|schema|list keepass-vault`. Nunca crie, edite ou remova Vaults, perfis ou credenciais KeePass por esta skill.
 
 Exclusão é destrutiva: só execute `profiles delete todoist --profile <nome> --confirm-delete DELETE` depois de um pedido inequívoco do usuário que identifique o perfil. Nunca crie, altere ou exclua perfis apenas para experimentar ou inferir preferências.
 

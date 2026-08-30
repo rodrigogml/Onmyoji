@@ -5,6 +5,8 @@ from pathlib import Path
 S=Path(__file__).resolve().parent; F=(('vault_profile','Perfil KeePass','example'),('vault_entry_path','Entrada KeePass','APIs/ForwardEmail'),('vault_field','Campo do token','password'),('domain','Domínio (opcional)',''))
 sys.path.insert(0,str(S.parent))
 from setup_ui import choose_keepass_profile,item,prompt,result,screen,suggested_vault_entry
+from setup_profile_api import Field,handle as handle_profile,wrapper_test
+PROFILE_FIELDS=tuple(Field(key,label,default,key in {'vault_profile','vault_entry_path'}) for key,label,default in F)
 def path(root):return root/'configs'/'forward-email.toml'
 def load(p):return tomllib.loads(p.read_text(encoding='utf-8')) if p.exists() else {'schema_version':1,'defaults':{'api_base':'https://api.forwardemail.net/v1','timeout_seconds':30,'max_retries':2},'profiles':{}}
 def render(d):
@@ -19,6 +21,15 @@ def save(p,d):
   else:p.write_text(old,encoding='utf-8',newline='\n')
   result(False,f'Não salvo: {e}');return
  result(True,'Configuração salva e validada.')
+def profile_save(p,d):
+ old=p.read_text(encoding='utf-8') if p.exists() else None
+ try:p.parent.mkdir(parents=True,exist_ok=True);p.write_text(render(d),encoding='utf-8',newline='\n');tomllib.loads(p.read_text(encoding='utf-8'))
+ except Exception as e:
+  if old is None:p.unlink(missing_ok=True)
+  else:p.write_text(old,encoding='utf-8',newline='\n')
+  return False,f'Não salvo: {e}'
+ return True,'Configuração salva e validada.'
+def profile_test(name,p,d):return wrapper_test(S/'scripts'/'forward_email.py',p,name,{'version':1,'operation':'domains.list'},'Forward Email')
 def select(q):
  n=sorted(q);screen('Forward Email','Selecionar perfil','Escolha um perfil ou pressione X para voltar');[item(f'{i}.',x) for i,x in enumerate(n,1)];item('X.','Voltar');v=prompt('Perfil [X cancela]: ').strip();return n[int(v)-1] if v.isdigit() and 1<=int(v)<=len(n) else None
 def configure(root):
@@ -47,8 +58,10 @@ def configure(root):
     if v.isdigit() and 1<=int(v)<=len(F):k,l,_=F[int(v)-1];x=choose_keepass_profile(root,z.get(k,'')) if k=='vault_profile' else prompt(f'{l} [X cancela]: ').strip();z[k]=z[k] if not x or x.casefold()=='x' else x;save(p,d)
   else:result(False,'Opção inválida.')
 def main():
- p=argparse.ArgumentParser();p.add_argument('--action',default='configure');p.add_argument('--json',action='store_true');p.add_argument('--onmyoji-root',type=Path);a=p.parse_args();r=a.onmyoji_root.resolve() if a.onmyoji_root else S.parents[1];i={'id':'forward-email','title':'Forward Email','description':'Domínios e aliases com token no KeePass Vault.'}
+ p=argparse.ArgumentParser();p.add_argument('--action',default='configure');p.add_argument('--json',action='store_true');p.add_argument('--onmyoji-root',type=Path);p.add_argument('--profile');p.add_argument('--set',action='append');p.add_argument('--confirm-delete');a=p.parse_args();r=a.onmyoji_root.resolve() if a.onmyoji_root else S.parents[1];i={'id':'forward-email','title':'Forward Email','description':'Domínios e aliases com token no KeePass Vault.'}
  if a.action=='describe':print(json.dumps(i,ensure_ascii=False) if a.json else i['title']);return
  if a.action=='status':print(json.dumps({'configured':bool(load(path(r))['profiles']),'valid':True}));return
+ if a.action.startswith('profile-'):
+  code,value=handle_profile(action=a.action,profile_name=a.profile,values=a.set,confirm_delete=a.confirm_delete,path=path(r),load=load,save=profile_save,fields=PROFILE_FIELDS,test=profile_test);print(json.dumps(value,ensure_ascii=False));return code
  configure(r)
 if __name__=='__main__':main()

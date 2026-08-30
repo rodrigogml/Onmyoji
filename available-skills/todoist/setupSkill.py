@@ -90,6 +90,8 @@ def profile_result(path: Path, args: argparse.Namespace) -> tuple[int, dict[str,
     try: data = load(path)
     except ValueError as error: return 2, {"ok": False, "error": {"code": "invalid_config", "message": str(error)}}
     action = args.action
+    if action == "profile-schema":
+        return 0, {"ok": True, "fields": [{"name": "vault_profile", "description": "Perfil KeePass", "required_on_create": True}, {"name": "vault_entry_path", "description": "Entrada KeePass", "required_on_create": True}, {"name": "vault_field", "description": "Campo do token", "default": "password"}, {"name": "access", "description": "Acesso", "default": "read_only"}, {"name": "allowed_operations", "description": "Operações permitidas", "default": []}, {"name": "allowed_attachment_roots", "description": "Raízes de anexos", "default": []}]}
     if action == "profile-list":
         valid, message = validate(data)
         return (0 if valid else 2), {"ok": valid, "configured": bool(data["profiles"]), "profiles": [public_profile(name, profile) for name, profile in sorted(data["profiles"].items())], "message": message}
@@ -210,7 +212,7 @@ def configure(root: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--onmyoji-root", type=Path, default=ROOT)
-    parser.add_argument("--action", choices=["describe", "status", "configure", "profile-list", "profile-create", "profile-update", "profile-delete", "profile-test"], default="configure")
+    parser.add_argument("--action", choices=["describe", "status", "configure", "profile-schema", "profile-list", "profile-create", "profile-update", "profile-delete", "profile-test"], default="configure")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--profile")
     parser.add_argument("--vault-profile")

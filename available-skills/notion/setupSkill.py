@@ -7,7 +7,9 @@ from pathlib import Path
 SKILL = Path(__file__).resolve().parent
 sys.path.insert(0, str(SKILL.parent))
 from setup_ui import choose_keepass_profile, item, prompt, result, screen, suggested_vault_entry
+from setup_profile_api import Field,handle as handle_profile,wrapper_test
 DEFAULTS = {"api_base":"https://api.notion.com","notion_version":"2026-03-11","timeout_seconds":30,"max_retries":2,"page_size":100}
+PROFILE_FIELDS=(Field('vault_profile','Perfil KeePass',required=True),Field('vault_entry_path','Entrada KeePass',required=True),Field('vault_field','Campo do token','password'))
 def path(root): return root / "configs" / "notion.toml"
 def load(file): return tomllib.loads(file.read_text(encoding="utf-8")) if file.exists() else {"schema_version":1,"defaults":dict(DEFAULTS),"profiles":{}}
 def render(data):
@@ -26,6 +28,15 @@ def save(file,data):
         else:file.write_text(old,encoding="utf-8",newline="\n")
         result(False, f"Não salvo: {e}");return
     result(True, "Configuração salva e validada.")
+def profile_save(file,data):
+    old=file.read_text(encoding="utf-8") if file.exists() else None
+    try:file.parent.mkdir(parents=True,exist_ok=True);file.write_text(render(data),encoding="utf-8",newline="\n");tomllib.loads(file.read_text(encoding="utf-8"))
+    except Exception as e:
+        if old is None:file.unlink(missing_ok=True)
+        else:file.write_text(old,encoding="utf-8",newline="\n")
+        return False,f"Não salvo: {e}"
+    return True,"Configuração salva e validada."
+def profile_test(name,file,data):return wrapper_test(SKILL/'scripts'/'notion.py',file,name,{'version':1,'operation':'users.self'},'Notion')
 def select(profiles):
     names=sorted(profiles)
     screen("Notion", "Selecionar perfil", "Escolha um perfil ou pressione X para voltar")
@@ -66,8 +77,10 @@ def configure(root):
                     if value and value.casefold() not in {"x","\x1b"}:p[key]=value;save(file,data)
         else:result(False, "Opção inválida.")
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument("--action",default="configure");parser.add_argument("--json",action="store_true");parser.add_argument("--onmyoji-root",type=Path);args=parser.parse_args();root=args.onmyoji_root.resolve() if args.onmyoji_root else SKILL.parents[1];info={"id":"notion","title":"Notion","description":"Páginas, bases e arquivos com token no KeePass Vault."}
+    parser=argparse.ArgumentParser();parser.add_argument("--action",default="configure");parser.add_argument("--json",action="store_true");parser.add_argument("--onmyoji-root",type=Path);parser.add_argument('--profile');parser.add_argument('--set',action='append');parser.add_argument('--confirm-delete');args=parser.parse_args();root=args.onmyoji_root.resolve() if args.onmyoji_root else SKILL.parents[1];info={"id":"notion","title":"Notion","description":"Páginas, bases e arquivos com token no KeePass Vault."}
     if args.action=="describe":print(json.dumps(info,ensure_ascii=False) if args.json else info["title"]);return
     if args.action=="status":print(json.dumps({"configured":path(root).exists(),"valid":True}));return
+    if args.action.startswith('profile-'):
+        code,value=handle_profile(action=args.action,profile_name=args.profile,values=args.set,confirm_delete=args.confirm_delete,path=path(root),load=load,save=profile_save,fields=PROFILE_FIELDS,test=profile_test);print(json.dumps(value,ensure_ascii=False));return code
     configure(root)
 if __name__=="__main__":main()

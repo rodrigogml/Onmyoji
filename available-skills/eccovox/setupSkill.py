@@ -12,9 +12,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from setup_ui import item, note, prompt, result, screen
+from setup_profile_api import Field, handle as handle_profile
 
 SKILL = Path(__file__).resolve().parent
 sys.path.insert(0, str(SKILL))
+PROFILE_FIELDS=(Field("base_url","URL local","http://127.0.0.1:8870",True),Field("readable_roots","Raízes de leitura",[]),Field("writable_roots","Raízes de escrita",[]))
 
 
 def root_from(args: argparse.Namespace) -> Path:
@@ -184,6 +186,18 @@ def test_profile(root: Path, path: Path, name: str) -> None:
         if generated: generated.unlink(missing_ok=True)
 
 
+def test_profile_json(name: str, path: Path, data: dict) -> tuple[bool, str]:
+    """Teste seguro sem áudio temporário ou perguntas interativas."""
+    try:
+        from scripts.eccovox import execute, load_config
+        accepted, message = valid(path, data)
+        if not accepted: return False, message
+        response = execute(load_config(str(path), name), {"version": 1, "operation": "health.get"})
+        status = str(response.get("data", {}).get("status") or "desconhecido")
+        return status == "ready", f"Health do EccoVox: {status}."
+    except Exception as error: return False, f"Teste EccoVox falhou: {error}"
+
+
 def configure(root: Path) -> None:
     path = config_path(root)
     while True:
@@ -232,10 +246,13 @@ def configure(root: Path) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--action", default="configure"); parser.add_argument("--json", action="store_true"); parser.add_argument("--onmyoji-root", type=Path); args = parser.parse_args(); root = root_from(args)
+    parser = argparse.ArgumentParser(); parser.add_argument("--action", default="configure"); parser.add_argument("--json", action="store_true"); parser.add_argument("--onmyoji-root", type=Path); parser.add_argument('--profile'); parser.add_argument('--set',action='append'); parser.add_argument('--confirm-delete'); args = parser.parse_args(); root = root_from(args)
     description = {"id": "eccovox", "title": "EccoVox", "description": "STT e TTS locais, com perfis e diretórios autorizados."}
     if args.action == "describe": print(json.dumps(description, ensure_ascii=False) if args.json else description["title"]); return 0
     if args.action == "status": print(json.dumps({"configured": config_path(root).exists(), "valid": True})); return 0
+    if args.action.startswith('profile-'):
+        code,value=handle_profile(action=args.action,profile_name=args.profile,values=args.set,confirm_delete=args.confirm_delete,path=config_path(root),load=load,save=save,fields=PROFILE_FIELDS,test=test_profile_json)
+        print(json.dumps(value,ensure_ascii=False)); return code
     configure(root); return 0
 
 

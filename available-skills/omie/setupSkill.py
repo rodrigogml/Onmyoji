@@ -7,6 +7,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from setup_ui import choose_keepass_profile, item, prompt, result, screen, suggested_vault_entry
+from setup_profile_api import Field, handle as handle_profile
+if hasattr(sys.stdout, 'reconfigure'): sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+PROFILE_FIELDS=(Field('vault_profile','Perfil KeePass',required=True),Field('vault_entry_path','Entrada KeePass',required=True),Field('app_key_field','Campo KeePass para app_key','username'),Field('app_secret_field','Campo KeePass para app_secret','password'))
 def path(root: Path) -> Path: return root / "configs" / "omie.toml"
 def empty() -> dict: return {"schema_version": 1, "defaults": {"timeout_seconds": 30, "max_retries": 2}, "profiles": {}}
 def render(data: dict) -> str:
@@ -62,6 +65,15 @@ def test_profile(root: Path, file: Path, data: dict) -> None:
         return
     result(True, f"Acesso à API Omie confirmado para o perfil '{name}'.")
 
+def test_profile_json(name: str, file: Path, data: dict) -> tuple[bool, str]:
+    defaults=data['defaults']; timeout=float(defaults['timeout_seconds'])*(int(defaults['max_retries'])+1)+5
+    command=[sys.executable,str(Path(__file__).resolve().parent/'scripts'/'omie.py'),'--config',str(file),'--profile',name]
+    try: process=subprocess.run(command,input=json.dumps({'version':1,'operation':'departments.list','params':{'page':1,'page_size':1}}),text=True,encoding='utf-8',errors='replace',capture_output=True,timeout=timeout); payload=json.loads(process.stdout)
+    except (OSError,subprocess.TimeoutExpired,json.JSONDecodeError): return False, 'Não foi possível concluir o teste de acesso à Omie.'
+    if process.returncode or payload.get('ok') is not True:
+        error=payload.get('error',{}) if isinstance(payload,dict) else {}; return False, f"Falha ao testar a Omie: {error.get('message','a API recusou a solicitação.')}"
+    return True, 'Acesso à API Omie confirmado.'
+
 def configure(root: Path) -> None:
     file, data = path(root), load(path(root))
     while True:
@@ -84,10 +96,13 @@ def configure(root: Path) -> None:
         elif choice == '3': test_profile(root, file, data)
         else: result(False, "Opção inválida.")
 def main() -> int:
-    parser=argparse.ArgumentParser(); parser.add_argument('--onmyoji-root',type=Path,default=ROOT); parser.add_argument('--action',choices=['describe','status','configure'],default='configure'); parser.add_argument('--json',action='store_true'); args=parser.parse_args()
+    parser=argparse.ArgumentParser(); parser.add_argument('--onmyoji-root',type=Path,default=ROOT); parser.add_argument('--action',choices=['describe','status','configure','profile-schema','profile-list','profile-create','profile-update','profile-delete','profile-test'],default='configure'); parser.add_argument('--json',action='store_true'); parser.add_argument('--profile'); parser.add_argument('--set',action='append'); parser.add_argument('--confirm-delete'); args=parser.parse_args()
     if args.action=='describe':
         data={'id':'omie','title':'Omie','description':'ERP, financeiro e NF-e com credenciais no KeePass Vault.'}; print(json.dumps(data,ensure_ascii=False) if args.json else data['title']); return 0
     if args.action=='status':
         data=load(path(args.onmyoji_root)); ok,message=valid(data); print(json.dumps({'configured':bool(data['profiles']),'valid':ok,'message':message},ensure_ascii=False)); return 0 if ok else 2
+    if args.action.startswith('profile-'):
+        code,value=handle_profile(action=args.action,profile_name=args.profile,values=args.set,confirm_delete=args.confirm_delete,path=path(args.onmyoji_root),load=load,save=save,fields=PROFILE_FIELDS,test=test_profile_json)
+        print(json.dumps(value,ensure_ascii=False)); return code
     configure(args.onmyoji_root); return 0
 if __name__=='__main__': raise SystemExit(main())
