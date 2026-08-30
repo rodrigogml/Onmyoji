@@ -17,3 +17,13 @@ def test_composition_has_order_and_overlay(tmp_path):
 def test_instruction_path_cannot_escape_authorized_root(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"
     with pytest.raises(InstructionError): InstructionComposer(tmp_path, data, "../outside.md").compose(identity="Akuma", telegram=False)
+
+
+def test_channel_capability_restarts_baseline_but_reply_mode_is_overlay_only(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"
+    composer = InstructionComposer(tmp_path, data, "shikigami.md")
+    text = composer.compose(identity="Akuma", telegram=True, reply_mode="text", outbound_media=False)
+    audio = composer.compose(identity="Akuma", telegram=True, reply_mode="audio", outbound_media=False)
+    media = composer.compose(identity="Akuma", telegram=True, reply_mode="text", outbound_media=True)
+    assert text.baseline_hash == audio.baseline_hash and text.overlay_hash != audio.overlay_hash
+    assert text.baseline_hash != media.baseline_hash

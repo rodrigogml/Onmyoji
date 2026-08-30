@@ -55,11 +55,14 @@ class InstructionComposer:
         parts = ["[ONMYŌJI — INSTRUÇÕES GERAIS]\n" + onmyoji, "[SHIKIGAMI — IDENTIDADE]\nSeu nome é " + identity + ". Ao ser perguntado, identifique-se assim, não como Codex."]
         sources = ["onmyoji.md", "identidade"]
         if shikigami: parts.append("[SHIKIGAMI — INSTRUÇÕES PARTICULARES]\n" + shikigami); sources.append(shikigami_path or "shikigami.md")
-        if telegram: parts.append("[TELEGRAM — CONTRATO DE CANAL]\n" + self._read(self.resources / "telegram.md", MAX_SHIKIGAMI_BYTES)); sources.append("telegram.md")
+        if telegram:
+            parts.append("[TELEGRAM — CONTRATO DE CANAL]\n" + self._read(self.resources / "telegram.md", MAX_SHIKIGAMI_BYTES))
+            parts.append("[TELEGRAM — CAPACIDADES DO CANAL]\nMídia de saída: " + ("permitida." if outbound_media else "não disponível."))
+            sources.append("telegram.md")
         baseline = "\n\n".join(parts)
         overlay = ""
         if telegram:
-            overlay = "[TELEGRAM — ESTADO CONFIÁVEL]\nResposta final: " + reply_mode + ". " + ("Use linguagem natural breve, sem Markdown, código, tabelas ou diagramas." if reply_mode == "audio" else "Responda normalmente.") + " Mídia de saída: " + ("permitida." if outbound_media else "não disponível.")
+            overlay = "[TELEGRAM — ESTADO CONFIÁVEL]\nResposta final: " + reply_mode + ". " + ("Use linguagem natural breve, sem Markdown, código, tabelas ou diagramas." if reply_mode == "audio" else "Responda normalmente.")
         text = baseline + ("\n\n" + overlay if overlay else "")
         if len(text.encode("utf-8")) > MAX_COMPOSED_BYTES: raise InstructionError("A composição de instruções excede o limite total.")
         return InstructionBundle(text, self._hash(baseline), self._hash(overlay), tuple(sources))

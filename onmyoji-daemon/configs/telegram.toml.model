@@ -18,13 +18,13 @@ owner_allowed_models = []
 owner_allowed_reasoning_efforts = []
 
 [instructions]
-# Caminho relativo a configs/daemon/services/telegram/, restrito a configs/daemon/instructions/.
+# Caminho relativo a configs/daemon/instructions/.
 enabled = true
 shikigami_file = "shikigami.md"
 
 [app_server]
 # Mantém um Codex App Server exclusivo desta instância para reutilizar a conversa.
-# Desabilitado por padrão para permitir rollout gradual; o modo legado usa codex exec por turno.
+# Deve ser habilitado antes do gateway Telegram; mantém contexto e developer instructions consistentes.
 enabled = false
 # Encerra o processo quando não houver turnos ativos por este período. As threads persistem.
 idle_timeout_seconds = 1800

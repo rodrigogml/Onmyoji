@@ -538,6 +538,8 @@ def daemon_menu(root: Path) -> None:
             except (OSError, tomllib.TOMLDecodeError): telegram_settings = {}; totp_enabled, app_server_enabled, app_server_idle, voice_enabled, voice_profile, voice_auto_off, outbound_media = False, False, 1800, False, "", 15, False
             agent_preferences = telegram_settings.get("agent", {}) if "telegram_settings" in locals() and isinstance(telegram_settings.get("agent", {}), dict) else {}
             owner_preferences = bool(agent_preferences.get("owner_execution_preferences", True)); owner_models = ";".join(str(value) for value in agent_preferences.get("owner_allowed_models", []) if isinstance(value, str)); owner_efforts = ";".join(str(value) for value in agent_preferences.get("owner_allowed_reasoning_efforts", []) if isinstance(value, str))
+            instruction_settings = telegram_settings.get("instructions", {}) if isinstance(telegram_settings.get("instructions", {}), dict) else {}
+            instruction_file = str(instruction_settings.get("shikigami_file") or "shikigami.md")
             screen("Gateway Telegram", "Credenciais permanecem exclusivamente no KeePass")
             item("1.", "Desabilitar Telegram" if enabled else "Habilitar Telegram")
             item("2.", "Configurar credencial do bot", "Perfil KeePass e referência da entrada")
@@ -547,10 +549,11 @@ def daemon_menu(root: Path) -> None:
             item("6.", "Desabilitar TOTP" if totp_enabled else "Configurar e habilitar TOTP")
             item("7.", "Testar agente Codex", "Execução controlada, sem mensagem ao bot")
             item("8.", "Atualizar comandos privados", "Regrava e confirma comandos de cada owner")
-            item("9.", "Desabilitar App Server" if app_server_enabled else "Habilitar App Server", "Conversa persistente por Shikigami" if app_server_enabled else "Usa codex exec por turno")
+            item("9.", "Desabilitar App Server" if app_server_enabled else "Habilitar App Server", "Conversa persistente por Shikigami" if app_server_enabled else "Obrigatório para o Gateway Telegram")
             item("10.", "Tempo de inatividade do App Server", f"{app_server_idle // 60} min · encerra somente sem turnos ativos")
             item("11.", "Configurar respostas em áudio", (f"EccoVox: {voice_profile} · auto-off: {voice_auto_off} min" if voice_enabled else "Desabilitadas"))
             item("12.", "Preferências de execução do owner", "Habilitadas" if owner_preferences else "Desabilitadas")
+            item("13.", "Instruções do Shikigami", instruction_file)
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
@@ -673,6 +676,28 @@ def daemon_menu(root: Path) -> None:
                 arguments = [sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-owner-execution-preferences", "--models", models, "--efforts", efforts] + (["--disabled"] if enabled != "s" else [])
                 changed = command(arguments, quiet=True); result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
                 if changed.returncode == 0: offer_restart()
+            elif choice == "13":
+                status = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "instructions-status"], quiet=True)
+                if status.returncode != 0:
+                    result(False, (status.stdout or status.stderr).strip()); continue
+                try:
+                    details = json.loads(status.stdout)
+                    result(True, f"Composição válida. Fontes: {', '.join(details.get('sources', []))}. Baseline: {details.get('baseline_hash', '')}.")
+                    local_file = Path(str(details["local_file"]))
+                except (json.JSONDecodeError, KeyError):
+                    result(False, "Não foi possível ler o estado das instruções."); continue
+                action = prompt("Abrir instruções particulares no editor? [S/n]: ").strip().casefold()
+                if action in {"", "s", "sim"}:
+                    try:
+                        if os.name == "nt": subprocess.run(["notepad.exe", str(local_file)], check=False)
+                        else:
+                            editor = os.environ.get("EDITOR")
+                            if not editor: raise ValueError("Defina a variável EDITOR para abrir o arquivo neste sistema.")
+                            subprocess.run([editor, str(local_file)], check=False)
+                        checked = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "instructions-status"], quiet=True)
+                        result(checked.returncode == 0, "Instruções salvas e validadas." if checked.returncode == 0 else (checked.stdout or checked.stderr).strip())
+                        if checked.returncode == 0: note("A alteração cria uma nova conversa Codex na próxima mensagem do Telegram.")
+                    except (OSError, ValueError) as error: result(False, f"Não foi possível abrir o editor: {error}")
             else: result(False, "Opção inválida.")
 
     while True:

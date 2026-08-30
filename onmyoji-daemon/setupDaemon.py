@@ -251,10 +251,13 @@ def test_agent(root: Path) -> tuple[bool, str]:
         app_server_enabled = bool(data.get("app_server", {}).get("enabled", False))
         if app_server_enabled:
             from onmyoji_daemon.telegram import CodexAppServer, Settings
-            client = CodexAppServer(Settings.load(root.resolve(), target(root).parent))
+            from onmyoji_daemon.instructions import InstructionComposer
+            settings = Settings.load(root.resolve(), target(root).parent)
+            bundle = InstructionComposer(root, target(root).parent, settings.instructions_file, settings.instructions_enabled).compose(identity=root.name.removeprefix("Onmyoji-").strip() or "Shikigami", telegram=True)
+            client = CodexAppServer(settings)
             try:
                 client.start()
-                parameters = {"cwd": str(workspace), "approvalPolicy": str(system.get("approval_policy") or "never"), "sandbox": str(system.get("sandbox_mode") or "workspace-write"), "developerInstructions": "Teste controlado do Onmyoji."}
+                parameters = {"cwd": str(workspace), "approvalPolicy": str(system.get("approval_policy") or "never"), "sandbox": str(system.get("sandbox_mode") or "workspace-write"), "developerInstructions": bundle.text}
                 if str(system.get("model") or ""): parameters["model"] = str(system["model"])
                 thread = client.request("thread/start", parameters).get("thread", {})
                 thread_id = str(thread.get("id") or "") if isinstance(thread, dict) else ""
@@ -278,13 +281,18 @@ def test_agent(root: Path) -> tuple[bool, str]:
                 marker.write_text(json.dumps({"tested_at": time.time(), "ok": True, "detail": "Codex App Server executou um turno controlado."}), encoding="utf-8")
                 return True, "Codex App Server executou um turno controlado."
             finally: client.stop()
-        command = [executable, "exec", "-C", str(workspace), "--skip-git-repo-check", "-m", str(system.get("model") or ""), "-c", f"model_reasoning_effort={json.dumps(str(system.get('model_reasoning_effort') or 'medium'))}", "-s", str(system.get("sandbox_mode") or "workspace-write"), "Responda somente com OK."]
-        run = subprocess.run(command, cwd=workspace, env=environment, text=True, capture_output=True, timeout=120)
-        message = (run.stderr or run.stdout or "sem saída").strip().replace("\n", " ")[-500:]
-        marker = root / "configs" / "daemon" / "runtime" / "codex-test.json"; marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(json.dumps({"tested_at": time.time(), "ok": run.returncode == 0, "detail": "Codex respondeu ao teste controlado." if run.returncode == 0 else message}), encoding="utf-8")
-        return (True, "Codex respondeu ao teste controlado.") if run.returncode == 0 else (False, f"Codex exec falhou: {message}")
+        return False, "Habilite o Codex App Server antes de testar o agente; o gateway e o teste usam as mesmas developer instructions."
     except Exception as error: return False, f"Teste do Codex falhou: {error}"
+
+
+def instruction_status(root: Path) -> dict[str, object]:
+    """Valida a composição sem imprimir conteúdo potencialmente particular."""
+    bootstrap(root)
+    from onmyoji_daemon.instructions import InstructionComposer
+    data = telegram_data(root); section = data.get("instructions", {})
+    composer = InstructionComposer(root.resolve(), target(root).parent, str(section.get("shikigami_file") or "shikigami.md"), bool(section.get("enabled", True)))
+    bundle = composer.compose(identity=root.name.removeprefix("Onmyoji-").strip() or "Shikigami", telegram=True)
+    return {"ok": True, "sources": list(bundle.sources), "baseline_hash": bundle.baseline_hash[:12], "local_file": str(root / "configs" / "daemon" / "instructions" / str(section.get("shikigami_file") or "shikigami.md"))}
 
 
 def validation(root: Path) -> list[dict[str, str]]:
@@ -303,6 +311,11 @@ def validation(root: Path) -> list[dict[str, str]]:
     app_server = data.get("app_server", {})
     enabled, idle = bool(app_server.get("enabled", False)), int(app_server.get("idle_timeout_seconds") or 1800)
     add("ok" if enabled and idle >= 60 else "error", "Codex App Server", (f"Habilitado; encerra após {idle} segundos sem turnos ativos." if enabled else "O gateway exige App Server para aplicar developer instructions."))
+    try:
+        state = instruction_status(root)
+        add("ok", "Developer instructions", f"Composição válida ({', '.join(str(value) for value in state['sources'])}).")
+    except Exception as error:
+        add("error", "Developer instructions", f"Corrija as instruções do Shikigami: {error}")
     limits = data.get("limits", {})
     try:
         per_file, batch, retained = int(limits.get("max_attachment_bytes", 20 * 1024 * 1024)), int(limits.get("max_batch_attachment_bytes", 50 * 1024 * 1024)), int(limits.get("max_retained_attachment_bytes", 250 * 1024 * 1024))
@@ -368,9 +381,10 @@ def test_telegram(root: Path) -> tuple[bool, str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--onmyoji-root", default=str(ROOT)); parser.add_argument("--action", choices=["bootstrap", "validate", "validation-json", "profiles", "set-credential", "set-totp", "set-app-server", "set-owner-execution-preferences", "set-voice-reply", "check-entry", "write-token", "test-telegram", "test-agent"], default="bootstrap"); parser.add_argument("--profile"); parser.add_argument("--entry"); parser.add_argument("--real-entry"); parser.add_argument("--fake-entry"); parser.add_argument("--enabled", action="store_true"); parser.add_argument("--disabled", action="store_true"); parser.add_argument("--idle-timeout", type=int); parser.add_argument("--auto-off-minutes", type=int); parser.add_argument("--agent-outbound-media", action="store_true"); parser.add_argument("--models", default=""); parser.add_argument("--efforts", default=""); args = parser.parse_args()
+    parser = argparse.ArgumentParser(); parser.add_argument("--onmyoji-root", default=str(ROOT)); parser.add_argument("--action", choices=["bootstrap", "validate", "validation-json", "instructions-status", "profiles", "set-credential", "set-totp", "set-app-server", "set-owner-execution-preferences", "set-voice-reply", "check-entry", "write-token", "test-telegram", "test-agent"], default="bootstrap"); parser.add_argument("--profile"); parser.add_argument("--entry"); parser.add_argument("--real-entry"); parser.add_argument("--fake-entry"); parser.add_argument("--enabled", action="store_true"); parser.add_argument("--disabled", action="store_true"); parser.add_argument("--idle-timeout", type=int); parser.add_argument("--auto-off-minutes", type=int); parser.add_argument("--agent-outbound-media", action="store_true"); parser.add_argument("--models", default=""); parser.add_argument("--efforts", default=""); args = parser.parse_args()
     root = Path(args.onmyoji_root).resolve()
     if args.action == "bootstrap": print(bootstrap(root)); return 0
+    if args.action == "instructions-status": print(json.dumps(instruction_status(root), ensure_ascii=False)); return 0
     if args.action == "profiles": print(json.dumps(profiles(root), ensure_ascii=False)); return 0
     if args.action == "set-credential":
         if not args.profile or not args.entry: parser.error("--profile e --entry são obrigatórios")
