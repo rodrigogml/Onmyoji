@@ -5,6 +5,7 @@ Base de integração local para Shikigamis. Cada instância é um repositório p
 ## Camadas da instância
 
 - `available-skills/`, `onmyoji-daemon/`, `setupOnmyoji.py` e `docs/`: base versionada do Onmyōji. Personalizações não devem ser feitas nesses arquivos.
+- `skills/`: superfície ativa que o Codex varre. É ignorada pelo Git. O setup do Onmyōji cria nela links locais para skills de integração habilitadas de `available-skills/`; ela também pode conter uma skill própria, instalada diretamente pela instância, sem link.
 - `shikigami/`: definição versionada da instância. Contém sua identidade, instruções particulares, documentação e declarações sem segredos. Leia sempre `shikigami/README.md` e `shikigami/AGENTS.md`, quando presentes.
 - `configs/`: sobreposição privada e estado operacional. Contém referências locais, integrações provisionadas, credenciais do SO, pairing, bancos de conversa, logs e dados de execução; permanece ignorada pelo Git.
 - workspace externo: área exclusiva de trabalho do agente, como `C:\opt\Shikigami-Akuma-Work`. Não fica dentro deste repositório nem do `CODEX_HOME`.
@@ -14,6 +15,7 @@ O conteúdo de `shikigami/` nunca pode conter tokens, senhas, chaves privadas, b
 | Classe de conteúdo | Local | Git |
 | --- | --- | --- |
 | Base comum, setup e skills de integração | raiz do repositório | versionado no upstream Onmyōji |
+| Skills ativas do Codex | `skills/` | local e ignorado; links do catálogo ou skills próprias instaladas diretamente |
 | Identidade, instruções e política Telegram | `shikigami/` | versionado no repositório do Shikigami |
 | Perfis de integração, caminhos dependentes da máquina e referências locais | `configs/` | privado e ignorado |
 | Tokens, senhas e chaves | KeePass e provedor seguro do SO | nunca versionado |
@@ -30,6 +32,12 @@ O repositório da base é `git@github.com:rodrigogml/Onmyoji.git` e é mantido e
 | Lavelinha | `C:\opt\Shikigami-Lavelinha` | `C:\opt\Shikigami-Lavelinha-Work` | `git@github.com:rodrigogml/Shikigami-Lavelinha.git` |
 
 Em qualquer repositório de Shikigami, `upstream` é sempre `git@github.com:rodrigogml/Onmyoji.git`. A branch principal é `main` em todos os repositórios.
+
+## Skills ativas
+
+O Codex descobre skills somente em `skills/`. As integrações fornecidas pela base ficam em `available-skills/` e são ativadas pelo `setupOnmyoji.py`, que cria links locais em `skills/` e registra essa ativação em `configs/onmyoji-skills.toml`.
+
+Uma skill específica da instância pode ser colocada diretamente em `skills/<nome>/`; ela não precisa de link nem de registro no catálogo. Por ser uma área ignorada pelo Git, distribua ou instale essa skill separadamente em cada `CODEX_HOME`. Não coloque nela segredos, perfis efetivos, caminhos dependentes da máquina, logs ou estado operacional.
 
 ## Fluxo Git obrigatório
 
