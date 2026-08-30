@@ -90,7 +90,7 @@ def connect(profile: dict[str, str], key_path: str | None) -> paramiko.SSHClient
     client = paramiko.SSHClient()
     known_hosts = profile.get("known_hosts", "")
     if known_hosts:
-        client.load_host_keys(os.path.expandvars(known_hosts))
+        client.load_host_keys(os.path.expanduser(os.path.expandvars(known_hosts)))
     client.set_missing_host_key_policy(paramiko.RejectPolicy())
     kwargs: dict[str, Any] = {"hostname": profile["host"], "port": int(profile["port"]), "username": profile["username"], "timeout": float(profile["timeout_seconds"]), "allow_agent": False, "look_for_keys": False}
     if profile["auth_mode"] == "password":

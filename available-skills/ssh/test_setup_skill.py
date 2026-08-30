@@ -17,13 +17,14 @@ SPEC.loader.exec_module(SETUP)
 
 class SshSetupTests(unittest.TestCase):
     def data(self, root: Path, temporary: Path) -> dict:
-        return {"schema_version": 1, "defaults": {"timeout_seconds": 30, "temp_dir": ""}, "profiles": {"server": {"host": "server.internal", "port": 22, "username": "operator", "auth_mode": "password", "vault_profile": "pessoal", "vault_entry_path": "APIs/SSH:Server", "keepass_password_field": "password", "keepass_key_attachment": "id_ed25519", "keepass_key_passphrase_field": "password", "known_hosts": "", "temp_dir": str(temporary)}}}
+        return {"schema_version": 1, "defaults": {"timeout_seconds": 30, "temp_dir": ""}, "profiles": {"server": {"host": "server.internal", "port": 22, "username": "operator", "auth_mode": "password", "vault_profile": "pessoal", "vault_entry_path": "APIs/SSH:Server", "keepass_password_field": "password", "keepass_key_attachment": "id_ed25519", "keepass_key_passphrase_field": "password", "known_hosts": str(root / "known_hosts"), "temp_dir": str(temporary)}}}
 
     def prepare(self, root: Path) -> Path:
         project = root / "project"; project.mkdir()
         configs = root / "configs"; configs.mkdir()
         (configs / "onmyoji-system.toml").write_text(f'[codex]\nproject_directory = "{project.as_posix()}"\n', encoding="utf-8")
         (configs / "keepass.toml").write_text("[profiles.pessoal]\nvault = \"local\"\n", encoding="utf-8")
+        (root / "known_hosts").write_text("", encoding="utf-8")
         return project
 
     def test_profile_save_creates_local_configuration_with_workspace_temp_area(self):

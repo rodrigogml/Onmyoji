@@ -79,6 +79,15 @@ class SshTests(unittest.TestCase):
             self.assertEqual(len(exported), 1)
             self.assertFalse(Path(exported[0]).exists())
 
+    @patch("ssh.paramiko.SSHClient")
+    def test_known_hosts_expands_home_directory(self, client_type):
+        profile = self.profile(tempfile.gettempdir())
+        profile["known_hosts"] = "~/.ssh/known_hosts"
+        client = client_type.return_value
+        with patch("ssh.resolve_secret", return_value="secret"):
+            ssh.connect(profile, None)
+        self.assertNotIn("~", client.load_host_keys.call_args.args[0])
+
 
 if __name__ == "__main__":
     unittest.main()
