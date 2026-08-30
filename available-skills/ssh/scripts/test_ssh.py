@@ -49,6 +49,28 @@ class SshTests(unittest.TestCase):
                 ssh.load_profile(str(path), "test")
         self.assertEqual(raised.exception.code, "invalid_profile")
 
+    def test_profile_lookup_is_case_insensitive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ssh.toml"
+            path.write_text(
+                "[defaults]\ntimeout_seconds = 5\n\n[profiles.dolores]\nhost = 'server'\nusername = 'user'\nauth_mode = 'password'\nvault_profile = 'vault'\nvault_entry_path = 'Servers/dolores'\n",
+                encoding="utf-8",
+            )
+            profile = ssh.load_profile(str(path), "Dolores")
+        self.assertEqual(profile["host"], "server")
+
+    def test_profile_lookup_reports_available_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ssh.toml"
+            path.write_text(
+                "[defaults]\n\n[profiles.dolores]\nhost = 'server'\nusername = 'user'\nauth_mode = 'password'\nvault_profile = 'vault'\nvault_entry_path = 'Servers/dolores'\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(ssh.SshError) as raised:
+                ssh.load_profile(str(path), "doloris")
+        self.assertEqual(raised.exception.code, "invalid_profile")
+        self.assertIn("dolores", raised.exception.message)
+
     def test_version_is_required(self):
         with self.assertRaises(ssh.SshError) as raised:
             ssh.handle(self.profile(tempfile.gettempdir()), {"version": 2, "operation": "exec", "command": "true"})
