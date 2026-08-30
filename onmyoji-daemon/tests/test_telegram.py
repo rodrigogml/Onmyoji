@@ -121,6 +121,24 @@ def test_voice_without_caption_never_attempts_to_parse_an_empty_command(tmp_path
     assert sent == [(9, "Anexos exigem que o App Server esteja habilitado na configuração do Gateway Telegram.")]
 
 
+def test_every_received_command_is_deleted_before_routing(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data); gateway = Gateway(Settings.load(tmp_path, data))
+    deleted, sent = [], []
+    gateway.api = type("Api", (), {"delete": lambda _self, chat, message: deleted.append((chat, message)), "send": lambda _self, chat, text, **_values: sent.append((chat, text)) or {"message_id": 1}})()
+    gateway._update({"message": {"message_id": 70, "chat": {"id": 9, "type": "private"}, "from": {"id": 9}, "text": "/comando-invalido"}})
+    assert deleted == [(9, 70)]
+    assert sent == []
+
+
+def test_new_command_is_deleted_once_and_still_resets_conversation(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data); gateway = Gateway(Settings.load(tmp_path, data)); gateway.contacts.add_owner({"id": 9, "first_name": "owner"})
+    deleted, sent = [], []
+    gateway.api = type("Api", (), {"delete": lambda _self, chat, message: deleted.append((chat, message)), "send": lambda _self, chat, text, **_values: sent.append((chat, text)) or {"message_id": 1}})()
+    gateway._update({"message": {"message_id": 71, "chat": {"id": 9, "type": "private"}, "from": {"id": 9}, "text": "/new"}})
+    assert deleted == [(9, 71)]
+    assert sent == [(9, "Conversa reiniciada.")]
+
+
 def test_totp_session_cleanup_removes_all_related_messages(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
     gateway = Gateway(Settings.load(tmp_path, data))

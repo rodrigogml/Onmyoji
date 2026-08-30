@@ -643,6 +643,7 @@ class Gateway:
         message = update.get("message") or {}; chat, sender = message.get("chat") or {}, message.get("from") or {}
         if chat.get("type") != "private" or not isinstance(sender.get("id"), int): return
         text = str(message.get("text") or message.get("caption") or "").strip(); assert self.api
+        if text.startswith("/"): self._delete_received_command(int(chat.get("id") or sender["id"]), message)
         if text.startswith("/pair ") and self.pair and time.time() < self.pair[1] and secrets.compare_digest(text[6:].strip(), self.pair[0]):
             self.contacts.add_owner(sender); self.pair = None; synced = self._configure_owner_commands()
             self.api.send(sender["id"], "Pairing concluído e comandos privados configurados." if synced.get("failed", 1) == 0 else "Pairing concluído, mas a configuração dos comandos falhou. Consulte o diagnóstico."); return
@@ -671,6 +672,15 @@ class Gateway:
             self._record_error(error); self._ephemeral(sender["id"], f"Não foi possível receber o anexo: {error}"); return
         try: self._enqueue_turn(sender["id"], text, attachments)
         except Exception as error: self._record_error(error); self._ephemeral(sender["id"], f"Não foi possível enfileirar a mensagem: {error}")
+
+    def _delete_received_command(self, chat_id: int, message: dict[str, Any]) -> None:
+        """Comandos são controles efêmeros e não devem permanecer no histórico da DM."""
+        message_id = message.get("message_id")
+        if not isinstance(message_id, int): return
+        try:
+            assert self.api; self.api.delete(chat_id, message_id)
+        except Exception as error:
+            self._record_error(f"Não foi possível excluir a mensagem de comando: {error}")
 
     def _new_conversation(self, chat_id: int) -> None:
         row = self.database.execute("SELECT codex_thread_id, generation FROM conversations WHERE chat_id=?", (str(chat_id),)).fetchone(); old = str(row[0]) if row and row[0] else ""; generation = int(row[1]) if row else 0
@@ -810,8 +820,6 @@ class Gateway:
             if not str(profile.get("real_password_entry") or "") or not str(profile.get("fake_password_entry") or ""):
                 self._ephemeral(chat_id, "TOTP está habilitado, mas as entradas de senha real e falsa não foram configuradas."); return
             self._clear_totp_session(chat_id)
-            message_id = message.get("message_id")
-            if isinstance(message_id, int): self.api.delete(chat_id, message_id)
             self.totp_sessions[chat_id] = {"phase": "password", "query": query, "expires_at": time.time() + 180, "message_ids": []}
             prompt = self._ephemeral(chat_id, "Informe a senha TOTP na próxima mensagem. Ela será apagada.", 180)
             if isinstance(prompt.get("message_id"), int): self.totp_sessions[chat_id]["message_ids"].append(prompt["message_id"])
