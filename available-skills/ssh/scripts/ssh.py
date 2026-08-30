@@ -30,9 +30,14 @@ def load_profile(path: str, profile_name: str) -> dict[str, str]:
         raw = tomllib.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as exc:
         fail("invalid_profile", f"Não foi possível ler o perfil: {exc.__class__.__name__}")
-    profile = raw.get("profiles", {}).get(profile_name)
+    profiles = raw.get("profiles", {})
     defaults = raw.get("defaults", {})
-    if not isinstance(profile, dict) or not isinstance(defaults, dict): fail("invalid_profile", "Perfil SSH não encontrado.")
+    if not isinstance(profiles, dict) or not isinstance(defaults, dict): fail("invalid_profile", "A configuração de perfis SSH é inválida.")
+    matches = [(name, value) for name, value in profiles.items() if isinstance(name, str) and name.casefold() == profile_name.casefold()]
+    if len(matches) != 1 or not isinstance(matches[0][1], dict):
+        available = ", ".join(sorted(name for name in profiles if isinstance(name, str))) or "nenhum"
+        fail("invalid_profile", f"Perfil SSH não encontrado: {profile_name}. Perfis disponíveis: {available}.")
+    profile = matches[0][1]
     values = {key: str(value).strip() for key, value in {**defaults, **profile}.items()}
     values["config_path"] = path
     required = {"host", "username", "auth_mode", "vault_profile", "vault_entry_path"}
