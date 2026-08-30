@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -87,6 +88,12 @@ class SshTests(unittest.TestCase):
         with patch("ssh.resolve_secret", return_value="secret"):
             ssh.connect(profile, None)
         self.assertNotIn("~", client.load_host_keys.call_args.args[0])
+
+    def test_command_line_uses_codex_home_profile_configuration_by_default(self):
+        with patch.dict(os.environ, {"CODEX_HOME": "C:/Onmyoji"}):
+            config, profile = ssh.command_line(["--profile", "dolores"])
+        self.assertEqual(profile, "dolores")
+        self.assertEqual(Path(config), Path("C:/Onmyoji/configs/ssh.toml"))
 
 
 if __name__ == "__main__":

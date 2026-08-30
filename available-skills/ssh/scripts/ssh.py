@@ -155,10 +155,29 @@ def handle(profile: dict[str, str], request: dict[str, Any]) -> dict[str, Any]:
     return {"operation": operation, "completed": True}
 
 
+def command_line(argv: list[str]) -> tuple[str, str]:
+    """Resolve o perfil da instância Codex sem exigir que o agente adivinhe o CODEX_HOME."""
+    config, profile = "", ""
+    position = 0
+    while position < len(argv):
+        option = argv[position]
+        if option not in {"--config", "--profile"} or position + 1 >= len(argv): fail("invalid_arguments", "Uso: ssh.py [--config caminho] --profile nome")
+        if option == "--config": config = argv[position + 1]
+        else: profile = argv[position + 1]
+        position += 2
+    if not profile: fail("invalid_arguments", "Informe --profile <nome>.")
+    if not config:
+        home = os.environ.get("CODEX_HOME", "").strip()
+        if not home: fail("invalid_arguments", "CODEX_HOME não está definido; informe --config explicitamente.")
+        config = str(Path(home) / "configs" / "ssh.toml")
+    return config, profile
+
+
 def main() -> int:
     try:
         request = json.load(sys.stdin)
-        result = handle(load_profile(sys.argv[2], sys.argv[4]), request)
+        config, profile = command_line(sys.argv[1:])
+        result = handle(load_profile(config, profile), request)
         print(json.dumps({"version": 1, "ok": True, "data": result}, ensure_ascii=False))
         return 0
     except SshError as exc:
@@ -170,7 +189,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 5 or sys.argv[1] != "--config" or sys.argv[3] != "--profile":
-        print("Uso: ssh.py --config ssh.toml --profile nome", file=sys.stderr)
-        raise SystemExit(2)
     raise SystemExit(main())

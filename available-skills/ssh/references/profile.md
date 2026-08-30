@@ -1,6 +1,6 @@
 # Perfil SSH
 
-Os perfis ficam em `configs/ssh.toml`, sempre na seção `[profiles.<nome>]`. A seção `[defaults]` contém `timeout_seconds` e pode conter `temp_dir`, mas cada perfil configurado pelo setup recebe seu próprio `temp_dir` dentro de `<workspace>/.onmyoji/ssh/temporary-keys/`.
+Os perfis ficam em `$CODEX_HOME/configs/ssh.toml`, sempre na seção `[profiles.<nome>]`; o workspace do Shikigami não contém essa configuração. A seção `[defaults]` contém `timeout_seconds` e pode conter `temp_dir`, mas cada perfil configurado pelo setup recebe seu próprio `temp_dir` dentro de `<workspace>/.onmyoji/ssh/temporary-keys/`.
 
 Os campos obrigatórios são `host`, `username`, `auth_mode`, `vault_profile` e `vault_entry_path`; `port` assume `22` e `timeout_seconds` assume `30`. `auth_mode` aceita somente `password` ou `key`.
 

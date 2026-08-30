@@ -9,7 +9,7 @@ Use `scripts/ssh.py` como wrapper JSON para conexões SSH. O wrapper usa Paramik
 
 ## Perfil
 
-Os perfis ficam no arquivo local e não versionado `configs/ssh.toml`, criado a partir de `configs/ssh.toml.model`. Informe sempre `--config configs/ssh.toml --profile <perfil>`; o perfil contém host, porta, usuário, backend SSH e a referência à entrada KeePass, nunca senha, chave privada ou passphrase.
+Os perfis ficam no arquivo local e não versionado `$CODEX_HOME/configs/ssh.toml`, criado pelo setup a partir de `configs/ssh.toml.model`; eles não ficam no workspace do Shikigami. Use `scripts/ssh.py --profile <perfil>`: o wrapper resolve automaticamente `$CODEX_HOME/configs/ssh.toml`. Use `--config <caminho>` somente para uma configuração explicitamente diferente. Antes de declarar perfil ausente, execute o wrapper com o perfil solicitado; o perfil contém host, porta, usuário e referências KeePass, nunca senha, chave privada ou passphrase.
 
 ```toml
 [profiles.servidor]
