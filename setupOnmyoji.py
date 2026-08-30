@@ -87,6 +87,37 @@ def skill_state_path(root: Path) -> Path: return root / "configs" / SKILL_STATE_
 def active_skills_path(root: Path) -> Path: return root / ACTIVE_SKILLS_DIRECTORY
 
 
+def instance_identity(root: Path) -> str:
+    try:
+        data = tomllib.loads((root / "shikigami" / "instance.toml").read_text(encoding="utf-8"))
+        value = data.get("shikigami", {}).get("identity", "")
+        if isinstance(value, str) and value.strip(): return value.strip()
+    except (OSError, tomllib.TOMLDecodeError, AttributeError):
+        pass
+    name = root.name
+    for prefix in ("Shikigami-", "Onmyoji-", "Onmyōji-"):
+        if name.startswith(prefix): return name.removeprefix(prefix).strip() or "Shikigami"
+    return name.strip() or "Shikigami"
+
+
+def ensure_shikigami_definition(root: Path) -> None:
+    """Cria apenas a definição portável; nunca copia estado ou segredos locais."""
+    directory = root / "shikigami"; identity = instance_identity(root)
+    directory.mkdir(parents=True, exist_ok=True)
+    instance = directory / "instance.toml"
+    if not instance.exists():
+        workspace_name = "Shikigami-" + "".join(part[:1].upper() + part[1:] for part in identity.split()) + "-Work"
+        instance.write_text("schema_version = 1\n\n[shikigami]\nidentity = " + json.dumps(identity, ensure_ascii=False) + "\nworkspace_directory_name = " + json.dumps(workspace_name, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
+    readme = directory / "README.md"
+    if not readme.exists(): readme.write_text(f"# {identity}\n\nDefinição versionada deste Shikigami. Arquivos da base Onmyōji não são personalizados aqui; particularidades da identidade ficam nesta pasta. Segredos e estado de execução permanecem fora do Git, em `../configs/`. O workspace externo é a única área para arquivos de trabalho do agente.\n", encoding="utf-8", newline="\n")
+    agents = directory / "AGENTS.md"
+    if not agents.exists(): agents.write_text(f"# {identity}\n\nLeia este arquivo e `README.md` antes de trabalhar nesta instância. Não altere arquivos da base Onmyōji (`available-skills/`, `onmyoji-daemon/`, `setupOnmyoji.py` e `docs/`) para personalizar {identity}; registre personalizações em `shikigami/` ou proponha melhorias genéricas ao upstream.\n\nNão armazene segredos, tokens, chaves, bancos de conversa, logs, staging ou arquivos de trabalho nesta pasta. O workspace externo é a única área de escrita para a atividade do agente.\n", encoding="utf-8", newline="\n")
+    instructions = directory / "instructions.md"
+    if not instructions.exists():
+        model = root / "onmyoji-daemon" / "configs" / "shikigami.md.model"
+        if model.exists(): shutil.copy2(model, instructions)
+
+
 def default_system() -> dict[str, object]:
     return {
         "executable": "codex",
@@ -516,8 +547,8 @@ def daemon_menu(root: Path) -> None:
                 choice = prompt("Opção: ").strip().casefold()
                 if choice in {"x", "\x1b"}: return
                 if choice != "1": result(False, "Opção inválida."); continue
-                default_name = "Shikigami-" + "".join(part[:1].upper() + part[1:] for part in root.name.removeprefix("Onmyoji-").split())
-                visible = root.name.removeprefix("Onmyoji-") or "Shikigami"
+                default_name = "Shikigami-" + "".join(part[:1].upper() + part[1:] for part in instance_identity(root).split())
+                visible = instance_identity(root)
                 name = prompt(f"Nome do serviço [{default_name}]: ").strip() or default_name
                 description = prompt(f"Descrição [{f'Shikigami {visible} Daemon'}]: ").strip() or f"Shikigami {visible} Daemon"
                 lifecycle("install-service", ["--name", name, "--description", description]); continue
@@ -552,7 +583,7 @@ def daemon_menu(root: Path) -> None:
             agent_preferences = telegram_settings.get("agent", {}) if "telegram_settings" in locals() and isinstance(telegram_settings.get("agent", {}), dict) else {}
             owner_preferences = bool(agent_preferences.get("owner_execution_preferences", True)); owner_models = ";".join(str(value) for value in agent_preferences.get("owner_allowed_models", []) if isinstance(value, str)); owner_efforts = ";".join(str(value) for value in agent_preferences.get("owner_allowed_reasoning_efforts", []) if isinstance(value, str))
             instruction_settings = telegram_settings.get("instructions", {}) if isinstance(telegram_settings.get("instructions", {}), dict) else {}
-            instruction_file = str(instruction_settings.get("shikigami_file") or "shikigami.md")
+            instruction_file = str(instruction_settings.get("shikigami_file") or "instructions.md")
             screen("Gateway Telegram", "Credenciais permanecem exclusivamente no KeePass")
             item("1.", "Desabilitar Telegram" if enabled else "Habilitar Telegram")
             item("2.", "Configurar credencial do bot", "Perfil KeePass e referência da entrada")
@@ -589,7 +620,7 @@ def daemon_menu(root: Path) -> None:
                 selected = prompt("Perfil KeePass: ").strip().casefold()
                 if selected in {"x", "\x1b"}: continue
                 if not selected.isdigit() or not 1 <= int(selected) <= len(values): result(False, "Perfil inválido."); continue
-                instance = "".join(part[:1].upper() + part[1:] for part in root.name.removeprefix("Onmyoji-").split()) or "Shikigami"
+                instance = "".join(part[:1].upper() + part[1:] for part in instance_identity(root).split()) or "Shikigami"
                 default_entry = f"APIs/Telegram:{instance}"
                 profile = values[int(selected)-1]
                 while True:
@@ -631,7 +662,7 @@ def daemon_menu(root: Path) -> None:
                     result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
                     if changed.returncode == 0: offer_restart()
                 else:
-                    instance = "".join(part[:1].upper() + part[1:] for part in root.name.removeprefix("Onmyoji-").split()) or "Shikigami"
+                    instance = "".join(part[:1].upper() + part[1:] for part in instance_identity(root).split()) or "Shikigami"
                     real = prompt(f"Entrada KeePass da senha TOTP real [APIs/TelegramTOTP:{instance}:Real]: ").strip() or f"APIs/TelegramTOTP:{instance}:Real"
                     fake = prompt(f"Entrada KeePass da senha TOTP falsa [APIs/TelegramTOTP:{instance}:Fake]: ").strip() or f"APIs/TelegramTOTP:{instance}:Fake"
                     changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-totp", "--enabled", "--real-entry", real, "--fake-entry", fake], quiet=True)
@@ -783,6 +814,7 @@ def menu(skills: list[Skill], root: Path) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(); parser.add_argument("--action", choices=["menu", "list", "enable", "disable", "configure", "status"], default="menu"); parser.add_argument("--skill"); parser.add_argument("--json", action="store_true"); args = parser.parse_args()
+    ensure_shikigami_definition(ROOT)
     skills = discover(); by_id = {skill.identifier: skill for skill in skills}
     initialized, initialization_message = ensure_skill_state(ROOT, skills)
     if not initialized:

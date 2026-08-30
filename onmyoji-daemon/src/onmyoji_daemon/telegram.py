@@ -22,6 +22,7 @@ from urllib.request import Request, urlopen
 
 from .rpc import RpcServer
 from .instructions import InstructionComposer
+from .instance import identity
 
 GATEWAY_INSTRUCTIONS = """You are operating through a private Telegram owner DM. Reply normally to the active conversation. Do not expose local paths, bot tokens, chat IDs, owners or gateway state. Native /new, pairing and TOTP commands are handled by the gateway before your turn. Treat gateway failures as failures."""
 
@@ -77,7 +78,7 @@ class Settings:
 
     @classmethod
     def load(cls, root: Path, data_dir: Path) -> "Settings":
-        path = data_dir / "telegram.toml"
+        path = root / "shikigami" / "daemon" / "telegram.toml"
         data = tomllib.loads(path.read_text(encoding="utf-8"))
         if data.get("schema_version") != 1: raise ValueError("unsupported telegram schema")
         telegram, agent, app_server, limits, voice, instructions = data.get("telegram", {}), data.get("agent", {}), data.get("app_server", {}), data.get("limits", {}), data.get("voice_reply", {}), data.get("instructions", {})
@@ -100,7 +101,7 @@ class Settings:
         # runtime e pelo Telegram; preservamos configurações já criadas.
         voice_format = "mp3" if requested_format == "opus" else requested_format
         if enabled and (not voice_profile or voice_format not in {"mp3", "wav", "flac"} or not 1 <= voice_text <= 4000 or not 1 <= auto_off <= 1440): raise ValueError("Telegram voice reply configuration is invalid")
-        return cls(root, data_dir, profile, entry, project, str(system.get("executable") or "codex"), str(system.get("model") or ""), str(system.get("model_reasoning_effort") or "medium"), str(system.get("sandbox_mode") or "workspace-write"), str(system.get("approval_policy") or "never"), int(telegram.get("poll_timeout_seconds") or 30), int(agent.get("turn_timeout_seconds") or 900), max(1, int(agent.get("max_parallel_conversations") or 1)), str(instructions.get("shikigami_file") or "shikigami.md"), bool(instructions.get("enabled", True)), bool(agent.get("owner_execution_preferences", True)), permitted_models, permitted_efforts, bool(app_server.get("enabled", False)), idle, per_file, batch, max(1, pending), retained, output_bytes, output_count, enabled, voice_profile, str(voice.get("language") or "pt-BR"), str(voice.get("voice") or ""), float(voice.get("speed") or 1.0), voice_format, voice_text, auto_off, bool(voice.get("fallback_to_text", True)), bool(voice.get("agent_outbound_media", False)))
+        return cls(root, data_dir, profile, entry, project, str(system.get("executable") or "codex"), str(system.get("model") or ""), str(system.get("model_reasoning_effort") or "medium"), str(system.get("sandbox_mode") or "workspace-write"), str(system.get("approval_policy") or "never"), int(telegram.get("poll_timeout_seconds") or 30), int(agent.get("turn_timeout_seconds") or 900), max(1, int(agent.get("max_parallel_conversations") or 1)), str(instructions.get("shikigami_file") or "instructions.md"), bool(instructions.get("enabled", True)), bool(agent.get("owner_execution_preferences", True)), permitted_models, permitted_efforts, bool(app_server.get("enabled", False)), idle, per_file, batch, max(1, pending), retained, output_bytes, output_count, enabled, voice_profile, str(voice.get("language") or "pt-BR"), str(voice.get("voice") or ""), float(voice.get("speed") or 1.0), voice_format, voice_text, auto_off, bool(voice.get("fallback_to_text", True)), bool(voice.get("agent_outbound_media", False)))
 
 
 class CodexProtocolError(RuntimeError): pass
@@ -294,7 +295,7 @@ class Gateway:
         self.database.execute("CREATE TABLE IF NOT EXISTS outbound_intents(id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, generation INTEGER NOT NULL, kind TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, telegram_message_id INTEGER, created_at REAL NOT NULL, completed_at REAL)")
         self.database.execute("UPDATE inbox_items SET state='pending' WHERE state='running'")
         self.database.commit()
-        self.identity = settings.root.name.removeprefix("Onmyoji-").strip() or "Shikigami"; self.instructions = InstructionComposer(settings.root, settings.data_dir, settings.instructions_file, settings.instructions_enabled)
+        self.identity = identity(settings.root); self.instructions = InstructionComposer(settings.root, settings.data_dir, settings.instructions_file, settings.instructions_enabled)
         self.activity_root = settings.project / ".onmyoji" / "telegram"; self.archive_root = self.activity_root / "attachments"; self.staging_root = self.activity_root / "staging"
         self.archive_root.mkdir(parents=True, exist_ok=True); self.staging_root.mkdir(parents=True, exist_ok=True)
         self.api: TelegramApi | None = None; self.pair: tuple[str, float] | None = None; self.offset = 0; self.work = threading.BoundedSemaphore(settings.parallel); self.totp_sessions: dict[int, dict[str, Any]] = {}; self.config_sessions: dict[str, dict[str, Any]] = {}; self.menu_sessions: dict[str, MenuSession] = {}; self.menu_lock = threading.RLock(); self.last_error: str | None = None; self.cleanup_path = settings.data_dir / "state" / "totp-cleanup.json"; self.pending_deletions = json_file(self.cleanup_path, {}); self.app_server: CodexAppServer | None = None; self.app_server_lock = threading.RLock(); self.app_turns: dict[str, AppServerTurn] = {}; self.last_app_activity = time.monotonic(); self.turn_locks: dict[int, threading.Lock] = {}; self.turn_locks_lock = threading.Lock(); self.workers: set[int] = set(); self.workers_lock = threading.Lock()
@@ -846,7 +847,7 @@ class Gateway:
     def _start_totp(self, chat_id: int, message: dict[str, Any], query: str) -> None:
         assert self.api
         try:
-            profile = tomllib.loads((self.settings.data_dir / "telegram.toml").read_text(encoding="utf-8")).get("totp", {})
+            profile = tomllib.loads((self.settings.root / "shikigami" / "daemon" / "telegram.toml").read_text(encoding="utf-8")).get("totp", {})
             if not str(profile.get("real_password_entry") or "") or not str(profile.get("fake_password_entry") or ""):
                 self._ephemeral(chat_id, "TOTP está habilitado, mas as entradas de senha real e falsa não foram configuradas."); return
             self._clear_totp_session(chat_id)
@@ -875,7 +876,7 @@ class Gateway:
                 typing_stop.wait(4)
         typing_thread = threading.Thread(target=renew_typing, daemon=True); typing_thread.start()
         try:
-            data = tomllib.loads((self.settings.data_dir / "telegram.toml").read_text(encoding="utf-8")); profile = data.get("totp", {})
+            data = tomllib.loads((self.settings.root / "shikigami" / "daemon" / "telegram.toml").read_text(encoding="utf-8")); profile = data.get("totp", {})
             real, fake = Vault(self.settings).read(str(profile.get("real_password_entry") or "")), Vault(self.settings).read(str(profile.get("fake_password_entry") or ""))
             supplied = str(message.get("text") or "")
             if secrets.compare_digest(supplied, fake): self._ephemeral(chat_id, "Não existe TOTP cadastrado."); return

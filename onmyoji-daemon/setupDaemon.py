@@ -15,19 +15,20 @@ from pathlib import Path
 PROJECT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT / "src"))
 from onmyoji_daemon.management import is_installed
+from onmyoji_daemon.instance import identity
 
 ROOT = PROJECT.parent
 MODEL = PROJECT / "configs" / "telegram.toml.model"
 INSTRUCTION_MODEL = PROJECT / "configs" / "shikigami.md.model"
 
 
-def target(root: Path) -> Path: return root / "configs" / "daemon" / "services" / "telegram" / "telegram.toml"
+def target(root: Path) -> Path: return root / "shikigami" / "daemon" / "telegram.toml"
 
 
 def bootstrap(root: Path) -> Path:
     path = target(root)
     if not path.exists(): path.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(MODEL, path)
-    instruction = root / "configs" / "daemon" / "instructions" / "shikigami.md"
+    instruction = root / "shikigami" / "instructions.md"
     if not instruction.exists(): instruction.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(INSTRUCTION_MODEL, instruction)
     return path
 
@@ -47,7 +48,7 @@ def save_telegram(root: Path, profile: str, entry: str, data: dict | None = None
     telegram = data.setdefault("telegram", {}); telegram["keepass_profile"] = profile; telegram["token_entry"] = entry
     agent, app_server, limits, totp, voice = data.setdefault("agent", {}), data.setdefault("app_server", {}), data.setdefault("limits", {}), data.setdefault("totp", {}), data.setdefault("voice_reply", {})
     instructions = data.get('instructions', {})
-    lines = ["schema_version = 1", f"enabled = {str(bool(data.get('enabled', False))).lower()}", "", "[telegram]", f"keepass_profile = {json.dumps(profile, ensure_ascii=False)}", f"token_entry = {json.dumps(entry, ensure_ascii=False)}", f"poll_timeout_seconds = {int(telegram.get('poll_timeout_seconds', 30))}", "", "[agent]", f"max_parallel_conversations = {int(agent.get('max_parallel_conversations', 1))}", f"turn_timeout_seconds = {int(agent.get('turn_timeout_seconds', 900))}", "", "[instructions]", f"enabled = {str(bool(instructions.get('enabled', True))).lower()}", f"shikigami_file = {json.dumps(str(instructions.get('shikigami_file', 'shikigami.md')), ensure_ascii=False)}", "", "[app_server]", f"enabled = {str(bool(app_server.get('enabled', False))).lower()}", f"idle_timeout_seconds = {int(app_server.get('idle_timeout_seconds', 1800))}", "", "[limits]", f"max_attachment_bytes = {int(limits.get('max_attachment_bytes', 20971520))}", f"max_batch_attachment_bytes = {int(limits.get('max_batch_attachment_bytes', 52428800))}", f"max_pending_items = {int(limits.get('max_pending_items', 50))}", f"max_retained_attachment_bytes = {int(limits.get('max_retained_attachment_bytes', 262144000))}", f"max_outbound_media_bytes = {int(limits.get('max_outbound_media_bytes', 20971520))}", f"max_outbound_media_per_turn = {int(limits.get('max_outbound_media_per_turn', 3))}", "", "[voice_reply]", f"enabled = {str(bool(voice.get('enabled', False))).lower()}", f"eccovox_profile = {json.dumps(str(voice.get('eccovox_profile', '')), ensure_ascii=False)}", f"language = {json.dumps(str(voice.get('language', 'pt-BR')), ensure_ascii=False)}", f"voice = {json.dumps(str(voice.get('voice', '')), ensure_ascii=False)}", f"speed = {float(voice.get('speed', 1.0))}", f"response_format = {json.dumps(str(voice.get('response_format', 'opus')), ensure_ascii=False)}", f"max_text_characters = {int(voice.get('max_text_characters', 3500))}", f"auto_off_minutes = {int(voice.get('auto_off_minutes', 15))}", f"fallback_to_text = {str(bool(voice.get('fallback_to_text', True))).lower()}", f"agent_outbound_media = {str(bool(voice.get('agent_outbound_media', False))).lower()}", "", "[totp]", f"enabled = {str(bool(totp.get('enabled', False))).lower()}", f"real_password_entry = {json.dumps(str(totp.get('real_password_entry', '')), ensure_ascii=False)}", f"fake_password_entry = {json.dumps(str(totp.get('fake_password_entry', '')), ensure_ascii=False)}", f"period_seconds = {int(totp.get('period_seconds', 30))}", ""]
+    lines = ["schema_version = 1", f"enabled = {str(bool(data.get('enabled', False))).lower()}", "", "[telegram]", f"keepass_profile = {json.dumps(profile, ensure_ascii=False)}", f"token_entry = {json.dumps(entry, ensure_ascii=False)}", f"poll_timeout_seconds = {int(telegram.get('poll_timeout_seconds', 30))}", "", "[agent]", f"max_parallel_conversations = {int(agent.get('max_parallel_conversations', 1))}", f"turn_timeout_seconds = {int(agent.get('turn_timeout_seconds', 900))}", "", "[instructions]", f"enabled = {str(bool(instructions.get('enabled', True))).lower()}", "shikigami_file = \"instructions.md\"", "", "[app_server]", f"enabled = {str(bool(app_server.get('enabled', False))).lower()}", f"idle_timeout_seconds = {int(app_server.get('idle_timeout_seconds', 1800))}", "", "[limits]", f"max_attachment_bytes = {int(limits.get('max_attachment_bytes', 20971520))}", f"max_batch_attachment_bytes = {int(limits.get('max_batch_attachment_bytes', 52428800))}", f"max_pending_items = {int(limits.get('max_pending_items', 50))}", f"max_retained_attachment_bytes = {int(limits.get('max_retained_attachment_bytes', 262144000))}", f"max_outbound_media_bytes = {int(limits.get('max_outbound_media_bytes', 20971520))}", f"max_outbound_media_per_turn = {int(limits.get('max_outbound_media_per_turn', 3))}", "", "[voice_reply]", f"enabled = {str(bool(voice.get('enabled', False))).lower()}", f"eccovox_profile = {json.dumps(str(voice.get('eccovox_profile', '')), ensure_ascii=False)}", f"language = {json.dumps(str(voice.get('language', 'pt-BR')), ensure_ascii=False)}", f"voice = {json.dumps(str(voice.get('voice', '')), ensure_ascii=False)}", f"speed = {float(voice.get('speed', 1.0))}", f"response_format = {json.dumps(str(voice.get('response_format', 'opus')), ensure_ascii=False)}", f"max_text_characters = {int(voice.get('max_text_characters', 3500))}", f"auto_off_minutes = {int(voice.get('auto_off_minutes', 15))}", f"fallback_to_text = {str(bool(voice.get('fallback_to_text', True))).lower()}", f"agent_outbound_media = {str(bool(voice.get('agent_outbound_media', False))).lower()}", "", "[totp]", f"enabled = {str(bool(totp.get('enabled', False))).lower()}", f"real_password_entry = {json.dumps(str(totp.get('real_password_entry', '')), ensure_ascii=False)}", f"fake_password_entry = {json.dumps(str(totp.get('fake_password_entry', '')), ensure_ascii=False)}", f"period_seconds = {int(totp.get('period_seconds', 30))}", ""]
     agent_end = lines.index("", lines.index("[agent]") + 1)
     lines[agent_end:agent_end] = [f"owner_execution_preferences = {str(bool(agent.get('owner_execution_preferences', True))).lower()}", f"owner_allowed_models = {json.dumps(agent.get('owner_allowed_models', []), ensure_ascii=False)}", f"owner_allowed_reasoning_efforts = {json.dumps(agent.get('owner_allowed_reasoning_efforts', []), ensure_ascii=False)}"]
     target(root).write_text("\n".join(lines), encoding="utf-8", newline="\n")
@@ -253,7 +254,7 @@ def test_agent(root: Path) -> tuple[bool, str]:
             from onmyoji_daemon.telegram import CodexAppServer, Settings
             from onmyoji_daemon.instructions import InstructionComposer
             settings = Settings.load(root.resolve(), target(root).parent)
-            bundle = InstructionComposer(root, target(root).parent, settings.instructions_file, settings.instructions_enabled).compose(identity=root.name.removeprefix("Onmyoji-").strip() or "Shikigami", telegram=True)
+            bundle = InstructionComposer(root, target(root).parent, settings.instructions_file, settings.instructions_enabled).compose(identity=identity(root), telegram=True)
             client = CodexAppServer(settings)
             try:
                 client.start()
@@ -290,9 +291,9 @@ def instruction_status(root: Path) -> dict[str, object]:
     bootstrap(root)
     from onmyoji_daemon.instructions import InstructionComposer
     data = telegram_data(root); section = data.get("instructions", {})
-    composer = InstructionComposer(root.resolve(), target(root).parent, str(section.get("shikigami_file") or "shikigami.md"), bool(section.get("enabled", True)))
-    bundle = composer.compose(identity=root.name.removeprefix("Onmyoji-").strip() or "Shikigami", telegram=True)
-    return {"ok": True, "sources": list(bundle.sources), "baseline_hash": bundle.baseline_hash[:12], "local_file": str(root / "configs" / "daemon" / "instructions" / str(section.get("shikigami_file") or "shikigami.md"))}
+    composer = InstructionComposer(root.resolve(), target(root).parent, str(section.get("shikigami_file") or "instructions.md"), bool(section.get("enabled", True)))
+    bundle = composer.compose(identity=identity(root), telegram=True)
+    return {"ok": True, "sources": list(bundle.sources), "baseline_hash": bundle.baseline_hash[:12], "local_file": str(root / "shikigami" / "instructions.md")}
 
 
 def validation(root: Path) -> list[dict[str, str]]:

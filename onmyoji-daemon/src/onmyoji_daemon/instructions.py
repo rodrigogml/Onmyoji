@@ -24,7 +24,8 @@ class InstructionComposer:
     def __init__(self, root: Path, data_dir: Path, shikigami_file: str, enabled: bool = True):
         self.root, self.data_dir, self.shikigami_file, self.enabled = root.resolve(), data_dir.resolve(), shikigami_file, enabled
         self.resources = Path(__file__).resolve().parents[2] / "resources" / "instructions"
-        self.instruction_root = (self.root / "configs" / "daemon" / "instructions").resolve()
+        self.instruction_root = (self.root / "shikigami").resolve()
+        self.legacy_instruction_root = (self.root / "configs" / "daemon" / "instructions").resolve()
 
     @staticmethod
     def _read(path: Path, limit: int) -> str:
@@ -38,11 +39,15 @@ class InstructionComposer:
 
     def _shikigami(self) -> tuple[str | None, str | None]:
         if not self.enabled: return None, None
-        relative = Path(self.shikigami_file or "shikigami.md")
+        relative = Path(self.shikigami_file or "instructions.md")
         if relative.is_absolute() or ".." in relative.parts: raise InstructionError("O arquivo de instruções do Shikigami deve ser relativo e permanecer na raiz autorizada.")
         candidate = (self.instruction_root / relative).resolve()
-        if not candidate.is_relative_to(self.instruction_root): raise InstructionError("O arquivo de instruções está fora de configs/daemon/instructions.")
-        if not candidate.exists(): return None, None
+        if not candidate.is_relative_to(self.instruction_root): raise InstructionError("O arquivo de instruções está fora de shikigami/.")
+        if not candidate.exists():
+            legacy = (self.legacy_instruction_root / relative).resolve()
+            if relative.name == "shikigami.md" and legacy.is_relative_to(self.legacy_instruction_root) and legacy.exists():
+                candidate = legacy
+            else: return None, None
         if candidate.is_symlink(): raise InstructionError("Links simbólicos não são aceitos para instruções do Shikigami.")
         return self._read(candidate, MAX_SHIKIGAMI_BYTES), str(candidate)
 

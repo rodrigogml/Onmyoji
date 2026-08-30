@@ -18,9 +18,9 @@ owner_allowed_models = []
 owner_allowed_reasoning_efforts = []
 
 [instructions]
-# Caminho relativo a configs/daemon/instructions/.
+# Caminho relativo a shikigami/.
 enabled = true
-shikigami_file = "shikigami.md"
+shikigami_file = "instructions.md"
 
 [app_server]
 # Mantém um Codex App Server exclusivo desta instância para reutilizar a conversa.

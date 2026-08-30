@@ -9,7 +9,7 @@ from onmyoji_daemon.telegram import AppServerTurn, Contacts, Gateway, Settings, 
 
 def write_settings(root: Path, data_dir: Path) -> None:
     (root / "configs").mkdir(parents=True); (root / "configs" / "onmyoji-system.toml").write_text('[codex]\nexecutable = "codex"\nmodel = "gpt-5.6-terra"\nmodel_reasoning_effort = "medium"\nproject_directory = "' + root.as_posix() + '"\nsandbox_mode = "workspace-write"\napproval_policy = "never"\n', encoding="utf-8")
-    data_dir.mkdir(parents=True); (data_dir / "telegram.toml").write_text('schema_version = 1\n[telegram]\nkeepass_profile = "telegram"\ntoken_entry = "APIs/Telegram:Lavelinha"\n', encoding="utf-8")
+    data_dir.mkdir(parents=True); config = root / "shikigami" / "daemon" / "telegram.toml"; config.parent.mkdir(parents=True); config.write_text('schema_version = 1\n[telegram]\nkeepass_profile = "telegram"\ntoken_entry = "APIs/Telegram:Lavelinha"\n', encoding="utf-8")
 
 
 def test_settings_bind_to_instance_codex_home_and_workspace(tmp_path):
@@ -22,7 +22,7 @@ def test_app_server_settings_default_to_disabled_and_enforce_idle_minimum(tmp_pa
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
     settings = Settings.load(tmp_path, data)
     assert not settings.app_server_enabled and settings.app_server_idle_seconds == 1800
-    (data / "telegram.toml").write_text((data / "telegram.toml").read_text(encoding="utf-8") + "\n[app_server]\nenabled = true\nidle_timeout_seconds = 120\n", encoding="utf-8")
+    config = tmp_path / "shikigami" / "daemon" / "telegram.toml"; config.write_text(config.read_text(encoding="utf-8") + "\n[app_server]\nenabled = true\nidle_timeout_seconds = 120\n", encoding="utf-8")
     settings = Settings.load(tmp_path, data)
     assert settings.app_server_enabled and settings.app_server_idle_seconds == 120
 
@@ -37,7 +37,7 @@ def test_gateway_sandbox_includes_only_configured_activity_root(tmp_path):
 
 def test_tts_uses_local_eccovox_profile_only_for_wrapper_selection(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
-    (data / "telegram.toml").write_text((data / "telegram.toml").read_text(encoding="utf-8") + "\n[voice_reply]\nenabled = true\neccovox_profile = \"eccovox\"\n", encoding="utf-8")
+    config = tmp_path / "shikigami" / "daemon" / "telegram.toml"; config.write_text(config.read_text(encoding="utf-8") + "\n[voice_reply]\nenabled = true\neccovox_profile = \"eccovox\"\n", encoding="utf-8")
     gateway = Gateway(Settings.load(tmp_path, data)); output = tmp_path / "voice.opus"; captured = {}
     def run(command, **kwargs):
         captured["command"], captured["request"] = command, json.loads(kwargs["input"])

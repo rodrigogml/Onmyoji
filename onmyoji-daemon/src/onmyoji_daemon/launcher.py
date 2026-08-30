@@ -14,10 +14,11 @@ from .telegram import CodexAppServer, CodexProtocolError, Settings
 
 def _bootstrap(root: Path, data_dir: Path) -> None:
     """Permite iniciar a sessão local antes de configurar o Telegram."""
-    if not (data_dir / "telegram.toml").exists():
-        data_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(Path(__file__).resolve().parents[2] / "configs" / "telegram.toml.model", data_dir / "telegram.toml")
-    instructions = root / "configs" / "daemon" / "instructions" / "shikigami.md"
+    config = root / "shikigami" / "daemon" / "telegram.toml"
+    if not config.exists():
+        config.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(Path(__file__).resolve().parents[2] / "configs" / "telegram.toml.model", config)
+    instructions = root / "shikigami" / "instructions.md"
     if not instructions.exists():
         instructions.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(Path(__file__).resolve().parents[2] / "configs" / "shikigami.md.model", instructions)
@@ -40,7 +41,8 @@ def main(argv: list[str] | None = None) -> int:
     root = args.onmyoji_root.resolve(); data_dir = root / "configs" / "daemon" / "services" / "telegram"; _bootstrap(root, data_dir)
     settings = Settings.load(root, data_dir)
     composer = InstructionComposer(root, data_dir, settings.instructions_file, settings.instructions_enabled)
-    identity = root.name.removeprefix("Onmyoji-").strip() or "Shikigami"; bundle = composer.compose(identity=identity, telegram=False)
+    from .instance import identity
+    bundle = composer.compose(identity=identity(root), telegram=False)
     client = CodexAppServer(settings); completed, final = threading.Event(), {"text": ""}
     def notification(method: str, params: dict) -> None:
         if method == "item/completed":
