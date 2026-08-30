@@ -375,9 +375,6 @@ def launch_codex(root: Path, data: dict[str, object], login: bool = False) -> No
         synced, sync_message = sync_active_skill_links(root, enabled_ids(root), discover(root))
         if not synced: result(False, f"Não iniciado: {sync_message}"); return
     command = [str(data["executable"]), "login"] if login else [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "interactive"]
-    if not login:
-        for directory in data["additional_writable_directories"]:
-            command.extend(["--add-dir", str(directory)])
     environment = dict(os.environ); environment["CODEX_HOME"] = str(root)
     if not login: environment["PYTHONPATH"] = str(root / "onmyoji-daemon" / "src") + os.pathsep + environment.get("PYTHONPATH", "")
     try: subprocess.run(command, cwd=str(data["project_directory"]) if not login else root, env=environment, check=False)

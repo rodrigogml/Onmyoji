@@ -49,7 +49,7 @@ class SystemSetupTests(unittest.TestCase):
             self.assertFalse(MODULE.save_system(root, bad)[0])
             self.assertEqual(MODULE.load_system(root)["project_directory"], str(root))
 
-    def test_launches_daemon_with_workspace_and_writable_directories(self) -> None:
+    def test_launches_daemon_with_workspace_and_local_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             project = root / "project"; project.mkdir()
@@ -60,7 +60,7 @@ class SystemSetupTests(unittest.TestCase):
             command = run.call_args.args[0]
             self.assertEqual(command[:5], [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root)])
             self.assertEqual(command[5], "interactive")
-            self.assertEqual(command[-2:], ["--add-dir", str(extra)])
+            self.assertNotIn("--add-dir", command)
             self.assertEqual(run.call_args.kwargs["cwd"], str(project))
             environment = run.call_args.kwargs["env"]
             self.assertEqual(environment["CODEX_HOME"], str(root))
