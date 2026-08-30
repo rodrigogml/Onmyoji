@@ -61,13 +61,12 @@ def main(argv: list[str] | None = None) -> int:
             if text in {"/exit", "/quit"}: break
             if not text: continue
             completed.clear(); final["text"] = ""
-            current = composer.compose(identity=identity, telegram=False)
-            resume = {"threadId": thread_id, "cwd": str(settings.project), "approvalPolicy": settings.approval, "sandbox": settings.sandbox, "developerInstructions": current.text}
-            if settings.model: resume["model"] = settings.model
-            client.request("thread/resume", resume)
             turn = {"threadId": thread_id, "input": [{"type": "text", "text": text}], "cwd": str(settings.project), "approvalPolicy": settings.approval, "sandboxPolicy": _sandbox_policy(settings), "effort": settings.effort}
             if settings.model: turn["model"] = settings.model
-            client.request("turn/start", turn)
+            try: client.request("turn/start", turn)
+            except CodexProtocolError as error:
+                print(f"! Não foi possível iniciar o turno: {error}")
+                continue
             if not completed.wait(settings.turn_timeout): print("! O turno excedeu o tempo configurado.")
             elif final["text"]: print("\n" + final["text"] + "\n")
             else: print("\n! O agente concluiu sem resposta textual.\n")

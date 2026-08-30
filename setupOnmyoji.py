@@ -369,16 +369,30 @@ def manage_writable_directories(root: Path, data: dict[str, object]) -> dict[str
 
 
 def launch_codex(root: Path, data: dict[str, object], login: bool = False) -> None:
+    """Abre o Codex CLI nativo; config.toml e --add-dir são seu contrato público."""
     ready, message = validate_system(data, require_ready=not login)
     if not ready: result(False, f"Não iniciado: {message}"); return
     if not login:
         synced, sync_message = sync_active_skill_links(root, enabled_ids(root), discover(root))
         if not synced: result(False, f"Não iniciado: {sync_message}"); return
-    command = [str(data["executable"]), "login"] if login else [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "interactive"]
+    command = [str(data["executable"]), "login"] if login else [str(data["executable"])]
+    if not login:
+        for directory in data["additional_writable_directories"]: command.extend(["--add-dir", str(directory)])
     environment = dict(os.environ); environment["CODEX_HOME"] = str(root)
-    if not login: environment["PYTHONPATH"] = str(root / "onmyoji-daemon" / "src") + os.pathsep + environment.get("PYTHONPATH", "")
     try: subprocess.run(command, cwd=str(data["project_directory"]) if not login else root, env=environment, check=False)
     except OSError as error: result(False, f"Não foi possível iniciar o Codex-CLI: {error}")
+
+
+def launch_onmyoji_interactive(root: Path, data: dict[str, object]) -> None:
+    """Modo opcional via App Server, para testar a composição Onmyōji de developer instructions."""
+    ready, message = validate_system(data, require_ready=True)
+    if not ready: result(False, f"Não iniciado: {message}"); return
+    synced, sync_message = sync_active_skill_links(root, enabled_ids(root), discover(root))
+    if not synced: result(False, f"Não iniciado: {sync_message}"); return
+    environment = dict(os.environ); environment["CODEX_HOME"] = str(root); environment["PYTHONPATH"] = str(root / "onmyoji-daemon" / "src") + os.pathsep + environment.get("PYTHONPATH", "")
+    command = [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "interactive"]
+    try: subprocess.run(command, cwd=str(data["project_directory"]), env=environment, check=False)
+    except OSError as error: result(False, f"Não foi possível iniciar o console Onmyōji: {error}")
 
 
 def codex_menu(root: Path) -> None:
@@ -393,8 +407,9 @@ def codex_menu(root: Path) -> None:
         item("5.", "Sandbox", str(data["sandbox_mode"]))
         item("6.", "Política de aprovação", str(data["approval_policy"]))
         item("7.", "Diretórios adicionais de escrita", f"{len(data['additional_writable_directories'])} configurado(s)")
-        item("8.", "Executar Codex-CLI", "Abre sessão interativa com todas as opções acima")
-        item("9.", "Login no Codex-CLI")
+        item("8.", "Executar Codex-CLI", "CLI nativo com modelo, sandbox e diretórios configurados")
+        item("9.", "Console interativo Onmyōji", "App Server com developer instructions compostas")
+        item("10.", "Login no Codex-CLI")
         print(f"\n  Estado: {'✓ PRONTO' if ready else '○ ' + message}")
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
@@ -420,7 +435,8 @@ def codex_menu(root: Path) -> None:
             if value: data = update_system(root, data, "approval_policy", value)
         elif choice == "7": data = manage_writable_directories(root, data)
         elif choice == "8": launch_codex(root, data)
-        elif choice == "9": launch_codex(root, data, login=True)
+        elif choice == "9": launch_onmyoji_interactive(root, data)
+        elif choice == "10": launch_codex(root, data, login=True)
         else: result(False, "Opção inválida.")
 
 

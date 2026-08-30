@@ -49,7 +49,7 @@ class SystemSetupTests(unittest.TestCase):
             self.assertFalse(MODULE.save_system(root, bad)[0])
             self.assertEqual(MODULE.load_system(root)["project_directory"], str(root))
 
-    def test_launches_daemon_with_workspace_and_local_configuration(self) -> None:
+    def test_launches_native_codex_with_workspace_and_writable_directories(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             project = root / "project"; project.mkdir()
@@ -58,13 +58,20 @@ class SystemSetupTests(unittest.TestCase):
             with patch.object(MODULE.subprocess, "run") as run:
                 MODULE.launch_codex(root, data)
             command = run.call_args.args[0]
-            self.assertEqual(command[:5], [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root)])
-            self.assertEqual(command[5], "interactive")
-            self.assertNotIn("--add-dir", command)
+            self.assertEqual(command, [sys.executable, "--add-dir", str(extra)])
             self.assertEqual(run.call_args.kwargs["cwd"], str(project))
             environment = run.call_args.kwargs["env"]
             self.assertEqual(environment["CODEX_HOME"], str(root))
-            self.assertTrue(environment["PYTHONPATH"].split(MODULE.os.pathsep)[0].endswith("onmyoji-daemon\\src"))
+
+    def test_launches_onmyoji_console_separately_from_native_codex(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); project = root / "project"; project.mkdir()
+            data = MODULE.default_system() | {"executable": sys.executable, "project_directory": str(project)}
+            with patch.object(MODULE.subprocess, "run") as run:
+                MODULE.launch_onmyoji_interactive(root, data)
+            command = run.call_args.args[0]
+            self.assertEqual(command[:5], [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root)])
+            self.assertEqual(command[5], "interactive")
 
     def test_enabled_skills_are_linked_from_the_local_catalog(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
