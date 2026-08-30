@@ -5,9 +5,9 @@ description: Operate Amazon Web Services through the installed AWS CLI with cred
 
 # AWS CLI
 
-Use `scripts/aws.py --config configs/aws.toml --profile <perfil>` as the only interface. Send one JSON request with `version: 1` through stdin and read one JSON response from stdout.
+Use `scripts/aws.py --config <CODEX_HOME>/configs/aws.toml --profile <perfil>` as the only interface. Send one JSON request with `version: 1` through stdin and read one JSON response from stdout.
 
-Use a real profile stored outside version control in `configs/aws.toml`. Generate it from `configs/aws.toml.model`; do not put credentials in it.
+Use a real profile stored outside version control in `<CODEX_HOME>/configs/aws.toml`. Generate it from `configs/aws.toml.model`; do not put credentials in it.
 
 The Vault entry stores `AWS_ACCESS_KEY_ID` in `username` and `AWS_SECRET_ACCESS_KEY` in `password`. Read the identity with `identity.get` before a meaningful operation and configure `expected_account_id` to prevent a wrong-account action.
 

@@ -9,7 +9,7 @@ Use `scripts/google.py` como wrapper JSON seguro para Gmail, People, Drive e Cal
 
 ## Execução
 
-Sempre informe `--config` com o perfil selecionado e envie JSON pelo stdin.
+Sempre informe `--config <CODEX_HOME>/configs/google.toml --profile <perfil>` e envie JSON pelo stdin.
 
 - Use `version: 1`.
 - Use `service` como `gmail`, `people`, `drive` ou `calendar`.
@@ -21,7 +21,7 @@ Sempre informe `--config` com o perfil selecionado e envie JSON pelo stdin.
 
 ## OAuth
 
-Execute `scripts/oauth_bootstrap.py --config <perfil>` para autorizar a conta Google.
+Execute `scripts/oauth_bootstrap.py --config <CODEX_HOME>/configs/google.toml --profile <perfil>` para autorizar a conta Google.
 
 O fluxo usa credencial Desktop, servidor temporário em `127.0.0.1` e porta dinâmica. O navegador pode ser aberto manualmente usando a URL exibida pelo bootstrap, mas deve estar na mesma máquina para retornar ao callback local.
 
@@ -31,7 +31,7 @@ Consulte `references/google-cloud-setup.md` para criar o projeto, ativar as APIs
 
 ## Perfis
 
-Perfis reais ficam em `configs/google.toml`, são ignorados pelo Git e usam tabelas `[profiles.<nome>]`. Use `configs/google.toml.model` como modelo. O formato das notas é `{"version":1,"profiles":{"rodrigogml":{"refresh_token":"..."}}}`.
+Perfis reais ficam em `<CODEX_HOME>/configs/google.toml`, são ignorados pelo Git e usam tabelas `[profiles.<nome>]`. Use `configs/google.toml.model` como modelo. O formato das notas é `{"version":1,"profiles":{"rodrigogml":{"refresh_token":"..."}}}`.
 
 ## Escopo
 

@@ -1,6 +1,6 @@
 # Configuração
 
-O wrapper lê `configs/mysql.toml` e exige `--profile <nome>`. Use `configs/mysql.toml.model` como ponto de partida:
+O wrapper lê `<CODEX_HOME>/configs/mysql.toml` e exige `--profile <nome>`. Use `configs/mysql.toml.model` como ponto de partida:
 
 ```toml
 [defaults]
@@ -21,4 +21,4 @@ password_field = "password"
 
 Quando `username_field` é definido, o usuário também é lido do Vault e `user` pode ficar vazio. O wrapper chama a KeePassVault nativa da instância Onmyōji com o perfil indicado; nenhum comando externo, segredo ou seletor de autenticação deve constar no perfil MySQL.
 
-Arquivos reais de configuração ficam em `configs/`, são ignorados pelo Git e nunca contêm senha.
+Arquivos reais de configuração ficam em `<CODEX_HOME>/configs/`, são ignorados pelo Git e nunca contêm senha.

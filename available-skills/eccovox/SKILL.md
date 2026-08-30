@@ -10,10 +10,10 @@ Use esta skill quando for necessário transcrever um arquivo de áudio local ou 
 Execute o wrapper com um perfil explícito e passe exatamente uma requisição JSON pelo stdin:
 
 ```powershell
-python scripts/eccovox.py --config C:\caminho\eccovox.toml --profile <perfil>
+python scripts/eccovox.py --config <CODEX_HOME>/configs/eccovox.toml --profile <perfil>
 ```
 
-O arquivo real fica em `configs/eccovox.toml`, criado a partir de `configs/eccovox.toml.model`. O stdout contém exclusivamente uma resposta JSON versão 1. Não inclua áudio, texto a ser sintetizado, transcrições ou dados pessoais em logs, mensagens de erro ou argumentos de linha de comando.
+O arquivo real fica em `<CODEX_HOME>/configs/eccovox.toml`, criado a partir de `configs/eccovox.toml.model`. O stdout contém exclusivamente uma resposta JSON versão 1. Não inclua áudio, texto a ser sintetizado, transcrições ou dados pessoais em logs, mensagens de erro ou argumentos de linha de comando.
 
 Operações disponíveis:
 

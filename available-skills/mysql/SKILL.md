@@ -20,10 +20,10 @@ Use esta skill para trabalhar com instâncias MySQL descritas por perfis TOML ex
 
 ## Configuração
 
-Perfis ficam em `configs/mysql.toml`, são ignorados pelo Git e partem de `configs/mysql.toml.model`:
+Perfis ficam em `<CODEX_HOME>/configs/mysql.toml`, são ignorados pelo Git e partem de `configs/mysql.toml.model`:
 
 ```text
-python scripts/mysql.py --config configs/mysql.toml --profile pessoal
+python scripts/mysql.py --config <CODEX_HOME>/configs/mysql.toml --profile pessoal
 ```
 
 Use tabelas `[profiles.<nome>]` para perfis adicionais. O perfil deve definir executável, servidor, porta ou socket, banco, usuário e referência da entrada KeePassVault. Valores sensíveis permanecem no Vault.

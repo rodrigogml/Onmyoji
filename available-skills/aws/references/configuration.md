@@ -1,6 +1,6 @@
 # Configuration
 
-Create `configs/aws.toml` from `configs/aws.toml.model` and call the wrapper with `--config configs/aws.toml --profile <name>`.
+Create `<CODEX_HOME>/configs/aws.toml` from `configs/aws.toml.model` and call the wrapper with `--config <CODEX_HOME>/configs/aws.toml --profile <name>`.
 
 `[defaults]` accepts `timeout_seconds` and `max_attempts`. Each `[profiles.<name>]` accepts `cli_path` (optional; defaults to `aws`), `region`, `expected_account_id` (optional 12-digit AWS account ID), `vault_profile`, and `vault_entry_path`.
 
