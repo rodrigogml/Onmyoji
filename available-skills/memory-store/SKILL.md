@@ -5,7 +5,7 @@ description: Armazenar e consultar memória local no workspace com texto indexad
 
 # Memória estruturada
 
-Use `scripts/memory_store.py --workspace <workspace> --namespace <namespace>` e envie uma requisição JSON `version: 1` pelo stdin. O estado fica apenas em `<workspace>/.onmyoji/memory/`.
+Use `scripts/memory_store.py --workspace <workspace> --namespace <namespace> [--memory-dir <diretório>]` e envie uma requisição JSON `version: 1` pelo stdin. Sem `--memory-dir`, o estado fica em `<workspace>/.onmyoji/memory/`; quando informado, o diretório indicado é a raiz exclusiva das bases de memória.
 
 ## Escolher o modelo antes de gravar
 

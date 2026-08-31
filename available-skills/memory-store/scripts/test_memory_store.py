@@ -119,6 +119,16 @@ class MemoryStoreTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(self.call("record.get", table="projects", id=first)["name"], "Atualizado")
 
+    def test_explicit_memory_dir_is_used_instead_of_workspace_default(self):
+        shared = self.workspace / "shared-memory"
+        dispatch(
+            self.workspace, self.namespace,
+            {"version": 1, "operation": "schema.apply", "manifest": MANIFEST, "confirm": True},
+            memory_dir=shared,
+        )
+        self.assertTrue((shared / "example__projects.sqlite3").is_file())
+        self.assertFalse((self.workspace / ".onmyoji" / "memory" / "example__projects.sqlite3").exists())
+
     def test_invalid_protocol_and_confirmation_are_rejected(self):
         with self.assertRaises(StoreError) as error: dispatch(self.workspace, self.namespace, {"version": 2, "operation": "health.check"})
         self.assertEqual(error.exception.code, "unsupported_version")
