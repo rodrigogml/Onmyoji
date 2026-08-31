@@ -5,6 +5,14 @@ description: Conhecimento empresarial da Laveli Engenharia, incluindo dados, cad
 
 # Laveli
 
+# Regras de Organização
+
+- Dados mutáveis — cadastros, aliases, anotações, decisões, estado de sincronização e demais informações operacionais — pertencem exclusivamente à memória estruturada local.
+- Estrutura, migrations e validações dos cadastros pertencem exclusivamente aos wrappers versionados desta skill.
+- Instruções de uso, regras de negócio e definição dos campos pertencem a `SKILL.md` e às referências da skill.
+- Não registrar dados operacionais, sementes de cadastro ou cópias da memória no código, em documentação ou em arquivos versionados da skill.
+- A localização da memória é uma configuração local, não versionada, em `configs/laveli.json`. `memory_dir: null` usa o local padrão da `memory-store`; um caminho explícito deve ser absoluto e nunca deve ser registrado nesta skill.
+
 
 ## Requisitos
 

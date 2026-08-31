@@ -8,7 +8,7 @@ Playbook e orientações sobre a organização de lançamentos financeiros e con
 
 ## Memória Estruturada local
 
-A Omie permanece a fonte de verdade.
+A Omie permanece a fonte de verdade, a memória estruturada deve ser utilizada como informações adicionais, temporárias ou para acelerar/lembrar informações ainda não consolidadas ou recentes.
 
 ### Projetos
 
