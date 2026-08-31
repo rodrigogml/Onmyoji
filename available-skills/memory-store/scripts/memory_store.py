@@ -34,9 +34,9 @@ def canonical(value: Any) -> str: return json.dumps(value, ensure_ascii=False, s
 def checksum(value: Any) -> str: return hashlib.sha256(canonical(value).encode()).hexdigest()
 
 
-def paths(workspace: Path, namespace: str) -> tuple[Path, Path, Path]:
+def paths(workspace: Path, namespace: str, memory_dir: Path | None = None) -> tuple[Path, Path, Path]:
     if not NAMESPACE.fullmatch(namespace): fail("invalid_namespace", "Namespace inválido.")
-    root = workspace.resolve() / ".onmyoji" / "memory"
+    root = memory_dir.resolve() if memory_dir is not None else workspace.resolve() / ".onmyoji" / "memory"
     root.mkdir(parents=True, exist_ok=True)
     slug = namespace.replace("/", "__")
     return root / "text.sqlite3", root / f"{slug}.sqlite3", root / "backups"
@@ -549,11 +549,11 @@ def admin(path: Path, text_path: Path, namespace: str, operation: str, request: 
     fail("unsupported_operation", "Operação administrativa não suportada.")
 
 
-def dispatch(workspace: Path, namespace: str, request: dict[str, Any]) -> tuple[str, Any]:
+def dispatch(workspace: Path, namespace: str, request: dict[str, Any], *, memory_dir: Path | None = None) -> tuple[str, Any]:
     if request.get("version") != VERSION: fail("unsupported_version", "version deve ser 1.")
     operation = request.get("operation")
     if not isinstance(operation, str): fail("invalid_request", "operation é obrigatório.")
-    text_path, structured_path, _ = paths(workspace, namespace)
+    text_path, structured_path, _ = paths(workspace, namespace, memory_dir)
     if operation.startswith("text."): return operation, text_operation(text_path, structured_path, namespace, operation, request)
     if operation == "schema.plan": return operation, apply_migrations(structured_path, text_path, namespace, request, True)
     if operation == "schema.apply": return operation, apply_migrations(structured_path, text_path, namespace, request, False)
@@ -563,9 +563,9 @@ def dispatch(workspace: Path, namespace: str, request: dict[str, Any]) -> tuple[
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--workspace", type=Path, required=True); parser.add_argument("--namespace", required=True); args = parser.parse_args()
+    parser = argparse.ArgumentParser(); parser.add_argument("--workspace", type=Path, required=True); parser.add_argument("--namespace", required=True); parser.add_argument("--memory-dir", type=Path); args = parser.parse_args()
     try:
-        request = json.load(sys.stdin); operation, data = dispatch(args.workspace, args.namespace, request)
+        request = json.load(sys.stdin); operation, data = dispatch(args.workspace, args.namespace, request, memory_dir=args.memory_dir)
         print(json.dumps({"version": VERSION, "ok": True, "operation": operation, "data": data}, ensure_ascii=False, default=str)); return 0
     except StoreError as error:
         print(json.dumps({"version": VERSION, "ok": False, "error": {"code": error.code, "message": error.message}}, ensure_ascii=False)); return 1
