@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from setup_ui import choose_keepass_profile, item, prompt, result, screen, suggested_vault_entry
+
 
 @dataclass(frozen=True)
 class Field:
@@ -123,6 +125,103 @@ def simple_save(path: Path, data: dict[str, Any]) -> tuple[bool, str]:
         else: path.write_text(old, encoding="utf-8", newline="\n")
         return False, f"Não salvo: {error}"
     return True, "Configuração salva e validada."
+
+
+def interactive_configure(*, root: Path, path: Path, title: str, subtitle: str, integration: str, defaults: dict[str, Any], fields: tuple[Field, ...], test: Callable[[str, Path, dict[str, Any]], tuple[bool, str]] | None = None) -> None:
+    """Configure perfis locais sem expor segredos ou duplicar menus de skills."""
+    def choose(profiles: dict[str, Any], action: str) -> str | None:
+        names = sorted(profiles)
+        screen(title, action, "Escolha um perfil ou pressione X para voltar")
+        for index, name in enumerate(names, 1): item(f"{index}.", name)
+        item("X.", "Voltar")
+        value = prompt("Perfil: ").strip().casefold()
+        if value in {"x", "\x1b"}: return None
+        if value.isdigit() and 1 <= int(value) <= len(names): return names[int(value) - 1]
+        result(False, "Opção inválida.")
+        return None
+
+    def field_value(field: Field, profile_name: str, current: Any = None) -> Any | None:
+        default = current if current is not None and current != "" else suggested_vault_entry(integration, profile_name) if field.name == "vault_entry_path" else field.default
+        if field.name == "vault_profile": return choose_keepass_profile(root, str(default or ""))
+        shown = "" if default is None else str(default)
+        value = prompt(f"{field.description} [{shown}]: ").strip()
+        if value.casefold() in {"x", "\x1b"}: return None
+        value = default if not value else _value(value)
+        if field.required and not value:
+            result(False, f"{field.description} é obrigatório.")
+            return None
+        return value
+
+    while True:
+        try: data = simple_load(path, defaults)
+        except (OSError, tomllib.TOMLDecodeError) as error:
+            result(False, f"Não foi possível ler a configuração: {error}")
+            return
+        profiles = data.get("profiles")
+        if not isinstance(profiles, dict):
+            result(False, "A seção profiles da configuração é inválida.")
+            return
+        screen(title, "Configuração", subtitle)
+        item("1.", "Criar perfil"); item("2.", "Editar perfil"); item("3.", "Excluir perfil")
+        if test is not None: item("4.", "Testar perfil")
+        item("X.", "Voltar")
+        action = prompt("Opção: ").strip().casefold()
+        if action in {"x", "\x1b"}: return
+        if action == "1":
+            name = prompt("Nome do perfil [X cancela]: ").strip()
+            try: name = _name(name)
+            except ValueError as error: result(False, str(error)); continue
+            if name in profiles:
+                result(False, "Esse perfil já existe.")
+                continue
+            candidate: dict[str, Any] = {}
+            for field in fields:
+                value = field_value(field, name)
+                if value is None:
+                    result(False, "Criação cancelada; nenhuma alteração foi gravada.")
+                    break
+                candidate[field.name] = value
+            else:
+                profiles[name] = candidate
+                ok, message = simple_save(path, data); result(ok, message)
+            continue
+        allowed = {"2", "3"} | ({"4"} if test is not None else set())
+        if action not in allowed:
+            result(False, "Opção inválida.")
+            continue
+        if not profiles:
+            result(False, "Nenhum perfil configurado.")
+            continue
+        labels = {"2": "Editar perfil", "3": "Excluir perfil", "4": "Testar perfil"}
+        name = choose(profiles, labels[action])
+        if name is None: continue
+        if action == "3":
+            if prompt(f"Digite EXCLUIR para remover {name}: ").strip() == "EXCLUIR":
+                del profiles[name]; ok, message = simple_save(path, data); result(ok, message)
+            else: result(False, "Operação cancelada.")
+            continue
+        if action == "4":
+            ok, message = test(name, path, data); result(ok, message)
+            continue
+        profile = profiles[name]
+        if not isinstance(profile, dict):
+            result(False, "Perfil inválido.")
+            continue
+        screen(title, "Editar perfil", name)
+        for index, field in enumerate(fields, 1): item(f"{index}.", field.description, str(profile.get(field.name, "")))
+        item("X.", "Voltar")
+        choice = prompt("Campo: ").strip().casefold()
+        if choice in {"x", "\x1b"}: continue
+        if not choice.isdigit() or not 1 <= int(choice) <= len(fields):
+            result(False, "Opção inválida.")
+            continue
+        field = fields[int(choice) - 1]
+        value = field_value(field, name, profile.get(field.name))
+        if value is None:
+            result(False, "Edição cancelada; nenhuma alteração foi gravada.")
+            continue
+        profile[field.name] = value
+        ok, message = simple_save(path, data); result(ok, message)
 
 
 def wrapper_test(script: Path, config: Path, profile: str, request: dict[str, Any], label: str, timeout: float = 60) -> tuple[bool, str]:
