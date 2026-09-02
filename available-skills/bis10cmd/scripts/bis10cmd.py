@@ -57,8 +57,8 @@ def read_secret(section: dict[str, Any], field: str) -> str:
     return value
 
 
-COMMANDS = {"help": "-h", "facade": "-facade", "login": "-login", "connect": "-connect", "ping": "-ping", "session": "-session", "accountstatement": "-accountStatement"}
-SESSION_COMMANDS = {"ping", "session", "accountstatement"}
+COMMANDS = {"help": "-h", "facade": "-facade", "login": "-login", "connect": "-connect", "ping": "-ping", "session": "-session", "accountstatement": "-accountStatement", "accounts": "-accounts", "categories": "-categories", "costcenters": "-costCenters", "companies": "-companies", "company": "-company"}
+SESSION_COMMANDS = {"ping", "session", "accountstatement", "accounts", "categories", "costcenters", "companies", "company"}
 
 
 def normalize_commands(request: dict[str, Any]) -> list[tuple[str, list[str]]]:
@@ -93,12 +93,26 @@ def redact(value: str, secrets: list[str]) -> str:
     return value
 
 
-def output(completed: Any, secrets: list[str]) -> dict[str, list[str]]:
-    data: dict[str, list[str]] = {}
-    stdout = [redact(line, secrets) for line in completed.stdout.splitlines() if line.strip()]
+def output(completed: Any, secrets: list[str]) -> dict[str, Any]:
+    data: dict[str, Any] = {}
+    stdout: list[str] = []
+    lookups: list[dict[str, Any]] = []
+    for line in completed.stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            candidate = json.loads(line)
+        except json.JSONDecodeError:
+            candidate = None
+        if isinstance(candidate, dict) and candidate.get("version") == 1 and isinstance(candidate.get("resource"), str) and isinstance(candidate.get("items"), list):
+            lookups.append(candidate)
+        else:
+            stdout.append(redact(line, secrets))
     stderr = [redact(line, secrets) for line in completed.stderr.splitlines() if line.strip()]
     if stdout:
         data["messages"] = stdout
+    if lookups:
+        data["lookups"] = lookups
     if stderr:
         data["stderr"] = stderr
     return data
@@ -118,7 +132,7 @@ def run(config: dict[str, dict[str, Any]], request: dict[str, Any]) -> dict[str,
         bis_password = read_secret(config["bis"], str(config["bis"]["password_field"]))
         secrets = [jndi_user, jndi_password, bis_user, bis_password]
         environment.update({"BISCMD_JNDI_USER": jndi_user, "BISCMD_JNDI_PASSWORD": jndi_password, "BISCMD_BIS_USER": bis_user, "BISCMD_BIS_PASSWORD": bis_password})
-    invocation = [str(client["java_path"]), "-jar", str(client["jar_path"])]
+    invocation = [str(client["java_path"]), "-Dfile.encoding=UTF-8", "-jar", str(client["jar_path"])]
     for name, args in commands:
         invocation.extend([COMMANDS[name], *args])
     try:

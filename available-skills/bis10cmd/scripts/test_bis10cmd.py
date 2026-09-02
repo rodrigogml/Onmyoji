@@ -40,6 +40,14 @@ class BIS10CMDTests(unittest.TestCase):
             self.assertEqual(bis10cmd.run(self.config, {"version": 1, "commands": [{"name": "help", "args": []}]}), {"messages": ["Ajuda"]})
             self.assertEqual(run.call_count, 1)
 
+    @patch("bis10cmd.subprocess.run")
+    def test_account_lookup_connects_and_returns_structured_data(self, run) -> None:
+        run.side_effect = [self.provider("jndi-user"), self.provider("jndi-secret"), self.provider("bis-user"), self.provider("bis-secret"), type("Result", (), {"returncode": 0, "stdout": '{"version":1,"resource":"accounts","items":[{"id":1,"name":"Caixa"}]}\n', "stderr": ""})()]
+        result = bis10cmd.run(self.config, {"version": 1, "commands": [{"name": "accounts", "args": ["name", "Rodrigo"]}]})
+        invocation = run.call_args_list[-1]
+        self.assertEqual(invocation.args[0][-4:], ["-connect", "-accounts", "name", "Rodrigo"])
+        self.assertEqual(result, {"lookups": [{"version": 1, "resource": "accounts", "items": [{"id": 1, "name": "Caixa"}]}]})
+
     def test_rejects_java_properties_and_unknown_commands(self) -> None:
         with self.assertRaisesRegex(bis10cmd.BIS10CMDError, "Propriedades Java"):
             bis10cmd.normalize_commands({"commands": [{"name": "ping", "args": ["-Dbiscmd.host=x"]}]})
