@@ -11,7 +11,7 @@ Execute primeiro `skills list` ou `skills status`. Habilite e desabilite somente
 
 Para perfis, use `profiles status <skill>` para consultar a validação e `profiles schema <skill>` antes de criar ou alterar um perfil. Use `profiles list <skill>` para listar a configuração não sensível. Crie e altere com `profiles create|update <skill> --profile <nome> --set campo=valor`; listas devem ser JSON, por exemplo `--set readable_roots='["C:/work/.onmyoji/eccovox"]'`. Nunca simule entrada em menu interativo.
 
-O contrato de perfil está disponível para `todoist`, `omie`, `eccovox`, `cloudflare`, `forward-email`, `notion`, `mysql`, `ssh`, `aws`, `google` e `bis2cmd`. Em Todoist, os campos também podem ser informados pelos argumentos específicos existentes; prefira `--set` para um fluxo uniforme. Teste perfis somente nas skills que retornarem suporte para isso; o teste sempre é uma leitura inofensiva pelo wrapper oficial.
+O contrato de perfil está disponível para `todoist`, `omie`, `eccovox`, `cloudflare`, `forward-email`, `notion`, `mysql`, `ssh`, `aws`, `google`, `bis2cmd` e `bis10cmd`. Em Todoist, os campos também podem ser informados pelos argumentos específicos existentes; prefira `--set` para um fluxo uniforme. Teste perfis somente nas skills que retornarem suporte para isso; o teste sempre é uma leitura inofensiva pelo wrapper oficial.
 
 `keepass-vault` é deliberadamente somente consulta: use `profiles status|schema|list keepass-vault`. Nunca crie, edite ou remova Vaults, perfis ou credenciais KeePass por esta skill.
 

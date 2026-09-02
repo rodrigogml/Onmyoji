@@ -27,6 +27,7 @@ class Field:
     default: Any = None
     required: bool = False
     secret: bool = False
+    suggest: Callable[[str], Any] | None = None
 
 
 def _name(value: str | None) -> str:
@@ -141,8 +142,8 @@ def interactive_configure(*, root: Path, path: Path, title: str, subtitle: str, 
         return None
 
     def field_value(field: Field, profile_name: str, current: Any = None) -> Any | None:
-        default = current if current is not None and current != "" else suggested_vault_entry(integration, profile_name) if field.name == "vault_entry_path" else field.default
-        if field.name == "vault_profile": return choose_keepass_profile(root, str(default or ""))
+        default = current if current is not None and current != "" else field.suggest(profile_name) if field.suggest else suggested_vault_entry(integration, profile_name) if field.name == "vault_entry_path" else field.default
+        if field.name == "vault_profile" or field.name.endswith("_vault_profile"): return choose_keepass_profile(root, str(default or ""))
         shown = "" if default is None else str(default)
         value = prompt(f"{field.description} [{shown}]: ").strip()
         if value.casefold() in {"x", "\x1b"}: return None
