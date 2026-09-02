@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -83,6 +85,30 @@ class SystemSetupTests(unittest.TestCase):
             self.assertEqual(MODULE.enabled_ids(root), {"omie"})
             self.assertTrue(MODULE.save_enabled(root, set(), [skill])[0])
             self.assertFalse(active.exists() or active.is_symlink())
+
+    def test_instance_skill_link_does_not_change_catalog_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "shikigami" / "skills" / "barinella"; source.mkdir(parents=True)
+            skill = MODULE.Skill("barinella", "Barinella", source / "setupSkill.py", "", catalog_managed=False)
+            self.assertTrue(MODULE.set_instance_skill_enabled(root, skill, True)[0])
+            self.assertTrue(MODULE.is_skill_enabled(root, skill))
+            self.assertFalse(MODULE.skill_state_path(root).exists())
+            self.assertTrue(MODULE.set_instance_skill_enabled(root, skill, False)[0])
+            self.assertFalse(MODULE.is_skill_enabled(root, skill))
+
+    def test_discovers_instance_setup_scripts_separately_from_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for script in (root / "available-skills" / "omie" / "setupSkill.py", root / "shikigami" / "skills" / "barinella" / "setupSkill.py"):
+                script.parent.mkdir(parents=True); script.write_text("", encoding="utf-8")
+            def describe(command, **_kwargs):
+                identifier = Path(command[1]).parent.name
+                return subprocess.CompletedProcess(command, 0, json.dumps({"id": identifier, "title": identifier.title()}), "")
+            with patch.object(MODULE.subprocess, "run", side_effect=describe):
+                skills = {skill.identifier: skill for skill in MODULE.discover(root)}
+            self.assertTrue(skills["omie"].catalog_managed)
+            self.assertFalse(skills["barinella"].catalog_managed)
 
     def test_stale_python_cache_is_replaced_by_an_active_skill_link(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
