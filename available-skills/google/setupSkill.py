@@ -6,13 +6,14 @@ import argparse
 import json
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 SKILL = Path(__file__).resolve().parent
 sys.path.insert(0, str(SKILL.parent))
 
 from setup_profile_api import Field, handle as handle_profile, simple_load, simple_save, wrapper_test
-from setup_ui import choose_keepass_profile, item, note, prompt, result, screen, suggested_vault_entry
+from setup_ui import choose_keepass_profile, item, note, prompt, result, screen
 
 
 DEFAULTS = {
@@ -40,6 +41,22 @@ def config_path(root: Path) -> Path:
     return root / "configs" / "google.toml"
 
 
+def shikigami_identity(root: Path) -> str:
+    try:
+        data = tomllib.loads((root / "shikigami" / "instance.toml").read_text(encoding="utf-8"))
+        identity = data.get("shikigami", {}).get("identity", "")
+        if isinstance(identity, str) and identity.strip():
+            return identity.strip()
+    except (OSError, tomllib.TOMLDecodeError, AttributeError):
+        pass
+    return root.name.removeprefix("Shikigami-") or "Shikigami"
+
+
+def suggested_google_vault_entry(root: Path, profile: str) -> str:
+    profile_name = "".join(part[:1].upper() + part[1:] for part in re.findall(r"[A-Za-z0-9]+", profile))
+    return f"APIs/{shikigami_identity(root)}:GoogleOAuth:{profile_name}"
+
+
 def profile_test(name: str, file: Path, data: dict[str, object]) -> tuple[bool, str]:
     return wrapper_test(SKILL / "scripts" / "google.py", file, name, {"version": 1, "service": "gmail", "operation": "profile.get"}, "Google")
 
@@ -60,7 +77,7 @@ def choose_profile(profiles: dict[str, object], action: str) -> str | None:
 
 
 def value_for(root: Path, field: Field, profile_name: str, current: object = "") -> str | None:
-    default = str(current or (profile_name if field.name == "oauth_profile" else suggested_vault_entry("Google", profile_name) if field.name == "vault_entry_path" else field.default or ""))
+    default = str(current or (profile_name if field.name == "oauth_profile" else suggested_google_vault_entry(root, profile_name) if field.name == "vault_entry_path" else field.default or ""))
     if field.name == "vault_profile":
         return choose_keepass_profile(root, default)
     value = prompt(f"{field.description} [{default}]: ").strip() or default

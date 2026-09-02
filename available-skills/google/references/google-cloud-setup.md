@@ -3,7 +3,7 @@
 ## 1. Criar o projeto
 
 1. Acessar o Google Cloud Console.
-2. Criar um projeto chamado `Akuma`.
+2. Criar um projeto compartilhado chamado `Onmyoji`.
 3. Selecionar o projeto recém-criado.
 
 ## 2. Ativar APIs
@@ -31,7 +31,7 @@ Os escopos amplos do Gmail e alguns escopos Google Workspace são sensíveis ou 
 1. Abrir Credentials.
 2. Selecionar Create credentials → OAuth client ID.
 3. Escolher Desktop app.
-4. Nomear a credencial, por exemplo `Akuma Desktop`.
+4. Nomear a credencial, por exemplo `Onmyoji Desktop`.
 5. Baixar o JSON.
 6. Armazenar o arquivo fora do Git, preferencialmente em uma pasta `credentials/` ignorada.
 
@@ -42,10 +42,10 @@ Não criar cliente Web. Não cadastrar webhook, domínio, IP público ou redirec
 Criar uma entrada, por exemplo:
 
 ```text
-APIs/Google:Akuma
+APIs/<Shikigami>:GoogleOAuth:<PerfilGoogle>
 ```
 
-Use os campos padrão da entrada para a identidade compartilhada da aplicação: `username` recebe o `client_id`, `password` recebe o `client_secret` e `notes` recebe o JSON versionado com os refresh tokens por perfil. O formato é `{"version":1,"profiles":{"rodrigogml":{"refresh_token":"..."}}}`. O bootstrap atualiza somente o perfil selecionado e preserva os demais.
+Para o perfil `rodrigogml` do Akuma, por exemplo, use `APIs/Akuma:GoogleOAuth:Rodrigogml`. Use os campos padrão da entrada para a identidade compartilhada da aplicação: `username` recebe o `client_id`, `password` recebe o `client_secret` e `notes` recebe o JSON versionado com os refresh tokens por perfil. O formato é `{"version":1,"profiles":{"rodrigogml":{"refresh_token":"..."}}}`. O bootstrap atualiza somente o perfil selecionado e preserva os demais.
 
 ## 6. Criar o perfil
 

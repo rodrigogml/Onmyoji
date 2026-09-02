@@ -20,6 +20,9 @@ class GoogleSetupTests(unittest.TestCase):
         configs = self.root / "configs"
         configs.mkdir()
         (configs / "keepass.toml").write_text("[profiles.local]\nvault = \"main\"\n", encoding="utf-8")
+        definition = self.root / "shikigami"
+        definition.mkdir()
+        (definition / "instance.toml").write_text('[shikigami]\nidentity = "Akuma"\n', encoding="utf-8")
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -33,7 +36,7 @@ class GoogleSetupTests(unittest.TestCase):
         data = tomllib.loads((self.root / "configs" / "google.toml").read_text(encoding="utf-8"))
         self.assertEqual(data["profiles"]["principal"]["oauth_profile"], "principal")
         self.assertEqual(data["profiles"]["principal"]["vault_profile"], "local")
-        self.assertEqual(data["profiles"]["principal"]["vault_entry_path"], "APIs/Google:Principal")
+        self.assertEqual(data["profiles"]["principal"]["vault_entry_path"], "APIs/Akuma:GoogleOAuth:Principal")
         self.assertEqual(data["profiles"]["principal"]["credentials_file"], "")
 
     def test_interactive_cancel_does_not_create_configuration(self) -> None:
