@@ -7,6 +7,9 @@ import sys
 import tomllib
 from pathlib import Path
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 SKILL = Path(__file__).resolve().parent
 sys.path.insert(0, str(SKILL.parent))
 
