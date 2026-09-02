@@ -359,15 +359,14 @@ def item(key: str, label: str, value: str = "") -> None:
     print(f"  {shortcut}  {label:<30}" + (f"   {Ui.text(value, Ui.slate)}" if value else ""))
 
 
-def skill_item(index: int, skill: Skill, state: str) -> None:
+def skill_item(index: int, skill: Skill, state: str, width: int = 48) -> str:
     """Renderiza a linha da skill na grade fixa do menu principal."""
     option = Ui.text(f"{index}.".rjust(4), Ui.bold, Ui.cyan)
-    name = skill.title
-    value_column = 48
+    name = skill.title[:max(1, width - 18)]
     prefix_width = 8  # margem, opção de quatro caracteres e dois espaços
-    fill_width = max(1, value_column - prefix_width - len(name))
+    fill_width = max(1, width - prefix_width - 9 - len(name))
     filler = "." * fill_width if index % 2 == 0 else " " * fill_width
-    print(f"  {option}  {name}{Ui.text(filler, Ui.slate)}{state}")
+    return f"  {option}  {name}{Ui.text(filler, Ui.slate)}{state}"
 
 
 def choose(label: str, values: list[str], current: str) -> str | None:
@@ -826,11 +825,26 @@ def menu(skills: list[Skill], root: Path) -> int:
         screen("Central de configuração", "Onmyōji · integrações do Shikigami")
         item("A.", "Codex-CLI", "Modelo, projeto, sandbox e permissões")
         item("D.", "Daemon", "Supervisor local e serviços da instância")
-        print("\n  SKILLS DE INTEGRAÇÃO")
-        for index, skill in enumerate(skills, 1):
+        integration = [skill for skill in skills if skill.catalog_managed]
+        domain = [skill for skill in skills if not skill.catalog_managed]
+        def rendered(index: int, skill: Skill, width: int = 48) -> str:
             active = is_skill_enabled(root, skill)
             state = Ui.badge("ATIVA", "active") if active else Ui.badge("inativa", "inactive")
-            skill_item(index, skill, state)
+            return skill_item(index, skill, state, width)
+        wide = len(domain) > 0 and shutil.get_terminal_size((78, 24)).columns >= 96
+        if wide:
+            print("\n  SKILLS DE INTEGRAÇÃO".ljust(48) + "SKILLS DE DOMÍNIO")
+            rows = max(len(integration), len(domain))
+            for row in range(rows):
+                left = rendered(row + 1, integration[row]) if row < len(integration) else " " * 48
+                right = rendered(len(integration) + row + 1, domain[row]) if row < len(domain) else ""
+                print(left + right)
+        else:
+            print("\n  SKILLS DE INTEGRAÇÃO")
+            for index, skill in enumerate(integration, 1): print(rendered(index, skill))
+            if domain:
+                print("\n  SKILLS DE DOMÍNIO")
+                for index, skill in enumerate(domain, len(integration) + 1): print(rendered(index, skill))
         print()
         item("X.", "Sair")
         choice = prompt("Selecione uma opção: ").strip().casefold()
