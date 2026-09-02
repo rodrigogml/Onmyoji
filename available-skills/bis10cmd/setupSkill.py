@@ -4,12 +4,13 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import tomllib
 from pathlib import Path
 
 SKILL = Path(__file__).resolve().parent
 sys.path.insert(0, str(SKILL.parent))
 
-from setup_profile_api import Field, handle as handle_profile, interactive_configure, simple_load, simple_save, wrapper_test
+from setup_profile_api import Field, handle as handle_profile, interactive_configure, recover_simple_load, simple_load, simple_save, wrapper_test
 from setup_ui import suggested_vault_entry
 
 
@@ -65,11 +66,20 @@ def main() -> int:
     if args.action == "status":
         print(json.dumps({"configured": config_path(root).exists(), "valid": True}, ensure_ascii=False))
         return 0
+    if args.action == "repair":
+        try:
+            data = recover_simple_load(config_path(root), DEFAULTS)
+            ok, message = simple_save(config_path(root), data)
+            response = {"ok": ok, "message": message}
+        except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
+            response = {"ok": False, "error": {"code": "repair_failed", "message": f"Não foi possível recuperar a configuração: {error}"}}
+        print(json.dumps(response, ensure_ascii=False))
+        return 0 if response["ok"] else 2
     if args.action.startswith("profile-"):
         code, value = handle_profile(action=args.action, profile_name=args.profile, values=args.set, confirm_delete=args.confirm_delete, path=config_path(root), load=lambda path: simple_load(path, DEFAULTS), save=simple_save, fields=PROFILE_FIELDS, test=profile_test)
         print(json.dumps(value, ensure_ascii=False))
         return code
-    interactive_configure(root=root, path=config_path(root), title="BIS10CMD", subtitle="Perfis de acesso ao cliente BIS10", integration="BIS10CMD", defaults=DEFAULTS, fields=PROFILE_FIELDS, test=profile_test)
+    interactive_configure(root=root, path=config_path(root), title="BIS10CMD", subtitle="Perfis de acesso ao cliente BIS10", integration="BIS10CMD", defaults=DEFAULTS, fields=PROFILE_FIELDS, test=profile_test, load=recover_simple_load)
     return 0
 
 
