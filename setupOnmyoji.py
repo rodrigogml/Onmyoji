@@ -25,6 +25,7 @@ MANAGED_END = "# END ONMYOJI MANAGED SKILLS"
 SYSTEM_BEGIN = "# BEGIN ONMYOJI MANAGED CODEX SETTINGS"
 SYSTEM_END = "# END ONMYOJI MANAGED CODEX SETTINGS"
 CATALOG_DIRECTORY = "available-skills"
+INSTANCE_SKILLS_DIRECTORY = "shikigami/skills"
 ACTIVE_SKILLS_DIRECTORY = "skills"
 SKILL_STATE_FILE = "onmyoji-skills.toml"
 REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"]
@@ -67,17 +68,20 @@ class Skill:
     title: str
     script: Path
     description: str
+    catalog_managed: bool = True
 
 
 def discover(root: Path = ROOT) -> list[Skill]:
     skills: list[Skill] = []
-    for script in sorted((root / CATALOG_DIRECTORY).glob("*/setupSkill.py")):
-        result = subprocess.run([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "describe", "--json"], text=True, encoding="utf-8", errors="replace", capture_output=True, env={**os.environ, "PYTHONUTF8": "1"})
-        try:
-            data = json.loads(result.stdout) if result.returncode == 0 else {}
-            skills.append(Skill(data["id"], data["title"], script, data.get("description", "")))
-        except (json.JSONDecodeError, KeyError):
-            continue
+    for directory, catalog_managed in ((root / CATALOG_DIRECTORY, True), (root / INSTANCE_SKILLS_DIRECTORY, False)):
+        for script in sorted(directory.glob("*/setupSkill.py")):
+            result = subprocess.run([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "describe", "--json"], text=True, encoding="utf-8", errors="replace", capture_output=True, env={**os.environ, "PYTHONUTF8": "1"})
+            try:
+                data = json.loads(result.stdout) if result.returncode == 0 else {}
+                if any(skill.identifier == data["id"] for skill in skills): continue
+                skills.append(Skill(data["id"], data["title"], script, data.get("description", ""), catalog_managed))
+            except (json.JSONDecodeError, KeyError):
+                continue
     return skills
 
 
@@ -266,7 +270,7 @@ def is_stale_runtime_cache(path: Path) -> bool:
 
 
 def sync_active_skill_links(root: Path, identifiers: set[str], skills: list[Skill]) -> tuple[bool, str]:
-    catalog = {skill.identifier: skill.script.parent.resolve() for skill in skills}
+    catalog = {skill.identifier: skill.script.parent.resolve() for skill in skills if skill.catalog_managed}
     unknown = identifiers - set(catalog)
     if unknown: return False, f"Skills não encontradas no catálogo: {', '.join(sorted(unknown))}."
     active = active_skills_path(root)
@@ -287,6 +291,30 @@ def sync_active_skill_links(root: Path, identifiers: set[str], skills: list[Skil
     except OSError as error:
         return False, f"Não foi possível sincronizar as skills ativas: {error}"
     return True, "Links das skills ativas sincronizados."
+
+
+def is_skill_enabled(root: Path, skill: Skill) -> bool:
+    if skill.catalog_managed: return skill.identifier in enabled_ids(root)
+    destination = active_skills_path(root) / skill.identifier
+    return (destination.exists() or destination.is_symlink()) and destination.resolve() == skill.script.parent.resolve()
+
+
+def set_instance_skill_enabled(root: Path, skill: Skill, enabled: bool) -> tuple[bool, str]:
+    if skill.catalog_managed: return False, "Esta operação é exclusiva de skills próprias do Shikigami."
+    destination = active_skills_path(root) / skill.identifier
+    source = skill.script.parent.resolve()
+    try:
+        active_skills_path(root).mkdir(parents=True, exist_ok=True)
+        if enabled:
+            if destination.exists() or destination.is_symlink():
+                if destination.resolve() != source: return False, f"O destino da skill {skill.identifier} já está ocupado por um item não gerenciado."
+            else: create_skill_link(source, destination)
+        elif destination.exists() or destination.is_symlink():
+            if destination.resolve() != source: return False, f"O destino da skill {skill.identifier} não aponta para esta skill do Shikigami."
+            remove_skill_link(destination)
+    except OSError as error:
+        return False, f"Não foi possível atualizar o link da skill: {error}"
+    return True, ("Skill habilitada." if enabled else "Skill desabilitada.")
 
 
 def save_enabled(root: Path, identifiers: set[str], skills: list[Skill]) -> tuple[bool, str]:
@@ -773,7 +801,7 @@ def daemon_menu(root: Path) -> None:
 
 def skill_menu(skill: Skill, root: Path, skills: list[Skill]) -> None:
     while True:
-        enabled = skill.identifier in enabled_ids(root)
+        enabled = is_skill_enabled(root, skill)
         state = "Desabilitar" if enabled else "Habilitar"
         screen(skill.title, f"Skill de integração · {'ATIVA' if enabled else 'INATIVA'}")
         if skill.description: print(f"  {skill.description}\n")
@@ -783,9 +811,11 @@ def skill_menu(skill: Skill, root: Path, skills: list[Skill]) -> None:
         choice = prompt("Opção: ").strip().casefold()
         if choice == "x": return
         if choice == "1":
-            identifiers = enabled_ids(root)
-            (identifiers.discard if enabled else identifiers.add)(skill.identifier)
-            ok, message = save_enabled(root, identifiers, skills)
+            if skill.catalog_managed:
+                identifiers = enabled_ids(root)
+                (identifiers.discard if enabled else identifiers.add)(skill.identifier)
+                ok, message = save_enabled(root, identifiers, skills)
+            else: ok, message = set_instance_skill_enabled(root, skill, not enabled)
             result(ok, message if ok else f"{message} A alteração foi desfeita.")
         elif choice == "2": invoke(skill, root)
         else: result(False, "Opção inválida.")
@@ -793,13 +823,12 @@ def skill_menu(skill: Skill, root: Path, skills: list[Skill]) -> None:
 
 def menu(skills: list[Skill], root: Path) -> int:
     while True:
-        enabled = enabled_ids(root)
         screen("Central de configuração", "Onmyōji · integrações do Shikigami")
         item("A.", "Codex-CLI", "Modelo, projeto, sandbox e permissões")
         item("D.", "Daemon", "Supervisor local e serviços da instância")
         print("\n  SKILLS DE INTEGRAÇÃO")
         for index, skill in enumerate(skills, 1):
-            active = skill.identifier in enabled
+            active = is_skill_enabled(root, skill)
             state = Ui.badge("ATIVA", "active") if active else Ui.badge("inativa", "inactive")
             skill_item(index, skill, state)
         print()
@@ -822,11 +851,10 @@ def main() -> int:
         return 2
     if args.action == "menu": return menu(skills, ROOT)
     if args.action == "list":
-        active = enabled_ids(ROOT)
-        values = [{"id": skill.identifier, "title": skill.title, "enabled": skill.identifier in active, "description": skill.description} for skill in skills]
+        values = [{"id": skill.identifier, "title": skill.title, "enabled": is_skill_enabled(ROOT, skill), "description": skill.description} for skill in skills]
         if args.json: print(json.dumps({"ok": True, "skills": values}, ensure_ascii=False))
         else:
-            for skill in skills: print(f"{skill.identifier}\t{'enabled' if skill.identifier in active else 'disabled'}\t{skill.description}")
+            for skill in skills: print(f"{skill.identifier}\t{'enabled' if is_skill_enabled(ROOT, skill) else 'disabled'}\t{skill.description}")
         return 0
     if args.action == "status":
         if args.json: print(json.dumps({"ok": True, "skills": sorted(active) if (active := enabled_ids(ROOT)) else []}, ensure_ascii=False))
@@ -836,9 +864,13 @@ def main() -> int:
     if args.action == "configure":
         if args.json: print(json.dumps({"ok": False, "error": {"code": "interactive_only", "message": "Use as ações não interativas declaradas pela própria skill."}}, ensure_ascii=False)); return 2
         invoke(by_id[args.skill], ROOT); return 0
-    active = enabled_ids(ROOT)
-    (active.add if args.action == "enable" else active.discard)(args.skill)
-    ok, message = save_enabled(ROOT, active, skills); print(json.dumps({"ok": ok, "skill": args.skill, "enabled": args.action == "enable", "message": message}, ensure_ascii=False) if args.json else message)
+    skill = by_id[args.skill]
+    if skill.catalog_managed:
+        active = enabled_ids(ROOT)
+        (active.add if args.action == "enable" else active.discard)(args.skill)
+        ok, message = save_enabled(ROOT, active, skills)
+    else: ok, message = set_instance_skill_enabled(ROOT, skill, args.action == "enable")
+    print(json.dumps({"ok": ok, "skill": args.skill, "enabled": args.action == "enable", "message": message}, ensure_ascii=False) if args.json else message)
     return 0 if ok else 2
 
 
