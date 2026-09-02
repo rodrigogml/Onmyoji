@@ -12,7 +12,7 @@ SKILL = Path(__file__).resolve().parent
 sys.path.insert(0, str(SKILL.parent))
 
 from setup_profile_api import Field, handle as handle_profile, simple_load, simple_save, wrapper_test
-from setup_ui import choose_keepass_profile, item, prompt, result, screen, suggested_vault_entry
+from setup_ui import choose_keepass_profile, item, note, prompt, result, screen, suggested_vault_entry
 
 
 DEFAULTS = {
@@ -27,9 +27,9 @@ DEFAULTS = {
 }
 PROFILE_FIELDS = (
     Field("oauth_profile", "Perfil OAuth", required=True),
-    Field("credentials_file", "Arquivo de credenciais", required=True),
     Field("vault_profile", "Perfil KeePass", required=True),
     Field("vault_entry_path", "Entrada KeePass", required=True),
+    Field("credentials_file", "Arquivo JSON OAuth Desktop (legado, opcional)", ""),
     Field("client_id_field", "Campo client_id", "username"),
     Field("client_secret_field", "Campo client_secret", "password"),
     Field("profiles_field", "Campo dos tokens", "notes"),
@@ -83,6 +83,7 @@ def create_profile(root: Path, path: Path, data: dict[str, object]) -> None:
         result(False, "Nome inválido ou já existente.")
         return
     profile: dict[str, str] = {}
+    note("Recomendado: deixe o arquivo JSON vazio. O client_id e o client_secret serão lidos da entrada KeePass selecionada. Use o JSON apenas para uma credencial OAuth Desktop legada.")
     for field in PROFILE_FIELDS:
         value = value_for(root, field, name)
         if value is None:
