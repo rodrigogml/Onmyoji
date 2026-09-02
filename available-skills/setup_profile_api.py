@@ -249,7 +249,24 @@ def interactive_configure(*, root: Path, path: Path, title: str, subtitle: str, 
         ok, message = simple_save(path, data); result(ok, message)
 
 
-def wrapper_test(script: Path, config: Path, profile: str, request: dict[str, Any], label: str, timeout: float = 60) -> tuple[bool, str]:
+def _test_error_details(payload: dict[str, Any]) -> str:
+    """Extraia poucas mensagens funcionais já redigidas pelo wrapper."""
+    data = payload.get("data")
+    if not isinstance(data, dict): return ""
+    lines: list[str] = []
+    for key in ("messages", "stderr"):
+        values = data.get(key, [])
+        if not isinstance(values, list): continue
+        for value in values:
+            if not isinstance(value, str): continue
+            line = value.strip()
+            if not line or line.startswith(("INFO:", "WARNING:", "at ", "\\tat ")): continue
+            if " version " in line.casefold() or line.casefold().startswith(("set.", "java ")): continue
+            lines.append(line)
+    return " | ".join(lines[-3:])
+
+
+def wrapper_test(script: Path, config: Path, profile: str, request: dict[str, Any], label: str, timeout: float = 60, include_error_details: bool = False) -> tuple[bool, str]:
     """Execute uma leitura inofensiva pelo wrapper oficial, sem expor a resposta."""
     try:
         process = subprocess.run([sys.executable, str(script), "--config", str(config), "--profile", profile], input=json.dumps(request), text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=timeout)
@@ -258,5 +275,7 @@ def wrapper_test(script: Path, config: Path, profile: str, request: dict[str, An
     except (OSError, json.JSONDecodeError): return False, f"O wrapper {label} não retornou JSON válido."
     if process.returncode or not payload.get("ok", False):
         error = payload.get("error", {}) if isinstance(payload, dict) else {}
-        return False, f"Teste {label} falhou: {error.get('message', 'a integração recusou a solicitação.')}"
+        details = _test_error_details(payload) if include_error_details and isinstance(payload, dict) else ""
+        suffix = f" Detalhes: {details}" if details else ""
+        return False, f"Teste {label} falhou: {error.get('message', 'a integração recusou a solicitação.')}{suffix}"
     return True, f"Conexão e credencial {label} confirmadas."

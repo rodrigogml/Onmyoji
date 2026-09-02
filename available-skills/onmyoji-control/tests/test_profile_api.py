@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).parents[2] / "setup_profile_api.py"
@@ -16,6 +17,15 @@ SPEC.loader.exec_module(MODULE)
 
 
 class ProfileApiTests(unittest.TestCase):
+    def test_wrapper_test_can_include_redacted_functional_details(self) -> None:
+        payload = {"ok": False, "error": {"message": "Cliente recusou a operação."}, "data": {"stderr": ["INFO: biblioteca", "Falha ao localizar a fachada remota.", "Caused by: NameNotFoundException: BISEAR-10.0"]}}
+        result = type("Result", (), {"returncode": 1, "stdout": __import__("json").dumps(payload)})()
+        with patch.object(MODULE.subprocess, "run", return_value=result):
+            ok, message = MODULE.wrapper_test(Path("wrapper.py"), Path("config.toml"), "principal", {"version": 1}, "BIS10CMD", include_error_details=True)
+        self.assertFalse(ok)
+        self.assertIn("Falha ao localizar a fachada remota.", message)
+        self.assertIn("NameNotFoundException", message)
+
     def test_create_update_delete_uses_declared_schema(self) -> None:
         fields = (MODULE.Field("host", "Host", "127.0.0.1", True), MODULE.Field("vault_profile", "KeePass", required=True))
         with tempfile.TemporaryDirectory() as temporary:

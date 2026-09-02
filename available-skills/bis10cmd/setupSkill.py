@@ -46,7 +46,7 @@ def config_path(root: Path) -> Path:
 
 
 def profile_test(name: str, path: Path, data: dict) -> tuple[bool, str]:
-    return wrapper_test(SKILL / "scripts" / "bis10cmd.py", path, name, {"version": 1, "commands": [{"name": "connect", "args": []}, {"name": "ping", "args": []}]}, "BIS10CMD", timeout=210)
+    return wrapper_test(SKILL / "scripts" / "bis10cmd.py", path, name, {"version": 1, "commands": [{"name": "connect", "args": []}, {"name": "ping", "args": []}]}, "BIS10CMD", timeout=210, include_error_details=True)
 
 
 def main() -> int:
