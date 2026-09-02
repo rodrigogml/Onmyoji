@@ -7,6 +7,7 @@ configuração, validação e persistência da respectiva skill.
 from __future__ import annotations
 
 import copy
+import datetime
 import json
 import re
 import subprocess
@@ -17,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from setup_ui import choose_keepass_profile, item, prompt, result, screen, suggested_vault_entry
+from setup_ui import choose_keepass_profile, item, note, prompt, result, screen, suggested_vault_entry
 
 
 @dataclass(frozen=True)
@@ -103,12 +104,19 @@ def handle(*, action: str, profile_name: str | None, values: list[str] | None, c
 
 def simple_load(path: Path, defaults: dict[str, Any]) -> dict[str, Any]:
     if not path.exists(): return {"schema_version": 1, "defaults": copy.deepcopy(defaults), "profiles": {}}
-    return tomllib.loads(path.read_text(encoding="utf-8"))
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict): raise ValueError("O documento TOML deve conter tabelas.")
+    configured_defaults = data.get("defaults", {})
+    profiles = data.get("profiles", {})
+    if not isinstance(configured_defaults, dict): raise ValueError("A seção defaults é inválida.")
+    if not isinstance(profiles, dict): raise ValueError("A seção profiles é inválida.")
+    return {"schema_version": data.get("schema_version", 1), "defaults": {**copy.deepcopy(defaults), **configured_defaults}, "profiles": profiles}
 
 
 def simple_render(data: dict[str, Any]) -> str:
     lines = ["schema_version = 1", "", "[defaults]"]
     lines.extend(f"{key} = {json.dumps(value, ensure_ascii=False)}" for key, value in data["defaults"].items())
+    lines.extend(["", "[profiles]"])
     for name, profile in sorted(data["profiles"].items()):
         lines.extend(["", f"[profiles.{name}]"])
         lines.extend(f"{key} = {json.dumps(value, ensure_ascii=False)}" for key, value in profile.items())
@@ -128,7 +136,23 @@ def simple_save(path: Path, data: dict[str, Any]) -> tuple[bool, str]:
     return True, "Configuração salva e validada."
 
 
-def interactive_configure(*, root: Path, path: Path, title: str, subtitle: str, integration: str, defaults: dict[str, Any], fields: tuple[Field, ...], test: Callable[[str, Path, dict[str, Any]], tuple[bool, str]] | None = None) -> None:
+def recover_simple_load(path: Path, defaults: dict[str, Any]) -> dict[str, Any]:
+    """Restaure uma configuração de perfil danificada sem descartar o original."""
+    try:
+        return simple_load(path, defaults)
+    except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
+        if not path.exists(): raise
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        backup = path.with_name(f"{path.stem}.invalid-{stamp}{path.suffix}.bak")
+        path.replace(backup)
+        data = {"schema_version": 1, "defaults": copy.deepcopy(defaults), "profiles": {}}
+        ok, message = simple_save(path, data)
+        if not ok: raise OSError(message)
+        note(f"Configuração danificada reconstruída. O arquivo original foi preservado em {backup.name}: {error}")
+        return data
+
+
+def interactive_configure(*, root: Path, path: Path, title: str, subtitle: str, integration: str, defaults: dict[str, Any], fields: tuple[Field, ...], test: Callable[[str, Path, dict[str, Any]], tuple[bool, str]] | None = None, load: Callable[[Path, dict[str, Any]], dict[str, Any]] = simple_load) -> None:
     """Configure perfis locais sem expor segredos ou duplicar menus de skills."""
     def choose(profiles: dict[str, Any], action: str) -> str | None:
         names = sorted(profiles)
@@ -154,8 +178,8 @@ def interactive_configure(*, root: Path, path: Path, title: str, subtitle: str, 
         return value
 
     while True:
-        try: data = simple_load(path, defaults)
-        except (OSError, tomllib.TOMLDecodeError) as error:
+        try: data = load(path, defaults)
+        except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
             result(False, f"Não foi possível ler a configuração: {error}")
             return
         profiles = data.get("profiles")
