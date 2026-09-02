@@ -8,6 +8,9 @@ import sys
 import tomllib
 from pathlib import Path
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 
 def config_path(root: Path) -> Path:
     return root / "configs" / "barinella.toml"
@@ -24,19 +27,21 @@ def load_config(root: Path) -> dict[str, str]:
 
 
 def valid(config: dict[str, str]) -> tuple[bool, str]:
-    memory_dir, namespace = config.get("memory_dir", ""), config.get("memory_namespace", "")
-    if not memory_dir or not Path(memory_dir).is_absolute(): return False, "memory_dir deve ser um diretório absoluto."
-    if not Path(memory_dir).is_dir(): return False, "memory_dir não existe ou não é um diretório."
+    memory_dir, namespace = config.get("memory_dir"), config.get("memory_namespace", "barinella")
+    if memory_dir is not None and not Path(memory_dir).is_absolute(): return False, "memory_dir deve ser um diretório absoluto."
+    if memory_dir is not None and not Path(memory_dir).is_dir(): return False, "memory_dir não existe ou não é um diretório."
     if not namespace: return False, "memory_namespace é obrigatório."
-    return True, "Memória estruturada da Barinella configurada."
+    return True, "Memória estruturada configurada." if memory_dir else "Memória estruturada usará o diretório padrão do Onmyōji."
 
 
 def save_config(root: Path, config: dict[str, str]) -> tuple[bool, str]:
     ok, message = valid(config)
     if not ok: return ok, message
     path = config_path(root); path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("memory_dir = " + json.dumps(str(Path(config["memory_dir"]).resolve()), ensure_ascii=False) + "\n"
-                    + "memory_namespace = " + json.dumps(config["memory_namespace"], ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
+    lines = []
+    if config.get("memory_dir"): lines.append("memory_dir = " + json.dumps(str(Path(config["memory_dir"]).resolve()), ensure_ascii=False))
+    lines.append("memory_namespace = " + json.dumps(config.get("memory_namespace", "barinella"), ensure_ascii=False))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     return True, message
 
 
@@ -45,15 +50,17 @@ def configure(root: Path) -> int:
     config = load_config(root)
     while True:
         screen("Barinella", "Memória estruturada", "Configuração local da instância")
-        item("1.", "Diretório compartilhado", config.get("memory_dir", "(não definido)"))
+        item("1.", "Diretório compartilhado", config.get("memory_dir", "(padrão do Onmyōji)"))
         item("2.", "Namespace", config.get("memory_namespace", "barinella"))
         item("S.", "Salvar")
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return 0
         if choice == "1":
-            value = prompt("Diretório absoluto [X cancela]: ").strip()
-            if value.casefold() not in {"x", "\x1b"} and value: config["memory_dir"] = str(Path(value).expanduser())
+            value = prompt("Diretório absoluto [vazio usa o padrão; X cancela]: ").strip()
+            if value.casefold() not in {"x", "\x1b"}:
+                if value: config["memory_dir"] = str(Path(value).expanduser())
+                else: config.pop("memory_dir", None)
         elif choice == "2":
             value = prompt("Namespace [barinella]: ").strip()
             if value.casefold() not in {"x", "\x1b"} and value: config["memory_namespace"] = value
@@ -75,7 +82,7 @@ def main() -> int:
         print(json.dumps(data, ensure_ascii=False) if args.json else data["title"]); return 0
     config = load_config(root); ok, message = valid(config)
     if args.action == "status":
-        data = {"configured": ok, "valid": ok, "message": message}
+        data = {"configured": config_path(root).exists(), "valid": ok, "message": message}
         print(json.dumps(data, ensure_ascii=False) if args.json else message); return 0 if ok else 2
     sys.path.insert(0, str(root / "available-skills"))
     return configure(root)

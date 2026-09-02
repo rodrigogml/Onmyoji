@@ -35,5 +35,12 @@ class CategoryMemoryTests(unittest.TestCase):
             _, result = MODULE.dispatch(root, workspace, {"version": 1, "operation": "record.upsert", "table": "category_guidance", "key": ["category_id"], "data": {"category_id": 58, "aliases": "AWS"}, "confirm": True})
             self.assertIn("id", result)
 
+    def test_uses_onmyoji_default_memory_directory_without_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            memory_dir, namespace = MODULE.config(root)
+            self.assertIsNone(memory_dir)
+            self.assertEqual(namespace, "barinella")
+
 
 if __name__ == "__main__": unittest.main()

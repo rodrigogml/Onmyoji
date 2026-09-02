@@ -24,14 +24,14 @@ MANIFEST = {
 }
 
 
-def config(root: Path) -> tuple[Path, str]:
+def config(root: Path) -> tuple[Path | None, str]:
     path = root / "configs" / "barinella.toml"
-    try: data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as error: raise ValueError("A memória da Barinella não está configurada. Use o setup do Onmyōji.") from error
+    try: data = tomllib.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, tomllib.TOMLDecodeError) as error: raise ValueError("A configuração da memória da Barinella é inválida.") from error
     memory_dir, namespace = data.get("memory_dir"), data.get("memory_namespace", NAMESPACE_DEFAULT)
-    if not isinstance(memory_dir, str) or not Path(memory_dir).is_absolute() or not Path(memory_dir).is_dir(): raise ValueError("memory_dir da Barinella é inválido.")
+    if memory_dir is not None and (not isinstance(memory_dir, str) or not Path(memory_dir).is_absolute() or not Path(memory_dir).is_dir()): raise ValueError("memory_dir da Barinella é inválido.")
     if not isinstance(namespace, str) or not namespace: raise ValueError("memory_namespace da Barinella é inválido.")
-    return Path(memory_dir), namespace
+    return (Path(memory_dir) if memory_dir is not None else None), namespace
 
 
 def dispatch(root: Path, workspace: Path, request: dict[str, object]) -> tuple[str, object]:
