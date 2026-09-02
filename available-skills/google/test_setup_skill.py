@@ -27,13 +27,14 @@ class GoogleSetupTests(unittest.TestCase):
     def run_setup(self, arguments: list[str], input_text: str = "") -> subprocess.CompletedProcess[str]:
         return subprocess.run([sys.executable, str(SCRIPT), "--onmyoji-root", str(self.root), *arguments], input=input_text, text=True, encoding="utf-8", errors="replace", capture_output=True, check=False)
 
-    def test_interactive_create_writes_a_complete_profile(self) -> None:
-        process = self.run_setup([], "1\nprincipal\n\nC:/oauth-client.json\n1\n\n\n\n\nx\n")
+    def test_interactive_create_uses_keepass_without_a_json_file(self) -> None:
+        process = self.run_setup([], "1\nprincipal\n\n1\n\n\n\n\n\nx\n")
         self.assertEqual(process.returncode, 0, process.stderr)
         data = tomllib.loads((self.root / "configs" / "google.toml").read_text(encoding="utf-8"))
         self.assertEqual(data["profiles"]["principal"]["oauth_profile"], "principal")
         self.assertEqual(data["profiles"]["principal"]["vault_profile"], "local")
         self.assertEqual(data["profiles"]["principal"]["vault_entry_path"], "APIs/Google:Principal")
+        self.assertEqual(data["profiles"]["principal"]["credentials_file"], "")
 
     def test_interactive_cancel_does_not_create_configuration(self) -> None:
         process = self.run_setup([], "x\n")
