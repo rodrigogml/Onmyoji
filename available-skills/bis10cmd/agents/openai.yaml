@@ -1,0 +1,4 @@
+interface:
+  display_name: "BIS10CMD"
+  short_description: "Executar comandos remotos do BIS10"
+  default_prompt: "Use $bis10cmd para executar uma operação do BISCMD 10.0 no perfil configurado."

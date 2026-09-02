@@ -1,0 +1,21 @@
+schema_version = 1
+
+[defaults]
+java_path = "java"
+timeout_seconds = 180
+encoding = "utf-8"
+locale = "pt-BR"
+
+[profiles.example]
+jar_path = "C:/opt/BIS10CMD/BISCMD-10.0.jar"
+working_dir = "C:/opt/BIS10CMD"
+host = "127.0.0.1"
+port = 8080
+jndi_vault_profile = "example"
+jndi_vault_entry_path = "APIs/BIS10CMD:JNDI:Example"
+jndi_username_field = "username"
+jndi_password_field = "password"
+bis_vault_profile = "example"
+bis_vault_entry_path = "APIs/BIS10CMD:BIS10:Example"
+bis_username_field = "username"
+bis_password_field = "password"
