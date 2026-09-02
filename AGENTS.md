@@ -14,7 +14,7 @@ O workspace do agente é externo ao `CODEX_HOME`. Arquivos de trabalho, saídas,
 
 ## Alteração de instruções e skills
 
-Antes de alterar `README.md`, `AGENTS.md`, `SKILL.md` ou qualquer arquivo de skill:
+Antes de alterar `README.md`, `AGENTS.md`, `SKILL.md` ou qualquer arquivo de definição de skill (não se aplica a arquivos de scripts e wrappers):
 	1. Exiba a alteração proposta em formato diff.
 	2. Aguarde autorização explícita do usuário.
 	3. Só então aplique a alteração.
