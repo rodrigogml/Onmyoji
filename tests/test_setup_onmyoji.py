@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -109,6 +111,18 @@ class SystemSetupTests(unittest.TestCase):
                 skills = {skill.identifier: skill for skill in MODULE.discover(root)}
             self.assertTrue(skills["omie"].catalog_managed)
             self.assertFalse(skills["barinella"].catalog_managed)
+
+    def test_menu_places_domain_skills_in_the_right_column_when_wide(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            integration = MODULE.Skill("omie", "Omie", root / "available-skills" / "omie" / "setupSkill.py", "")
+            domain = MODULE.Skill("barinella", "Barinella", root / "shikigami" / "skills" / "barinella" / "setupSkill.py", "", catalog_managed=False)
+            output = io.StringIO()
+            with patch("builtins.input", return_value="x"), patch.object(MODULE.shutil, "get_terminal_size", return_value=os.terminal_size((120, 24))), patch.object(MODULE.sys, "stdout", output):
+                self.assertEqual(MODULE.menu([integration, domain], root), 0)
+            first_header = next(line for line in output.getvalue().splitlines() if "SKILLS DE INTEGRAÇÃO" in line)
+            self.assertIn("SKILLS DE DOMÍNIO", first_header)
+            self.assertLess(first_header.index("SKILLS DE INTEGRAÇÃO"), first_header.index("SKILLS DE DOMÍNIO"))
 
     def test_stale_python_cache_is_replaced_by_an_active_skill_link(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
