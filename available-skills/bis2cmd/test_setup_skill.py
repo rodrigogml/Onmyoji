@@ -22,10 +22,11 @@ class BIS2CMDSetupTests(unittest.TestCase):
     def setup(self, arguments: list[str] = [], input_text: str = "") -> subprocess.CompletedProcess[str]:
         return subprocess.run([sys.executable, str(SKILL / "setupSkill.py"), "--onmyoji-root", str(self.root), *arguments], input=input_text, text=True, encoding="utf-8", errors="replace", capture_output=True, check=False)
 
-    def test_interactive_create_writes_a_profile(self) -> None:
-        process = self.setup(input_text="1\nprincipal\nC:/BISCMD/client.jar\nC:/BISCMD\n\n\n1\n\n\n\nx\n")
+    def test_interactive_create_defaults_working_directory_to_the_jar_parent(self) -> None:
+        process = self.setup(input_text="1\nprincipal\nC:/BISCMD/client.jar\n\n\n\n1\n\n\n\nx\n")
         self.assertEqual(process.returncode, 0, process.stderr)
         data = tomllib.loads((self.root / "configs" / "bis2cmd.toml").read_text(encoding="utf-8"))
+        self.assertEqual(data["profiles"]["principal"]["working_dir"], "")
         self.assertEqual(data["profiles"]["principal"]["vault_profile"], "local")
         self.assertEqual(data["profiles"]["principal"]["vault_entry_path"], "APIs/BISCMD:Principal")
 
