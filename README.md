@@ -51,7 +51,7 @@ Uma skill específica da instância deve ter a fonte em `shikigami/skills/<nome>
 
 ### Codex Desktop
 
-O Codex Desktop lê as skills do projeto em `.agents/skills/`. Para manter os ambientes sempre sincronizados, configure a pasta do projeto no menu `A. Codex-CLI` e use `B. Codex Desktop` no setup. Ao habilitar, o setup cria `<projeto>/.agents/skills` como um link para `<CODEX_HOME>/skills`; assim, o Desktop usa exatamente o conjunto de skills já ativo no CLI, sem cópias ou configuração duplicada.
+O Codex Desktop lê as skills em `.agents/skills/` no diretório da instância do Shikigami. Para manter os ambientes sempre sincronizados, use `B. Codex Desktop` no setup. Ao habilitar, o setup cria `<CODEX_HOME>/.agents/skills` como um link para `<CODEX_HOME>/skills`; assim, o Desktop usa exatamente o conjunto de skills já ativo no CLI, sem cópias ou configuração duplicada.
 
 `.agents/` é local: mantenha-a ignorada pelo Git no projeto configurado. Não aponte `.agents/skills` diretamente para `shikigami/skills/`: `skills/` é o destino canônico porque reúne as integrações ativas e as skills de domínio habilitadas.
 

@@ -93,11 +93,7 @@ def active_skills_path(root: Path) -> Path: return root / ACTIVE_SKILLS_DIRECTOR
 
 
 def desktop_skills_path(root: Path, data: dict[str, object]) -> Path:
-    project = str(data["project_directory"]).strip()
-    if not project: raise ValueError("Defina a pasta do projeto no menu Codex-CLI antes de configurar o Codex Desktop.")
-    project_path = Path(project).resolve()
-    if not project_path.is_dir(): raise ValueError("Pasta de projeto não encontrada; corrija a configuração do Codex-CLI antes de configurar o Codex Desktop.")
-    return project_path / DESKTOP_SKILLS_DIRECTORY
+    return root / DESKTOP_SKILLS_DIRECTORY
 
 
 def instance_identity(root: Path) -> str:
@@ -269,10 +265,9 @@ def remove_skill_link(path: Path) -> None:
 
 
 def desktop_skills_enabled(root: Path, data: dict[str, object]) -> bool:
-    try: destination = desktop_skills_path(root, data)
-    except ValueError: return False
-    source = active_skills_path(root).resolve()
-    return (destination.exists() or destination.is_symlink()) and is_managed_link(destination) and destination.resolve() == source
+    destination, source = desktop_skills_path(root, data), active_skills_path(root).resolve()
+    try: return (destination.exists() or destination.is_symlink()) and is_managed_link(destination) and destination.resolve() == source
+    except OSError: return False
 
 
 def set_desktop_skills_enabled(root: Path, data: dict[str, object], enabled: bool) -> tuple[bool, str]:
@@ -284,11 +279,16 @@ def set_desktop_skills_enabled(root: Path, data: dict[str, object], enabled: boo
         if enabled:
             if exists:
                 if is_managed_link(destination) and destination.resolve() == source: return True, "Skills do Codex Desktop já estão habilitadas."
-                return False, "O destino .agents/skills já está ocupado por um item que não pertence a esta instância."
+                if is_managed_link(destination): return False, "Não foi possível criar a junction skills porque .agents/skills já aponta para outro destino."
+                if destination.is_dir(): return False, "Não foi possível criar a junction skills porque já existe uma pasta skills em .agents."
+                if destination.is_file(): return False, "Não foi possível criar a junction skills porque já existe um arquivo skills em .agents."
+                return False, "Não foi possível criar a junction skills porque .agents/skills já está ocupado por outro item."
             source.mkdir(parents=True, exist_ok=True)
+            if agents.exists() and (not agents.is_dir() or is_managed_link(agents)):
+                return False, "Não foi possível criar a pasta .agents porque o caminho já existe e não é uma pasta comum."
             agents.mkdir(parents=True, exist_ok=True)
             create_skill_link(source, destination)
-            return True, "Skills do Codex Desktop habilitadas para a pasta de projeto configurada."
+            return True, "Skills do Codex Desktop habilitadas para esta instância do Shikigami."
         if exists:
             if not is_managed_link(destination) or destination.resolve() != source:
                 return False, "O destino .agents/skills não aponta para as skills desta instância e não será removido."
@@ -544,13 +544,13 @@ def desktop_skills_menu(root: Path) -> None:
     while True:
         data = load_system(root)
         enabled = desktop_skills_enabled(root, data)
-        try: destination = desktop_skills_path(root, data)
-        except ValueError as error: destination = None; status = str(error)
-        else: status = "ATIVA" if enabled else "inativa"
+        destination = desktop_skills_path(root, data)
+        status = "ATIVA" if enabled else "inativa"
         screen("Codex Desktop", "Skills do projeto")
         item("1.", "Desabilitar" if enabled else "Habilitar")
         item("X.", "Voltar")
-        print(f"\n  Projeto: {destination.parent.parent if destination else '(não configurado)'}")
+        print(f"\n  Instância: {root}")
+        print(f"  Link: {destination}")
         print(f"  Estado: {status}")
         choice = prompt("Opção: ").strip().casefold()
         if choice == "x": return

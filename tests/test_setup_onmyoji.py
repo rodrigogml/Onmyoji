@@ -88,24 +88,24 @@ class SystemSetupTests(unittest.TestCase):
             self.assertTrue(MODULE.save_enabled(root, set(), [skill])[0])
             self.assertFalse(active.exists() or active.is_symlink())
 
-    def test_desktop_skills_link_uses_the_configured_project(self) -> None:
+    def test_desktop_skills_link_uses_the_shikigami_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); project = root / "project"; project.mkdir()
             data = MODULE.default_system() | {"project_directory": str(project)}
             self.assertTrue(MODULE.set_desktop_skills_enabled(root, data, True)[0])
-            link = project / ".agents" / "skills"
+            link = root / ".agents" / "skills"
             self.assertTrue(MODULE.desktop_skills_enabled(root, data))
             self.assertEqual(link.resolve(), MODULE.active_skills_path(root).resolve())
+            self.assertFalse((project / ".agents").exists())
             self.assertTrue(MODULE.set_desktop_skills_enabled(root, data, False)[0])
             self.assertFalse(link.exists() or link.is_symlink())
-            self.assertFalse((project / ".agents").exists())
+            self.assertFalse((root / ".agents").exists())
 
     def test_desktop_skills_disable_preserves_other_agents_content(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); project = root / "project"; project.mkdir()
-            data = MODULE.default_system() | {"project_directory": str(project)}
+            root = Path(temporary); data = MODULE.default_system()
             self.assertTrue(MODULE.set_desktop_skills_enabled(root, data, True)[0])
-            marker = project / ".agents" / "other.txt"; marker.write_text("keep", encoding="utf-8")
+            marker = root / ".agents" / "other.txt"; marker.write_text("keep", encoding="utf-8")
             ok, message = MODULE.set_desktop_skills_enabled(root, data, False)
             self.assertTrue(ok)
             self.assertIn("preservada", message)
@@ -113,12 +113,21 @@ class SystemSetupTests(unittest.TestCase):
 
     def test_desktop_skills_refuses_an_unmanaged_destination(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); project = root / "project"; project.mkdir()
-            data = MODULE.default_system() | {"project_directory": str(project)}
-            destination = project / ".agents" / "skills"; destination.mkdir(parents=True)
+            root = Path(temporary); data = MODULE.default_system()
+            destination = root / ".agents" / "skills"; destination.mkdir(parents=True)
             self.assertFalse(MODULE.set_desktop_skills_enabled(root, data, True)[0])
             self.assertFalse(MODULE.set_desktop_skills_enabled(root, data, False)[0])
             self.assertTrue(destination.is_dir())
+
+    def test_desktop_skills_foreign_junction_is_not_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); data = MODULE.default_system(); foreign = root / "foreign"; foreign.mkdir()
+            destination = root / ".agents" / "skills"; destination.parent.mkdir()
+            MODULE.create_skill_link(foreign, destination)
+            self.assertFalse(MODULE.desktop_skills_enabled(root, data))
+            ok, message = MODULE.set_desktop_skills_enabled(root, data, True)
+            self.assertFalse(ok)
+            self.assertIn("outro destino", message)
 
     def test_instance_skill_link_does_not_change_catalog_state(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
