@@ -14,7 +14,7 @@ O nome vem do imaginário japonês: o *onmyōji* era um especialista da corte em
 
 - `available-skills/`, `onmyoji-daemon/`, `setupOnmyoji.py` e `docs/`: base versionada do Onmyōji. Personalizações não devem ser feitas nesses arquivos.
 - `skills/`: superfície ativa que o Codex varre. É ignorada pelo Git e contém links locais para as skills ativas.
-- `shikigami/`: definição versionada da instância. Contém sua identidade, instruções particulares, documentação, declarações sem segredos e fontes de skills próprias. Leia sempre `shikigami/README.md` e `shikigami/AGENTS.md`, quando presentes.
+- `shikigami/`: definição versionada da instância, criada somente no repositório de cada Shikigami. Contém sua identidade, instruções particulares, documentação, declarações sem segredos e fontes de skills próprias. Leia sempre `shikigami/README.md` e `shikigami/AGENTS.md`, quando presentes. O upstream Onmyōji não contém nem versiona essa pasta.
 - `configs/`: sobreposição privada e estado operacional. Contém referências locais, integrações provisionadas, credenciais do SO, pairing, bancos de conversa, logs e dados de execução; permanece ignorada pelo Git.
 - workspace externo: área exclusiva de trabalho do agente, como `C:\opt\Shikigami-Akuma-Work`. Não fica dentro deste repositório nem do `CODEX_HOME`.
 
@@ -43,9 +43,17 @@ Em qualquer repositório de Shikigami, `upstream` é sempre `git@github.com:rodr
 
 ## Skills ativas
 
-O Codex descobre skills somente em `skills/`. As integrações fornecidas pela base ficam em `available-skills/` e são ativadas pelo `setupOnmyoji.py`, que cria links locais em `skills/` e registra essa ativação em `configs/onmyoji-skills.toml`.
+### Codex CLI
+
+O Codex CLI da instância lê as skills a partir de `skills/` no `CODEX_HOME`. As integrações fornecidas pela base ficam em `available-skills/` e são ativadas pelo `setupOnmyoji.py`, que cria links locais em `skills/` e registra essa ativação em `configs/onmyoji-skills.toml`.
 
 Uma skill específica da instância deve ter a fonte em `shikigami/skills/<nome>/` e um link de ativação em `skills/<nome>/`. Esse link não é gerenciado pelo catálogo nem precisa aparecer em `configs/onmyoji-skills.toml`; ele apenas permite que o Codex encontre uma definição que permanece versionada no repositório do Shikigami. Não coloque na fonte ou no link segredos, perfis efetivos, caminhos dependentes da máquina, logs ou estado operacional.
+
+### Codex Desktop
+
+O Codex Desktop lê as skills do projeto em `.agents/skills/`. Para manter os ambientes sempre sincronizados, configure a pasta do projeto no menu `A. Codex-CLI` e use `B. Codex Desktop` no setup. Ao habilitar, o setup cria `<projeto>/.agents/skills` como um link para `<CODEX_HOME>/skills`; assim, o Desktop usa exatamente o conjunto de skills já ativo no CLI, sem cópias ou configuração duplicada.
+
+`.agents/` é local: mantenha-a ignorada pelo Git no projeto configurado. Não aponte `.agents/skills` diretamente para `shikigami/skills/`: `skills/` é o destino canônico porque reúne as integrações ativas e as skills de domínio habilitadas.
 
 ## Criar e configurar um Shikigami
 
@@ -86,7 +94,7 @@ Crie ou escolha um workspace externo, por exemplo `C:\opt\Shikigami-<Nome>-Work`
 
 ### 4. Instalar uma skill própria da instância
 
-Crie a fonte versionada em `shikigami/skills/<nome>/` com `SKILL.md` e recursos opcionais. Depois, crie o link de ativação. No Windows, uma junction não exige privilégio de administrador:
+Crie a fonte versionada em `shikigami/skills/<nome>/` com `SKILL.md` e recursos opcionais. Uma skill própria também pode incluir `setupSkill.py`, que será descoberta pelo setup e exibida no grupo de skills de domínio. Depois, crie o link de ativação. No Windows, uma junction não exige privilégio de administrador:
 
 ```powershell
 New-Item -ItemType Junction `

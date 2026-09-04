@@ -8,8 +8,7 @@
 !/setupOnmyoji.py
 !/pytest.ini
 !/conftest.py
-!/shikigami/
-!/shikigami/**
+/shikigami/
 !/docs/
 !/docs/**
 !/available-skills/

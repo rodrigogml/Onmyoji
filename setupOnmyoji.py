@@ -27,6 +27,7 @@ SYSTEM_END = "# END ONMYOJI MANAGED CODEX SETTINGS"
 CATALOG_DIRECTORY = "available-skills"
 INSTANCE_SKILLS_DIRECTORY = "shikigami/skills"
 ACTIVE_SKILLS_DIRECTORY = "skills"
+DESKTOP_SKILLS_DIRECTORY = ".agents/skills"
 SKILL_STATE_FILE = "onmyoji-skills.toml"
 REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"]
 SANDBOXES = ["read-only", "workspace-write", "danger-full-access"]
@@ -89,6 +90,14 @@ def config_path(root: Path) -> Path: return root / "config.toml"
 def system_path(root: Path) -> Path: return root / "configs" / "onmyoji-system.toml"
 def skill_state_path(root: Path) -> Path: return root / "configs" / SKILL_STATE_FILE
 def active_skills_path(root: Path) -> Path: return root / ACTIVE_SKILLS_DIRECTORY
+
+
+def desktop_skills_path(root: Path, data: dict[str, object]) -> Path:
+    project = str(data["project_directory"]).strip()
+    if not project: raise ValueError("Defina a pasta do projeto no menu Codex-CLI antes de configurar o Codex Desktop.")
+    project_path = Path(project).resolve()
+    if not project_path.is_dir(): raise ValueError("Pasta de projeto não encontrada; corrija a configuração do Codex-CLI antes de configurar o Codex Desktop.")
+    return project_path / DESKTOP_SKILLS_DIRECTORY
 
 
 def instance_identity(root: Path) -> str:
@@ -257,6 +266,39 @@ def remove_skill_link(path: Path) -> None:
     if not is_managed_link(path): raise OSError(f"{path} existe e não é um link gerenciado pelo Onmyōji.")
     if path.is_symlink(): path.unlink()
     else: os.rmdir(path)
+
+
+def desktop_skills_enabled(root: Path, data: dict[str, object]) -> bool:
+    try: destination = desktop_skills_path(root, data)
+    except ValueError: return False
+    source = active_skills_path(root).resolve()
+    return (destination.exists() or destination.is_symlink()) and is_managed_link(destination) and destination.resolve() == source
+
+
+def set_desktop_skills_enabled(root: Path, data: dict[str, object], enabled: bool) -> tuple[bool, str]:
+    try:
+        destination = desktop_skills_path(root, data)
+        source = active_skills_path(root).resolve()
+        agents = destination.parent
+        exists = destination.exists() or destination.is_symlink()
+        if enabled:
+            if exists:
+                if is_managed_link(destination) and destination.resolve() == source: return True, "Skills do Codex Desktop já estão habilitadas."
+                return False, "O destino .agents/skills já está ocupado por um item que não pertence a esta instância."
+            source.mkdir(parents=True, exist_ok=True)
+            agents.mkdir(parents=True, exist_ok=True)
+            create_skill_link(source, destination)
+            return True, "Skills do Codex Desktop habilitadas para a pasta de projeto configurada."
+        if exists:
+            if not is_managed_link(destination) or destination.resolve() != source:
+                return False, "O destino .agents/skills não aponta para as skills desta instância e não será removido."
+            remove_skill_link(destination)
+        if agents.exists() and agents.is_dir() and not is_managed_link(agents):
+            try: agents.rmdir()
+            except OSError: return True, "Link do Codex Desktop removido; a pasta .agents foi preservada porque contém outros itens."
+        return True, "Skills do Codex Desktop desabilitadas."
+    except (OSError, ValueError) as error:
+        return False, f"Não foi possível atualizar as skills do Codex Desktop: {error}"
 
 
 def is_stale_runtime_cache(path: Path) -> bool:
@@ -495,6 +537,26 @@ def codex_menu(root: Path) -> None:
         elif choice == "8": launch_codex(root, data)
         elif choice == "9": launch_onmyoji_interactive(root, data)
         elif choice == "10": launch_codex(root, data, login=True)
+        else: result(False, "Opção inválida.")
+
+
+def desktop_skills_menu(root: Path) -> None:
+    while True:
+        data = load_system(root)
+        enabled = desktop_skills_enabled(root, data)
+        try: destination = desktop_skills_path(root, data)
+        except ValueError as error: destination = None; status = str(error)
+        else: status = "ATIVA" if enabled else "inativa"
+        screen("Codex Desktop", "Skills do projeto")
+        item("1.", "Desabilitar" if enabled else "Habilitar")
+        item("X.", "Voltar")
+        print(f"\n  Projeto: {destination.parent.parent if destination else '(não configurado)'}")
+        print(f"  Estado: {status}")
+        choice = prompt("Opção: ").strip().casefold()
+        if choice == "x": return
+        if choice == "1":
+            ok, message = set_desktop_skills_enabled(root, data, not enabled)
+            result(ok, message)
         else: result(False, "Opção inválida.")
 
 
@@ -824,6 +886,7 @@ def menu(skills: list[Skill], root: Path) -> int:
     while True:
         screen("Central de configuração", "Onmyōji · integrações do Shikigami")
         item("A.", "Codex-CLI", "Modelo, projeto, sandbox e permissões")
+        item("B.", "Codex Desktop", "Habilitar ou desabilitar skills do projeto")
         item("D.", "Daemon", "Supervisor local e serviços da instância")
         integration = [skill for skill in skills if skill.catalog_managed]
         domain = [skill for skill in skills if not skill.catalog_managed]
@@ -850,6 +913,7 @@ def menu(skills: list[Skill], root: Path) -> int:
         choice = prompt("Selecione uma opção: ").strip().casefold()
         if choice == "x": return 0
         if choice == "a": codex_menu(root); continue
+        if choice == "b": desktop_skills_menu(root); continue
         if choice == "d": daemon_menu(root); continue
         if choice.isdigit() and 1 <= int(choice) <= len(skills): skill_menu(skills[int(choice) - 1], root, skills)
         else: result(False, "Opção inválida.")

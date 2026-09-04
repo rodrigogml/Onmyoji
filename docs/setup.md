@@ -17,6 +17,8 @@ O menu `A. Configurar Codex-CLI` administra o sistema da instância: executável
 
 `Executar Codex-CLI` inicia o executável configurado com o diretório de trabalho igual à pasta do projeto e `CODEX_HOME` apontando para a instância atual. Modelo, esforço de raciocínio, sandbox e aprovação vêm do bloco gerenciado em `config.toml`; cada diretório adicional de escrita também é enviado por `--add-dir`. Esse é o CLI nativo do Codex. `Console interativo Onmyōji` é uma opção diferente: inicia o App Server e aplica a composição de developer instructions do Onmyōji.
 
+O menu `B. Codex Desktop` prepara a pasta de projeto configurada no menu A para o Codex Desktop. Ao habilitar, cria `<projeto>/.agents/skills` como link para `<CODEX_HOME>/skills`, que é a superfície já usada pelo Codex CLI. Ao desabilitar, remove somente esse link quando ele aponta para a superfície de skills da instância. Se a pasta `.agents/` ficar vazia, ela também é removida; se contiver outros itens, é preservada e o setup avisa o operador. Um destino já ocupado ou um link para outro local nunca é sobrescrito ou removido automaticamente.
+
 O Codex-CLI expõe configuração de raízes adicionais de escrita, não uma lista pública equivalente de raízes exclusivas de leitura. Em `workspace-write`, a pasta do projeto e `writable_roots` podem ser alteradas; a restrição de leitura para fora de uma lista permitida continua sendo responsabilidade da ACL do sistema operacional aplicada ao usuário que executa o Shikigami. Não cadastre diretórios sensíveis como graváveis apenas para que possam ser lidos.
 
 Cada `setupSkill.py` é responsável exclusivamente pela configuração da sua skill. Ele recebe a pasta da instância do Onmyōji, apresenta seu próprio menu e preserva perfis existentes até haver confirmação explícita. Todo novo ou alterado fluxo de gravação deve validar o resultado, manter backup temporário quando substituir dados e restaurar a configuração anterior em caso de falha. Wizards aceitam `X` ou `Esc` (quando o terminal o transmite, normalmente seguido de Enter) para cancelar sem gravar alterações parciais.
@@ -29,7 +31,7 @@ Quando uma skill oferecer teste de perfil, ele deve selecionar um perfil existen
 
 ## Protocolo de discovery e perfis
 
-Todo `setupSkill.py` aceita `--action describe --json` e retorna, no mínimo, os campos `id`, `title` e `description`. O configurador geral usa somente esses campos para descobrir e exibir a skill. Campos adicionais são opcionais e não fazem parte do contrato consumido pelo setup central.
+Todo `setupSkill.py`, seja de `available-skills/` ou de `shikigami/skills/`, aceita `--action describe --json` e retorna, no mínimo, os campos `id`, `title` e `description`. O configurador geral usa somente esses campos para descobrir e exibir a skill. Campos adicionais são opcionais e não fazem parte do contrato consumido pelo setup central.
 
 Todas as skills do catálogo também aceitam estas ações:
 
