@@ -30,6 +30,8 @@ class BIS2CMDTests(unittest.TestCase):
         self.assertEqual(result["records"], [{"id": 1}])
         invocation = run.call_args_list[2]
         self.assertNotIn("secret", invocation.args[0])
+        self.assertEqual(invocation.kwargs["env"]["BISCMD_HOST"], "192.168.3.64")
+        self.assertEqual(invocation.kwargs["env"]["BISCMD_PORT"], "8080")
         self.assertEqual(invocation.kwargs["env"]["BISCMD_PASSWORD"], "secret")
 
     def test_parse_output(self):

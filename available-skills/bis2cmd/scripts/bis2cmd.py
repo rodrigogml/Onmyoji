@@ -101,7 +101,7 @@ def run(config: dict[str,dict[str,Any]], request: dict[str, Any]) -> dict[str, A
         normalized = "-" + normalized
     command_args = java_args + ["-facade", normalized] + args
     environment = os.environ.copy()
-    environment.update({"BISCMD_HOST": cfg["host"], "BISCMD_PORT": cfg["port"],
+    environment.update({"BISCMD_HOST": str(cfg["host"]), "BISCMD_PORT": str(cfg["port"]),
                         "BISCMD_USER": user, "BISCMD_PASSWORD": password})
     cwd = str(cfg.get("working_dir") or Path(str(cfg["jar_path"])).parent)
     try:
