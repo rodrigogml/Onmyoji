@@ -5,7 +5,7 @@ description: Integração com o BISCMD, cliente de linha de comando Java que ace
 
 # BIS2CMD
 
-Use `scripts/bis2cmd.py` para executar comandos do BISCMD configurados em um perfil INI.
+Use `scripts/bis2cmd.py` para executar comandos do BISCMD configurados em um perfil TOML e selecionados por nome.
 
 ## Configuração
 

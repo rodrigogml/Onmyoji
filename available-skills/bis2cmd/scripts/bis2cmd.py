@@ -2,6 +2,7 @@
 """JSON wrapper for the BISCMD EJB/JNDI command-line client."""
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import shlex
@@ -16,6 +17,36 @@ class BIS2CMDError(Exception):
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
+
+
+def validate_command_args(command: str, args: list[str]) -> None:
+    normalized = command.lstrip("-").lower()
+    if normalized == "docfiscaldetail" and args and args[0].lower() == "key":
+        if len(args) != 2 or not args[1].isdigit() or len(args[1]) != 44:
+            raise BIS2CMDError("invalid_request", "docFiscalDetail key exige uma chave de 44 dígitos.")
+    if normalized != "nfcelist":
+        return
+    if len(args) % 2:
+        raise BIS2CMDError("invalid_request", "nfceList exige pares de parâmetro e valor.")
+    allowed = {"companyid", "status", "validationstatus", "validationerrorcode", "start", "end", "limit", "offset"}
+    values: dict[str, str] = {}
+    for index in range(0, len(args), 2):
+        key, value = args[index].lower(), args[index + 1]
+        if key not in allowed:
+            raise BIS2CMDError("invalid_request", f"Parâmetro inválido para nfceList: {args[index]}.")
+        if key in values:
+            raise BIS2CMDError("invalid_request", f"Parâmetro repetido para nfceList: {args[index]}.")
+        values[key] = value
+    if not values.get("companyid"):
+        raise BIS2CMDError("invalid_request", "nfceList exige companyId.")
+    for key in ("start", "end"):
+        if key in values:
+            try:
+                datetime.datetime.fromisoformat(values[key])
+            except ValueError as exc:
+                raise BIS2CMDError("invalid_request", f"{key} deve usar data e hora ISO-8601.") from exc
+    if "start" in values and "end" in values and values["end"] < values["start"]:
+        raise BIS2CMDError("invalid_request", "end não pode ser anterior a start.")
 
 
 def load_config(path: str, profile_name: str) -> dict[str, dict[str, Any]]:
@@ -85,6 +116,7 @@ def run(config: dict[str,dict[str,Any]], request: dict[str, Any]) -> dict[str, A
         raise BIS2CMDError("invalid_request", "command é obrigatório.")
     if not isinstance(args, list) or not all(isinstance(item, str) for item in args):
         raise BIS2CMDError("invalid_request", "args deve ser uma lista de strings.")
+    validate_command_args(command, args)
     if any(secret in command.lower() for secret in ("password", "credential", "biscmd_password")):
         raise BIS2CMDError("invalid_request", "Credenciais não podem ser argumentos do BISCMD.")
     cfg = config["biscmd"]

@@ -40,6 +40,19 @@ class BIS2CMDTests(unittest.TestCase):
         self.assertEqual(result["metadata"]["next_offset"], 5)
         self.assertEqual(result["messages"], ["Mensagem"])
 
+    def test_doc_fiscal_detail_key_requires_44_digits(self):
+        with self.assertRaises(bis2cmd.BIS2CMDError) as error:
+            bis2cmd.validate_command_args("docFiscalDetail", ["key", "123"])
+        self.assertEqual(error.exception.code, "invalid_request")
+
+    def test_nfce_list_requires_company_and_accepts_validation_and_period_filters(self):
+        args = ["companyId", "2", "validationStatus", "ERROR", "validationErrorCode", "E001",
+                "start", "2026-01-01T00:00:00", "end", "2026-01-31T23:59:59"]
+        bis2cmd.validate_command_args("nfceList", args)
+        with self.assertRaises(bis2cmd.BIS2CMDError) as error:
+            bis2cmd.validate_command_args("nfceList", ["status", "SOLD"])
+        self.assertEqual(error.exception.code, "invalid_request")
+
     @patch("bis2cmd.subprocess.run")
     def test_invalid_version(self, run):
         with self.assertRaises(bis2cmd.BIS2CMDError) as error:
