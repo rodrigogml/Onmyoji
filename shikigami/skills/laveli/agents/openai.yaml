@@ -1,0 +1,4 @@
+interface:
+  display_name: "Laveli"
+  short_description: "Conhecimento empresarial da Laveli"
+  default_prompt: "Use $laveli para orientar uma tarefa relacionada a Laveli."

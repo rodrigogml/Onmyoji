@@ -151,6 +151,9 @@ def main() -> int:
     try:
         if len(sys.argv) != 5 or sys.argv[1] != "--config" or sys.argv[3] != "--profile":
             raise BIS10CMDError("usage", "Uso: bis10cmd.py --config PERFIL.toml --profile NOME")
+        # JSON v1 is always UTF-8. On Windows, Python may otherwise inherit
+        # the active ANSI code page (for example cp1252) for piped stdin.
+        sys.stdin.reconfigure(encoding="utf-8")
         request = json.load(sys.stdin)
         if not isinstance(request, dict) or request.get("version") != 1:
             raise BIS10CMDError("unsupported_version", "A versão do protocolo deve ser 1.")
