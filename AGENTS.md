@@ -19,4 +19,10 @@ Antes de alterar `README.md`, `AGENTS.md`, `SKILL.md` ou qualquer arquivo de def
 	2. Aguarde autorização explícita do usuário.
 	3. Só então aplique a alteração.
 
-No diff, apresente as remoções com `-` e as adições com `+`. Ordene os blocos pelo número da linha e, quando houver substituição na mesma linha, mostre primeiro a remoção e depois a adição. Use cores, quando a interface suportar.
+No diff, apresente as remoções com `[-]` e as adições com `[+]`. Ordene os blocos pelo número da linha e, quando houver substituição na mesma linha, mostre primeiro a remoção e depois a adição. Use cores, quando a interface suportar.
+
+Exclusivamente para arquivos .md: Quando o usuário solitar o diff diretamente no arquivo, aplique as mesmas regras acima de marcação, mas escreva o diretamente no arquivo ao invés de exibir como resposta.
+
+## Publicação e propagação
+
+Após publicar alterações no upstream `Onmyoji`, atualize automaticamente as instâncias de Shikigami em `C:\opt` que rastreiem esse upstream, usando o repositório remoto. Preserve alterações locais; se uma instância não puder ser atualizada sem conflito, não a force e informe o bloqueio.
