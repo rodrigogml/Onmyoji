@@ -22,13 +22,19 @@ class MySQLSetupTests(unittest.TestCase):
     def setup(self, arguments: list[str] = [], input_text: str = "") -> subprocess.CompletedProcess[str]:
         return subprocess.run([sys.executable, str(SKILL / "setupSkill.py"), "--onmyoji-root", str(self.root), *arguments], input=input_text, text=True, encoding="utf-8", errors="replace", capture_output=True, check=False)
 
-    def test_interactive_create_writes_a_profile(self) -> None:
-        process = self.setup(input_text="1\nprincipal\n\nfinanceiro\n\n1\n\n\n\nx\n")
+    def test_interactive_create_allows_a_profile_without_default_database(self) -> None:
+        process = self.setup(input_text="1\nprincipal\n\n\n\n1\n\n\n\nx\n")
         self.assertEqual(process.returncode, 0, process.stderr)
         data = tomllib.loads((self.root / "configs" / "mysql.toml").read_text(encoding="utf-8"))
         self.assertEqual(data["profiles"]["principal"]["host"], "127.0.0.1")
-        self.assertEqual(data["profiles"]["principal"]["database"], "financeiro")
+        self.assertEqual(data["profiles"]["principal"]["database"], "")
         self.assertEqual(data["profiles"]["principal"]["vault_entry_path"], "APIs/MySQL:Principal")
+
+    def test_profile_create_allows_omitting_database(self) -> None:
+        process = self.setup(["--action", "profile-create", "--profile", "principal", "--set", "vault_profile=local", "--set", "vault_entry_path=APIs/MySQL:Principal"])
+        self.assertEqual(process.returncode, 0, process.stderr)
+        data = tomllib.loads((self.root / "configs" / "mysql.toml").read_text(encoding="utf-8"))
+        self.assertEqual(data["profiles"]["principal"]["database"], "")
 
     def test_cancel_does_not_create_configuration(self) -> None:
         self.assertEqual(self.setup(input_text="x\n").returncode, 0)
