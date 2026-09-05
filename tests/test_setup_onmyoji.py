@@ -202,7 +202,7 @@ class SystemSetupTests(unittest.TestCase):
             first_header = next(line for line in output.getvalue().splitlines() if "SKILLS DE INTEGRAÇÃO" in line)
             self.assertIn("SKILLS DE DOMÍNIO", first_header)
             self.assertLess(first_header.index("SKILLS DE INTEGRAÇÃO"), first_header.index("SKILLS DE DOMÍNIO"))
-            self.assertEqual(first_header.index("SKILLS DE DOMÍNIO"), 51)
+            self.assertEqual(first_header.index("SKILLS DE DOMÍNIO"), 52)
 
     def test_skill_status_badges_keep_the_menu_column_width(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE.Ui, "enabled", False):
