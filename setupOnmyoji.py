@@ -931,7 +931,7 @@ def menu(skills: list[Skill], root: Path) -> int:
             return skill_item(index, skill, state, width)
         wide = len(domain) > 0 and shutil.get_terminal_size((78, 24)).columns >= 96
         if wide:
-            print("\n" + "  SKILLS DE INTEGRAÇÃO".ljust(50) + "SKILLS DE DOMÍNIO")
+            print("\n" + "  SKILLS DE INTEGRAÇÃO".ljust(51) + "SKILLS DE DOMÍNIO")
             rows = max(len(integration), len(domain))
             for row in range(rows):
                 left = rendered(row + 1, integration[row]) if row < len(integration) else " " * 50
