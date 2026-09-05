@@ -14,15 +14,12 @@ O workspace do agente é externo ao `CODEX_HOME`. Arquivos de trabalho, saídas,
 
 ## Alteração de instruções e skills
 
-Antes de alterar `README.md`, `AGENTS.md`, `SKILL.md` ou qualquer arquivo de definição de skill (não se aplica a arquivos de scripts e wrappers):
-	1. Exiba a alteração proposta em formato diff.
-	2. Aguarde autorização explícita do usuário.
-	3. Só então aplique a alteração.
+Ao alterar arquivos `README.md`, `AGENTS.md`, `SKILL.md` ou qualquer arquivo `.md` de definição de skill (não se aplica a arquivos de scripts, wrappers e outros códigos):
+	1. É estritamente proibido ao agente alterar diretamente o arquivo original, inclusive quando houver autorização explícita do usuário.
+	2. O agente deve criar uma versão completa proposta no mesmo diretório do original, no formato `<nome-base>-AAAA-MM-DD.proposed.md`.
+	3. A versão `.proposed` deve preservar todo o conteúdo inalterado do original e conter somente as alterações sugeridas. Ela é o único artefato que o agente pode criar ou revisar nesse fluxo.
+	4. O usuário avalia o arquivo original e a versão `.proposed` e pode aceitar, rejeitar ou editar cada trecho proposto.
+	5. Enquanto a proposta não estiver aprovada, o agente pode corrigir ou substituir somente o arquivo `.proposed`, seguindo o retorno do usuário.
+	6. A incorporação de qualquer alteração ao arquivo original é feita exclusivamente pelo usuário. O usuário também pode descartar o arquivo `.proposed` quando desejar.
+	7. Não considere conteúdo de arquivos `.proposed` criados por outros fluxos. O conteúdo vigente é sempre o do arquivo principal.
 
-No diff, apresente as remoções com `[-]` e as adições com `[+]`. Ordene os blocos pelo número da linha e, quando houver substituição na mesma linha, mostre primeiro a remoção e depois a adição. Use cores, quando a interface suportar.
-
-Exclusivamente para arquivos .md: Quando o usuário solitar o diff diretamente no arquivo, aplique as mesmas regras acima de marcação, mas escreva o diretamente no arquivo ao invés de exibir como resposta.
-
-## Publicação e propagação
-
-Após publicar alterações no upstream `Onmyoji`, atualize automaticamente as instâncias de Shikigami em `C:\opt` que rastreiem esse upstream, usando o repositório remoto. Preserve alterações locais; se uma instância não puder ser atualizada sem conflito, não a force e informe o bloqueio.

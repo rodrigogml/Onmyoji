@@ -13,7 +13,6 @@ executable = mysql
 host = localhost
 port = 3306
 database = test
-user = tester
 
 [auth]
 provider_command = keepass-wrapper
@@ -25,7 +24,7 @@ username_field = username
 timeout = 5
 allow_client_commands = true
 """
-    return {"mysql":{"executable":"mysql","host":"localhost","port":3306,"database":"test","user":"tester"},"auth":{"vault_profile":"test","vault_entry_path":"APIs/MySQL:test","username_field":"username","password_field":"password"},"execution":{"timeout_seconds":5,"allow_client_commands":True}}
+    return {"mysql":{"executable":"mysql","host":"localhost","port":3306,"database":"test"},"auth":{"vault_profile":"test","vault_entry_path":"APIs/MySQL:test","username_field":"username","password_field":"password"},"execution":{"timeout_seconds":5,"allow_client_commands":True}}
 
 
 class MySQLTests(unittest.TestCase):

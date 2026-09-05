@@ -10,8 +10,8 @@ Use esta skill para trabalhar com instâncias MySQL descritas por perfis TOML ex
 ## Princípios
 
 - Carregar o perfil explicitamente antes de executar operações.
-- Obter senhas pela KeePassVault; nunca pedir, exibir ou registrar credenciais no contexto.
-- Respeitar o executável, host, porta, socket, banco, usuário, parâmetros e ambiente definidos no perfil.
+- Obter usuário e senha pela KeePassVault; nunca pedir, exibir ou registrar credenciais no contexto.
+- Respeitar o executável, host, porta, socket, banco, parâmetros e ambiente definidos no perfil.
 - Permitir execução ampla de SQL e comandos do cliente MySQL quando autorizada pelo usuário e pelo perfil.
 - Não impor bloqueios artificiais a `INSERT`, `UPDATE`, `DELETE`, DDL, procedures, administração ou comandos avançados.
 - Informar claramente quando uma operação puder causar perda de dados, indisponibilidade ou alteração estrutural.
@@ -26,7 +26,7 @@ Perfis ficam em `<CODEX_HOME>/configs/mysql.toml`, são ignorados pelo Git e par
 python scripts/mysql.py --config <CODEX_HOME>/configs/mysql.toml --profile pessoal
 ```
 
-Use tabelas `[profiles.<nome>]` para perfis adicionais. O perfil deve definir executável, servidor, porta ou socket, banco, usuário e referência da entrada KeePassVault. Valores sensíveis permanecem no Vault.
+Use tabelas `[profiles.<nome>]` para perfis adicionais. O perfil deve definir executável, servidor, porta ou socket, banco e a referência da entrada KeePassVault. Usuário e senha são lidos dos campos configurados nessa entrada.
 
 Leia `references/configuration.md` antes de criar ou ajustar perfis.
 

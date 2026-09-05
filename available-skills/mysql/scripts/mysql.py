@@ -25,13 +25,13 @@ def load_config(path: str, profile_name: str) -> dict[str, dict[str, Any]]:
     defaults, profile = document.get("defaults", {}), document.get("profiles", {}).get(profile_name)
     if not isinstance(defaults, dict) or not isinstance(profile, dict): raise MySQLError("invalid_config", "Perfil solicitado não encontrado.")
     values = {**defaults, **profile}
-    mysql = {key: values.get(key, "") for key in ("executable", "host", "port", "socket", "database", "user")}
+    mysql = {key: values.get(key, "") for key in ("executable", "host", "port", "socket", "database")}
     auth = {key: values.get(key, "") for key in ("vault_profile", "vault_entry_path", "username_field", "password_field")}
     execution = {key: values.get(key, "") for key in ("timeout_seconds", "allow_client_commands")}
     if not str(mysql["executable"]).strip() or not str(mysql["host"]).strip() or not str(auth["vault_profile"]).strip() or not str(auth["vault_entry_path"]).strip():
         raise MySQLError("invalid_config", "Perfil MySQL ou KeePass incompleto.")
-    if not str(mysql["user"]).strip() and not str(auth["username_field"]).strip():
-        raise MySQLError("invalid_config", "Informe mysql.user ou auth.username_field.")
+    if not str(auth["username_field"]).strip() or not str(auth["password_field"]).strip():
+        raise MySQLError("invalid_config", "Informe auth.username_field e auth.password_field.")
     return {"mysql": mysql, "auth": auth, "execution": execution}
 
 
@@ -69,11 +69,9 @@ def get_secret(config: dict[str, dict[str, Any]], field: str) -> str:
 
 def get_credentials(config: dict[str, dict[str, Any]]) -> tuple[str, str]:
     username_field = str(config["auth"].get("username_field", "")).strip()
-    username = str(config["mysql"].get("user", "")).strip()
-    if username_field:
-        username = get_secret(config, username_field)
+    username = get_secret(config, username_field)
     if not username:
-        raise MySQLError("invalid_config", "Informe mysql.user ou auth.username_field.")
+        raise MySQLError("credential_provider_error", "O provedor não retornou um usuário válido.")
     return username, get_secret(config, str(config["auth"].get("password_field", "password")))
 
 

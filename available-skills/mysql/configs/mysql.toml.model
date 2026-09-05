@@ -8,7 +8,6 @@ allow_client_commands = true
 [profiles.example]
 host = "127.0.0.1"
 database = ""
-user = ""
 vault_profile = "example"
 vault_entry_path = "APIs/MySQL:usuario"
 username_field = "username"
