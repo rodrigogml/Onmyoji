@@ -425,7 +425,7 @@ def item(key: str, label: str, value: str = "") -> None:
     print(f"  {shortcut}  {label:<30}" + (f"   {Ui.text(value, Ui.slate)}" if value else ""))
 
 
-def skill_item(index: int, skill: Skill, state: str, width: int = 48) -> str:
+def skill_item(index: int, skill: Skill, state: str, width: int = 50) -> str:
     """Renderiza a linha da skill na grade fixa do menu principal."""
     option = Ui.text(f"{index}.".rjust(4), Ui.bold, Ui.cyan)
     name = skill.title[:max(1, width - 18)]
@@ -922,7 +922,7 @@ def menu(skills: list[Skill], root: Path) -> int:
         item("D.", "Daemon", "Supervisor local e serviços da instância")
         integration = [skill for skill in skills if skill.catalog_managed]
         domain = [skill for skill in skills if not skill.catalog_managed]
-        def rendered(index: int, skill: Skill, width: int = 48) -> str:
+        def rendered(index: int, skill: Skill, width: int = 50) -> str:
             if skill.identifier in conflicting_skill_ids(skills): state = Ui.badge("CONFLITO", "warning")
             else:
                 active = is_skill_enabled(root, skill)
@@ -930,10 +930,10 @@ def menu(skills: list[Skill], root: Path) -> int:
             return skill_item(index, skill, state, width)
         wide = len(domain) > 0 and shutil.get_terminal_size((78, 24)).columns >= 96
         if wide:
-            print("\n  SKILLS DE INTEGRAÇÃO".ljust(48) + "SKILLS DE DOMÍNIO")
+            print("\n" + "  SKILLS DE INTEGRAÇÃO".ljust(50) + "SKILLS DE DOMÍNIO")
             rows = max(len(integration), len(domain))
             for row in range(rows):
-                left = rendered(row + 1, integration[row]) if row < len(integration) else " " * 48
+                left = rendered(row + 1, integration[row]) if row < len(integration) else " " * 50
                 right = rendered(len(integration) + row + 1, domain[row]) if row < len(domain) else ""
                 print(left + right)
         else:

@@ -202,6 +202,7 @@ class SystemSetupTests(unittest.TestCase):
             first_header = next(line for line in output.getvalue().splitlines() if "SKILLS DE INTEGRAÇÃO" in line)
             self.assertIn("SKILLS DE DOMÍNIO", first_header)
             self.assertLess(first_header.index("SKILLS DE INTEGRAÇÃO"), first_header.index("SKILLS DE DOMÍNIO"))
+            self.assertEqual(first_header.index("SKILLS DE DOMÍNIO"), 50)
 
     def test_stale_python_cache_is_replaced_by_an_active_skill_link(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
