@@ -204,6 +204,17 @@ class SystemSetupTests(unittest.TestCase):
             self.assertLess(first_header.index("SKILLS DE INTEGRAÇÃO"), first_header.index("SKILLS DE DOMÍNIO"))
             self.assertEqual(first_header.index("SKILLS DE DOMÍNIO"), 50)
 
+    def test_skill_status_badges_keep_the_menu_column_width(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE.Ui, "enabled", False):
+            root = Path(temporary)
+            skill = MODULE.Skill("omie", "Omie", root / "available-skills" / "omie", "")
+            active = MODULE.skill_item(1, skill, MODULE.Ui.badge("ATIVA", "active"))
+            inactive = MODULE.skill_item(1, skill, MODULE.Ui.badge("inativa", "inactive"))
+            conflict = MODULE.skill_item(1, skill, MODULE.Ui.badge("CONFLITO", "warning"))
+            self.assertEqual(len(active), 50)
+            self.assertEqual(len(inactive), 50)
+            self.assertEqual(len(conflict), 50)
+
     def test_stale_python_cache_is_replaced_by_an_active_skill_link(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); skill = self.fake_skill(root)

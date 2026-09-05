@@ -47,7 +47,7 @@ class Ui:
     @classmethod
     def badge(cls, label: str, state: str) -> str:
         colors = {"ready": cls.green, "active": cls.green, "warning": cls.amber, "inactive": cls.slate, "danger": cls.red}
-        return cls.text(f" {label} ", cls.bold, colors[state])
+        return cls.text(f" {label:<8} ", cls.bold, colors[state])
 
 
 def prompt(label: str) -> str:
@@ -430,7 +430,8 @@ def skill_item(index: int, skill: Skill, state: str, width: int = 50) -> str:
     option = Ui.text(f"{index}.".rjust(4), Ui.bold, Ui.cyan)
     name = skill.title[:max(1, width - 18)]
     prefix_width = 8  # margem, opção de quatro caracteres e dois espaços
-    fill_width = max(1, width - prefix_width - 9 - len(name))
+    state_width = 10  # badge: espaço externo, rótulo de até oito caracteres e espaço externo
+    fill_width = max(1, width - prefix_width - state_width - len(name))
     filler = "." * fill_width if index % 2 == 0 else " " * fill_width
     return f"  {option}  {name}{Ui.text(filler, Ui.slate)}{state}"
 
