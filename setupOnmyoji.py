@@ -67,8 +67,9 @@ def note(message: str) -> None:
 class Skill:
     identifier: str
     title: str
-    script: Path
+    source: Path
     description: str
+    setup_script: Path | None = None
     catalog_managed: bool = True
 
 
@@ -79,10 +80,17 @@ def discover(root: Path = ROOT) -> list[Skill]:
             result = subprocess.run([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "describe", "--json"], text=True, encoding="utf-8", errors="replace", capture_output=True, env={**os.environ, "PYTHONUTF8": "1"})
             try:
                 data = json.loads(result.stdout) if result.returncode == 0 else {}
-                if any(skill.identifier == data["id"] for skill in skills): continue
-                skills.append(Skill(data["id"], data["title"], script, data.get("description", ""), catalog_managed))
+                skills.append(Skill(data["id"], data["title"], script.parent, data.get("description", ""), script, catalog_managed))
             except (json.JSONDecodeError, KeyError):
                 continue
+    instance_directory = root / INSTANCE_SKILLS_DIRECTORY
+    for skill_file in sorted(instance_directory.glob("*/SKILL.md")):
+        source = skill_file.parent
+        if (source / "setupSkill.py").is_file():
+            continue
+        identifier = source.name
+        title = identifier.replace("-", " ").replace("_", " ").title()
+        skills.append(Skill(identifier, title, source, "Skill do Shikigami sem configuração.", None, False))
     return skills
 
 
@@ -311,8 +319,18 @@ def is_stale_runtime_cache(path: Path) -> bool:
     return True
 
 
+def conflicting_skill_ids(skills: list[Skill]) -> set[str]:
+    """IDs devem ser únicos porque catálogo e Shikigami compartilham skills/<id>."""
+    identifiers = [skill.identifier for skill in skills]
+    return {identifier for identifier in identifiers if identifiers.count(identifier) > 1}
+
+
 def sync_active_skill_links(root: Path, identifiers: set[str], skills: list[Skill]) -> tuple[bool, str]:
-    catalog = {skill.identifier: skill.script.parent.resolve() for skill in skills if skill.catalog_managed}
+    catalog = {skill.identifier: skill.source.resolve() for skill in skills if skill.catalog_managed}
+    conflicts = conflicting_skill_ids(skills)
+    enabled_conflicts = identifiers & conflicts
+    if enabled_conflicts:
+        return False, f"IDs de skills em conflito entre catálogo e Shikigami: {', '.join(sorted(enabled_conflicts))}. Renomeie uma delas antes de habilitá-la."
     unknown = identifiers - set(catalog)
     if unknown: return False, f"Skills não encontradas no catálogo: {', '.join(sorted(unknown))}."
     active = active_skills_path(root)
@@ -329,22 +347,25 @@ def sync_active_skill_links(root: Path, identifiers: set[str], skills: list[Skil
                     if not (destination.exists() or destination.is_symlink()): create_skill_link(source, destination)
                 else: create_skill_link(source, destination)
             elif destination.exists() or destination.is_symlink():
-                remove_skill_link(destination)
+                if destination.resolve() == source:
+                    remove_skill_link(destination)
     except OSError as error:
         return False, f"Não foi possível sincronizar as skills ativas: {error}"
     return True, "Links das skills ativas sincronizados."
 
 
 def is_skill_enabled(root: Path, skill: Skill) -> bool:
-    if skill.catalog_managed: return skill.identifier in enabled_ids(root)
     destination = active_skills_path(root) / skill.identifier
-    return (destination.exists() or destination.is_symlink()) and destination.resolve() == skill.script.parent.resolve()
+    linked = (destination.exists() or destination.is_symlink()) and destination.resolve() == skill.source.resolve()
+    return skill.identifier in enabled_ids(root) and linked if skill.catalog_managed else linked
 
 
 def set_instance_skill_enabled(root: Path, skill: Skill, enabled: bool) -> tuple[bool, str]:
     if skill.catalog_managed: return False, "Esta operação é exclusiva de skills próprias do Shikigami."
+    if skill.identifier in conflicting_skill_ids(discover(root)):
+        return False, f"O ID da skill {skill.identifier} conflita com uma skill do catálogo. Renomeie uma delas antes de habilitá-la."
     destination = active_skills_path(root) / skill.identifier
-    source = skill.script.parent.resolve()
+    source = skill.source.resolve()
     try:
         active_skills_path(root).mkdir(parents=True, exist_ok=True)
         if enabled:
@@ -383,8 +404,11 @@ def ensure_skill_state(root: Path, skills: list[Skill]) -> tuple[bool, str]:
     return save_enabled(root, legacy_enabled_ids(root), skills)
 
 
-def invoke(skill: Skill, root: Path) -> None:
-    subprocess.run([sys.executable, str(skill.script), "--onmyoji-root", str(root), "--action", "configure"], check=False)
+def invoke(skill: Skill, root: Path) -> tuple[bool, str]:
+    if skill.setup_script is None:
+        return False, "Esta skill não possui rotina de configuração."
+    subprocess.run([sys.executable, str(skill.setup_script), "--onmyoji-root", str(root), "--action", "configure"], check=False)
+    return True, "Configuração concluída."
 
 
 def screen(title: str, subtitle: str = "") -> None:
@@ -862,23 +886,31 @@ def daemon_menu(root: Path) -> None:
 
 def skill_menu(skill: Skill, root: Path, skills: list[Skill]) -> None:
     while True:
+        conflicted = skill.identifier in conflicting_skill_ids(skills)
         enabled = is_skill_enabled(root, skill)
         state = "Desabilitar" if enabled else "Habilitar"
-        screen(skill.title, f"Skill de integração · {'ATIVA' if enabled else 'INATIVA'}")
+        screen(skill.title, f"Skill de integração · {'CONFLITO' if conflicted else ('ATIVA' if enabled else 'INATIVA')}")
         if skill.description: print(f"  {skill.description}\n")
-        item("1.", state)
-        item("2.", "Configurar")
+        if conflicted:
+            note(f"O ID {skill.identifier} também existe no catálogo ou no Shikigami. Renomeie uma das skills antes de habilitá-la.")
+        else:
+            item("1.", state)
+            if skill.setup_script is not None: item("2.", "Configurar")
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice == "x": return
-        if choice == "1":
+        if conflicted:
+            result(False, "Esta skill possui um ID em conflito e não pode ser alterada.")
+        elif choice == "1":
             if skill.catalog_managed:
                 identifiers = enabled_ids(root)
                 (identifiers.discard if enabled else identifiers.add)(skill.identifier)
                 ok, message = save_enabled(root, identifiers, skills)
             else: ok, message = set_instance_skill_enabled(root, skill, not enabled)
             result(ok, message if ok else f"{message} A alteração foi desfeita.")
-        elif choice == "2": invoke(skill, root)
+        elif choice == "2" and skill.setup_script is not None:
+            ok, message = invoke(skill, root)
+            result(ok, message)
         else: result(False, "Opção inválida.")
 
 
@@ -891,8 +923,10 @@ def menu(skills: list[Skill], root: Path) -> int:
         integration = [skill for skill in skills if skill.catalog_managed]
         domain = [skill for skill in skills if not skill.catalog_managed]
         def rendered(index: int, skill: Skill, width: int = 48) -> str:
-            active = is_skill_enabled(root, skill)
-            state = Ui.badge("ATIVA", "active") if active else Ui.badge("inativa", "inactive")
+            if skill.identifier in conflicting_skill_ids(skills): state = Ui.badge("CONFLITO", "warning")
+            else:
+                active = is_skill_enabled(root, skill)
+                state = Ui.badge("ATIVA", "active") if active else Ui.badge("inativa", "inactive")
             return skill_item(index, skill, state, width)
         wide = len(domain) > 0 and shutil.get_terminal_size((78, 24)).columns >= 96
         if wide:
@@ -922,14 +956,14 @@ def menu(skills: list[Skill], root: Path) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(); parser.add_argument("--action", choices=["menu", "list", "enable", "disable", "configure", "status"], default="menu"); parser.add_argument("--skill"); parser.add_argument("--json", action="store_true"); args = parser.parse_args()
     ensure_shikigami_definition(ROOT)
-    skills = discover(); by_id = {skill.identifier: skill for skill in skills}
+    skills = discover(); by_id = {skill.identifier: skill for skill in skills if skill.identifier not in conflicting_skill_ids(skills)}
     initialized, initialization_message = ensure_skill_state(ROOT, skills)
     if not initialized:
         result(False, initialization_message)
         return 2
     if args.action == "menu": return menu(skills, ROOT)
     if args.action == "list":
-        values = [{"id": skill.identifier, "title": skill.title, "enabled": is_skill_enabled(ROOT, skill), "description": skill.description} for skill in skills]
+        values = [{"id": skill.identifier, "title": skill.title, "enabled": is_skill_enabled(ROOT, skill), "description": skill.description, "conflict": skill.identifier in conflicting_skill_ids(skills)} for skill in skills]
         if args.json: print(json.dumps({"ok": True, "skills": values}, ensure_ascii=False))
         else:
             for skill in skills: print(f"{skill.identifier}\t{'enabled' if is_skill_enabled(ROOT, skill) else 'disabled'}\t{skill.description}")
@@ -938,10 +972,16 @@ def main() -> int:
         if args.json: print(json.dumps({"ok": True, "skills": sorted(active) if (active := enabled_ids(ROOT)) else []}, ensure_ascii=False))
         else: print("\n".join(sorted(enabled_ids(ROOT))))
         return 0
+    if args.skill in conflicting_skill_ids(skills): parser.error("--skill identifica skills em conflito entre catálogo e Shikigami; renomeie uma delas")
     if args.skill not in by_id: parser.error("--skill deve identificar uma skill descoberta")
     if args.action == "configure":
+        if by_id[args.skill].setup_script is None:
+            message = "Esta skill não possui rotina de configuração."
+            if args.json: print(json.dumps({"ok": False, "error": {"code": "configuration_unavailable", "message": message}}, ensure_ascii=False))
+            else: print(message)
+            return 2
         if args.json: print(json.dumps({"ok": False, "error": {"code": "interactive_only", "message": "Use as ações não interativas declaradas pela própria skill."}}, ensure_ascii=False)); return 2
-        invoke(by_id[args.skill], ROOT); return 0
+        ok, _message = invoke(by_id[args.skill], ROOT); return 0 if ok else 2
     skill = by_id[args.skill]
     if skill.catalog_managed:
         active = enabled_ids(ROOT)

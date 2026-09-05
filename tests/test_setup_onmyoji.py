@@ -24,7 +24,7 @@ class SystemSetupTests(unittest.TestCase):
         script = root / "available-skills" / identifier / "setupSkill.py"
         script.parent.mkdir(parents=True)
         script.write_text("", encoding="utf-8")
-        return MODULE.Skill(identifier, identifier.title(), script, "")
+        return MODULE.Skill(identifier, identifier.title(), script.parent, "", script)
 
     def test_prompt_uses_the_shared_visual_prefix(self) -> None:
         with patch("builtins.input", return_value="x") as input_mock:
@@ -83,7 +83,7 @@ class SystemSetupTests(unittest.TestCase):
             self.assertTrue(MODULE.save_enabled(root, {"omie"}, [skill])[0])
             active = MODULE.active_skills_path(root) / "omie"
             self.assertTrue(active.exists())
-            self.assertEqual(active.resolve(), skill.script.parent.resolve())
+            self.assertEqual(active.resolve(), skill.source.resolve())
             self.assertEqual(MODULE.enabled_ids(root), {"omie"})
             self.assertTrue(MODULE.save_enabled(root, set(), [skill])[0])
             self.assertFalse(active.exists() or active.is_symlink())
@@ -133,7 +133,7 @@ class SystemSetupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "shikigami" / "skills" / "barinella"; source.mkdir(parents=True)
-            skill = MODULE.Skill("barinella", "Barinella", source / "setupSkill.py", "", catalog_managed=False)
+            skill = MODULE.Skill("barinella", "Barinella", source, "", catalog_managed=False)
             self.assertTrue(MODULE.set_instance_skill_enabled(root, skill, True)[0])
             self.assertTrue(MODULE.is_skill_enabled(root, skill))
             self.assertFalse(MODULE.skill_state_path(root).exists())
@@ -153,11 +153,49 @@ class SystemSetupTests(unittest.TestCase):
             self.assertTrue(skills["omie"].catalog_managed)
             self.assertFalse(skills["barinella"].catalog_managed)
 
+    def test_discovers_instance_skill_markdown_without_setup_script(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "shikigami" / "skills" / "domain-knowledge"; source.mkdir(parents=True)
+            (source / "SKILL.md").write_text("# Domain knowledge\n", encoding="utf-8")
+            skills = MODULE.discover(root)
+            self.assertEqual(len(skills), 1)
+            skill = skills[0]
+            self.assertEqual(skill.identifier, "domain-knowledge")
+            self.assertEqual(skill.source, source)
+            self.assertIsNone(skill.setup_script)
+            self.assertFalse(skill.catalog_managed)
+            self.assertTrue(MODULE.set_instance_skill_enabled(root, skill, True)[0])
+            self.assertEqual((MODULE.active_skills_path(root) / skill.identifier).resolve(), source.resolve())
+            self.assertTrue(MODULE.set_instance_skill_enabled(root, skill, False)[0])
+
+    def test_catalog_sync_preserves_homonymous_instance_link_when_catalog_is_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            catalog_source = root / "available-skills" / "omie"; catalog_source.mkdir(parents=True)
+            instance_source = root / "shikigami" / "skills" / "omie"; instance_source.mkdir(parents=True)
+            instance_skill = MODULE.Skill("omie", "Omie", instance_source, "", catalog_managed=False)
+            catalog_skill = MODULE.Skill("omie", "Omie", catalog_source, "", catalog_source / "setupSkill.py")
+            self.assertTrue(MODULE.set_instance_skill_enabled(root, instance_skill, True)[0])
+            self.assertTrue(MODULE.sync_active_skill_links(root, set(), [catalog_skill])[0])
+            self.assertEqual((MODULE.active_skills_path(root) / "omie").resolve(), instance_source.resolve())
+
+    def test_conflicting_catalog_and_instance_ids_cannot_be_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            catalog_source = root / "available-skills" / "omie"; catalog_source.mkdir(parents=True)
+            instance_source = root / "shikigami" / "skills" / "omie"; instance_source.mkdir(parents=True)
+            catalog_skill = MODULE.Skill("omie", "Omie", catalog_source, "", catalog_source / "setupSkill.py")
+            instance_skill = MODULE.Skill("omie", "Omie", instance_source, "", catalog_managed=False)
+            ok, message = MODULE.save_enabled(root, {"omie"}, [catalog_skill, instance_skill])
+            self.assertFalse(ok)
+            self.assertIn("conflito", message)
+
     def test_menu_places_domain_skills_in_the_right_column_when_wide(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            integration = MODULE.Skill("omie", "Omie", root / "available-skills" / "omie" / "setupSkill.py", "")
-            domain = MODULE.Skill("barinella", "Barinella", root / "shikigami" / "skills" / "barinella" / "setupSkill.py", "", catalog_managed=False)
+            integration = MODULE.Skill("omie", "Omie", root / "available-skills" / "omie", "", root / "available-skills" / "omie" / "setupSkill.py")
+            domain = MODULE.Skill("barinella", "Barinella", root / "shikigami" / "skills" / "barinella", "", catalog_managed=False)
             output = io.StringIO()
             with patch("builtins.input", return_value="x"), patch.object(MODULE.shutil, "get_terminal_size", return_value=os.terminal_size((120, 24))), patch.object(MODULE.sys, "stdout", output):
                 self.assertEqual(MODULE.menu([integration, domain], root), 0)
@@ -172,12 +210,12 @@ class SystemSetupTests(unittest.TestCase):
             stale.mkdir(parents=True)
             (stale / "omie.cpython-312.pyc").write_bytes(b"cache")
             self.assertTrue(MODULE.save_enabled(root, {"omie"}, [skill])[0])
-            self.assertEqual((MODULE.active_skills_path(root) / "omie").resolve(), skill.script.parent.resolve())
+            self.assertEqual((MODULE.active_skills_path(root) / "omie").resolve(), skill.source.resolve())
 
     def test_legacy_skill_config_is_migrated_to_local_state(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); skill = self.fake_skill(root)
-            MODULE.config_path(root).write_text(f'{MODULE.MANAGED_BEGIN}\n[[skills.config]]\npath = "{skill.script.parent.as_posix()}"\nenabled = true\n{MODULE.MANAGED_END}\n', encoding="utf-8")
+            MODULE.config_path(root).write_text(f'{MODULE.MANAGED_BEGIN}\n[[skills.config]]\npath = "{skill.source.as_posix()}"\nenabled = true\n{MODULE.MANAGED_END}\n', encoding="utf-8")
             self.assertTrue(MODULE.ensure_skill_state(root, [skill])[0])
             self.assertEqual(MODULE.enabled_ids(root), {"omie"})
             self.assertNotIn(MODULE.MANAGED_BEGIN, MODULE.config_path(root).read_text(encoding="utf-8"))
