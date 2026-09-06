@@ -24,7 +24,7 @@ username_field = username
 timeout = 5
 allow_client_commands = true
 """
-    return {"mysql":{"executable":"mysql","host":"localhost","port":3306,"database":"test"},"auth":{"vault_profile":"test","vault_entry_path":"APIs/MySQL:test","username_field":"username","password_field":"password"},"execution":{"timeout_seconds":5,"allow_client_commands":True}}
+    return {"mysql":{"executable":"mysql","host":"localhost","port":3306,"database":"test","connect_timeout":10},"auth":{"vault_profile":"test","vault_entry_path":"APIs/MySQL:test","username_field":"username","password_field":"password"},"execution":{"timeout_seconds":5,"allow_client_commands":True}}
 
 
 class MySQLTests(unittest.TestCase):
@@ -44,6 +44,7 @@ class MySQLTests(unittest.TestCase):
         args = run.call_args_list[2]
         self.assertNotIn("secret", args.args[0])
         self.assertEqual(args.kwargs["env"]["MYSQL_PWD"], "secret")
+        self.assertIn("--connect-timeout=10", args.args[0])
 
     @patch("mysql.subprocess.run")
     def test_client_can_be_enabled(self, run):

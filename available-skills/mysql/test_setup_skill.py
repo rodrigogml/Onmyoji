@@ -23,7 +23,7 @@ class MySQLSetupTests(unittest.TestCase):
         return subprocess.run([sys.executable, str(SKILL / "setupSkill.py"), "--onmyoji-root", str(self.root), *arguments], input=input_text, text=True, encoding="utf-8", errors="replace", capture_output=True, check=False)
 
     def test_interactive_create_allows_a_profile_without_default_database(self) -> None:
-        process = self.setup(input_text="1\nprincipal\n\n\n\n1\n\n\n\nx\n")
+        process = self.setup(input_text="1\nprincipal\n\n\n\n\n\n\n\n\n1\n\n\n\nx\n")
         self.assertEqual(process.returncode, 0, process.stderr)
         data = tomllib.loads((self.root / "configs" / "mysql.toml").read_text(encoding="utf-8"))
         self.assertEqual(data["profiles"]["principal"]["host"], "127.0.0.1")
@@ -35,6 +35,21 @@ class MySQLSetupTests(unittest.TestCase):
         self.assertEqual(process.returncode, 0, process.stderr)
         data = tomllib.loads((self.root / "configs" / "mysql.toml").read_text(encoding="utf-8"))
         self.assertEqual(data["profiles"]["principal"]["database"], "")
+
+    def test_interactive_default_and_blank_profile_executable_use_inheritance(self) -> None:
+        process = self.setup(input_text="0\n1\nC:/MariaDB/bin/mysql.exe\n1\nprincipal\n\n\n\n\n\n\n\n\n1\n\n\n\nx\n")
+        self.assertEqual(process.returncode, 0, process.stderr)
+        data = tomllib.loads((self.root / "configs" / "mysql.toml").read_text(encoding="utf-8"))
+        self.assertEqual(data["defaults"]["executable"], "C:/MariaDB/bin/mysql.exe")
+        self.assertNotIn("executable", data["profiles"]["principal"])
+
+    def test_profile_api_blank_executable_removes_override(self) -> None:
+        created = self.setup(["--action", "profile-create", "--profile", "principal", "--set", "executable=C:/MariaDB/bin/mysql.exe", "--set", "vault_profile=local", "--set", "vault_entry_path=APIs/MySQL:Principal"])
+        self.assertEqual(created.returncode, 0, created.stderr)
+        updated = self.setup(["--action", "profile-update", "--profile", "principal", "--set", "executable="])
+        self.assertEqual(updated.returncode, 0, updated.stderr)
+        data = tomllib.loads((self.root / "configs" / "mysql.toml").read_text(encoding="utf-8"))
+        self.assertNotIn("executable", data["profiles"]["principal"])
 
     def test_cancel_does_not_create_configuration(self) -> None:
         self.assertEqual(self.setup(input_text="x\n").returncode, 0)

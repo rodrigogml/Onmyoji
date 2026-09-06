@@ -29,6 +29,7 @@ class Field:
     required: bool = False
     secret: bool = False
     suggest: Callable[[str], Any] | None = None
+    inherit_default: bool = False
 
 
 def _name(value: str | None) -> str:
@@ -57,7 +58,7 @@ def _public(name: str, profile: dict[str, Any], fields: tuple[Field, ...]) -> di
 
 
 def _schema(fields: tuple[Field, ...]) -> list[dict[str, Any]]:
-    return [{"name": field.name, "description": field.description, "required_on_create": field.required, "default": "[CONFIGURADO]" if field.secret and field.default else field.default} for field in fields]
+    return [{"name": field.name, "description": field.description, "required_on_create": field.required, "default": "[CONFIGURADO]" if field.secret and field.default else field.default, "inherit_default_when_empty": field.inherit_default} for field in fields]
 
 
 def handle(*, action: str, profile_name: str | None, values: list[str] | None, confirm_delete: str | None, path: Path, load: Callable[[Path], dict[str, Any]], save: Callable[[Path, dict[str, Any]], tuple[bool, str]], fields: tuple[Field, ...], test: Callable[[str, Path, dict[str, Any]], tuple[bool, str]] | None = None) -> tuple[int, dict[str, Any]]:
@@ -85,8 +86,10 @@ def handle(*, action: str, profile_name: str | None, values: list[str] | None, c
         exists = name in profiles
         if action == "profile-create":
             if exists: return 2, {"ok": False, "error": {"code": "profile_exists", "message": "Já existe um perfil com este nome."}}
-            candidate_profile = {field.name: copy.deepcopy(field.default) for field in fields if field.default is not None}
+            candidate_profile = {field.name: copy.deepcopy(field.default) for field in fields if field.default is not None and not field.inherit_default}
             candidate_profile.update(updates)
+            for field in fields:
+                if field.inherit_default and isinstance(candidate_profile.get(field.name), str) and not candidate_profile[field.name].strip(): candidate_profile.pop(field.name, None)
             missing = [field.name for field in fields if field.required and not candidate_profile.get(field.name)]
             if missing: return 2, {"ok": False, "error": {"code": "missing_required_field", "message": "Campos obrigatórios ausentes: " + ", ".join(missing) + "."}}
             candidate = copy.deepcopy(data); candidate["profiles"][name] = candidate_profile
@@ -94,6 +97,8 @@ def handle(*, action: str, profile_name: str | None, values: list[str] | None, c
             if not exists: return 2, {"ok": False, "error": {"code": "profile_not_found", "message": "Perfil não encontrado."}}
             if not updates: return 2, {"ok": False, "error": {"code": "missing_update", "message": "Informe pelo menos um --set campo=valor."}}
             candidate = copy.deepcopy(data); candidate["profiles"][name].update(updates)
+            for field in fields:
+                if field.inherit_default and isinstance(candidate["profiles"][name].get(field.name), str) and not candidate["profiles"][name][field.name].strip(): candidate["profiles"][name].pop(field.name, None)
         else: return 2, {"ok": False, "error": {"code": "unsupported_action", "message": "Ação de perfil não suportada."}}
     ok, message = save(path, candidate)
     if not ok: return 2, {"ok": False, "error": {"code": "validation_failed", "message": message}}
@@ -152,7 +157,7 @@ def recover_simple_load(path: Path, defaults: dict[str, Any]) -> dict[str, Any]:
         return data
 
 
-def interactive_configure(*, root: Path, path: Path, title: str, subtitle: str, integration: str, defaults: dict[str, Any], fields: tuple[Field, ...], test: Callable[[str, Path, dict[str, Any]], tuple[bool, str]] | None = None, load: Callable[[Path, dict[str, Any]], dict[str, Any]] = simple_load) -> None:
+def interactive_configure(*, root: Path, path: Path, title: str, subtitle: str, integration: str, defaults: dict[str, Any], fields: tuple[Field, ...], default_fields: tuple[Field, ...] = (), test: Callable[[str, Path, dict[str, Any]], tuple[bool, str]] | None = None, load: Callable[[Path, dict[str, Any]], dict[str, Any]] = simple_load) -> None:
     """Configure perfis locais sem expor segredos ou duplicar menus de skills."""
     def choose(profiles: dict[str, Any], action: str) -> str | None:
         names = sorted(profiles)
@@ -165,12 +170,17 @@ def interactive_configure(*, root: Path, path: Path, title: str, subtitle: str, 
         result(False, "Opção inválida.")
         return None
 
-    def field_value(field: Field, profile_name: str, current: Any = None) -> Any | None:
-        default = current if current is not None and current != "" else field.suggest(profile_name) if field.suggest else suggested_vault_entry(integration, profile_name) if field.name == "vault_entry_path" else field.default
+    inherit = object()
+
+    def field_value(field: Field, profile_name: str, current: Any = None, inherited_default: Any = None) -> Any | None:
+        inherited = field.inherit_default and (current is None or current == "")
+        default = inherited_default if inherited else current if current is not None and current != "" else field.suggest(profile_name) if field.suggest else suggested_vault_entry(integration, profile_name) if field.name == "vault_entry_path" else field.default
         if field.name == "vault_profile" or field.name.endswith("_vault_profile"): return choose_keepass_profile(root, str(default or ""))
         shown = "" if default is None else str(default)
-        value = prompt(f"{field.description} [{shown}]: ").strip()
+        suffix = "; vazio = padrão" if field.inherit_default else ""
+        value = prompt(f"{field.description} [{shown}{suffix}]: ").strip()
         if value.casefold() in {"x", "\x1b"}: return None
+        if field.inherit_default and not value: return inherit
         value = default if not value else _value(value)
         if field.required and not value:
             result(False, f"{field.description} é obrigatório.")
@@ -187,11 +197,29 @@ def interactive_configure(*, root: Path, path: Path, title: str, subtitle: str, 
             result(False, "A seção profiles da configuração é inválida.")
             return
         screen(title, "Configuração", subtitle)
+        if default_fields: item("0.", "Configurar valores padrão")
         item("1.", "Criar perfil"); item("2.", "Editar perfil"); item("3.", "Excluir perfil")
         if test is not None: item("4.", "Testar perfil")
         item("X.", "Voltar")
         action = prompt("Opção: ").strip().casefold()
         if action in {"x", "\x1b"}: return
+        if action == "0" and default_fields:
+            screen(title, "Valores padrão", "Aplicados aos perfis que não os sobrescrevem")
+            for index, field in enumerate(default_fields, 1): item(f"{index}.", field.description, str(data["defaults"].get(field.name, field.default)))
+            item("X.", "Voltar")
+            choice = prompt("Campo: ").strip().casefold()
+            if choice in {"x", "\x1b"}: continue
+            if not choice.isdigit() or not 1 <= int(choice) <= len(default_fields):
+                result(False, "Opção inválida."); continue
+            field = default_fields[int(choice) - 1]
+            current = data["defaults"].get(field.name, field.default)
+            value = prompt(f"{field.description} [{current}]: ").strip()
+            if value.casefold() in {"x", "\x1b"}: continue
+            if not value:
+                result(False, "Informe um valor para o padrão."); continue
+            data["defaults"][field.name] = _value(value)
+            ok, message = simple_save(path, data); result(ok, message)
+            continue
         if action == "1":
             name = prompt("Nome do perfil [X cancela]: ").strip()
             try: name = _name(name)
@@ -201,11 +229,11 @@ def interactive_configure(*, root: Path, path: Path, title: str, subtitle: str, 
                 continue
             candidate: dict[str, Any] = {}
             for field in fields:
-                value = field_value(field, name)
+                value = field_value(field, name, inherited_default=data["defaults"].get(field.name, field.default))
                 if value is None:
                     result(False, "Criação cancelada; nenhuma alteração foi gravada.")
                     break
-                candidate[field.name] = value
+                if value is not inherit: candidate[field.name] = value
             else:
                 profiles[name] = candidate
                 ok, message = simple_save(path, data); result(ok, message)
@@ -233,7 +261,9 @@ def interactive_configure(*, root: Path, path: Path, title: str, subtitle: str, 
             result(False, "Perfil inválido.")
             continue
         screen(title, "Editar perfil", name)
-        for index, field in enumerate(fields, 1): item(f"{index}.", field.description, str(profile.get(field.name, "")))
+        for index, field in enumerate(fields, 1):
+            shown = profile.get(field.name, data["defaults"].get(field.name, "")) if field.inherit_default else profile.get(field.name, "")
+            item(f"{index}.", field.description, str(shown))
         item("X.", "Voltar")
         choice = prompt("Campo: ").strip().casefold()
         if choice in {"x", "\x1b"}: continue
@@ -241,11 +271,12 @@ def interactive_configure(*, root: Path, path: Path, title: str, subtitle: str, 
             result(False, "Opção inválida.")
             continue
         field = fields[int(choice) - 1]
-        value = field_value(field, name, profile.get(field.name))
+        value = field_value(field, name, profile.get(field.name), data["defaults"].get(field.name, field.default))
         if value is None:
             result(False, "Edição cancelada; nenhuma alteração foi gravada.")
             continue
-        profile[field.name] = value
+        if value is inherit: profile.pop(field.name, None)
+        else: profile[field.name] = value
         ok, message = simple_save(path, data); result(ok, message)
 
 
