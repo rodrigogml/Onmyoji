@@ -5,6 +5,8 @@ description: Use para listar, consultar e alterar entradas, TOTPs e anexos de um
 
 # KeePass Vault
 
+Neste documento, `<CODEX_HOME>` é um placeholder para o diretório raiz da instância atual do Shikigami. Não o digite literalmente nem o substitua pelo workspace; use o diretório efetivamente configurado como `CODEX_HOME` para essa instância.
+
 Use `scripts/keepass_vault.py` com `--config <CODEX_HOME>/configs/keepass.toml` e um perfil explícito. Envie uma única requisição JSON pela entrada padrão; receba uma única resposta JSON na saída padrão.
 
 Não inclua a senha mestra, códigos TOTP ou conteúdo de anexos em mensagens, comandos, arquivos versionados ou logs. Configure o perfil com `setupSkill.py`; o configurador também pode criar um vault local isolado em `CODEX_HOME/configs/vaults/` e guardar sua senha no provedor seguro do SO. Leia [o contrato](references/contract.md) antes de integrar uma operação e [a configuração](references/configuration.md) ao criar ou revisar perfis.

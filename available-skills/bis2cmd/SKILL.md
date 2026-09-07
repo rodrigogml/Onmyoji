@@ -5,6 +5,8 @@ description: Integração com o BISCMD, cliente de linha de comando Java que ace
 
 # BIS2CMD
 
+Neste documento, `<CODEX_HOME>` é um placeholder para o diretório raiz da instância atual do Shikigami. Não o digite literalmente nem o substitua pelo workspace; use o diretório efetivamente configurado como `CODEX_HOME` para essa instância.
+
 Use `scripts/bis2cmd.py` para executar comandos do BISCMD configurados em um perfil TOML e selecionados por nome.
 
 ## Configuração

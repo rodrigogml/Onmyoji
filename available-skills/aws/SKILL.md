@@ -5,6 +5,8 @@ description: Operate Amazon Web Services through the installed AWS CLI with cred
 
 # AWS CLI
 
+In this document, `<CODEX_HOME>` is a placeholder for the root directory of the current Shikigami instance. Do not type it literally or replace it with the workspace; use the actual directory configured as `CODEX_HOME` for that instance.
+
 Use `scripts/aws.py --config <CODEX_HOME>/configs/aws.toml --profile <perfil>` as the only interface. Send one JSON request with `version: 1` through stdin and read one JSON response from stdout.
 
 Use a real profile stored outside version control in `<CODEX_HOME>/configs/aws.toml`. Generate it from `configs/aws.toml.model`; do not put credentials in it.

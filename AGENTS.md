@@ -20,6 +20,6 @@ Ao alterar arquivos `README.md`, `AGENTS.md`, `SKILL.md` ou qualquer arquivo `.m
 	3. A versão `.proposed` deve preservar todo o conteúdo inalterado do original e conter somente as alterações sugeridas. Ela é o único artefato que o agente pode criar ou revisar nesse fluxo.
 	4. O usuário avalia o arquivo original e a versão `.proposed` e pode aceitar, rejeitar ou editar cada trecho proposto.
 	5. Enquanto a proposta não estiver aprovada, o agente pode corrigir ou substituir somente o arquivo `.proposed`, seguindo o retorno do usuário.
-	6. A incorporação de qualquer alteração ao arquivo original é feita exclusivamente pelo usuário. O usuário também pode descartar o arquivo `.proposed` quando desejar.
+	6. A incorporação de qualquer alteração ao arquivo original é feita exclusivamente pelo usuário, ou aplicadas pelo agente quando a mando do usuário. O usuário também pode descartar o arquivo `.proposed` quando desejar.
 	7. Não considere conteúdo de arquivos `.proposed` criados por outros fluxos. O conteúdo vigente é sempre o do arquivo principal.
 

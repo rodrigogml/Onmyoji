@@ -5,6 +5,8 @@ description: Conectar e executar comandos em servidores SSH usando perfis TOML e
 
 # SSH
 
+Neste documento, `$CODEX_HOME` é a variável de ambiente que aponta para o diretório raiz da instância atual do Shikigami. Não a interprete como texto literal nem a substitua pelo workspace; o wrapper a resolve para a configuração da instância.
+
 Use `scripts/ssh.py` como wrapper JSON para conexões SSH. O wrapper usa Paramiko para suportar senha e chave privada no Windows, aceita comandos remotos livremente e oferece upload/download.
 
 ## Perfil

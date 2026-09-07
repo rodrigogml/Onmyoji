@@ -5,6 +5,8 @@ description: Integração com a API pública do Notion para consultar e modifica
 
 # Notion
 
+Neste documento, `<CODEX_HOME>` é um placeholder para o diretório raiz da instância atual do Shikigami. Não o digite literalmente nem o substitua pelo workspace; use o diretório efetivamente configurado como `CODEX_HOME` para essa instância.
+
 Use `scripts/notion.py` como wrapper JSON determinístico para a API pública do Notion.
 
 ## Execução

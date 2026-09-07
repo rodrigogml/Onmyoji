@@ -5,6 +5,8 @@ description: Use para consultar e administrar tarefas, projetos, seções, etiqu
 
 # Todoist
 
+Neste documento, `<CODEX_HOME>` é um placeholder para o diretório raiz da instância atual do Shikigami. Não o digite literalmente nem o substitua pelo workspace; use o diretório efetivamente configurado como `CODEX_HOME` para essa instância.
+
 Use `scripts/todoist.py` com `--config <CODEX_HOME>/configs/todoist.toml` e `--profile <perfil>`. Envie uma requisição JSON por stdin e receba uma única resposta JSON por stdout.
 
 Antes de executar alterações destrutivas, confirme com o usuário. Nunca inclua token, senha ou cabeçalho HTTP em prompt, argumentos, arquivos temporários ou logs. Configure perfis com `setupSkill.py`; consulte [o contrato](references/contract.md) para as operações e o envelope.

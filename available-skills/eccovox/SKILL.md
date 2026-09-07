@@ -5,6 +5,8 @@ description: Usa um serviço EccoVox local para verificar disponibilidade, trans
 
 # EccoVox
 
+Neste documento, `<CODEX_HOME>` é um placeholder para o diretório raiz da instância atual do Shikigami. Não o digite literalmente nem o substitua pelo workspace; use o diretório efetivamente configurado como `CODEX_HOME` para essa instância.
+
 Use esta skill quando for necessário transcrever um arquivo de áudio local ou sintetizar fala por meio de um runtime EccoVox local. Antes de STT ou TTS, consulte `health.get` quando a disponibilidade do serviço não for conhecida.
 
 Execute o wrapper com um perfil explícito e passe exatamente uma requisição JSON pelo stdin:

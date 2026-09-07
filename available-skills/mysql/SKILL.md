@@ -5,6 +5,8 @@ description: Integração ampla com servidores MySQL usando perfis de configura�
 
 # MySQL
 
+Neste documento, `<CODEX_HOME>` é um placeholder para o diretório raiz da instância atual do Shikigami. Não o digite literalmente nem o substitua pelo workspace; use o diretório efetivamente configurado como `CODEX_HOME` para essa instância.
+
 Use esta skill para trabalhar com instâncias MySQL descritas por perfis TOML explícitos.
 
 ## Princípios

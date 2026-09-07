@@ -5,6 +5,8 @@ description: Integração OAuth 2.0 com Gmail, Contatos via People API, Google D
 
 # Google
 
+Neste documento, `<CODEX_HOME>` é um placeholder para o diretório raiz da instância atual do Shikigami. Não o digite literalmente nem o substitua pelo workspace; use o diretório efetivamente configurado como `CODEX_HOME` para essa instância.
+
 Use `scripts/google.py` como wrapper JSON seguro para Gmail, People, Drive e Calendar.
 
 ## Execução
