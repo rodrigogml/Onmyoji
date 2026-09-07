@@ -186,16 +186,26 @@ def parse_output(stdout: str) -> dict[str, Any]:
 
 def biscmd_failure_message(stdout: str, stderr: str) -> str:
     """Return the most useful functional error emitted by the Java client."""
-    lines = [line.strip() for line in (stderr + "\n" + stdout).splitlines() if line.strip()]
-    candidates = [line for line in lines if "rejei" in line.lower() or "sefaz" in line.lower()]
-    if not candidates:
-        candidates = [line for line in lines if not line.startswith("at ") and not line.startswith("Caused by:")]
-    if not candidates:
+    def useful_lines(value: str) -> list[str]:
+        return [
+            line.strip() for line in value.splitlines()
+            if line.strip() and not line.lstrip().startswith("at ")
+            and not line.lstrip().startswith("Caused by:")
+            and not line.lstrip().startswith("<Facade>")
+        ]
+
+    stderr_lines, stdout_lines = useful_lines(stderr), useful_lines(stdout)
+    for lines in (stderr_lines, stdout_lines):
+        candidates = [line for line in lines if "rejei" in line.lower() or "sefaz" in line.lower()]
+        if candidates:
+            message = candidates[-1]
+            return message.split(": ", 1)[-1]
+    for lines in (stderr_lines, stdout_lines):
+        if lines:
+            return lines[-1].split(": ", 1)[-1]
+    if not stderr_lines and not stdout_lines:
         return "O BISCMD retornou erro."
-    message = candidates[-1]
-    if ": " in message:
-        message = message.split(": ", 1)[1]
-    return message
+    return "O BISCMD retornou erro."
 
 
 def run(config: dict[str,dict[str,Any]], request: dict[str, Any]) -> dict[str, Any]:
