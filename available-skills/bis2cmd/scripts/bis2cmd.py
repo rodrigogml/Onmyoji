@@ -184,6 +184,20 @@ def parse_output(stdout: str) -> dict[str, Any]:
     return data
 
 
+def biscmd_failure_message(stdout: str, stderr: str) -> str:
+    """Return the most useful functional error emitted by the Java client."""
+    lines = [line.strip() for line in (stderr + "\n" + stdout).splitlines() if line.strip()]
+    candidates = [line for line in lines if "rejei" in line.lower() or "sefaz" in line.lower()]
+    if not candidates:
+        candidates = [line for line in lines if not line.startswith("at ") and not line.startswith("Caused by:")]
+    if not candidates:
+        return "O BISCMD retornou erro."
+    message = candidates[-1]
+    if ": " in message:
+        message = message.split(": ", 1)[1]
+    return message
+
+
 def run(config: dict[str,dict[str,Any]], request: dict[str, Any]) -> dict[str, Any]:
     command = request.get("command")
     args = request.get("args", [])
@@ -212,18 +226,21 @@ def run(config: dict[str,dict[str,Any]], request: dict[str, Any]) -> dict[str, A
                         "BISCMD_USER": user, "BISCMD_PASSWORD": password})
     cwd = str(cfg.get("working_dir") or Path(str(cfg["jar_path"])).parent)
     try:
-        completed = subprocess.run(command_args, cwd=cwd, env=environment, text=True,
+        completed = subprocess.run(command_args, cwd=cwd, env=environment,
                                    capture_output=True, check=False,
-                                   timeout=int(config["execution"].get("timeout_seconds", 180)),
-                                   encoding=str(config["execution"].get("encoding", "utf-8")),
-                                   errors="replace")
+                                   timeout=int(config["execution"].get("timeout_seconds", 180)))
     except subprocess.TimeoutExpired as exc:
         raise BIS2CMDError("timeout", "O BISCMD excedeu o tempo configurado.") from exc
     except OSError as exc:
         raise BIS2CMDError("execution_error", "Não foi possível iniciar o BISCMD.") from exc
+    encoding = str(config["execution"].get("encoding", "utf-8"))
+    def decode(value: bytes) -> str:
+        decoded = value.decode(encoding, errors="replace")
+        return value.decode("cp1252", errors="replace") if "\ufffd" in decoded else decoded
+    stdout, stderr = decode(completed.stdout), decode(completed.stderr)
     if completed.returncode:
-        raise BIS2CMDError("biscmd_error", "O BISCMD retornou erro.")
-    return parse_output(completed.stdout)
+        raise BIS2CMDError("biscmd_error", biscmd_failure_message(stdout, stderr))
+    return parse_output(stdout)
 
 
 def main() -> int:
