@@ -14,7 +14,6 @@ Comandos identificados no código-fonte:
 - `docFiscalDetail`;
 - `nfceList`;
 - `validateDocFiscal`;
-- `updateDocFiscalStatus`;
 - `nfceDownloadXML`;
 - `nfceListagemChaves`;
 - `nfceInutilizeNumber`;
@@ -44,6 +43,28 @@ Saídas estruturadas:
 - `BISJSON {...}` vira um registro em `data.records`;
 - `BISMETA {...}` vira `data.metadata`;
 - demais linhas ficam em `data.messages`.
+
+## `nfceInutilizeNumber`
+
+Solicita a inutilização de um ou mais conjuntos de série e faixa de numeração na SEFAZ. É uma operação fiscal externa e exige `confirm`. Informe cada conjunto como `serie`, `numberStart` e `numberEnd`; sem `--workers`, os conjuntos são enviados sequencialmente.
+
+Para enviar diversos conjuntos, inclusive de séries diferentes, em paralelo, use `--workers` com um inteiro de 2 a 5. O valor 1 não é aceito, pois o modo sequencial já é o padrão. O wrapper também valida essa faixa de valores antes de executar o BISCMD.
+
+```json
+{
+  "version": 1,
+  "command": "nfceInutilizeNumber",
+  "args": [
+    "companyId", "2",
+    "certificateId", "6",
+    "serie", "1",
+    "numberStart", "123", "numberEnd", "125",
+    "serie", "2", "numberStart", "130", "numberEnd", "132",
+    "--workers", "2",
+    "confirm"
+  ]
+}
+```
 
 ## `docFiscalDetail`
 

@@ -24,6 +24,9 @@ def validate_command_args(command: str, args: list[str]) -> None:
     if normalized == "docfiscaldetail" and args and args[0].lower() == "key":
         if len(args) != 2 or not args[1].isdigit() or len(args[1]) != 44:
             raise BIS2CMDError("invalid_request", "docFiscalDetail key exige uma chave de 44 dígitos.")
+    if normalized == "nfceinutilizenumber":
+        validate_inutilize_args(args)
+        return
     if normalized != "nfcelist":
         return
     if len(args) % 2:
@@ -47,6 +50,78 @@ def validate_command_args(command: str, args: list[str]) -> None:
                 raise BIS2CMDError("invalid_request", f"{key} deve usar data e hora ISO-8601.") from exc
     if "start" in values and "end" in values and values["end"] < values["start"]:
         raise BIS2CMDError("invalid_request", "end não pode ser anterior a start.")
+
+
+def validate_inutilize_args(args: list[str]) -> None:
+    if args and args[0].lower() == "help":
+        return
+    required = {"companyid", "certificateid"}
+    seen: set[str] = set()
+    current_serie = False
+    pending_start: int | None = None
+    ranges = 0
+    workers_seen = False
+    confirm = False
+    index = 0
+    while index < len(args):
+        key = args[index].lower()
+        if key == "confirm":
+            if confirm:
+                raise BIS2CMDError("invalid_request", "confirm cannot be repeated.")
+            confirm = True
+            index += 1
+            continue
+        if key == "--workers":
+            if workers_seen or index + 1 >= len(args):
+                raise BIS2CMDError("invalid_request", "--workers requires one integer from 2 to 5.")
+            try:
+                workers = int(args[index + 1])
+            except ValueError as exc:
+                raise BIS2CMDError("invalid_request", "--workers must be an integer from 2 to 5.") from exc
+            if not 2 <= workers <= 5:
+                raise BIS2CMDError("invalid_request", "--workers must be between 2 and 5.")
+            workers_seen = True
+            index += 2
+            continue
+        if key in required:
+            if key in seen or index + 1 >= len(args):
+                raise BIS2CMDError("invalid_request", f"{args[index]} requires one value.")
+            seen.add(key)
+            index += 2
+            continue
+        if key == "serie":
+            if pending_start is not None or index + 1 >= len(args):
+                raise BIS2CMDError("invalid_request", "serie requires one value before a complete number range.")
+            current_serie = True
+            index += 2
+            continue
+        if key == "numberstart":
+            if not current_serie or pending_start is not None or index + 1 >= len(args):
+                raise BIS2CMDError("invalid_request", "numberStart requires a preceding serie and a following numberEnd.")
+            try:
+                pending_start = int(args[index + 1])
+            except ValueError as exc:
+                raise BIS2CMDError("invalid_request", "numberStart must be an integer.") from exc
+            index += 2
+            continue
+        if key == "numberend":
+            if pending_start is None or index + 1 >= len(args):
+                raise BIS2CMDError("invalid_request", "numberEnd requires a preceding numberStart.")
+            try:
+                end = int(args[index + 1])
+            except ValueError as exc:
+                raise BIS2CMDError("invalid_request", "numberEnd must be an integer.") from exc
+            if end < pending_start:
+                raise BIS2CMDError("invalid_request", "numberEnd cannot be lower than numberStart.")
+            pending_start = None
+            ranges += 1
+            index += 2
+            continue
+        raise BIS2CMDError("invalid_request", f"Invalid nfceInutilizeNumber parameter: {args[index]}.")
+    if not required.issubset(seen) or ranges == 0 or pending_start is not None:
+        raise BIS2CMDError("invalid_request", "nfceInutilizeNumber requires companyId, certificateId and a complete serie/numberStart/numberEnd set.")
+    if not confirm:
+        raise BIS2CMDError("invalid_request", "nfceInutilizeNumber requires confirm.")
 
 
 def load_config(path: str, profile_name: str) -> dict[str, dict[str, Any]]:

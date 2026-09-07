@@ -53,6 +53,29 @@ class BIS2CMDTests(unittest.TestCase):
             bis2cmd.validate_command_args("nfceList", ["status", "SOLD"])
         self.assertEqual(error.exception.code, "invalid_request")
 
+    def test_nfce_inutilize_number_accepts_multiple_ranges_and_workers(self):
+        bis2cmd.validate_command_args("nfceInutilizeNumber", [
+            "companyId", "2", "certificateId", "6", "serie", "1",
+            "numberStart", "123", "numberEnd", "125",
+            "serie", "2", "numberStart", "130", "numberEnd", "132", "--workers", "2", "confirm",
+        ])
+
+    def test_nfce_inutilize_number_rejects_invalid_workers(self):
+        with self.assertRaises(bis2cmd.BIS2CMDError) as error:
+            bis2cmd.validate_command_args("nfceInutilizeNumber", [
+                "companyId", "2", "certificateId", "6", "serie", "1",
+                "numberStart", "123", "numberEnd", "125", "--workers", "1", "confirm",
+            ])
+        self.assertEqual(error.exception.code, "invalid_request")
+
+    def test_nfce_inutilize_number_requires_a_serie_for_each_set(self):
+        with self.assertRaises(bis2cmd.BIS2CMDError) as error:
+            bis2cmd.validate_command_args("nfceInutilizeNumber", [
+                "companyId", "2", "certificateId", "6",
+                "numberStart", "123", "numberEnd", "125", "confirm",
+            ])
+        self.assertEqual(error.exception.code, "invalid_request")
+
     @patch("bis2cmd.subprocess.run")
     def test_invalid_version(self, run):
         with self.assertRaises(bis2cmd.BIS2CMDError) as error:
