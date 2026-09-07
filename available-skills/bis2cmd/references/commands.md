@@ -44,6 +44,34 @@ Saídas estruturadas:
 - `BISMETA {...}` vira `data.metadata`;
 - demais linhas ficam em `data.messages`.
 
+## `nfceListagemChaves`
+
+Consulta uma única página da listagem de chaves NFC-e diretamente na SEFAZ. Não use `limit` nem `offset`: a paginação é temporal e usa o cursor devolvido pela própria SEFAZ.
+
+Parâmetros:
+
+- `companyId <id>`: ID da empresa emissora;
+- `certificateId <id>`: ID do certificado digital;
+- `start <ISO-8601>`: início inclusivo da consulta;
+- `end <ISO-8601>`: fim opcional da consulta.
+
+As chaves da página são devolvidas em `data.messages`. `data.metadata` contém `sefaz_status`, `sefaz_message`, `last_emission`, `next_start`, `returned`, `complete` e `truncated`. Quando a SEFAZ responder `101`, a lista ainda está incompleta: conserve o mesmo `end`, repita a consulta usando `start = next_start` e deduplique as chaves entre páginas. Quando responder `100`, `complete` será `true` e não haverá `next_start`.
+
+Se a SEFAZ responder `101` sem `dhEmisUltNfce`, o BISCMD falha explicitamente, pois não há cursor seguro para continuar. O agente também deve interromper e reportar se `next_start` não avançar em relação ao `start` da chamada anterior.
+
+```json
+{
+  "version": 1,
+  "command": "nfceListagemChaves",
+  "args": [
+    "companyId", "2",
+    "certificateId", "6",
+    "start", "2026-08-24T09:35:00",
+    "end", "2027-08-24T09:35:00"
+  ]
+}
+```
+
 ## `nfceInutilizeNumber`
 
 Solicita a inutilização de um ou mais conjuntos de série e faixa de numeração na SEFAZ. É uma operação fiscal externa e exige `confirm`. Informe cada conjunto como `serie`, `numberStart` e `numberEnd`; sem `--workers`, os conjuntos são enviados sequencialmente.
