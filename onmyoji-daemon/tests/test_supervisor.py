@@ -8,10 +8,11 @@ from onmyoji_daemon.supervisor import Supervisor, endpoint
 from onmyoji_daemon.management import default_service_description, default_service_name, install_instance, is_installed, set_enabled
 
 
-def test_supervisor_exposes_only_registered_services(tmp_path):
+def test_supervisor_exposes_registered_services(tmp_path):
     supervisor = Supervisor(tmp_path)
-    assert [item["name"] for item in supervisor.handle("list-services", {})] == ["telegram"]
+    assert [item["name"] for item in supervisor.handle("list-services", {})] == ["telegram", "mini-apps"]
     assert supervisor.handle("status", {"service": "telegram"})["enabled"] is False
+    assert supervisor.handle("status", {"service": "mini-apps"})["enabled"] is False
 
 
 def test_supervisor_persists_enablement_and_local_rpc(tmp_path):
@@ -28,6 +29,16 @@ def test_supervisor_persists_enablement_and_local_rpc(tmp_path):
     assert not thread.is_alive()
 
 
+def test_supervisor_starts_mini_apps_service(tmp_path):
+    supervisor = Supervisor(tmp_path)
+    state = supervisor.start("mini-apps")
+    try:
+        assert state["state"] == "running"
+        assert supervisor.handle("mini-apps.status", {})["state"] == "running"
+    finally:
+        supervisor.stop("mini-apps")
+
+
 def test_instance_installation_and_service_identity_are_local(tmp_path):
     root = tmp_path / "Onmyoji-Lavelinha"
     root.mkdir()
@@ -38,3 +49,6 @@ def test_instance_installation_and_service_identity_are_local(tmp_path):
     ok, _message = set_enabled(root, "telegram", True)
     assert ok
     assert Supervisor(root).services["telegram"].enabled
+    ok, _message = set_enabled(root, "mini-apps", True)
+    assert ok
+    assert Supervisor(root).services["mini-apps"].enabled

@@ -858,6 +858,49 @@ def daemon_menu(root: Path) -> None:
                     except (OSError, ValueError) as error: result(False, f"Não foi possível abrir o editor: {error}")
             else: result(False, "Opção inválida.")
 
+    def miniapps_menu() -> None:
+        while True:
+            screen("Mini Apps", "Gateway HTTPS local e Cloudflare Tunnel")
+            item("1.", "Habilitar/desabilitar serviço")
+            item("2.", "Status TLS")
+            item("3.", "Instalar confiança da CA local")
+            item("4.", "Configurar Tunnel")
+            item("5.", "Provisionar Tunnel e DNS")
+            item("6.", "Status/reiniciar Tunnel")
+            item("7.", "Baixar cloudflared oficial")
+            item("X.", "Voltar")
+            choice = prompt("Opção: ").strip().casefold()
+            if choice in {"x", "\x1b"}: return
+            if choice == "1":
+                state = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "list-services"], quiet=True)
+                try:
+                    services = json.loads(state.stdout)
+                    enabled = any(item.get("name") == "mini-apps" and item.get("enabled") is True for item in services)
+                except (json.JSONDecodeError, TypeError):
+                    result(False, "Não foi possível consultar o estado do serviço Mini Apps.")
+                    continue
+                lifecycle("disable" if enabled else "enable", ["mini-apps"]); offer_restart(); continue
+            if not daemon_running(): result(False, "Inicie o daemon antes de administrar Mini Apps."); continue
+            base = [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "mini-apps"]
+            if choice == "2": completed = command(base + ["tls", "status"], quiet=True)
+            elif choice == "3":
+                if prompt("Digite confiar para instalar a CA: ").strip() != "confiar": result(False, "Cancelado."); continue
+                completed = command(base + ["tls", "install-trust", "--confirm"], quiet=True)
+            elif choice == "4":
+                values = {"account_id": prompt("Account ID: ").strip(), "zone_id": prompt("Zone ID: ").strip(), "hostname": prompt("Hostname: ").strip(), "keepass_profile": prompt("Perfil KeePass: ").strip(), "token_entry": prompt("Entrada KeePass: ").strip(), "cloudflared_executable": prompt("cloudflared [cloudflared]: ").strip() or "cloudflared"}
+                completed = command(base + ["tunnel", "configure", "--values", json.dumps(values)], quiet=True)
+            elif choice == "5":
+                if prompt("Digite provisionar para confirmar: ").strip() != "provisionar": result(False, "Cancelado."); continue
+                completed = command(base + ["tunnel", "provision", "--confirm"], quiet=True)
+            elif choice == "6":
+                restart = prompt("Digite reiniciar para reiniciar o Tunnel, ou Enter para consultar o status: ").strip().casefold()
+                completed = command(base + ["tunnel", "restart" if restart == "reiniciar" else "status"], quiet=True)
+            elif choice == "7":
+                if prompt("Digite baixar para confirmar: ").strip() != "baixar": result(False, "Cancelado."); continue
+                completed = command(base + ["tunnel", "install-cloudflared", "--confirm"], quiet=True)
+            else: result(False, "Opção inválida."); continue
+            result(completed.returncode == 0, (completed.stdout or completed.stderr).strip())
+
     while True:
         status = "INSTALADO" if installed() else "NÃO INSTALADO"
         screen("Daemon", f"Supervisor e serviços da instância · {status}")
@@ -869,6 +912,7 @@ def daemon_menu(root: Path) -> None:
             print()
             item("4.", "Gateway Telegram", "Configuração, teste e pareamento")
             item("5.", "Diagnóstico detalhado")
+            item("6.", "Mini Apps", "Gateway HTTPS e Cloudflare Tunnel")
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
@@ -882,6 +926,7 @@ def daemon_menu(root: Path) -> None:
         elif installed() and choice == "3" and not service_installed(): process_menu()
         elif installed() and choice == "4": telegram_menu()
         elif installed() and choice == "5": show_validation()
+        elif installed() and choice == "6": miniapps_menu()
         else: result(False, "Opção inválida.")
 
 

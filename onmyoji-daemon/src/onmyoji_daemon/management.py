@@ -16,6 +16,7 @@ import uuid
 import shutil
 
 from .rpc import call
+from .registry import SERVICES
 from .instance import identity
 from .supervisor import endpoint
 
@@ -86,15 +87,16 @@ def installed_metadata(root: Path) -> dict:
 
 def set_enabled(root: Path, service: str, enabled: bool) -> tuple[bool, str]:
     if not is_installed(root): return False, "Instale primeiro o daemon desta instância."
-    if service != "telegram": return False, "Serviço não registrado."
+    if service not in SERVICES: return False, "Serviço não registrado."
     path = daemon_root(root) / "services.json"; values = _read_json(path)
-    values.setdefault("telegram", {})["enabled"] = enabled
+    values.setdefault(service, {})["enabled"] = enabled
     _write_json(path, values)
-    if not enabled and daemon_reachable(root):
+    if daemon_reachable(root):
         try:
-            host, port, token = endpoint(root); call(host, port, token, "disable", {"service": service})
+            host, port, token = endpoint(root); call(host, port, token, "enable" if enabled else "disable", {"service": service})
         except Exception: pass
-    return True, "Telegram habilitado." if enabled else "Telegram desabilitado."
+    label = SERVICES[service].description
+    return True, f"{label} habilitado." if enabled else f"{label} desabilitado."
 
 
 def _pid_alive(pid: int) -> bool:
