@@ -15,6 +15,11 @@ def test_supervisor_exposes_registered_services(tmp_path):
     assert supervisor.handle("status", {"service": "mini-apps"})["enabled"] is False
 
 
+def test_supervisor_service_output_redacts_sensitive_values(tmp_path):
+    supervisor = Supervisor(tmp_path)
+    assert supervisor._safe_output("falhou token=abc password: xyz secret = zzz") == "falhou token=[redacted] password=[redacted] secret=[redacted]"
+
+
 def test_supervisor_persists_enablement_and_local_rpc(tmp_path):
     supervisor = Supervisor(tmp_path)
     thread = threading.Thread(target=supervisor.run_forever, daemon=True); thread.start()

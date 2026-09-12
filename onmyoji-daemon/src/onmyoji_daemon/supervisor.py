@@ -7,6 +7,7 @@ import secrets
 import socket
 import subprocess
 import os
+import re
 import threading
 import time
 import uuid
@@ -30,6 +31,8 @@ class ManagedService:
     token: str = ""
     state: str = "stopped"
     last_error: str | None = None
+    output_tail: str = ""
+    log_path: Path | None = None
 
 
 class Supervisor:
@@ -41,6 +44,7 @@ class Supervisor:
         self.process_file = self.runtime / "process.json"
         self.lock_file = self.runtime / "supervisor.lock"
         self.state_file = self.root / "services.json"
+        self.log_root = self.runtime / "logs"; self.log_root.mkdir(parents=True, exist_ok=True)
         self.host, self.token, self.stop_event = "127.0.0.1", secrets.token_urlsafe(32), threading.Event()
         self.rpc = RpcServer(self.host, free_port(), self.token, self.handle)
         self.services = {name: ManagedService(spec) for name, spec in SERVICES.items()}
@@ -81,8 +85,30 @@ class Supervisor:
 
     def status(self, name: str) -> dict[str, Any]:
         service = self.services[name]
-        if service.process and service.process.poll() is not None: service.state = "failed" if service.last_error else "stopped"
-        return {"name": name, "enabled": service.enabled, "state": service.state, "pid": service.process.pid if service.process and service.process.poll() is None else None, "last_error": service.last_error}
+        if service.process and service.process.poll() is not None:
+            if service.process.returncode:
+                service.state = "failed"
+                if not service.last_error: service.last_error = service.output_tail or f"process exited with {service.process.returncode}"
+            else: service.state = "stopped"
+        return {"name": name, "enabled": service.enabled, "state": service.state, "pid": service.process.pid if service.process and service.process.poll() is None else None, "last_error": service.last_error, "log_path": str(service.log_path) if service.log_path else None}
+
+    @staticmethod
+    def _safe_output(line: str) -> str:
+        return re.sub(r"(?i)(token|password|secret)\s*[=:]\s*\S+", r"\1=[redacted]", line).strip()[-800:]
+
+    def _capture_output(self, service: ManagedService) -> None:
+        if not service.process or not service.process.stdout or not service.log_path: return
+        try:
+            with service.log_path.open("a", encoding="utf-8") as output:
+                for raw in service.process.stdout:
+                    line = self._safe_output(raw)
+                    if not line: continue
+                    output.write(line + "\n"); output.flush()
+                    service.output_tail = line
+                    if service.process.poll() is not None and service.process.returncode:
+                        service.last_error = line
+        except OSError:
+            pass
 
     def start(self, name: str) -> dict[str, Any]:
         service = self.services[name]
@@ -94,10 +120,14 @@ class Supervisor:
             environment = dict(os.environ)
             source_root = str(Path(__file__).resolve().parents[1])
             environment["PYTHONPATH"] = source_root + (os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else "")
-            service.process = subprocess.Popen(command, cwd=str(self.onmyoji_root), text=True, env=environment)
+            service.log_path = self.log_root / f"{name}.log"
+            service.process = subprocess.Popen(command, cwd=str(self.onmyoji_root), text=True, encoding="utf-8", errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=environment)
+            threading.Thread(target=self._capture_output, args=(service,), daemon=True).start()
             deadline = time.monotonic() + 12
             while time.monotonic() < deadline:
-                if service.process.poll() is not None: raise RuntimeError(f"process exited with {service.process.returncode}")
+                if service.process.poll() is not None:
+                    detail = service.output_tail or f"process exited with {service.process.returncode}"
+                    raise RuntimeError(detail)
                 try:
                     call(self.host, service.port, service.token, "ping", timeout=0.4)
                     service.state, service.last_error = "running", None; return self.status(name)
