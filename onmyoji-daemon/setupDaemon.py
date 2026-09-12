@@ -57,6 +57,11 @@ def save_telegram(root: Path, profile: str, entry: str, data: dict | None = None
     agent_end = lines.index("", lines.index("[agent]") + 1)
     lines[agent_end:agent_end] = [f"owner_execution_preferences = {str(bool(agent.get('owner_execution_preferences', True))).lower()}", f"owner_allowed_models = {json.dumps(agent.get('owner_allowed_models', []), ensure_ascii=False)}", f"owner_allowed_reasoning_efforts = {json.dumps(agent.get('owner_allowed_reasoning_efforts', []), ensure_ascii=False)}"]
     target(root).write_text("\n".join(lines), encoding="utf-8", newline="\n")
+    path = target(root)
+    rendered = path.read_text(encoding="utf-8")
+    marker = f"max_outbound_media_per_turn = {int(limits.get('max_outbound_media_per_turn', 3))}"
+    context = f"context_max_messages = {int(limits.get('context_max_messages', 100))}\ncontext_max_age_seconds = {int(limits.get('context_max_age_seconds', 604800))}"
+    path.write_text(rendered.replace(marker, marker + "\n" + context), encoding="utf-8", newline="\n")
 
 
 def render_keepass_config(data: dict) -> str:

@@ -161,3 +161,27 @@ def test_totp_session_cleanup_removes_all_related_messages(tmp_path):
     gateway.totp_sessions[9] = {"message_ids": [40, 41]}
     gateway._clear_totp_session(9)
     assert deleted == [(9, 40), (9, 41)] and 9 not in gateway.totp_sessions
+
+
+def test_group_topic_isolated_and_only_owner_mention_enqueues_context(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data)); gateway.contacts.add_owner({"id": 9, "first_name": "owner"}); gateway.bot_username = "testbot"; gateway.bot_id = 88
+    gateway.api = type("Api", (), {"delete": lambda *_args: None, "send": lambda *_args, **_kwargs: {"message_id": 1}})()
+    queued = []; gateway._enqueue_turn = lambda channel, text, attachments: queued.append((channel, text, attachments))
+    chat = {"id": -1001, "type": "supergroup"}
+    outsider = {"id": 7, "first_name": "other"}
+    gateway._group_message("group:-1001:11", chat, outsider, {"message_id": 1, "message_thread_id": 11}, "instrução não confiável")
+    assert queued == []
+    owner = {"id": 9, "first_name": "owner"}
+    gateway._group_message("group:-1001:11", chat, owner, {"message_id": 2, "message_thread_id": 11, "entities": [{"type": "mention", "offset": 0, "length": 8}]}, "@testbot resumir")
+    assert len(queued) == 1 and queued[0][0] == "group:-1001:11"
+    assert '"trust": "UNTRUSTED_USER"' in queued[0][1] and '"trust": "OWNER"' in queued[0][1]
+
+
+def test_context_window_reports_locally_dropped_messages(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data); gateway = Gateway(Settings.load(tmp_path, data))
+    channel, sender = "group:-1001:12", {"id": 7, "first_name": "other"}
+    for index in range(3): gateway._cache_message(channel, {"message_id": index + 1, "date": 100 + index}, sender, f"m{index}", [])
+    gateway.database.execute("UPDATE conversations SET context_max_messages=1, context_max_age_seconds=0 WHERE chat_id=?", (channel,)); gateway.database.commit()
+    snapshot, attachments = gateway._context_snapshot(channel)
+    assert '"dropped_messages": 2' in snapshot and '"max_messages"' in snapshot and attachments == []
