@@ -595,7 +595,7 @@ def daemon_menu(root: Path) -> None:
     environment["PYTHONPATH"] = source + (os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else "")
 
     def command(arguments: list[str], quiet: bool = False, input_value: str | None = None) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(arguments, cwd=str(project), env=environment, text=True, capture_output=quiet, input=input_value)
+        return subprocess.run(arguments, cwd=str(project), env=environment, text=True, encoding="utf-8", errors="replace", capture_output=quiet, input=input_value)
 
     def lifecycle(action: str, extra: list[str] | None = None) -> bool:
         completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), action, *(extra or [])], quiet=True)
@@ -604,8 +604,8 @@ def daemon_menu(root: Path) -> None:
 
     def validation() -> list[dict[str, str]]:
         completed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "validation-json"], quiet=True)
-        try: return json.loads(completed.stdout)
-        except json.JSONDecodeError: return []
+        try: return json.loads(completed.stdout or "[]")
+        except (json.JSONDecodeError, TypeError): return []
 
     def show_validation() -> bool:
         checks = validation(); print()
