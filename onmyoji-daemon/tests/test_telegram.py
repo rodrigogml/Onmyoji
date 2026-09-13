@@ -10,7 +10,7 @@ from onmyoji_daemon.telegram import AppServerTurn, Contacts, Gateway, Settings, 
 
 def write_settings(root: Path, data_dir: Path) -> None:
     (root / "configs").mkdir(parents=True); (root / "configs" / "onmyoji-system.toml").write_text('[codex]\nexecutable = "codex"\nmodel = "gpt-5.6-terra"\nmodel_reasoning_effort = "medium"\nproject_directory = "' + root.as_posix() + '"\nsandbox_mode = "workspace-write"\napproval_policy = "never"\n', encoding="utf-8")
-    data_dir.mkdir(parents=True); config = root / "shikigami" / "daemon" / "telegram.toml"; config.parent.mkdir(parents=True); config.write_text('schema_version = 1\n[telegram]\nkeepass_profile = "telegram"\ntoken_entry = "APIs/Telegram:Lavelinha"\n', encoding="utf-8")
+    data_dir.mkdir(parents=True); config = root / "shikigami" / "daemon" / "telegram.toml"; config.parent.mkdir(parents=True); config.write_text('schema_version = 1\n[telegram]\nkeepass_profile = "telegram"\ntoken_entry = "APIs/Telegram:Example"\n', encoding="utf-8")
 
 
 def test_settings_bind_to_instance_codex_home_and_workspace(tmp_path):
@@ -62,7 +62,7 @@ def test_vault_token_uses_onmyoji_keepass_wrapper_without_token_argument(tmp_pat
         return type("Result", (), {"stdout": json.dumps({"ok": True, "result": {"value": "secret"}})})()
     with patch("onmyoji_daemon.telegram.subprocess.run", side_effect=run): assert Vault(settings).read(settings.token_entry) == "secret"
     assert "secret" not in " ".join(captured["command"])
-    assert json.loads(captured["input"])["entry"]["path"] == "APIs/Telegram:Lavelinha"
+    assert json.loads(captured["input"])["entry"]["path"] == "APIs/Telegram:Example"
 
 
 def test_totp_filter_supports_case_insensitive_wildcards():

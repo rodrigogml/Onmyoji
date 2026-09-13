@@ -45,7 +45,7 @@ Criar uma entrada, por exemplo:
 APIs/<Shikigami>:GoogleOAuth:<PerfilGoogle>
 ```
 
-Para o perfil `rodrigogml` do Akuma, por exemplo, use `APIs/Akuma:GoogleOAuth:Rodrigogml`. Use os campos padrão da entrada para a identidade compartilhada da aplicação: `username` recebe o `client_id`, `password` recebe o `client_secret` e `notes` recebe o JSON versionado com os refresh tokens por perfil. O formato é `{"version":1,"profiles":{"rodrigogml":{"refresh_token":"..."}}}`. O bootstrap atualiza somente o perfil selecionado e preserva os demais.
+Para um perfil como `user@example.com` de um Shikigami de exemplo, use `APIs/Example:GoogleOAuth:UserExample`. Use os campos padrão da entrada para a identidade compartilhada da aplicação: `username` recebe o `client_id`, `password` recebe o `client_secret` e `notes` recebe o JSON versionado com os refresh tokens por perfil. O formato é `{"version":1,"profiles":{"user@example.com":{"refresh_token":"..."}}}`. O bootstrap atualiza somente o perfil selecionado e preserva os demais.
 
 ## 6. Criar o perfil
 

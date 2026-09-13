@@ -7,7 +7,7 @@ O nome vem do imaginário japonês: o *onmyōji* era um especialista da corte em
 | Conceito | Papel no projeto |
 | --- | --- |
 | Onmyōji | Base reutilizável: catálogo de integrações, setup, daemon e documentação. |
-| Shikigami | Repositório e `CODEX_HOME` de uma instância específica, como Akuma. Recebe a base como `upstream` e mantém suas próprias definições. |
+| Shikigami | Repositório e `CODEX_HOME` de uma instância específica, como um Shikigami de exemplo. Recebe a base como `upstream` e mantém suas próprias definições. |
 | Workspace | Diretório externo onde o Shikigami trabalha em projetos e produz artefatos. Não é parte do `CODEX_HOME`. |
 
 ## Camadas da instância
@@ -16,7 +16,7 @@ O nome vem do imaginário japonês: o *onmyōji* era um especialista da corte em
 - `skills/`: superfície ativa que o Codex varre. É ignorada pelo Git e contém links locais para as skills ativas.
 - `shikigami/`: definição versionada da instância, criada somente no repositório de cada Shikigami. Contém sua identidade, instruções particulares, documentação, declarações sem segredos e fontes de skills próprias. Leia sempre `shikigami/README.md` e `shikigami/AGENTS.md`, quando presentes. O upstream Onmyōji não contém nem versiona essa pasta.
 - `configs/`: sobreposição privada e estado operacional. Contém referências locais, integrações provisionadas, credenciais do SO, pairing, bancos de conversa, logs e dados de execução; permanece ignorada pelo Git.
-- workspace externo: área exclusiva de trabalho do agente, como `C:\opt\Shikigami-Akuma-Work`. Não fica dentro deste repositório nem do `CODEX_HOME`.
+- workspace externo: área exclusiva de trabalho do agente, como `C:\opt\Shikigami-Exemplo-Work`. Não fica dentro deste repositório nem do `CODEX_HOME`.
 
 O conteúdo de `shikigami/` nunca pode conter tokens, senhas, chaves privadas, bancos de dados, logs ou state. Segredos ficam no KeePass e os dados operacionais em `configs/`.
 
@@ -32,14 +32,13 @@ O conteúdo de `shikigami/` nunca pode conter tokens, senhas, chaves privadas, b
 
 ## Padrão de nomes e repositórios
 
-O repositório da base é `git@github.com:rodrigogml/Onmyoji.git` e é mantido em `C:\x\Onmyoji`. Cada Shikigami possui um repositório próprio, que também é seu `CODEX_HOME`; o workspace não pertence ao repositório.
+O repositório da base é `git@github.com:<organização>/Onmyoji.git` e pode ser mantido em um diretório local como `C:\opt\Onmyoji`. Cada Shikigami possui um repositório próprio, que também é seu `CODEX_HOME`; o workspace não pertence ao repositório.
 
 | Shikigami | CODEX_HOME e repositório | Workspace não versionado | `origin` |
 | --- | --- | --- | --- |
-| Akuma | `C:\opt\Shikigami-Akuma` | `C:\opt\Shikigami-Akuma-Work` | `git@github.com:rodrigogml/Shikigami-Akuma.git` |
-| Lavelinha | `C:\opt\Shikigami-Lavelinha` | `C:\opt\Shikigami-Lavelinha-Work` | `git@github.com:rodrigogml/Shikigami-Lavelinha.git` |
+| Exemplo | `C:\opt\Shikigami-Exemplo` | `C:\opt\Shikigami-Exemplo-Work` | `git@github.com:<organização>/Shikigami-Exemplo.git` |
 
-Em qualquer repositório de Shikigami, `upstream` é sempre `git@github.com:rodrigogml/Onmyoji.git`. A branch principal é `main` em todos os repositórios.
+Em qualquer repositório de Shikigami, `upstream` é sempre `git@github.com:<organização>/Onmyoji.git`. A branch principal é `main` em todos os repositórios.
 
 ## Skills ativas
 
@@ -65,10 +64,10 @@ Set-Location C:\opt\Shikigami-<Nome>
 git remote -v
 ```
 
-Confirme que `origin` aponta para o repositório do Shikigami e que `upstream` aponta para `git@github.com:rodrigogml/Onmyoji.git`. Se o clone não tiver `upstream`, registre-o uma vez:
+Confirme que `origin` aponta para o repositório do Shikigami e que `upstream` aponta para `git@github.com:<organização>/Onmyoji.git`. Se o clone não tiver `upstream`, registre-o uma vez:
 
 ```powershell
-git remote add upstream git@github.com:rodrigogml/Onmyoji.git
+git remote add upstream git@github.com:<organização>/Onmyoji.git
 ```
 
 ### 2. Criar um Shikigami novo a partir da base
@@ -76,7 +75,7 @@ git remote add upstream git@github.com:rodrigogml/Onmyoji.git
 Crie primeiro um repositório Git vazio para a nova instância. Depois, clone a base com o nome de remoto `upstream`, conecte o repositório da instância como `origin` e publique a branch principal:
 
 ```powershell
-git clone --origin upstream git@github.com:rodrigogml/Onmyoji.git C:\opt\Shikigami-<Nome>
+git clone --origin upstream git@github.com:<organização>/Onmyoji.git C:\opt\Shikigami-<Nome>
 Set-Location C:\opt\Shikigami-<Nome>
 git remote add origin git@github.com:<organização>/Shikigami-<Nome>.git
 git push -u origin main
@@ -138,7 +137,7 @@ git push origin main
 Melhorias gerais — daemon, setup, documentação e skills de integração — são implementadas exclusivamente no repositório Onmyōji:
 
 ```powershell
-Set-Location C:\x\Onmyoji
+Set-Location C:\opt\Onmyoji
 git pull --ff-only origin main
 # alterar, testar, commit e publicar a base
 git push origin main
@@ -147,9 +146,9 @@ git push origin main
 Em um Shikigami, altere somente `shikigami/` para personalizações da instância. O `git push` simples publica no `origin` daquele Shikigami, nunca no Onmyōji.
 
 ```powershell
-Set-Location C:\opt\Shikigami-Akuma
+Set-Location C:\opt\Shikigami-Exemplo
 git add shikigami
-git commit -m "Descreve a personalização do Akuma"
+git commit -m "Descreve a personalização do Shikigami de exemplo"
 git push
 ```
 

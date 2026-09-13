@@ -13,14 +13,14 @@ class GoogleTests(unittest.TestCase):
         fd, filename = tempfile.mkstemp(suffix=".toml")
         os.close(fd)
         path = Path(filename)
-        path.write_text(f'''[defaults]\nscopes = ["openid", "email", "profile", "https://mail.google.com/"]\n[profiles.example]\ncredentials_file = "{credentials_file}"\noauth_profile = "rodrigogml"\nvault_profile = "test"\nvault_entry_path = "APIs/Google:Akuma"\nclient_id_field = "username"\nclient_secret_field = "password"\nprofiles_field = "notes"\n''', encoding="utf-8")
+        path.write_text(f'''[defaults]\nscopes = ["openid", "email", "profile", "https://mail.google.com/"]\n[profiles.example]\ncredentials_file = "{credentials_file}"\noauth_profile = "user@example.com"\nvault_profile = "test"\nvault_entry_path = "APIs/Google:Example"\nclient_id_field = "username"\nclient_secret_field = "password"\nprofiles_field = "notes"\n''', encoding="utf-8")
         self.addCleanup(lambda: path.unlink(missing_ok=True))
         return path
 
     def test_profile_validation(self):
         settings = load_settings(str(self.profile()), "example")
         self.assertEqual(settings.user_id, "me")
-        self.assertEqual(settings.profile, "rodrigogml")
+        self.assertEqual(settings.profile, "user@example.com")
 
     def test_credentials_desktop_json(self):
         handle, filename = tempfile.mkstemp(suffix=".json")
@@ -44,7 +44,7 @@ class GoogleTests(unittest.TestCase):
 
         def response(_settings, request):
             field = request["field"]
-            values = {"username": "client-id", "password": "client-secret", "notes": json.dumps({"version": 1, "profiles": {"rodrigogml": {"refresh_token": "refresh-token"}}})}
+            values = {"username": "client-id", "password": "client-secret", "notes": json.dumps({"version": 1, "profiles": {"user@example.com": {"refresh_token": "refresh-token"}}})}
             return {"ok": True, "result": {"value": values[field]}}
 
         vault.side_effect = response
@@ -62,7 +62,7 @@ class GoogleTests(unittest.TestCase):
             self.assertEqual(request["operation"], "edit")
             payload = json.loads(request["fields"]["notes"])
             self.assertEqual(payload["profiles"]["other"]["refresh_token"], "keep-me")
-            self.assertEqual(payload["profiles"]["rodrigogml"]["refresh_token"], "new-token")
+            self.assertEqual(payload["profiles"]["user@example.com"]["refresh_token"], "new-token")
             return {"ok": True}
 
         vault.side_effect = response

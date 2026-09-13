@@ -85,7 +85,7 @@ class SetupTests(unittest.TestCase):
 
     def test_local_vault_creation_passes_password_only_through_stdin(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            database = Path(temporary) / "configs" / "vaults" / "lavelinha.kdbx"
+            database = Path(temporary) / "configs" / "vaults" / "example.kdbx"
             completed = SimpleNamespace(returncode=0, stdout="", stderr="")
             def run(command: list[str], **kwargs: object) -> SimpleNamespace:
                 self.assertEqual(command, [sys.executable, "db-create", "--set-password", str(database)])
@@ -102,12 +102,12 @@ class SetupTests(unittest.TestCase):
             root = Path(temporary); config = root / "configs" / "keepass.toml"; data = SETUP.empty_config()
             def create(_executable: str, database: Path, _password: str) -> tuple[bool, str]:
                 database.parent.mkdir(parents=True, exist_ok=True); database.touch(); return True, "criado"
-            with patch.object(SETUP, "ask", side_effect=["lavelinha", sys.executable, "", ""]), patch.object(SETUP, "ask_choice", side_effect=["2", "1"]), patch.object(SETUP.getpass, "getpass", side_effect=["senha", "senha"]), patch.object(SETUP, "create_local_vault", side_effect=create), patch.object(SETUP, "write_system_password", return_value=(True, "salva")) as stored:
-                SETUP.create_profile(data, config, root, "lavelinha")
-            database = SETUP.local_vault_for(root, "lavelinha")
+            with patch.object(SETUP, "ask", side_effect=["example", sys.executable, "", ""]), patch.object(SETUP, "ask_choice", side_effect=["2", "1"]), patch.object(SETUP.getpass, "getpass", side_effect=["senha", "senha"]), patch.object(SETUP, "create_local_vault", side_effect=create), patch.object(SETUP, "write_system_password", return_value=(True, "salva")) as stored:
+                SETUP.create_profile(data, config, root, "example")
+            database = SETUP.local_vault_for(root, "example")
             self.assertTrue(database.is_file())
-            self.assertEqual(data["profiles"]["lavelinha"]["vault"], "lavelinha")
-            self.assertEqual(data["vaults"]["lavelinha"]["database"]["windows" if os.name == "nt" else "linux"], str(database))
+            self.assertEqual(data["profiles"]["example"]["vault"], "example")
+            self.assertEqual(data["vaults"]["example"]["database"]["windows" if os.name == "nt" else "linux"], str(database))
             stored.assert_called_once()
 
     def test_edit_menu_lists_profiles_and_shows_current_fields(self) -> None:

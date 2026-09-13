@@ -45,12 +45,12 @@ def test_supervisor_starts_mini_apps_service(tmp_path):
 
 
 def test_instance_installation_and_service_identity_are_local(tmp_path):
-    root = tmp_path / "Onmyoji-Lavelinha"
+    root = tmp_path / "Onmyoji-Exemplo"
     root.mkdir()
     ok, _message = install_instance(root)
     assert ok and is_installed(root)
-    assert default_service_name(root) == "Shikigami-Lavelinha"
-    assert default_service_description(root) == "Shikigami Lavelinha Daemon"
+    assert default_service_name(root) == "Shikigami-Exemplo"
+    assert default_service_description(root) == "Shikigami Exemplo Daemon"
     ok, _message = set_enabled(root, "telegram", True)
     assert ok
     assert Supervisor(root).services["telegram"].enabled

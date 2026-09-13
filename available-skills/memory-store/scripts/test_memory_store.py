@@ -67,8 +67,8 @@ class MemoryStoreTests(unittest.TestCase):
         self.assertEqual({(item["source"], item["id"]) for item in found}, {("text", memory), ("record", str(project)), ("record", str(task))})
         records = [item for item in found if item["source"] == "record"]
         self.assertTrue(all(item["matched_fields"] in (["name"], ["title"]) and item["matches"] for item in records))
-        self.call("record.update", table="projects", id=project, data={"name": "Akuma Engenharia"}, confirm=True)
-        self.assertEqual([item["id"] for item in self.call("search.query", query="akuma", sources="records")["items"]], [str(project)])
+        self.call("record.update", table="projects", id=project, data={"name": "Projeto Exemplo"}, confirm=True)
+        self.assertEqual([item["id"] for item in self.call("search.query", query="exemplo", sources="records")["items"]], [str(project)])
         self.call("record.archive", table="tasks", id=task, confirm=True)
         active = self.call("search.query", query="laveli", sources="records", tables=["tasks"])["items"]
         self.assertEqual(active, [])
