@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from dataclasses import replace
 from unittest.mock import patch
 
 from onmyoji_daemon.telegram import AppServerTurn, Contacts, Gateway, Settings, Vault
@@ -176,6 +177,29 @@ def test_group_topic_isolated_and_only_owner_mention_enqueues_context(tmp_path):
     gateway._group_message("group:-1001:11", chat, owner, {"message_id": 2, "message_thread_id": 11, "entities": [{"type": "mention", "offset": 0, "length": 8}]}, "@testbot resumir")
     assert len(queued) == 1 and queued[0][0] == "group:-1001:11"
     assert '"trust": "UNTRUSTED_USER"' in queued[0][1] and '"trust": "OWNER"' in queued[0][1]
+
+
+def test_private_topic_isolated_and_routes_responses_to_its_topic(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data)); gateway.contacts.add_owner({"id": 9, "first_name": "owner"})
+    gateway.settings = replace(gateway.settings, app_server_enabled=True)
+    queued, sent = [], []
+    gateway.api = type("Api", (), {"delete": lambda *_args: None, "typing": lambda *_args, **_kwargs: None, "send": lambda _self, chat, text, **values: sent.append((chat, text, values)) or {"message_id": 1}})()
+    gateway._enqueue_turn = lambda channel, text, attachments: queued.append((channel, text, attachments))
+    message = {"message_id": 3, "chat": {"id": 9, "type": "private"}, "from": {"id": 9}, "message_thread_id": 42, "text": "olá"}
+    gateway._update({"message": message})
+    assert queued == [("private:9:42", "olá", [])]
+    gateway._app_turn = lambda *_args: ("resposta", "text")
+    gateway._turn_serial("private:9:42", "olá", [])
+    assert sent[-1] == (9, "resposta", {"message_thread_id": 42})
+
+
+def test_private_topic_ephemeral_controls_stay_in_the_active_topic(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data)); sent = []
+    gateway.api = type("Api", (), {"send": lambda _self, chat, text, **values: sent.append((chat, text, values)) or {"message_id": 8}})()
+    gateway._ephemeral("private:9:42", "controle")
+    assert sent == [(9, "controle", {"protect_content": True, "message_thread_id": 42})]
 
 
 def test_context_window_reports_locally_dropped_messages(tmp_path):

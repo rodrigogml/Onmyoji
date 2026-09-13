@@ -319,13 +319,14 @@ class Gateway:
     @staticmethod
     def _conversation_id(chat: dict[str, Any], message: dict[str, Any]) -> str:
         chat_id = int(chat["id"])
-        if chat.get("type") == "private": return str(chat_id)
         thread = message.get("message_thread_id")
+        if chat.get("type") == "private":
+            return f"private:{chat_id}:{int(thread)}" if isinstance(thread, int) else str(chat_id)
         return f"group:{chat_id}:{int(thread) if isinstance(thread, int) else 0}"
 
     @staticmethod
     def _telegram_address(conversation_id: str) -> tuple[int, int | None]:
-        if not conversation_id.startswith("group:"): return int(conversation_id), None
+        if not conversation_id.startswith(("group:", "private:")): return int(conversation_id), None
         _, chat_id, thread = conversation_id.split(":", 2)
         return int(chat_id), (int(thread) or None)
 
@@ -540,9 +541,9 @@ class Gateway:
         with self.app_server_lock: active = self.app_turns.get(thread_id)
         if not active: raise RuntimeError("Turno do Telegram não está ativo.")
         arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
-        if tool == "get_channel_state": return {"contentItems": [{"type": "inputText", "text": json.dumps(self._channel_state(active.chat_id), ensure_ascii=False)}], "success": True}
+        if tool == "get_channel_state": return {"contentItems": [{"type": "inputText", "text": json.dumps(self._channel_state(active.conversation_id), ensure_ascii=False)}], "success": True}
         if tool == "set_reply_mode":
-            state = self._set_reply_mode(active.chat_id, str(arguments.get("mode") or "")); active.reply_mode = state["reply_mode"]
+            state = self._set_reply_mode(active.conversation_id, str(arguments.get("mode") or "")); active.reply_mode = state["reply_mode"]
             return {"contentItems": [{"type": "inputText", "text": json.dumps(state, ensure_ascii=False)}], "success": True}
         if tool == "send_message":
             text, ttl = arguments.get("text"), arguments.get("ttl_seconds", 0)
@@ -562,7 +563,7 @@ class Gateway:
                 ids.add(option["id"]); normalized.append({"id": option["id"], "label": option["label"]})
             if not self.api: raise RuntimeError("Gateway Telegram indisponível.")
             token = secrets.token_urlsafe(12); keyboard = {"inline_keyboard": [[{"text": option["label"], "callback_data": f"ag:{token}:{index}"}] for index, option in enumerate(normalized)]}
-            sent = self.api.send(active.chat_id, question, reply_markup=keyboard, protect_content=bool(arguments.get("protect_content", False))); message_id = sent.get("message_id")
+            sent = self.api.send(active.chat_id, question, reply_markup=keyboard, protect_content=bool(arguments.get("protect_content", False)), **({"message_thread_id": active.telegram_thread_id} if active.telegram_thread_id else {})); message_id = sent.get("message_id")
             if not isinstance(message_id, int): raise RuntimeError("Telegram não retornou o identificador do menu.")
             session = MenuSession(token, active.chat_id, message_id, normalized)
             with self.menu_lock: self.menu_sessions[token] = session
@@ -625,9 +626,9 @@ class Gateway:
         normalized = " ".join(text.split())
         if normalized in active.seen_thoughts: return
         active.seen_thoughts.add(normalized)
-        if not self._conversation_settings(active.chat_id)["share_thoughts"] or not self.api: return
+        if not self._conversation_settings(active.conversation_id)["share_thoughts"] or not self.api: return
         try:
-            sent = self.api.send(active.chat_id, f"💭 {text}", protect_content=True)
+            sent = self.api.send(active.chat_id, f"💭 {text}", protect_content=True, **({"message_thread_id": active.telegram_thread_id} if active.telegram_thread_id else {}))
             if isinstance(sent.get("message_id"), int): active.thought_ids.append(sent["message_id"])
         except Exception as error: self._record_error(error)
 
@@ -648,7 +649,7 @@ class Gateway:
         return re.sub(r"(?i)(token|password|secret)\s*[=:]\s*\S+", r"\1=[redacted]", text)
 
     def _cleanup_thoughts(self, active: AppServerTurn) -> None:
-        if not self._conversation_settings(active.chat_id)["delete_thoughts"] or not self.api: return
+        if not self._conversation_settings(active.conversation_id)["delete_thoughts"] or not self.api: return
         for message_id in active.thought_ids:
             try: self.api.delete(active.chat_id, message_id)
             except Exception as error: self._record_error(error)
@@ -748,32 +749,34 @@ class Gateway:
         if text.startswith("/"): self._delete_received_command(int(chat.get("id") or sender["id"]), message)
         if text.startswith("/pair ") and self.pair and time.time() < self.pair[1] and secrets.compare_digest(text[6:].strip(), self.pair[0]):
             self.contacts.add_owner(sender); self.pair = None; synced = self._configure_owner_commands()
-            self.api.send(sender["id"], "Pairing concluído e comandos privados configurados." if synced.get("failed", 1) == 0 else "Pairing concluído, mas a configuração dos comandos falhou. Consulte o diagnóstico."); return
+            values = {"message_thread_id": message["message_thread_id"]} if isinstance(message.get("message_thread_id"), int) else {}
+            self.api.send(sender["id"], "Pairing concluído e comandos privados configurados." if synced.get("failed", 1) == 0 else "Pairing concluído, mas a configuração dos comandos falhou. Consulte o diagnóstico.", **values); return
         if sender["id"] not in self.contacts.owners(): return
-        channel = self._channel_state(sender["id"], renew=True)
-        if channel["expired"]: self._ephemeral(sender["id"], "O modo de respostas em áudio foi desligado por inatividade.")
-        if sender["id"] in self.totp_sessions:
+        channel = self._channel_state(conversation_id, renew=True)
+        if channel["expired"]: self._ephemeral(conversation_id, "O modo de respostas em áudio foi desligado por inatividade.")
+        if conversation_id in self.totp_sessions:
             if text.startswith("/"):
-                self._clear_totp_session(sender["id"]); self._ephemeral(sender["id"], "Fluxo TOTP cancelado por um novo comando.")
-            else: self._totp_password(sender["id"], message)
+                self._clear_totp_session(conversation_id); self._ephemeral(conversation_id, "Fluxo TOTP cancelado por um novo comando.")
+            else: self._totp_password(conversation_id, message)
             return
         command = text.split(maxsplit=1)[0].split("@", 1)[0].casefold() if text else ""
-        if command == "/new": self._new_conversation(sender["id"]); self.api.send(sender["id"], "Conversa reiniciada."); return
+        thread_values = {"message_thread_id": message["message_thread_id"]} if isinstance(message.get("message_thread_id"), int) else {}
+        if command == "/new": self._new_conversation(conversation_id); self.api.send(int(chat["id"]), "Conversa reiniciada.", **thread_values); return
         if command == "/totp":
-            if self._totp_enabled(): self._start_totp(sender["id"], message, text[len(text.split(maxsplit=1)[0]):].strip())
-            else: self._ephemeral(sender["id"], "TOTP não está habilitado para este Shikigami. Configure-o no setup do Gateway Telegram.")
+            if self._totp_enabled(): self._start_totp(conversation_id, message, text[len(text.split(maxsplit=1)[0]):].strip())
+            else: self._ephemeral(conversation_id, "TOTP não está habilitado para este Shikigami. Configure-o no setup do Gateway Telegram.")
             return
-        if command == "/config": self._open_config(sender["id"]); return
-        if text.startswith("/"): self._ephemeral(sender["id"], "Comando inválido. Use /new, /config ou /totp quando habilitado."); return
+        if command == "/config": self._open_config(conversation_id); return
+        if text.startswith("/"): self._ephemeral(conversation_id, "Comando inválido. Use /new, /config ou /totp quando habilitado."); return
         contains_attachment = any(isinstance(message.get(name), (dict, list)) and message.get(name) for name in ("photo", "document", "voice"))
-        if not text and not contains_attachment: self._ephemeral(sender["id"], "Mensagem sem texto ou anexo reconhecido."); return
+        if not text and not contains_attachment: self._ephemeral(conversation_id, "Mensagem sem texto ou anexo reconhecido."); return
         if contains_attachment and not self.settings.app_server_enabled:
-            self._ephemeral(sender["id"], "Anexos exigem que o App Server esteja habilitado na configuração do Gateway Telegram."); return
-        try: attachments = self._collect_attachments(sender["id"], message) if contains_attachment else []
+            self._ephemeral(conversation_id, "Anexos exigem que o App Server esteja habilitado na configuração do Gateway Telegram."); return
+        try: attachments = self._collect_attachments(conversation_id, message) if contains_attachment else []
         except Exception as error:
-            self._record_error(error); self._ephemeral(sender["id"], f"Não foi possível receber o anexo: {error}"); return
-        try: self._enqueue_turn(sender["id"], text, attachments)
-        except Exception as error: self._record_error(error); self._ephemeral(sender["id"], f"Não foi possível enfileirar a mensagem: {error}")
+            self._record_error(error); self._ephemeral(conversation_id, f"Não foi possível receber o anexo: {error}"); return
+        try: self._enqueue_turn(conversation_id, text, attachments)
+        except Exception as error: self._record_error(error); self._ephemeral(conversation_id, f"Não foi possível enfileirar a mensagem: {error}")
 
     def _group_message(self, conversation_id: str, chat: dict[str, Any], sender: dict[str, Any], message: dict[str, Any], text: str) -> None:
         """Caches every delivered group item but only routes explicit authorized invocations."""
@@ -860,13 +863,17 @@ class Gateway:
         assert self.api
         token, settings = secrets.token_urlsafe(8), self._conversation_settings(chat_id); text, keyboard = self._config_keyboard(token, settings, voice_available=self.settings.voice_enabled, execution_available=self.settings.owner_execution_preferences, allowed_models=self.settings.owner_allowed_models, allowed_efforts=self.settings.owner_allowed_efforts)
         sent = self._ephemeral(chat_id, text, 180, reply_markup=keyboard)
-        if isinstance(sent.get("message_id"), int): self.config_sessions[token] = {"chat_id": chat_id, "message_id": sent["message_id"], "expires_at": time.time() + 180}
+        if isinstance(sent.get("message_id"), int): self.config_sessions[token] = {"chat_id": str(chat_id), "message_id": sent["message_id"], "expires_at": time.time() + 180}
 
     def _config_callback(self, chat_id: int, callback: dict[str, Any], parts: list[str]) -> bool:
         if len(parts) != 3 or parts[0] != "cfg": return False
         session = self.config_sessions.get(parts[1]); action = parts[2]
-        if not session or session["chat_id"] != chat_id or time.time() > float(session["expires_at"]): self._ephemeral(chat_id, "Esta configuração expirou."); return True
-        if action == "close": self.config_sessions.pop(parts[1], None); self._delete_later(chat_id, int(session["message_id"])); return True
+        if not session or session["chat_id"] != str(chat_id) or time.time() > float(session["expires_at"]): self._ephemeral(chat_id, "Esta configuração expirou."); return True
+        if action == "close":
+            self.config_sessions.pop(parts[1], None)
+            telegram_chat_id, _telegram_thread_id = self._telegram_address(str(chat_id))
+            self._delete_later(telegram_chat_id, int(session["message_id"]))
+            return True
         if action == "audio":
             try: self._set_reply_mode(chat_id, "text" if self._conversation_settings(chat_id)["reply_mode"] == "audio" else "audio")
             except Exception as error: self._ephemeral(chat_id, str(error)); return True
@@ -884,7 +891,10 @@ class Gateway:
         else: thoughts = "execution" if action == "execution" else action == "thoughts"
         if action not in {"thoughts", "share", "delete", "back", "audio", "execution", "model", "effort", "execution-reset"}: self._ephemeral(chat_id, "Opção de configuração inválida."); return True
         text, keyboard = self._config_keyboard(parts[1], settings, thoughts, self.settings.voice_enabled, self.settings.owner_execution_preferences, self.settings.owner_allowed_models, self.settings.owner_allowed_efforts)
-        try: assert self.api; self.api.edit(chat_id, int(session["message_id"]), text, keyboard)
+        try:
+            assert self.api
+            telegram_chat_id, _telegram_thread_id = self._telegram_address(str(chat_id))
+            self.api.edit(telegram_chat_id, int(session["message_id"]), text, keyboard)
         except Exception as error: self._record_error(error); self._ephemeral(chat_id, "Não foi possível atualizar esta configuração.")
         return True
     def _turn(self, chat_id: int, text: str, attachments: list[dict[str, Any]] | None = None) -> None:
@@ -922,7 +932,7 @@ class Gateway:
                         self._tts(answer, output); self.api.send_file("sendVoice", telegram_chat_id, output, "voice", **({"message_thread_id": telegram_thread_id} if telegram_thread_id else {}))
                     except Exception as voice_error:
                         self._record_error(voice_error)
-                        if self.settings.voice_fallback_to_text: self.api.send(chat_id, "Não consegui gerar a resposta em áudio.\n\n" + answer[-3500:])
+                        if self.settings.voice_fallback_to_text: self.api.send(telegram_chat_id, "Não consegui gerar a resposta em áudio.\n\n" + answer[-3500:], **({"message_thread_id": telegram_thread_id} if telegram_thread_id else {}))
                         else: self._ephemeral(chat_id, "Não consegui gerar a resposta em áudio. Tente novamente ou altere o modo para texto.")
                     finally: shutil.rmtree(output.parent, ignore_errors=True)
                 else:
@@ -938,10 +948,11 @@ class Gateway:
 
     def _ephemeral(self, chat_id: int, text: str, seconds: float = 8, **values: Any) -> dict[str, Any]:
         assert self.api
+        telegram_chat_id, telegram_thread_id = self._telegram_address(str(chat_id))
         protect_content = bool(values.pop("protect_content", True))
-        message = self.api.send(chat_id, text, protect_content=protect_content, **values)
+        message = self.api.send(telegram_chat_id, text, protect_content=protect_content, **({"message_thread_id": telegram_thread_id} if telegram_thread_id else {}), **values)
         message_id = message.get("message_id")
-        if isinstance(message_id, int): self._schedule_delete(chat_id, message_id, seconds)
+        if isinstance(message_id, int): self._schedule_delete(telegram_chat_id, message_id, seconds)
         return message
 
     def _schedule_delete(self, chat_id: int, message_id: int, seconds: float) -> None:
@@ -977,22 +988,23 @@ class Gateway:
             if isinstance(prompt.get("message_id"), int): self.totp_sessions[chat_id]["message_ids"].append(prompt["message_id"])
         except Exception as error:
             self._record_error(error)
-            try: self.api.send(chat_id, "Não foi possível iniciar o TOTP. Consulte o diagnóstico do gateway.")
+            try: self._ephemeral(chat_id, "Não foi possível iniciar o TOTP. Consulte o diagnóstico do gateway.")
             except Exception: pass
 
     def _totp_password(self, chat_id: int, message: dict[str, Any]) -> None:
         assert self.api
         session = self.totp_sessions.pop(chat_id, None)
+        telegram_chat_id, telegram_thread_id = self._telegram_address(str(chat_id))
         try:
             message_id = message.get("message_id")
-            if isinstance(message_id, int): self.api.delete(chat_id, message_id)
+            if isinstance(message_id, int): self.api.delete(telegram_chat_id, message_id)
         except Exception: pass
         self._delete_totp_messages(chat_id, session)
         if not session or session.get("phase") != "password" or time.time() > float(session["expires_at"]): self._ephemeral(chat_id, "Sessão TOTP expirada."); return
         typing_stop = threading.Event()
         def renew_typing() -> None:
             while not typing_stop.is_set():
-                try: self.api.typing(chat_id)
+                try: self.api.typing(telegram_chat_id, **({"message_thread_id": telegram_thread_id} if telegram_thread_id else {}))
                 except Exception as error: self._record_error(error)
                 typing_stop.wait(4)
         typing_thread = threading.Thread(target=renew_typing, daemon=True); typing_thread.start()
@@ -1029,8 +1041,9 @@ class Gateway:
 
     def _delete_totp_messages(self, chat_id: int, session: dict[str, Any] | None) -> None:
         if not session: return
+        telegram_chat_id, _telegram_thread_id = self._telegram_address(str(chat_id))
         for message_id in list(session.get("message_ids", [])):
-            if isinstance(message_id, int): self._delete_later(chat_id, message_id)
+            if isinstance(message_id, int): self._delete_later(telegram_chat_id, message_id)
         session["message_ids"] = []
 
     def _clear_totp_session(self, chat_id: int) -> dict[str, Any] | None:
@@ -1040,6 +1053,8 @@ class Gateway:
         assert self.api
         sender = callback.get("from") or {}; message = callback.get("message") or {}; chat = message.get("chat") or {}; chat_id = sender.get("id")
         if chat.get("type") != "private" or not isinstance(chat_id, int) or chat_id not in self.contacts.owners(): return
+        if not isinstance(chat.get("id"), int): chat = {**chat, "id": chat_id}
+        conversation_id = self._conversation_id(chat, message)
         data = str(callback.get("data") or ""); parts = data.split(":")
         try: self.api.call("answerCallbackQuery", {"callback_query_id": callback["id"]})
         except Exception: pass
@@ -1047,20 +1062,20 @@ class Gateway:
             with self.menu_lock: session = self.menu_sessions.get(parts[1])
             try: index = int(parts[2])
             except ValueError: index = -1
-            if not session or session.chat_id != chat_id or session.message_id != message.get("message_id") or not 0 <= index < len(session.options): self._ephemeral(chat_id, "Seleção inválida ou expirada."); return
+            if not session or session.chat_id != chat_id or session.message_id != message.get("message_id") or not 0 <= index < len(session.options): self._ephemeral(conversation_id, "Seleção inválida ou expirada."); return
             session.selected = session.options[index]; session.completed.set(); return
-        if self._config_callback(chat_id, callback, parts): return
-        if len(parts) < 3 or parts[0] != "totp": self._ephemeral(chat_id, "Ação inválida ou expirada."); return
-        session = self.totp_sessions.get(chat_id)
-        if not session or session.get("phase") != "selection" or not secrets.compare_digest(str(session.get("token", "")), parts[1]) or time.time() > float(session.get("expires_at", 0)): self._ephemeral(chat_id, "Seleção TOTP expirada. Inicie /totp novamente."); return
-        if len(parts) == 4 and parts[2] == "p": self._show_totp_page(chat_id, int(parts[3])); return
-        if parts[2] == "x": self._clear_totp_session(chat_id); self._ephemeral(chat_id, "TOTP cancelado."); return
+        if self._config_callback(conversation_id, callback, parts): return
+        if len(parts) < 3 or parts[0] != "totp": self._ephemeral(conversation_id, "Ação inválida ou expirada."); return
+        session = self.totp_sessions.get(conversation_id)
+        if not session or session.get("phase") != "selection" or not secrets.compare_digest(str(session.get("token", "")), parts[1]) or time.time() > float(session.get("expires_at", 0)): self._ephemeral(conversation_id, "Seleção TOTP expirada. Inicie /totp novamente."); return
+        if len(parts) == 4 and parts[2] == "p": self._show_totp_page(conversation_id, int(parts[3])); return
+        if parts[2] == "x": self._clear_totp_session(conversation_id); self._ephemeral(conversation_id, "TOTP cancelado."); return
         try:
             entry = session["entries"][int(parts[2])]; code = Vault(self.settings).read(entry, "totp")
-            self._clear_totp_session(chat_id); remaining = 30 - (int(time.time()) % 30)
-            self._ephemeral(chat_id, code, remaining + 5, protect_content=False); self._ephemeral(chat_id, f"Expira em {remaining} segundos.", remaining + 5)
+            self._clear_totp_session(conversation_id); remaining = 30 - (int(time.time()) % 30)
+            self._ephemeral(conversation_id, code, remaining + 5, protect_content=False); self._ephemeral(conversation_id, f"Expira em {remaining} segundos.", remaining + 5)
         except Exception as error:
-            self._record_error(error); self._ephemeral(chat_id, "Não foi possível obter este TOTP.")
+            self._record_error(error); self._ephemeral(conversation_id, "Não foi possível obter este TOTP.")
     def handle(self, method: str, params: dict[str, Any]) -> Any:
         if method == "ping": return {"service": "telegram", "state": "running"}
         if method == "telegram.status": return {"owners": len(self.contacts.owners()), "listener": "running", "totp_enabled": self._totp_enabled(), "last_error": self.last_error, "commands": json_file(self.settings.data_dir / "state" / "gateway-status.json", {}).get("commands"), "execution_mode": "app-server" if self.settings.app_server_enabled else "codex-exec", "app_server_running": bool(self.app_server and self.app_server.running()), "app_server_idle_timeout_seconds": self.settings.app_server_idle_seconds}
