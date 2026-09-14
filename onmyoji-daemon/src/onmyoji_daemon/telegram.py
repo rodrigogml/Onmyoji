@@ -1068,6 +1068,11 @@ class Gateway:
             except ValueError: index = -1
             if not session or session.chat_id != chat_id or session.message_id != message.get("message_id") or not 0 <= index < len(session.options): self._ephemeral(conversation_id, "Seleção inválida ou expirada."); return
             session.selected = session.options[index]; session.completed.set(); return
+        if len(parts) == 3 and parts[0] == "cfg":
+            session = self.config_sessions.get(parts[1])
+            if session and session.get("message_id") == message.get("message_id"):
+                expected_chat_id, _topic_values = self._telegram_address(str(session["chat_id"]))
+                if expected_chat_id == int(chat["id"]): conversation_id = str(session["chat_id"])
         if self._config_callback(conversation_id, callback, parts): return
         if len(parts) < 3 or parts[0] != "totp": self._ephemeral(conversation_id, "Ação inválida ou expirada."); return
         session = self.totp_sessions.get(conversation_id)
