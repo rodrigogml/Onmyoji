@@ -202,6 +202,30 @@ def test_private_topic_ephemeral_controls_stay_in_the_active_topic(tmp_path):
     assert sent == [(9, "controle", {"protect_content": True, "message_thread_id": 42})]
 
 
+def test_config_command_keeps_execution_preferences_scoped_to_each_private_topic(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data)); gateway.contacts.add_owner({"id": 9, "first_name": "owner"})
+    gateway.settings = replace(gateway.settings, model="default-model", effort="medium", owner_allowed_models=("topic-model", "other-model"), owner_allowed_efforts=("low", "high"))
+    sent, edited = [], []
+    gateway.api = type("Api", (), {
+        "delete": lambda *_args: None,
+        "send": lambda _self, chat, text, **values: sent.append((chat, text, values)) or {"message_id": len(sent)},
+        "edit": lambda _self, chat, message, text, keyboard: edited.append((chat, message, text, keyboard)),
+        "call": lambda *_args, **_kwargs: None,
+    })()
+
+    gateway._update({"message": {"message_id": 1, "chat": {"id": 9, "type": "private"}, "from": {"id": 9}, "text": "/config"}})
+    direct_token = next(iter(gateway.config_sessions))
+    gateway._callback({"id": "direct", "from": {"id": 9}, "message": {"message_id": 1, "chat": {"id": 9, "type": "private"}}, "data": f"cfg:{direct_token}:model"})
+
+    gateway._update({"message": {"message_id": 2, "chat": {"id": 9, "type": "private"}, "from": {"id": 9}, "message_thread_id": 42, "text": "/config"}})
+    topic_token = next(token for token in gateway.config_sessions if token != direct_token)
+    gateway._callback({"id": "topic", "from": {"id": 9}, "message": {"message_id": 2, "chat": {"id": 9, "type": "private"}, "message_thread_id": 42}, "data": f"cfg:{topic_token}:effort"})
+
+    assert gateway._execution_preferences(9) == ("topic-model", "medium")
+    assert gateway._execution_preferences("private:9:42") == ("default-model", "low")
+    assert sent[-1][2]["message_thread_id"] == 42 and len(edited) == 2
+
 def test_context_window_reports_locally_dropped_messages(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data); gateway = Gateway(Settings.load(tmp_path, data))
     channel, sender = "group:-1001:12", {"id": 7, "first_name": "other"}
