@@ -226,6 +226,34 @@ def test_config_command_keeps_execution_preferences_scoped_to_each_private_topic
     assert gateway._execution_preferences("private:9:42") == ("default-model", "low")
     assert sent[-1][2]["message_thread_id"] == 42 and len(edited) == 2
 
+def test_config_execution_submenus_select_the_current_private_topic(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data)); gateway.contacts.add_owner({"id": 9, "first_name": "owner"})
+    gateway.settings = replace(gateway.settings, model="default-model", owner_allowed_models=("first-model", "second-model"), owner_allowed_efforts=("low", "high"))
+    sent, edited = [], []
+    gateway.api = type("Api", (), {
+        "delete": lambda *_args: None,
+        "send": lambda _self, chat, text, **values: sent.append((chat, text, values)) or {"message_id": len(sent)},
+        "edit": lambda _self, chat, message, text, keyboard: edited.append((chat, message, text, keyboard)),
+        "call": lambda *_args, **_kwargs: None,
+    })()
+
+    gateway._update({"message": {"message_id": 7, "chat": {"id": 9, "type": "private"}, "from": {"id": 9}, "message_thread_id": 42, "text": "/config"}})
+    token, session = next(iter(gateway.config_sessions.items()))
+    callback_message = {"message_id": session["message_id"], "chat": {"id": 9, "type": "private"}, "message_thread_id": 42}
+    gateway._callback({"id": "execution", "from": {"id": 9}, "message": callback_message, "data": f"cfg:{token}:execution"})
+    gateway._callback({"id": "models", "from": {"id": 9}, "message": callback_message, "data": f"cfg:{token}:models"})
+
+    title, keyboard = edited[-1][2:]
+    assert title == "Configurações › Execução › Modelo"
+    assert keyboard["inline_keyboard"][0][0]["text"] == "✓ first-model"
+    assert keyboard["inline_keyboard"][1][0]["callback_data"] == f"cfg:{token}:model-1"
+
+    gateway._callback({"id": "choose", "from": {"id": 9}, "message": callback_message, "data": f"cfg:{token}:model-1"})
+    assert gateway._execution_preferences("private:9:42")[0] == "second-model"
+    assert edited[-1][2] == "Configurações › Execução"
+
+
 def test_config_command_uses_direct_messages_topic_id_for_a_direct_message_topic(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
     gateway = Gateway(Settings.load(tmp_path, data)); gateway.contacts.add_owner({"id": 9, "first_name": "owner"})

@@ -353,6 +353,12 @@ class Gateway:
         self.last_error = __import__("re").sub(r"(?i)(token|password|secret)\s*[=:]\s*\S+", r"\1=[redacted]", message)
         state = json_file(self.settings.data_dir / "state" / "gateway-status.json", {})
         state.update({"last_error": self.last_error, "updated_at": time.time()}); write_json(self.settings.data_dir / "state" / "gateway-status.json", state)
+    def _diagnostic(self, event: str, **values: Any) -> None:
+        state = json_file(self.settings.data_dir / "state" / "gateway-status.json", {})
+        entries = state.setdefault("diagnostics", [])
+        if not isinstance(entries, list): entries = state["diagnostics"] = []
+        entries.append({"at": time.time(), "event": event, **values})
+        state["diagnostics"] = entries[-30:]; write_json(self.settings.data_dir / "state" / "gateway-status.json", state)
     def _configure_owner_commands(self) -> dict[str, int]:
         if not self.api: return
         owners, verified, failed = self.contacts.owners(), 0, 0
@@ -859,7 +865,15 @@ class Gateway:
             rows.append([{"text": "Fechar", "callback_data": f"cfg:{token}:close"}]); return "Configurações do bot", {"inline_keyboard": rows}
         if thoughts == "execution":
             model = settings["owner_model"] or allowed_models[0]; effort = settings["owner_effort"] or allowed_efforts[0]
-            return "Configurações › Execução", {"inline_keyboard": [[{"text": f"Modelo: {model}", "callback_data": f"cfg:{token}:model"}], [{"text": f"Raciocínio: {effort}", "callback_data": f"cfg:{token}:effort"}], [{"text": "↺ Padrão do setup", "callback_data": f"cfg:{token}:execution-reset"}], [{"text": "‹ Voltar", "callback_data": f"cfg:{token}:back"}], [{"text": "Fechar", "callback_data": f"cfg:{token}:close"}]]}
+            return "Configurações › Execução", {"inline_keyboard": [[{"text": f"Modelo: {model}", "callback_data": f"cfg:{token}:models"}], [{"text": f"Raciocínio: {effort}", "callback_data": f"cfg:{token}:efforts"}], [{"text": "↺ Padrão do setup", "callback_data": f"cfg:{token}:execution-reset"}], [{"text": "‹ Voltar", "callback_data": f"cfg:{token}:back"}], [{"text": "Fechar", "callback_data": f"cfg:{token}:close"}]]}
+        if thoughts == "models":
+            selected = settings["owner_model"] or allowed_models[0]
+            rows = [[{"text": f"{'✓ ' if model == selected else ''}{model}", "callback_data": f"cfg:{token}:model-{index}"}] for index, model in enumerate(allowed_models)]
+            return "Configurações › Execução › Modelo", {"inline_keyboard": rows + [[{"text": "‹ Voltar", "callback_data": f"cfg:{token}:execution"}], [{"text": "Fechar", "callback_data": f"cfg:{token}:close"}]]}
+        if thoughts == "efforts":
+            selected = settings["owner_effort"] or allowed_efforts[0]
+            rows = [[{"text": f"{'✓ ' if effort == selected else ''}{effort}", "callback_data": f"cfg:{token}:effort-{index}"}] for index, effort in enumerate(allowed_efforts)]
+            return "Configurações › Execução › Raciocínio", {"inline_keyboard": rows + [[{"text": "‹ Voltar", "callback_data": f"cfg:{token}:execution"}], [{"text": "Fechar", "callback_data": f"cfg:{token}:close"}]]}
         shared, deleted = ("☑" if settings["share_thoughts"] else "☐"), ("☑" if settings["delete_thoughts"] else "☐")
         return "Configurações › Pensamentos", {"inline_keyboard": [[{"text": f"{shared} Compartilha Pensamentos", "callback_data": f"cfg:{token}:share"}], [{"text": f"{deleted} Excluir Pensamentos", "callback_data": f"cfg:{token}:delete"}], [{"text": "‹ Voltar", "callback_data": f"cfg:{token}:back"}], [{"text": "Fechar", "callback_data": f"cfg:{token}:close"}]]}
 
@@ -867,16 +881,20 @@ class Gateway:
         assert self.api
         token, settings = secrets.token_urlsafe(8), self._conversation_settings(chat_id); text, keyboard = self._config_keyboard(token, settings, voice_available=self.settings.voice_enabled, execution_available=self.settings.owner_execution_preferences, allowed_models=self.settings.owner_allowed_models, allowed_efforts=self.settings.owner_allowed_efforts)
         sent = self._ephemeral(chat_id, text, 180, reply_markup=keyboard)
-        if isinstance(sent.get("message_id"), int): self.config_sessions[token] = {"chat_id": str(chat_id), "message_id": sent["message_id"], "expires_at": time.time() + 180}
+        if isinstance(sent.get("message_id"), int):
+            self.config_sessions[token] = {"chat_id": str(chat_id), "message_id": sent["message_id"], "expires_at": time.time() + 180}
+            self._diagnostic("config.open", conversation=str(chat_id), message_id=sent["message_id"])
 
     def _config_callback(self, chat_id: int, callback: dict[str, Any], parts: list[str]) -> bool:
         if len(parts) != 3 or parts[0] != "cfg": return False
         session = self.config_sessions.get(parts[1]); action = parts[2]
+        self._diagnostic("config.callback", action=action, conversation=str(chat_id), session_found=bool(session), callback_message_id=callback.get("message", {}).get("message_id"))
         if not session or session["chat_id"] != str(chat_id) or time.time() > float(session["expires_at"]): self._ephemeral(chat_id, "Esta configuração expirou."); return True
         if action == "close":
             self.config_sessions.pop(parts[1], None)
             telegram_chat_id, _topic_values = self._telegram_address(str(chat_id))
             self._delete_later(telegram_chat_id, int(session["message_id"]))
+            self._diagnostic("config.close", conversation=str(chat_id), message_id=session["message_id"])
             return True
         if action == "audio":
             try: self._set_reply_mode(chat_id, "text" if self._conversation_settings(chat_id)["reply_mode"] == "audio" else "audio")
@@ -884,6 +902,18 @@ class Gateway:
         settings = self._conversation_settings(chat_id)
         if action in {"share", "delete"}:
             column = "share_thoughts" if action == "share" else "delete_thoughts"; self.database.execute(f"UPDATE conversations SET {column} = NOT {column}, updated_at=? WHERE chat_id=?", (time.time(), str(chat_id))); self.database.commit(); settings = self._conversation_settings(chat_id); thoughts = True
+        elif action.startswith(("model-", "effort-")):
+            if not self.settings.owner_execution_preferences: return True
+            prefix, _, raw_index = action.partition("-")
+            permitted = self.settings.owner_allowed_models if prefix == "model" else self.settings.owner_allowed_efforts
+            try: index = int(raw_index)
+            except ValueError: index = -1
+            if not 0 <= index < len(permitted): return True
+            column = "owner_model" if prefix == "model" else "owner_effort"
+            if str(settings[column] or "") != permitted[index]:
+                self.database.execute(f"UPDATE conversations SET {column}=?, updated_at=? WHERE chat_id=?", (permitted[index], time.time(), str(chat_id)))
+                self.database.commit(); settings = self._conversation_settings(chat_id)
+            thoughts = "execution"
         elif action in {"model", "effort", "execution-reset"}:
             if not self.settings.owner_execution_preferences: self._ephemeral(chat_id, "Preferências de execução não estão liberadas pelo setup."); return True
             if action == "execution-reset": self.database.execute("UPDATE conversations SET owner_model=NULL, owner_effort=NULL, updated_at=? WHERE chat_id=?", (time.time(), str(chat_id)))
@@ -892,14 +922,22 @@ class Gateway:
                 value = permitted[(permitted.index(current) + 1) % len(permitted)] if current in permitted else permitted[0]
                 self.database.execute(f"UPDATE conversations SET {column}=?, updated_at=? WHERE chat_id=?", (value, time.time(), str(chat_id)))
             self.database.commit(); settings = self._conversation_settings(chat_id); thoughts = "execution"
-        else: thoughts = "execution" if action == "execution" else action == "thoughts"
-        if action not in {"thoughts", "share", "delete", "back", "audio", "execution", "model", "effort", "execution-reset"}: self._ephemeral(chat_id, "Opção de configuração inválida."); return True
+        else: thoughts = "execution" if action == "execution" else action if action in {"thoughts", "models", "efforts"} else False
+        if action not in {"thoughts", "share", "delete", "back", "audio", "execution", "models", "efforts", "model", "effort", "execution-reset"} and not action.startswith(("model-", "effort-")): self._ephemeral(chat_id, "Opção de configuração inválida."); return True
         text, keyboard = self._config_keyboard(parts[1], settings, thoughts, self.settings.voice_enabled, self.settings.owner_execution_preferences, self.settings.owner_allowed_models, self.settings.owner_allowed_efforts)
         try:
             assert self.api
-            telegram_chat_id, _topic_values = self._telegram_address(str(chat_id))
-            self.api.edit(telegram_chat_id, int(session["message_id"]), text, keyboard)
-        except Exception as error: self._record_error(error); self._ephemeral(chat_id, "Não foi possível atualizar esta configuração.")
+            telegram_chat_id, topic_values = self._telegram_address(str(chat_id))
+            if "direct_messages_topic_id" in topic_values:
+                previous = int(session["message_id"])
+                sent = self.api.send(telegram_chat_id, text, protect_content=True, reply_markup=keyboard, **topic_values)
+                if not isinstance(sent.get("message_id"), int): raise RuntimeError("Telegram did not return the configuration message id.")
+                session["message_id"] = sent["message_id"]
+                self._delete_later(telegram_chat_id, previous)
+            else: self.api.edit(telegram_chat_id, int(session["message_id"]), text, keyboard)
+            self._diagnostic("config.rendered", conversation=str(chat_id), action=action, message_id=session["message_id"], route="direct" if "direct_messages_topic_id" in topic_values else "thread" if "message_thread_id" in topic_values else "chat")
+        except Exception as error:
+            self._record_error(error); self._diagnostic("config.render_failed", conversation=str(chat_id), action=action, error=self.last_error); self._ephemeral(chat_id, "Não foi possível atualizar esta configuração.")
         return True
     def _turn(self, chat_id: int, text: str, attachments: list[dict[str, Any]] | None = None) -> None:
         with self.turn_locks_lock: lock = self.turn_locks.setdefault(chat_id, threading.Lock())
