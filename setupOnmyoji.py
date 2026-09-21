@@ -620,6 +620,15 @@ def daemon_menu(root: Path) -> None:
     def daemon_running() -> bool:
         return command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "list-services"], quiet=True).returncode == 0
 
+    def miniapps_state() -> dict[str, object]:
+        completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "list-services"], quiet=True)
+        if completed.returncode != 0: return {}
+        try:
+            services = json.loads(completed.stdout)
+            return next((item for item in services if item.get("name") == "mini-apps"), {})
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            return {}
+
     def offer_restart() -> None:
         if not daemon_running(): return
         answer = prompt("O daemon está em execução; reiniciar agora para efetivar a alteração? [S/n]: ").strip().casefold()
@@ -860,8 +869,12 @@ def daemon_menu(root: Path) -> None:
 
     def miniapps_menu() -> None:
         while True:
+            service = miniapps_state()
+            enabled = service.get("enabled") is True
+            running = service.get("state") == "running"
+            service_label = "EM EXECUÇÃO" if running else ("PARADO" if enabled else "DESABILITADO")
             screen("Mini Apps", "Gateway HTTPS local e Cloudflare Tunnel")
-            item("1.", "Habilitar/desabilitar serviço")
+            item("1.", "Habilitar/desabilitar serviço", service_label)
             item("2.", "Status TLS")
             item("3.", "Instalar confiança da CA local")
             item("4.", "Configurar Tunnel")
@@ -872,15 +885,22 @@ def daemon_menu(root: Path) -> None:
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
             if choice == "1":
-                state = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "list-services"], quiet=True)
-                try:
-                    services = json.loads(state.stdout)
-                    enabled = any(item.get("name") == "mini-apps" and item.get("enabled") is True for item in services)
-                except (json.JSONDecodeError, TypeError):
-                    result(False, "Não foi possível consultar o estado do serviço Mini Apps.")
+                if not service:
+                    result(False, "Não foi possível consultar o estado do serviço Mini Apps; confirme que o daemon está em execução.")
                     continue
-                lifecycle("disable" if enabled else "enable", ["mini-apps"]); offer_restart(); continue
+                if enabled:
+                    lifecycle("disable", ["mini-apps"])
+                elif lifecycle("enable", ["mini-apps"]):
+                    lifecycle("start", ["mini-apps"])
+                continue
             if not daemon_running(): result(False, "Inicie o daemon antes de administrar Mini Apps."); continue
+            service = miniapps_state()
+            if service.get("state") != "running":
+                if service.get("enabled") is True:
+                    result(False, "O serviço Mini Apps está habilitado, mas parado. Use a opção 1 para desabilitar e habilitar novamente, ou reinicie o daemon.")
+                else:
+                    result(False, "O serviço Mini Apps está desabilitado. Habilite-o primeiro pela opção 1.")
+                continue
             base = [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "mini-apps"]
             if choice == "2": completed = command(base + ["tls", "status"], quiet=True)
             elif choice == "3":

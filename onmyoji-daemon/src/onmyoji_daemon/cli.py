@@ -3,8 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
 
-from .rpc import call
+from .rpc import RpcError, call
 from .supervisor import Supervisor, endpoint
 from . import management
 from .launcher import main as interactive_main
@@ -83,7 +84,12 @@ def main(argv: list[str] | None = None) -> int:
             elif action == "update": params = {"id": args.id, "values": json.loads(args.values)}
             elif action in {"publish", "unpublish", "reload", "delete"}: params = {"id": args.id}
             else: params = {}
-    print(json.dumps(call(host, port, token, method, params), ensure_ascii=False)); return 0
+    try:
+        response = call(host, port, token, method, params)
+    except RpcError as error:
+        print(f"Erro: {error}", file=sys.stderr)
+        return 2
+    print(json.dumps(response, ensure_ascii=False)); return 0
 
 
 if __name__ == "__main__": raise SystemExit(main())
