@@ -82,6 +82,11 @@ class CloudflareClient:
     def status(self, account_id: str, tunnel_id: str) -> dict[str, Any]:
         return dict(self._call("GET", f"/accounts/{account_id}/cfd_tunnel/{tunnel_id}"))
 
+    def tunnel_token(self, account_id: str, tunnel_id: str) -> str:
+        value = self._call("GET", f"/accounts/{account_id}/cfd_tunnel/{tunnel_id}/token")
+        if not isinstance(value, str) or not value: raise TunnelError("Cloudflare não retornou o token de execução do Tunnel")
+        return value
+
 
 class TunnelProcess:
     def __init__(self, executable: str, token: str):
@@ -106,7 +111,7 @@ class TunnelProcess:
         # cloudflared exige o token como argumento no modo remotely-managed;
         # nunca o registramos em configuração ou logs do Onmyoji.
         self.last_error = None
-        self.process = subprocess.Popen([self.executable, "tunnel", "--token", self.token, "run"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+        self.process = subprocess.Popen([self.executable, "tunnel", "run", "--token", self.token], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
         threading.Thread(target=self._capture_output, daemon=True).start()
         time.sleep(0.25)
         if self.process.poll() is not None: raise TunnelError(self.last_error or f"cloudflared encerrou com código {self.process.returncode}")
@@ -167,7 +172,9 @@ class TunnelController:
     def start(self) -> dict[str, Any]:
         settings = self.settings()
         if not settings or not settings.get("tunnel_id"): raise TunnelError("tunnel ainda não foi provisionado")
-        self.process = TunnelProcess(str(settings["cloudflared_executable"]), self._token(settings)); self.process.start(); return self.status()
+        api_token = self._token(settings)
+        run_token = CloudflareClient(api_token).tunnel_token(str(settings["account_id"]), str(settings["tunnel_id"]))
+        self.process = TunnelProcess(str(settings["cloudflared_executable"]), run_token); self.process.start(); return self.status()
 
     @staticmethod
     def cloudflared_download_url(system: str | None = None, machine: str | None = None) -> str:

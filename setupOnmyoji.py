@@ -961,7 +961,7 @@ def daemon_menu(root: Path) -> None:
                 hostname = prompt("Hostname público: ").strip()
                 print("\n  Perfil e entrada apenas apontam para o token já salvo no KeePass.")
                 keepass_profile = prompt("Perfil KeePass: ").strip()
-                token_entry = prompt("Entrada KeePass do token Cloudflare: ").strip()
+                token_entry = prompt("Entrada KeePass do token de API Cloudflare: ").strip()
                 print("\n  Pressione Enter se cloudflared estiver no PATH; caso contrário, informe o caminho do executável.")
                 executable = prompt("Executável cloudflared [cloudflared]: ").strip() or "cloudflared"
                 values = {"account_id": account_id, "zone_id": zone_id, "hostname": hostname, "keepass_profile": keepass_profile, "token_entry": token_entry, "cloudflared_executable": executable}

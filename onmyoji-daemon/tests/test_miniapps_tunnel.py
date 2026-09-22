@@ -4,6 +4,7 @@ import pytest
 import sys
 import time
 
+import onmyoji_daemon.miniapps_tunnel as module
 from onmyoji_daemon.miniapps_tunnel import CloudflareClient, TunnelController, TunnelDefinition, TunnelError, TunnelProcess
 
 
@@ -18,6 +19,15 @@ def test_cloudflare_writes_require_explicit_confirmation():
     with pytest.raises(TunnelError): client.create_tunnel(definition, False)
     with pytest.raises(TunnelError): client.configure_ingress(definition, "tunnel", "https://localhost:39391", False)
     with pytest.raises(TunnelError): client.ensure_dns(definition, "tunnel", False)
+
+
+def test_cloudflare_returns_the_runtime_token_only_from_its_tunnel_endpoint(monkeypatch):
+    client = CloudflareClient("api-token")
+    received = {}
+    monkeypatch.setattr(client, "_call", lambda method, path, body=None: received.update(method=method, path=path) or "runtime-token")
+
+    assert client.tunnel_token("account", "tunnel") == "runtime-token"
+    assert received == {"method": "GET", "path": "/accounts/account/cfd_tunnel/tunnel/token"}
 
 
 def test_tunnel_controller_persists_only_configuration_references(tmp_path):
@@ -57,3 +67,23 @@ def test_tunnel_process_reports_sanitized_startup_failure():
     time.sleep(0.05)
     assert "private-token" not in str(process.status())
     assert process.status()["last_error"]
+
+
+def test_tunnel_controller_uses_a_runtime_token_without_persisting_it(tmp_path, monkeypatch):
+    controller = TunnelController(tmp_path, tmp_path / "state", "https://localhost:39391")
+    controller.configure({"account_id": "account", "zone_id": "zone", "hostname": "apps.example.com", "tunnel_id": "tunnel", "keepass_profile": "local", "token_entry": "APIs/Tunnel", "cloudflared_executable": "cloudflared"})
+    monkeypatch.setattr(controller, "_token", lambda _settings: "api-token")
+    received = {}
+    class Client:
+        def __init__(self, token): received["api_token"] = token
+        def tunnel_token(self, account_id, tunnel_id): received.update(account_id=account_id, tunnel_id=tunnel_id); return "runtime-token"
+    class Process:
+        def __init__(self, executable, token): received.update(executable=executable, runtime_token=token)
+        def start(self): pass
+        def status(self): return {"running": True, "pid": 1, "last_error": None}
+        def stop(self): pass
+    monkeypatch.setattr(module, "CloudflareClient", Client)
+    monkeypatch.setattr(module, "TunnelProcess", Process)
+
+    assert controller.start()["running"]
+    assert received == {"api_token": "api-token", "account_id": "account", "tunnel_id": "tunnel", "executable": "cloudflared", "runtime_token": "runtime-token"}
