@@ -40,3 +40,16 @@ def test_cli_routes_miniapps_diagnose_to_the_gateway(monkeypatch, capsys):
     assert result == 0
     assert received == {"method": "mini-apps.diagnose", "params": {}}
     assert '"local_ready": true' in captured.out
+
+
+def test_cli_allows_extra_time_for_local_ca_installation(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "endpoint", lambda _root: ("127.0.0.1", 1234, "token"))
+    received = {}
+    monkeypatch.setattr(cli, "call", lambda _host, _port, _token, method, params, timeout: received.update(method=method, params=params, timeout=timeout) or {"installed": True})
+
+    result = cli.main(["--onmyoji-root", ".", "mini-apps", "tls", "install-trust", "--confirm"])
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert received == {"method": "mini-apps.tls.install-trust", "params": {"confirm": True}, "timeout": 30}
+    assert '"installed": true' in captured.out

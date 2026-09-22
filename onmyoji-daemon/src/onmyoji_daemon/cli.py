@@ -85,9 +85,10 @@ def main(argv: list[str] | None = None) -> int:
             elif action == "update": params = {"id": args.id, "values": json.loads(args.values)}
             elif action in {"publish", "unpublish", "reload", "delete"}: params = {"id": args.id}
             else: params = {}
+    timeout = 30 if args.action == "mini-apps" and args.miniapps_action == "tls" and args.tls_action == "install-trust" else 5
     try:
-        response = call(host, port, token, method, params)
-    except RpcError as error:
+        response = call(host, port, token, method, params, timeout=timeout)
+    except (OSError, RpcError, TimeoutError) as error:
         print(f"Erro: {error}", file=sys.stderr)
         return 2
     if args.action in {"start", "restart"} and isinstance(response, dict) and response.get("state") == "failed":

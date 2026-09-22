@@ -938,7 +938,7 @@ def daemon_menu(root: Path) -> None:
             if diagnosis is None: return
             tunnel = diagnosis.get("tunnel", {}) if isinstance(diagnosis.get("tunnel"), dict) else {}
             screen("Domínio e Cloudflare Tunnel", "Exposição pública opcional; todas as Mini Apps continuam protegidas por autenticação")
-            item("1.", "Configurar domínio e credencial", "IDs Cloudflare e referência KeePass; nenhum token é exibido")
+            item("1.", "Entender pré-requisitos e configurar", "Domínio, permissões Cloudflare e referência KeePass")
             item("2.", "Provisionar Tunnel e DNS", "Cria/altera recursos Cloudflare após confirmação")
             item("3.", "Consultar/iniciar/reiniciar Tunnel", "Em execução" if tunnel.get("running") else "Parado")
             item("4.", "Baixar cloudflared oficial", "Somente se o executável não estiver disponível")
@@ -946,8 +946,25 @@ def daemon_menu(root: Path) -> None:
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
             if choice == "1":
-                print("\n  Informe referências, nunca o token do Cloudflare. O token deve existir no KeePass.")
-                values = {"account_id": prompt("Cloudflare Account ID: ").strip(), "zone_id": prompt("Cloudflare Zone ID: ").strip(), "hostname": prompt("Hostname público (ex.: apps.exemplo.com): ").strip(), "keepass_profile": prompt("Perfil KeePass: ").strip(), "token_entry": prompt("Entrada KeePass do token: ").strip(), "cloudflared_executable": prompt("Executável cloudflared [cloudflared]: ").strip() or "cloudflared"}
+                screen("Preparar acesso público", "Reúna estes dados antes de criar qualquer recurso na Cloudflare")
+                print("  1. Um domínio já adicionado à Cloudflare.")
+                print("  2. Um token Cloudflare guardado no KeePass, com permissão Account > Cloudflare Tunnel > Edit e Zone > DNS > Edit.")
+                print("  3. Account ID e Zone ID, encontrados no painel Overview da conta e da zona.")
+                print("  4. Um hostname livre dentro da zona, por exemplo apps.seudominio.com.")
+                print("\n  O Onmyōji recebe somente os IDs e a referência do token no KeePass; o token nunca é solicitado nem gravado aqui.")
+                if prompt("Digite configurar quando os dados estiverem prontos, ou X para voltar: ").strip().casefold() != "configurar": result(False, "Configuração pública adiada; o Gateway local continua disponível."); continue
+                print("\n  Account ID identifica sua conta Cloudflare; copie-o do painel da conta.")
+                account_id = prompt("Cloudflare Account ID: ").strip()
+                print("\n  Zone ID identifica a zona DNS do domínio; copie-o do Overview do domínio.")
+                zone_id = prompt("Cloudflare Zone ID: ").strip()
+                print("\n  Hostname é o endereço que será criado no DNS, por exemplo apps.seudominio.com.")
+                hostname = prompt("Hostname público: ").strip()
+                print("\n  Perfil e entrada apenas apontam para o token já salvo no KeePass.")
+                keepass_profile = prompt("Perfil KeePass: ").strip()
+                token_entry = prompt("Entrada KeePass do token Cloudflare: ").strip()
+                print("\n  Pressione Enter se cloudflared estiver no PATH; caso contrário, informe o caminho do executável.")
+                executable = prompt("Executável cloudflared [cloudflared]: ").strip() or "cloudflared"
+                values = {"account_id": account_id, "zone_id": zone_id, "hostname": hostname, "keepass_profile": keepass_profile, "token_entry": token_entry, "cloudflared_executable": executable}
                 completed = miniapps_command("tunnel", "configure", "--values", json.dumps(values))
             elif choice == "2":
                 if prompt("Digite provisionar para criar/atualizar Tunnel, ingress e DNS: ").strip() != "provisionar": result(False, "Cancelado."); continue
@@ -993,11 +1010,13 @@ def daemon_menu(root: Path) -> None:
         diagnosis = show_miniapps_diagnosis()
         if diagnosis is None: return
         if prompt("Instalar a confiança da CA local agora? [s/N]: ").strip().casefold() in {"s", "sim"}:
-            completed = miniapps_command("tls", "install-trust", "--confirm"); result(completed.returncode == 0, (completed.stdout or completed.stderr).strip())
+            completed = miniapps_command("tls", "install-trust", "--confirm")
+            if completed.returncode == 0: result(True, (completed.stdout or completed.stderr).strip())
+            else: result(False, "A confiança local não foi confirmada. Isso não bloqueia o uso público; tente novamente em 'Gateway HTTPS e confiança local'. " + (completed.stdout or completed.stderr).strip())
         apps = diagnosis.get("apps", {}) if isinstance(diagnosis.get("apps"), dict) else {}
         if int(apps.get("total", 0)) == 0: print("\n  Próximo passo local: crie a Mini App dentro do workspace e publique-a pela skill Mini Apps.")
         if choice == "p":
-            print("\n  Próximo passo público: configure o domínio, a referência do token Cloudflare no KeePass e provisione o Tunnel.")
+            print("\n  Agora você verá os pré-requisitos do domínio. Se ainda não tiver domínio, token ou IDs Cloudflare, escolha voltar: nenhuma configuração pública é obrigatória neste momento.")
             miniapps_public_menu()
 
     def miniapps_menu() -> None:
