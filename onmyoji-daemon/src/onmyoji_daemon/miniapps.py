@@ -258,7 +258,7 @@ class MiniAppsGateway:
             "state": "ok" if gateway_ready else "action",
             "label": "Gateway HTTPS local",
             "detail": f"Em execução em https://localhost:{self.http_port}." if gateway_ready else "O Gateway não está aceitando conexões locais.",
-            "action": "Habilite e inicie o serviço Mini Apps.",
+            "action": "" if gateway_ready else "Habilite e inicie o serviço Mini Apps.",
         })
         try:
             workspace = self._workspace()
@@ -274,7 +274,7 @@ class MiniAppsGateway:
             "state": "ok" if tls_ready else "action",
             "label": "Certificados TLS locais",
             "detail": "Certificados da instância estão prontos." if tls_ready else "Os certificados locais ainda não estão disponíveis.",
-            "action": "Inicie o serviço Mini Apps para gerar os certificados locais.",
+            "action": "" if tls_ready else "Inicie o serviço Mini Apps para gerar os certificados locais.",
         })
         checks.append({
             "id": "browser_trust",
