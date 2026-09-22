@@ -106,7 +106,7 @@ class TunnelProcess:
         # cloudflared exige o token como argumento no modo remotely-managed;
         # nunca o registramos em configuração ou logs do Onmyoji.
         self.last_error = None
-        self.process = subprocess.Popen([self.executable, "tunnel", "run", "--token", self.token], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+        self.process = subprocess.Popen([self.executable, "tunnel", "--token", self.token, "run"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
         threading.Thread(target=self._capture_output, daemon=True).start()
         time.sleep(0.25)
         if self.process.poll() is not None: raise TunnelError(self.last_error or f"cloudflared encerrou com código {self.process.returncode}")
