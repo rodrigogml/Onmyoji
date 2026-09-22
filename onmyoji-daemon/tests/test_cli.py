@@ -27,3 +27,16 @@ def test_cli_treats_failed_service_start_as_failure(monkeypatch, capsys):
     assert result == 2
     assert captured.out == ""
     assert captured.err == "Erro: No module named dependency\n"
+
+
+def test_cli_routes_miniapps_diagnose_to_the_gateway(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "endpoint", lambda _root: ("127.0.0.1", 1234, "token"))
+    received = {}
+    monkeypatch.setattr(cli, "call", lambda _host, _port, _token, method, params: received.update(method=method, params=params) or {"local_ready": True})
+
+    result = cli.main(["--onmyoji-root", ".", "mini-apps", "diagnose"])
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert received == {"method": "mini-apps.diagnose", "params": {}}
+    assert '"local_ready": true' in captured.out

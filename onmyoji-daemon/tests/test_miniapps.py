@@ -41,6 +41,47 @@ def test_rejects_entrypoint_with_syntax_error(tmp_path):
     else: raise AssertionError("broken entrypoint was accepted")
 
 
+def test_diagnose_distinguishes_local_readiness_from_optional_public_access(tmp_path):
+    gateway, workspace = configured_gateway(tmp_path)
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0)); gateway.http_port = int(probe.getsockname()[1])
+    gateway.start_http()
+    try:
+        diagnosis = gateway.diagnose()
+        checks = {item["id"]: item for item in diagnosis["checks"]}
+        assert diagnosis["local_ready"]
+        assert not diagnosis["public_ready"]
+        assert checks["workspace"]["detail"] == str(workspace)
+        assert checks["apps"]["state"] == "info"
+        assert checks["tunnel"]["state"] == "info"
+        assert "opcional" in checks["tunnel"]["detail"]
+    finally:
+        gateway.stop_http()
+        gateway.db.close()
+
+
+def test_diagnose_marks_a_provisioned_tunnel_without_cloudflared_as_action(tmp_path):
+    gateway, _workspace = configured_gateway(tmp_path)
+    gateway.tunnel.configure({"account_id": "account", "zone_id": "zone", "hostname": "apps.example.com", "tunnel_id": "tunnel", "keepass_profile": "local", "token_entry": "APIs/Tunnel", "cloudflared_executable": "missing-cloudflared"})
+    diagnosis = gateway.diagnose()
+    tunnel = next(item for item in diagnosis["checks"] if item["id"] == "tunnel")
+    assert tunnel["state"] == "action"
+    assert "cloudflared" in tunnel["detail"]
+    gateway.db.close()
+
+
+def test_diagnose_does_not_return_publication_error_details(tmp_path):
+    gateway, workspace = configured_gateway(tmp_path)
+    app = workspace / "report"; app.mkdir(); (app / "app.py").write_text("", encoding="utf-8")
+    created = gateway.create({"root_path": str(app), "entrypoint": "app.py"})
+    with gateway.lock:
+        gateway.db.execute("UPDATE apps SET last_error=? WHERE id=?", ("token=not-for-diagnostics", created["id"])); gateway.db.commit()
+    diagnosis = gateway.diagnose()
+    assert "last_error" not in diagnosis["apps"]["items"][0]
+    assert "not-for-diagnostics" not in str(diagnosis)
+    gateway.db.close()
+
+
 def test_unpublish_and_delete_preserve_registry_tombstone(tmp_path):
     gateway, workspace = configured_gateway(tmp_path)
     app = workspace / "report"; app.mkdir(); (app / "app.py").write_text("", encoding="utf-8")

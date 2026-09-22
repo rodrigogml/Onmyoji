@@ -249,6 +249,73 @@ class MiniAppsGateway:
         with self.lock: ids = [str(row[0]) for row in self.db.execute("SELECT id FROM apps WHERE state != 'DELETED' ORDER BY created_at DESC")]
         return [self._public(self._app(app_id)) for app_id in ids]
 
+    def diagnose(self) -> dict[str, Any]:
+        """Return readiness data for the setup wizard without exposing secrets."""
+        checks: list[dict[str, str]] = []
+        gateway_ready = self.http_runner is not None
+        checks.append({
+            "id": "gateway",
+            "state": "ok" if gateway_ready else "action",
+            "label": "Gateway HTTPS local",
+            "detail": f"Em execução em https://localhost:{self.http_port}." if gateway_ready else "O Gateway não está aceitando conexões locais.",
+            "action": "Habilite e inicie o serviço Mini Apps.",
+        })
+        try:
+            workspace = self._workspace()
+            checks.append({"id": "workspace", "state": "ok", "label": "Workspace do Shikigami", "detail": str(workspace), "action": ""})
+            workspace_ready = True
+        except ValueError as error:
+            checks.append({"id": "workspace", "state": "action", "label": "Workspace do Shikigami", "detail": str(error), "action": "Configure o workspace no menu Codex-CLI."})
+            workspace_ready = False
+        tls_dir = self.data_dir / "tls"
+        tls_ready = all((tls_dir / name).is_file() for name in ("ca.pem", "gateway.pem", "gateway-key.pem"))
+        checks.append({
+            "id": "tls",
+            "state": "ok" if tls_ready else "action",
+            "label": "Certificados TLS locais",
+            "detail": "Certificados da instância estão prontos." if tls_ready else "Os certificados locais ainda não estão disponíveis.",
+            "action": "Inicie o serviço Mini Apps para gerar os certificados locais.",
+        })
+        checks.append({
+            "id": "browser_trust",
+            "state": "info",
+            "label": "Confiança no navegador local",
+            "detail": "Opcional; necessária somente para abrir https://localhost sem aviso de certificado.",
+            "action": "Use 'Gateway HTTPS e confiança local' para instalar a CA com confirmação.",
+        })
+        apps = self.list()
+        unhealthy = [item for item in apps if item["health"] != "ok"]
+        app_summaries = [{key: item[key] for key in ("id", "alias", "state", "health", "url", "local_url", "public_url", "auth_type")} for item in apps]
+        checks.append({
+            "id": "apps",
+            "state": "ok" if apps and not unhealthy else "info",
+            "label": "Mini Apps publicadas",
+            "detail": f"{len(apps)} publicada(s); {len(unhealthy)} com atenção." if apps else "Nenhuma Mini App foi publicada ainda.",
+            "action": "Crie a Mini App no workspace e publique-a pela skill Mini Apps." if not apps else "Use 'Publicações Mini App' para consultar URLs e estado.",
+        })
+        tunnel = self.tunnel.status()
+        if not tunnel["configured"]:
+            tunnel_state, tunnel_detail, tunnel_action = "info", "Não configurado; exposição pública é opcional.", "Configure um domínio somente se precisar de acesso externo."
+        elif not tunnel["provisioned"]:
+            tunnel_state, tunnel_detail, tunnel_action = "action", "Configurado, mas o Tunnel e o DNS ainda não foram provisionados.", "Revise os dados e provisione o Tunnel com confirmação."
+        elif not tunnel["cloudflared_available"]:
+            tunnel_state, tunnel_detail, tunnel_action = "action", "Tunnel provisionado, mas cloudflared não foi encontrado.", "Instale cloudflared oficial ou informe o caminho do executável."
+        elif not tunnel["running"]:
+            tunnel_state, tunnel_detail, tunnel_action = "action", "Tunnel provisionado, porém parado.", "Inicie ou reinicie o Tunnel."
+        else:
+            tunnel_state, tunnel_detail, tunnel_action = "ok", f"Em execução para {tunnel['hostname']}.", ""
+        checks.append({"id": "tunnel", "state": tunnel_state, "label": "Domínio e Cloudflare Tunnel", "detail": tunnel_detail, "action": tunnel_action})
+        local_ready = gateway_ready and workspace_ready and tls_ready
+        public_ready = local_ready and tunnel["provisioned"] and tunnel["cloudflared_available"] and tunnel["running"]
+        return {
+            "local_ready": local_ready,
+            "public_ready": public_ready,
+            "local_url": f"https://localhost:{self.http_port}",
+            "checks": checks,
+            "apps": {"total": len(apps), "unhealthy": len(unhealthy), "items": app_summaries},
+            "tunnel": tunnel,
+        }
+
     def inspect(self, app_id: str) -> dict[str, Any]: return self._public(self._app(app_id))
 
     def events(self, app_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
@@ -500,6 +567,7 @@ class MiniAppsGateway:
     def rpc(self, method: str, params: dict[str, Any]) -> Any:
         action = method.removeprefix("mini-apps.")
         if action == "status": return {"state": "running", "http_port": self.http_port, "apps": len(self.list()), "last_error": self.last_error}
+        if action == "diagnose": return self.diagnose()
         if action == "list": return self.list()
         if action == "create": return self.create(params)
         if action == "inspect": return self.inspect(str(params["id"]))

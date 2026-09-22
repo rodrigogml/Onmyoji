@@ -867,61 +867,166 @@ def daemon_menu(root: Path) -> None:
                     except (OSError, ValueError) as error: result(False, f"Não foi possível abrir o editor: {error}")
             else: result(False, "Opção inválida.")
 
-    def miniapps_menu() -> None:
+    def miniapps_command(*arguments: str) -> subprocess.CompletedProcess[str]:
+        return command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "mini-apps", *arguments], quiet=True)
+
+    def require_miniapps_running() -> bool:
+        if not daemon_running():
+            result(False, "Inicie o daemon antes de administrar Mini Apps.")
+            return False
+        service = miniapps_state()
+        if service.get("state") == "running": return True
+        if service.get("state") == "failed": result(False, "Falha ao iniciar Mini Apps: " + str(service.get("last_error") or "consulte o log do serviço"))
+        elif service.get("enabled") is True: result(False, "O serviço Mini Apps está habilitado, mas parado. Reinicie o daemon ou desabilite e habilite o serviço novamente.")
+        else: result(False, "O serviço Mini Apps está desabilitado. Habilite-o primeiro em 'Gateway HTTPS e confiança local'.")
+        return False
+
+    def miniapps_diagnosis() -> dict[str, object] | None:
+        if not require_miniapps_running(): return None
+        completed = miniapps_command("diagnose")
+        if completed.returncode != 0:
+            result(False, (completed.stdout or completed.stderr).strip())
+            return None
+        try:
+            value = json.loads(completed.stdout)
+            return value if isinstance(value, dict) else None
+        except json.JSONDecodeError:
+            result(False, "O daemon retornou um diagnóstico Mini Apps inválido.")
+            return None
+
+    def show_miniapps_diagnosis() -> dict[str, object] | None:
+        diagnosis = miniapps_diagnosis()
+        if diagnosis is None: return None
+        local = "PRONTO" if diagnosis.get("local_ready") else "AÇÃO NECESSÁRIA"
+        public = "PRONTO" if diagnosis.get("public_ready") else "OPCIONAL / PENDENTE"
+        screen("Diagnóstico Mini Apps", f"Local: {local} · Público: {public}")
+        symbols = {"ok": "✓", "action": "!", "info": "i"}
+        for check in diagnosis.get("checks", []):
+            if not isinstance(check, dict): continue
+            state = str(check.get("state") or "info")
+            print(f"  {symbols.get(state, 'i')}  {check.get('label', 'Verificação')} — {check.get('detail', '')}")
+            if check.get("action"): print(f"     Próximo passo: {check['action']}")
+        return diagnosis
+
+    def miniapps_local_menu() -> None:
         while True:
-            service = miniapps_state()
-            enabled = service.get("enabled") is True
-            running = service.get("state") == "running"
-            service_label = "EM EXECUÇÃO" if running else ("FALHOU" if service.get("state") == "failed" else ("PARADO" if enabled else "DESABILITADO"))
-            screen("Mini Apps", "Gateway HTTPS local e Cloudflare Tunnel")
-            item("1.", "Habilitar/desabilitar serviço", service_label)
-            item("2.", "Status TLS")
-            item("3.", "Instalar confiança da CA local")
-            item("4.", "Configurar Tunnel")
-            item("5.", "Provisionar Tunnel e DNS")
-            item("6.", "Status/reiniciar Tunnel")
-            item("7.", "Baixar cloudflared oficial")
+            service = miniapps_state(); enabled = service.get("enabled") is True
+            state = "EM EXECUÇÃO" if service.get("state") == "running" else ("FALHOU" if service.get("state") == "failed" else ("PARADO" if enabled else "DESABILITADO"))
+            screen("Gateway HTTPS local", "O acesso público não é necessário para usar Mini Apps neste computador")
+            item("1.", "Habilitar/desabilitar gateway", state)
+            item("2.", "Consultar certificados TLS locais")
+            item("3.", "Instalar confiança da CA local", "Altera a confiança deste computador")
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
             if choice == "1":
-                if not service:
-                    result(False, "Não foi possível consultar o estado do serviço Mini Apps; confirme que o daemon está em execução.")
-                    continue
-                if enabled:
-                    lifecycle("disable", ["mini-apps"])
-                elif lifecycle("enable", ["mini-apps"]):
-                    lifecycle("start", ["mini-apps"])
+                if not service: result(False, "Não foi possível consultar o serviço; confirme que o daemon está em execução.")
+                elif enabled: lifecycle("disable", ["mini-apps"])
+                elif lifecycle("enable", ["mini-apps"]): lifecycle("start", ["mini-apps"])
                 continue
-            if not daemon_running(): result(False, "Inicie o daemon antes de administrar Mini Apps."); continue
-            service = miniapps_state()
-            if service.get("state") != "running":
-                if service.get("state") == "failed":
-                    result(False, "Falha ao iniciar Mini Apps: " + str(service.get("last_error") or "consulte o log do serviço"))
-                elif service.get("enabled") is True:
-                    result(False, "O serviço Mini Apps está habilitado, mas parado. Use a opção 1 para desabilitar e habilitar novamente, ou reinicie o daemon.")
-                else:
-                    result(False, "O serviço Mini Apps está desabilitado. Habilite-o primeiro pela opção 1.")
-                continue
-            base = [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "mini-apps"]
-            if choice == "2": completed = command(base + ["tls", "status"], quiet=True)
+            if not require_miniapps_running(): continue
+            if choice == "2": completed = miniapps_command("tls", "status")
             elif choice == "3":
-                if prompt("Digite confiar para instalar a CA: ").strip() != "confiar": result(False, "Cancelado."); continue
-                completed = command(base + ["tls", "install-trust", "--confirm"], quiet=True)
-            elif choice == "4":
-                values = {"account_id": prompt("Account ID: ").strip(), "zone_id": prompt("Zone ID: ").strip(), "hostname": prompt("Hostname: ").strip(), "keepass_profile": prompt("Perfil KeePass: ").strip(), "token_entry": prompt("Entrada KeePass: ").strip(), "cloudflared_executable": prompt("cloudflared [cloudflared]: ").strip() or "cloudflared"}
-                completed = command(base + ["tunnel", "configure", "--values", json.dumps(values)], quiet=True)
-            elif choice == "5":
-                if prompt("Digite provisionar para confirmar: ").strip() != "provisionar": result(False, "Cancelado."); continue
-                completed = command(base + ["tunnel", "provision", "--confirm"], quiet=True)
-            elif choice == "6":
-                restart = prompt("Digite reiniciar para reiniciar o Tunnel, ou Enter para consultar o status: ").strip().casefold()
-                completed = command(base + ["tunnel", "restart" if restart == "reiniciar" else "status"], quiet=True)
-            elif choice == "7":
-                if prompt("Digite baixar para confirmar: ").strip() != "baixar": result(False, "Cancelado."); continue
-                completed = command(base + ["tunnel", "install-cloudflared", "--confirm"], quiet=True)
+                if prompt("Digite confiar para instalar a CA no computador: ").strip() != "confiar": result(False, "Cancelado."); continue
+                completed = miniapps_command("tls", "install-trust", "--confirm")
             else: result(False, "Opção inválida."); continue
             result(completed.returncode == 0, (completed.stdout or completed.stderr).strip())
+
+    def miniapps_public_menu() -> None:
+        while True:
+            diagnosis = miniapps_diagnosis()
+            if diagnosis is None: return
+            tunnel = diagnosis.get("tunnel", {}) if isinstance(diagnosis.get("tunnel"), dict) else {}
+            screen("Domínio e Cloudflare Tunnel", "Exposição pública opcional; todas as Mini Apps continuam protegidas por autenticação")
+            item("1.", "Configurar domínio e credencial", "IDs Cloudflare e referência KeePass; nenhum token é exibido")
+            item("2.", "Provisionar Tunnel e DNS", "Cria/altera recursos Cloudflare após confirmação")
+            item("3.", "Consultar/iniciar/reiniciar Tunnel", "Em execução" if tunnel.get("running") else "Parado")
+            item("4.", "Baixar cloudflared oficial", "Somente se o executável não estiver disponível")
+            item("X.", "Voltar")
+            choice = prompt("Opção: ").strip().casefold()
+            if choice in {"x", "\x1b"}: return
+            if choice == "1":
+                print("\n  Informe referências, nunca o token do Cloudflare. O token deve existir no KeePass.")
+                values = {"account_id": prompt("Cloudflare Account ID: ").strip(), "zone_id": prompt("Cloudflare Zone ID: ").strip(), "hostname": prompt("Hostname público (ex.: apps.exemplo.com): ").strip(), "keepass_profile": prompt("Perfil KeePass: ").strip(), "token_entry": prompt("Entrada KeePass do token: ").strip(), "cloudflared_executable": prompt("Executável cloudflared [cloudflared]: ").strip() or "cloudflared"}
+                completed = miniapps_command("tunnel", "configure", "--values", json.dumps(values))
+            elif choice == "2":
+                if prompt("Digite provisionar para criar/atualizar Tunnel, ingress e DNS: ").strip() != "provisionar": result(False, "Cancelado."); continue
+                completed = miniapps_command("tunnel", "provision", "--confirm")
+            elif choice == "3":
+                action = prompt("Digite iniciar, reiniciar ou pressione Enter para consultar: ").strip().casefold()
+                completed = miniapps_command("tunnel", "start" if action == "iniciar" else "restart" if action == "reiniciar" else "status")
+            elif choice == "4":
+                if prompt("Digite baixar para obter cloudflared oficial: ").strip() != "baixar": result(False, "Cancelado."); continue
+                completed = miniapps_command("tunnel", "install-cloudflared", "--confirm")
+            else: result(False, "Opção inválida."); continue
+            result(completed.returncode == 0, (completed.stdout or completed.stderr).strip())
+
+    def miniapps_publications() -> None:
+        if not require_miniapps_running(): return
+        completed = miniapps_command("list")
+        try: apps = json.loads(completed.stdout) if completed.returncode == 0 else None
+        except json.JSONDecodeError: apps = None
+        if not isinstance(apps, list): result(False, (completed.stdout or completed.stderr).strip()); return
+        screen("Publicações Mini App", "Os arquivos permanecem no workspace; o Gateway mantém somente o registro")
+        if not apps:
+            print("  i  Nenhuma Mini App publicada. Crie o código no workspace e publique-o pela skill Mini Apps.")
+            return
+        for app in apps:
+            if not isinstance(app, dict): continue
+            item(str(app.get("id", ""))[:8] + ".", str(app.get("alias") or "Sem nome"), f"{app.get('state')} · {app.get('health')}")
+            print(f"     URL: {app.get('url')}")
+            if app.get("last_error"): print("     Atenção: a publicação registrou um erro; consulte os eventos pela skill Mini Apps.")
+
+    def miniapps_wizard() -> None:
+        screen("Assistente Mini Apps", "O acesso público é opcional; comece pelo objetivo de uso")
+        item("L.", "Somente neste computador", "Gateway HTTPS local e publicação no workspace")
+        item("P.", "Também em domínio público", "Cloudflare Tunnel, DNS e proteção da Mini App")
+        item("X.", "Voltar")
+        choice = prompt("Objetivo: ").strip().casefold()
+        if choice in {"x", "\x1b"}: return
+        if choice not in {"l", "p"}: result(False, "Escolha L ou P."); return
+        service = miniapps_state()
+        if service.get("state") != "running":
+            if prompt("O gateway local precisa estar ativo. Habilitar e iniciar agora? [S/n]: ").strip().casefold() not in {"", "s", "sim"}: result(False, "O assistente precisa do gateway ativo para continuar."); return
+            if service.get("enabled") is not True and not lifecycle("enable", ["mini-apps"]): return
+            lifecycle("start", ["mini-apps"])
+        diagnosis = show_miniapps_diagnosis()
+        if diagnosis is None: return
+        if prompt("Instalar a confiança da CA local agora? [s/N]: ").strip().casefold() in {"s", "sim"}:
+            completed = miniapps_command("tls", "install-trust", "--confirm"); result(completed.returncode == 0, (completed.stdout or completed.stderr).strip())
+        apps = diagnosis.get("apps", {}) if isinstance(diagnosis.get("apps"), dict) else {}
+        if int(apps.get("total", 0)) == 0: print("\n  Próximo passo local: crie a Mini App dentro do workspace e publique-a pela skill Mini Apps.")
+        if choice == "p":
+            print("\n  Próximo passo público: configure o domínio, a referência do token Cloudflare no KeePass e provisione o Tunnel.")
+            miniapps_public_menu()
+
+    def miniapps_menu() -> None:
+        while True:
+            service = miniapps_state()
+            local = "EM EXECUÇÃO" if service.get("state") == "running" else ("FALHOU" if service.get("state") == "failed" else "PENDENTE")
+            screen("Mini Apps", f"Gateway local: {local} · Domínio público é opcional")
+            item("1.", "Assistente de início", "Orienta a configuração local ou pública")
+            item("2.", "Diagnóstico de disponibilidade", "Mostra estado e próximos passos sem expor segredos")
+            print()
+            item("3.", "Gateway HTTPS e confiança local")
+            item("4.", "Publicações Mini App")
+            print()
+            item("5.", "Domínio e Cloudflare Tunnel")
+            item("6.", "Estado do Tunnel")
+            print()
+            item("X.", "Voltar")
+            choice = prompt("Opção: ").strip().casefold()
+            if choice in {"x", "\x1b"}: return
+            if choice == "1": miniapps_wizard()
+            elif choice == "2": show_miniapps_diagnosis()
+            elif choice == "3": miniapps_local_menu()
+            elif choice == "4": miniapps_publications()
+            elif choice == "5": miniapps_public_menu()
+            elif choice == "6":
+                diagnosis = miniapps_diagnosis()
+                if diagnosis is not None:
+                    result(True, json.dumps(diagnosis.get("tunnel", {}), ensure_ascii=False))
+            else: result(False, "Opção inválida.")
 
     while True:
         status = "INSTALADO" if installed() else "NÃO INSTALADO"
