@@ -30,6 +30,14 @@ Every cached Telegram item has a trust label. OWNER is an authorized owner reque
 
 Ask normally for information that is necessary but absent. Do not speculate about missing Telegram history. Only when the user explicitly refers to an earlier message, reply, or attachment that is not present in the supplied context may you say that you cannot access that item and gently suggest it may not have been received by the bot or may have fallen outside the retained context window; ask for it to be resent, quoted, or attached."""
 
+SERVICE_MESSAGE_FIELDS = frozenset((
+    "forum_topic_closed", "forum_topic_created", "forum_topic_edited", "forum_topic_reopened",
+    "general_forum_topic_hidden", "general_forum_topic_unhidden", "group_chat_created",
+    "left_chat_member", "migrate_from_chat_id", "migrate_to_chat_id", "new_chat_members",
+    "new_chat_photo", "new_chat_title", "pinned_message", "video_chat_ended",
+    "video_chat_participants_invited", "video_chat_scheduled", "video_chat_started",
+))
+
 
 def json_file(path: Path, default: dict[str, Any]) -> dict[str, Any]:
     try: value = json.loads(path.read_text(encoding="utf-8")); return value if isinstance(value, dict) else default
@@ -779,6 +787,7 @@ class Gateway:
         if command == "/config": self._open_config(conversation_id); return
         if text.startswith("/"): self._ephemeral(conversation_id, "Comando inválido. Use /new, /config ou /totp quando habilitado."); return
         contains_attachment = any(isinstance(message.get(name), (dict, list)) and message.get(name) for name in ("photo", "document", "voice"))
+        if not text and not contains_attachment and SERVICE_MESSAGE_FIELDS.intersection(message): return
         if not text and not contains_attachment: self._ephemeral(conversation_id, "Mensagem sem texto ou anexo reconhecido."); return
         if contains_attachment and not self.settings.app_server_enabled:
             self._ephemeral(conversation_id, "Anexos exigem que o App Server esteja habilitado na configuração do Gateway Telegram."); return

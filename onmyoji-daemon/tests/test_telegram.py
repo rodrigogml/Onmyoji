@@ -136,6 +136,17 @@ def test_voice_without_caption_never_attempts_to_parse_an_empty_command(tmp_path
     assert sent == [(9, "Anexos exigem que o App Server esteja habilitado na configuração do Gateway Telegram.")]
 
 
+def test_forum_topic_creation_is_ignored_without_an_empty_message_warning(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data)); gateway.contacts.add_owner({"id": 9, "first_name": "owner"})
+    sent = []
+    gateway.api = type("Api", (), {"send": lambda _self, chat, text, **_values: sent.append((chat, text)) or {"message_id": 1}})()
+
+    gateway._update({"message": {"message_id": 1, "chat": {"id": 9, "type": "private"}, "from": {"id": 9}, "forum_topic_created": {"name": "Nova conversa"}}})
+
+    assert sent == []
+
+
 def test_every_received_command_is_deleted_before_routing(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data); gateway = Gateway(Settings.load(tmp_path, data))
     deleted, sent = [], []
