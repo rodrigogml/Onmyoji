@@ -12,6 +12,7 @@ from pathlib import Path
 import platform
 import shutil
 import subprocess
+import threading
 import time
 from typing import Any
 import urllib.error
@@ -84,14 +85,31 @@ class CloudflareClient:
 
 class TunnelProcess:
     def __init__(self, executable: str, token: str):
-        self.executable, self.token, self.process = executable, token, None
+        self.executable, self.token, self.process, self.last_error = executable, token, None, None
         if not shutil.which(executable) and not Path(executable).is_file(): raise TunnelError("cloudflared não encontrado")
+
+    @staticmethod
+    def _safe_output(value: str) -> str:
+        return __import__("re").sub(r"(?i)(token|password|secret)\s*[=:]\s*\S+", r"\1=[redacted]", value).strip()[-800:]
+
+    def _capture_output(self) -> None:
+        if not self.process or not self.process.stdout: return
+        try:
+            for raw in self.process.stdout:
+                value = self._safe_output(raw)
+                if value: self.last_error = value
+        except OSError:
+            pass
 
     def start(self) -> None:
         if self.process and self.process.poll() is None: return
         # cloudflared exige o token como argumento no modo remotely-managed;
         # nunca o registramos em configuração ou logs do Onmyoji.
-        self.process = subprocess.Popen([self.executable, "tunnel", "run", "--token", self.token], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.last_error = None
+        self.process = subprocess.Popen([self.executable, "tunnel", "run", "--token", self.token], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+        threading.Thread(target=self._capture_output, daemon=True).start()
+        time.sleep(0.25)
+        if self.process.poll() is not None: raise TunnelError(self.last_error or f"cloudflared encerrou com código {self.process.returncode}")
 
     def stop(self) -> None:
         if not self.process or self.process.poll() is not None: return
@@ -100,7 +118,9 @@ class TunnelProcess:
         except subprocess.TimeoutExpired: self.process.kill(); self.process.wait(timeout=5)
 
     def status(self) -> dict[str, Any]:
-        return {"running": bool(self.process and self.process.poll() is None), "pid": self.process.pid if self.process and self.process.poll() is None else None}
+        running = bool(self.process and self.process.poll() is None)
+        if self.process and not running and not self.last_error: self.last_error = f"cloudflared encerrou com código {self.process.returncode}"
+        return {"running": running, "pid": self.process.pid if running else None, "last_error": self.last_error}
 
 
 class TunnelController:
@@ -183,7 +203,7 @@ class TunnelController:
         return self.status()
 
     def status(self) -> dict[str, Any]:
-        values = self.settings(); state = self.process.status() if self.process else {"running": False, "pid": None}
+        values = self.settings(); state = self.process.status() if self.process else {"running": False, "pid": None, "last_error": None}
         executable = str(values.get("cloudflared_executable", "cloudflared"))
         found = bool(shutil.which(executable) or Path(executable).is_file())
         return {"configured": bool(values), "provisioned": bool(values.get("tunnel_id")) if values else False, "hostname": values.get("hostname") if values else None, "cloudflared_executable": executable, "cloudflared_available": found, **state}

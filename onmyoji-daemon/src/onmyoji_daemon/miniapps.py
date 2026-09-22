@@ -301,7 +301,8 @@ class MiniAppsGateway:
         elif not tunnel["cloudflared_available"]:
             tunnel_state, tunnel_detail, tunnel_action = "action", "Tunnel provisionado, mas cloudflared não foi encontrado.", "Instale cloudflared oficial ou informe o caminho do executável."
         elif not tunnel["running"]:
-            tunnel_state, tunnel_detail, tunnel_action = "action", "Tunnel provisionado, porém parado.", "Inicie ou reinicie o Tunnel."
+            reason = str(tunnel.get("last_error") or "")
+            tunnel_state, tunnel_detail, tunnel_action = "action", "Tunnel provisionado, porém parado" + (f": {reason}" if reason else "."), "Corrija o motivo informado e inicie ou reinicie o Tunnel."
         else:
             tunnel_state, tunnel_detail, tunnel_action = "ok", f"Em execução para {tunnel['hostname']}.", ""
         checks.append({"id": "tunnel", "state": tunnel_state, "label": "Domínio e Cloudflare Tunnel", "detail": tunnel_detail, "action": tunnel_action})

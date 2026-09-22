@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import pytest
+import sys
+import time
 
-from onmyoji_daemon.miniapps_tunnel import CloudflareClient, TunnelController, TunnelDefinition, TunnelError
+from onmyoji_daemon.miniapps_tunnel import CloudflareClient, TunnelController, TunnelDefinition, TunnelError, TunnelProcess
 
 
 def test_tunnel_definition_requires_account_zone_and_hostname():
@@ -47,3 +49,11 @@ def test_ingress_is_limited_to_local_tls_hop(monkeypatch):
 def test_cloudflared_download_urls_cover_windows_and_linux():
     assert TunnelController.cloudflared_download_url("Windows", "AMD64").endswith("cloudflared-windows-amd64.exe")
     assert TunnelController.cloudflared_download_url("Linux", "aarch64").endswith("cloudflared-linux-arm64")
+
+
+def test_tunnel_process_reports_sanitized_startup_failure():
+    process = TunnelProcess(sys.executable, "private-token")
+    with pytest.raises(TunnelError): process.start()
+    time.sleep(0.05)
+    assert "private-token" not in str(process.status())
+    assert process.status()["last_error"]
