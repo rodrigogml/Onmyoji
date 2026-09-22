@@ -19,7 +19,9 @@ def telegram_command(data_dir: Path) -> list[str]:
 
 
 def miniapps_command(data_dir: Path) -> list[str]:
-    return [sys.executable, "-m", "onmyoji_daemon.miniapps", "--data-dir", str(data_dir)]
+    environment = data_dir.parent.parent / "venv"
+    executable = environment / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    return [str(executable if executable.is_file() else Path(sys.executable)), "-m", "onmyoji_daemon.miniapps", "--data-dir", str(data_dir)]
 
 
 SERVICES: dict[str, ServiceSpec] = {

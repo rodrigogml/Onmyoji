@@ -14,7 +14,7 @@ from .launcher import main as interactive_main
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="onmyoji-daemon"); parser.add_argument("--onmyoji-root", required=True, type=Path)
     sub = parser.add_subparsers(dest="action", required=True); sub.add_parser("run"); sub.add_parser("interactive"); sub.add_parser("list-services")
-    sub.add_parser("install-instance"); sub.add_parser("remove-instance")
+    sub.add_parser("install-instance"); sub.add_parser("install-runtime"); sub.add_parser("remove-instance")
     sub.add_parser("process-status"); sub.add_parser("process-start")
     for action in ("process-stop", "process-force-stop"): sub.add_parser(action)
     install_service = sub.add_parser("install-service"); install_service.add_argument("--name", required=True); install_service.add_argument("--description", required=True)
@@ -44,6 +44,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.action == "interactive": return interactive_main(["--onmyoji-root", str(root)])
     direct = {
         "install-instance": lambda: management.install_instance(root),
+        "install-runtime": lambda: management.ensure_runtime(root),
         "remove-instance": lambda: management.remove_instance(root),
         "enable": lambda: management.set_enabled(root, args.service, True),
         "disable": lambda: management.set_enabled(root, args.service, False),
@@ -88,6 +89,9 @@ def main(argv: list[str] | None = None) -> int:
         response = call(host, port, token, method, params)
     except RpcError as error:
         print(f"Erro: {error}", file=sys.stderr)
+        return 2
+    if args.action in {"start", "restart"} and isinstance(response, dict) and response.get("state") == "failed":
+        print(f"Erro: {response.get('last_error') or 'serviço não iniciou'}", file=sys.stderr)
         return 2
     print(json.dumps(response, ensure_ascii=False)); return 0
 

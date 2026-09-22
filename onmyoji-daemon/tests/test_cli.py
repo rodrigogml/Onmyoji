@@ -15,3 +15,15 @@ def test_cli_reports_remote_failure_without_traceback(monkeypatch, capsys):
     assert captured.out == ""
     assert captured.err == "Erro: mini-apps is not running\n"
     assert "Traceback" not in captured.err
+
+
+def test_cli_treats_failed_service_start_as_failure(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "endpoint", lambda _root: ("127.0.0.1", 1234, "token"))
+    monkeypatch.setattr(cli, "call", lambda *_args, **_kwargs: {"state": "failed", "last_error": "No module named dependency"})
+
+    result = cli.main(["--onmyoji-root", ".", "start", "mini-apps"])
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert captured.out == ""
+    assert captured.err == "Erro: No module named dependency\n"

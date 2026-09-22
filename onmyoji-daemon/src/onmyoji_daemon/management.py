@@ -26,6 +26,39 @@ def manifest_path(root: Path) -> Path: return daemon_root(root) / "daemon.toml"
 def runtime_path(root: Path) -> Path: return daemon_root(root) / "runtime"
 def process_path(root: Path) -> Path: return runtime_path(root) / "process.json"
 def service_path(root: Path) -> Path: return daemon_root(root) / "service.json"
+def daemon_python(root: Path) -> Path:
+    environment = daemon_root(root) / "venv"
+    return environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+
+def _runtime_ready(executable: Path) -> bool:
+    if not executable.is_file(): return False
+    probe = """from importlib.metadata import version
+def parsed(name): return tuple(int(part) for part in version(name).split('.')[:2])
+assert (3, 10) <= parsed('aiohttp') < (4, 0)
+assert (42, 0) <= parsed('cryptography') < (47, 0)
+"""
+    result = subprocess.run([str(executable), "-c", probe], text=True, capture_output=True, check=False)
+    return result.returncode == 0
+
+
+def ensure_runtime(root: Path) -> tuple[bool, str]:
+    """Cria um Python privado para o daemon e instala suas dependências."""
+    executable = daemon_python(root)
+    if _runtime_ready(executable): return True, "Ambiente Python do daemon está pronto."
+    environment = executable.parent.parent
+    environment.parent.mkdir(parents=True, exist_ok=True)
+    if not executable.is_file():
+        created = subprocess.run([sys.executable, "-m", "venv", str(environment)], text=True, capture_output=True, check=False)
+        if created.returncode != 0: return False, "Não foi possível criar o ambiente Python do daemon: " + (created.stderr or created.stdout).strip()
+    project = Path(__file__).resolve().parents[2]
+    requirement = str(project) + ("[windows]" if os.name == "nt" else "")
+    installed = subprocess.run([str(executable), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", "--editable", requirement], text=True, capture_output=True, check=False)
+    if installed.returncode != 0:
+        detail = (installed.stderr or installed.stdout).strip().splitlines()
+        return False, "Não foi possível instalar as dependências do daemon: " + (detail[-1] if detail else "pip falhou")
+    if not _runtime_ready(executable): return False, "O ambiente Python foi criado, mas as dependências do daemon não puderam ser validadas."
+    return True, "Ambiente Python do daemon instalado e validado."
 
 
 def _write_json(path: Path, value: dict) -> None:
@@ -61,11 +94,14 @@ def is_installed(root: Path) -> bool:
 
 def install_instance(root: Path) -> tuple[bool, str]:
     path = manifest_path(root)
-    if path.exists(): return True, "Daemon já está instalado nesta instância."
-    path.parent.mkdir(parents=True, exist_ok=True)
-    instance_id = uuid.uuid4().hex
-    path.write_text("\n".join(["schema_version = 1", f"instance_id = {json.dumps(instance_id)}", f"instance_name = {json.dumps(instance_label(root), ensure_ascii=False)}", ""]) , encoding="utf-8", newline="\n")
-    return True, "Daemon instalado; nenhum processo foi iniciado."
+    created = not path.exists()
+    if created:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        instance_id = uuid.uuid4().hex
+        path.write_text("\n".join(["schema_version = 1", f"instance_id = {json.dumps(instance_id)}", f"instance_name = {json.dumps(instance_label(root), ensure_ascii=False)}", ""]) , encoding="utf-8", newline="\n")
+    ready, message = ensure_runtime(root)
+    if not ready: return False, message
+    return True, ("Daemon instalado. " if created else "Daemon já estava instalado. ") + message
 
 
 def remove_instance(root: Path) -> tuple[bool, str]:
@@ -88,6 +124,9 @@ def installed_metadata(root: Path) -> dict:
 def set_enabled(root: Path, service: str, enabled: bool) -> tuple[bool, str]:
     if not is_installed(root): return False, "Instale primeiro o daemon desta instância."
     if service not in SERVICES: return False, "Serviço não registrado."
+    if enabled and service == "mini-apps":
+        ready, message = ensure_runtime(root)
+        if not ready: return False, message
     path = daemon_root(root) / "services.json"; values = _read_json(path)
     values.setdefault(service, {})["enabled"] = enabled
     _write_json(path, values)
@@ -127,10 +166,12 @@ def start_background(root: Path) -> tuple[bool, str]:
     if not is_installed(root): return False, "Instale primeiro o daemon desta instância."
     if service_path(root).exists(): return False, "O serviço do sistema operacional está instalado; gerencie-o no submenu Serviço."
     if daemon_reachable(root) or running_process(root): return False, "Já existe um daemon em execução nesta instância."
+    ready, message = ensure_runtime(root)
+    if not ready: return False, message
     source = Path(__file__).resolve().parents[1]
     environment = dict(os.environ)
     environment["PYTHONPATH"] = str(source) + (os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else "")
-    command = [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root.resolve()), "run"]
+    command = [str(daemon_python(root)), "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root.resolve()), "run"]
     flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS if os.name == "nt" else 0
     with open(os.devnull, "w", encoding="utf-8") as sink:
         subprocess.Popen(command, cwd=str(root), env=environment, stdin=subprocess.DEVNULL, stdout=sink, stderr=sink, creationflags=flags, start_new_session=os.name != "nt")
@@ -172,17 +213,20 @@ def install_service(root: Path, name: str, description: str) -> tuple[bool, str]
     if not is_installed(root): return False, "Instale primeiro o daemon desta instância."
     if service_path(root).exists(): return False, "Já existe um serviço instalado para esta instância."
     if running_process(root): return False, "Finalize o processo local antes de instalar o serviço."
+    ready, message = ensure_runtime(root)
+    if not ready: return False, message
+    executable = str(daemon_python(root))
     if os.name == "nt":
         source = str(Path(__file__).resolve().parents[1]); environment = dict(os.environ)
         environment["PYTHONPATH"] = source + (os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else "")
-        created = subprocess.run([sys.executable, "-m", "onmyoji_daemon.windows_service", "--service-name", name, "--onmyoji-root", str(root.resolve()), "--startup", "auto", "install"], text=True, capture_output=True, env=environment, check=False)
+        created = subprocess.run([executable, "-m", "onmyoji_daemon.windows_service", "--service-name", name, "--onmyoji-root", str(root.resolve()), "--startup", "auto", "install"], text=True, capture_output=True, env=environment, check=False)
         if created.returncode != 0: return False, (created.stderr or created.stdout).strip()
         subprocess.run(["sc.exe", "description", name, description], text=True, capture_output=True, check=False)
     else:
         if not shutil.which("systemctl"): return False, "systemd não está disponível neste sistema."
         unit = Path("/etc/systemd/system") / f"{name}.service"
         source = Path(__file__).resolve().parents[1]
-        content = "\n".join(["[Unit]", f"Description={description}", "After=network-online.target", "", "[Service]", "Type=simple", f"WorkingDirectory={root.resolve()}", f"Environment=PYTHONPATH={source}", f"ExecStart={sys.executable} -m onmyoji_daemon.cli --onmyoji-root {root.resolve()} run", "Restart=on-failure", "RestartSec=3", "", "[Install]", "WantedBy=multi-user.target", ""])
+        content = "\n".join(["[Unit]", f"Description={description}", "After=network-online.target", "", "[Service]", "Type=simple", f"WorkingDirectory={root.resolve()}", f"Environment=PYTHONPATH={source}", f"ExecStart={executable} -m onmyoji_daemon.cli --onmyoji-root {root.resolve()} run", "Restart=on-failure", "RestartSec=3", "", "[Install]", "WantedBy=multi-user.target", ""])
         try: unit.write_text(content, encoding="utf-8")
         except OSError as error: return False, f"Não foi possível gravar {unit}; execute o setup com privilégio administrativo: {error}"
         reloaded = subprocess.run(["systemctl", "daemon-reload"], text=True, capture_output=True, check=False)
@@ -242,7 +286,7 @@ def remove_service(root: Path) -> tuple[bool, str]:
     service_action(root, "stop")
     source = str(Path(__file__).resolve().parents[1]); environment = dict(os.environ)
     environment["PYTHONPATH"] = source + (os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else "")
-    value = subprocess.run([sys.executable, "-m", "onmyoji_daemon.windows_service", "--service-name", str(info["name"]), "--onmyoji-root", str(root.resolve()), "remove"], text=True, capture_output=True, env=environment, check=False)
+    value = subprocess.run([str(daemon_python(root)), "-m", "onmyoji_daemon.windows_service", "--service-name", str(info["name"]), "--onmyoji-root", str(root.resolve()), "remove"], text=True, capture_output=True, env=environment, check=False)
     if value.returncode != 0: return False, (value.stderr or value.stdout).strip()
     service_path(root).unlink(missing_ok=True)
     return True, "Serviço removido."

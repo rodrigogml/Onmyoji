@@ -872,7 +872,7 @@ def daemon_menu(root: Path) -> None:
             service = miniapps_state()
             enabled = service.get("enabled") is True
             running = service.get("state") == "running"
-            service_label = "EM EXECUÇÃO" if running else ("PARADO" if enabled else "DESABILITADO")
+            service_label = "EM EXECUÇÃO" if running else ("FALHOU" if service.get("state") == "failed" else ("PARADO" if enabled else "DESABILITADO"))
             screen("Mini Apps", "Gateway HTTPS local e Cloudflare Tunnel")
             item("1.", "Habilitar/desabilitar serviço", service_label)
             item("2.", "Status TLS")
@@ -896,7 +896,9 @@ def daemon_menu(root: Path) -> None:
             if not daemon_running(): result(False, "Inicie o daemon antes de administrar Mini Apps."); continue
             service = miniapps_state()
             if service.get("state") != "running":
-                if service.get("enabled") is True:
+                if service.get("state") == "failed":
+                    result(False, "Falha ao iniciar Mini Apps: " + str(service.get("last_error") or "consulte o log do serviço"))
+                elif service.get("enabled") is True:
                     result(False, "O serviço Mini Apps está habilitado, mas parado. Use a opção 1 para desabilitar e habilitar novamente, ou reinicie o daemon.")
                 else:
                     result(False, "O serviço Mini Apps está desabilitado. Habilite-o primeiro pela opção 1.")
@@ -933,6 +935,7 @@ def daemon_menu(root: Path) -> None:
             item("4.", "Gateway Telegram", "Configuração, teste e pareamento")
             item("5.", "Diagnóstico detalhado")
             item("6.", "Mini Apps", "Gateway HTTPS e Cloudflare Tunnel")
+            item("7.", "Reparar ambiente Python", "Dependências privadas do daemon")
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
@@ -947,6 +950,7 @@ def daemon_menu(root: Path) -> None:
         elif installed() and choice == "4": telegram_menu()
         elif installed() and choice == "5": show_validation()
         elif installed() and choice == "6": miniapps_menu()
+        elif installed() and choice == "7": lifecycle("install-runtime")
         else: result(False, "Opção inválida.")
 
 

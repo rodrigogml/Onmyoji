@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import threading
 import time
+from types import SimpleNamespace
 
+from onmyoji_daemon import management
+from onmyoji_daemon.registry import miniapps_command
 from onmyoji_daemon.rpc import call
 from onmyoji_daemon.supervisor import Supervisor, endpoint
 from onmyoji_daemon.management import default_service_description, default_service_name, install_instance, is_installed, set_enabled
@@ -44,7 +47,8 @@ def test_supervisor_starts_mini_apps_service(tmp_path):
         supervisor.stop("mini-apps")
 
 
-def test_instance_installation_and_service_identity_are_local(tmp_path):
+def test_instance_installation_and_service_identity_are_local(tmp_path, monkeypatch):
+    monkeypatch.setattr("onmyoji_daemon.management.ensure_runtime", lambda _root: (True, "ready"))
     root = tmp_path / "Onmyoji-Exemplo"
     root.mkdir()
     ok, _message = install_instance(root)
@@ -57,3 +61,28 @@ def test_instance_installation_and_service_identity_are_local(tmp_path):
     ok, _message = set_enabled(root, "mini-apps", True)
     assert ok
     assert Supervisor(root).services["mini-apps"].enabled
+
+
+def test_runtime_install_creates_private_environment(tmp_path, monkeypatch):
+    executable = tmp_path / "configs" / "daemon" / "venv" / "Scripts" / "python.exe"
+    monkeypatch.setattr(management, "daemon_python", lambda _root: executable)
+    readiness = iter((False, True))
+    monkeypatch.setattr(management, "_runtime_ready", lambda _executable: next(readiness))
+    calls = []
+    monkeypatch.setattr(management.subprocess, "run", lambda command, **_kwargs: calls.append(command) or SimpleNamespace(returncode=0, stdout="", stderr=""))
+
+    ok, message = management.ensure_runtime(tmp_path)
+
+    assert ok and "validado" in message
+    assert calls[0][:3] == [management.sys.executable, "-m", "venv"]
+    assert calls[1][:4] == [str(executable), "-m", "pip", "install"]
+
+
+def test_miniapps_uses_private_daemon_python_when_available(tmp_path):
+    data_dir = tmp_path / "configs" / "daemon" / "services" / "mini-apps"
+    executable = data_dir.parent.parent / "venv" / ("Scripts/python.exe" if management.os.name == "nt" else "bin/python")
+    executable.parent.mkdir(parents=True); executable.touch()
+
+    command = miniapps_command(data_dir)
+
+    assert command[0] == str(executable)
