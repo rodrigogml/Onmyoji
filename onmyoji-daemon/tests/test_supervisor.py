@@ -76,6 +76,8 @@ def test_runtime_install_creates_private_environment(tmp_path, monkeypatch):
     assert ok and "validado" in message
     assert calls[0][:3] == [management.sys.executable, "-m", "venv"]
     assert calls[1][:4] == [str(executable), "-m", "pip", "install"]
+    assert "--editable" not in calls[1]
+    assert any(str(value).startswith("aiohttp>=") for value in calls[1])
 
 
 def test_miniapps_uses_private_daemon_python_when_available(tmp_path):

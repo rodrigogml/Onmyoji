@@ -12,6 +12,7 @@ import platform
 import subprocess
 import sys
 import time
+import tomllib
 import uuid
 import shutil
 
@@ -52,8 +53,14 @@ def ensure_runtime(root: Path) -> tuple[bool, str]:
         created = subprocess.run([sys.executable, "-m", "venv", str(environment)], text=True, capture_output=True, check=False)
         if created.returncode != 0: return False, "Não foi possível criar o ambiente Python do daemon: " + (created.stderr or created.stdout).strip()
     project = Path(__file__).resolve().parents[2]
-    requirement = str(project) + ("[windows]" if os.name == "nt" else "")
-    installed = subprocess.run([str(executable), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", "--editable", requirement], text=True, capture_output=True, check=False)
+    try:
+        metadata = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))
+        requirements = list(metadata["project"]["dependencies"])
+        if os.name == "nt": requirements.extend(metadata["project"].get("optional-dependencies", {}).get("windows", []))
+        if not requirements or any(not isinstance(value, str) for value in requirements): raise ValueError
+    except (OSError, KeyError, TypeError, ValueError, tomllib.TOMLDecodeError):
+        return False, "Não foi possível ler as dependências do daemon em pyproject.toml."
+    installed = subprocess.run([str(executable), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", *requirements], text=True, capture_output=True, check=False)
     if installed.returncode != 0:
         detail = (installed.stderr or installed.stdout).strip().splitlines()
         return False, "Não foi possível instalar as dependências do daemon: " + (detail[-1] if detail else "pip falhou")
