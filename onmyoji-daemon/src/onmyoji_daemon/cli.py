@@ -11,6 +11,12 @@ from . import management
 from .launcher import main as interactive_main
 
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="onmyoji-daemon"); parser.add_argument("--onmyoji-root", required=True, type=Path)
     sub = parser.add_subparsers(dest="action", required=True); sub.add_parser("run"); sub.add_parser("interactive"); sub.add_parser("list-services")
