@@ -5,14 +5,18 @@ from __future__ import annotations
 import argparse
 import ctypes
 import getpass
+import hashlib
+import io
 import json
 import os
 import subprocess
+import tempfile
 import sys
 import tomllib
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 READ_OPERATIONS = {"list", "list.totp", "read", "attachment.export"}
 ALL_OPERATIONS = READ_OPERATIONS | {"add", "edit", "delete", "copy", "attachment.import", "attachment.delete"}
@@ -147,6 +151,8 @@ class KeePass:
         return entries
 
     def show(self, path: str, field: str) -> str:
+        if field == "otp":
+            return self.totp_entry(path)
         if field == "totp": return self.run(["show", "-q", "--totp", "__DATABASE__", path])
         attrs = {"title": "Title", "username": "Username", "password": "Password", "url": "URL", "notes": "Notes"}
         if field not in attrs: fail("invalid_request", "Campo inválido para read.")
@@ -162,11 +168,64 @@ class KeePass:
         else: self.run(args)
 
     def edit(self, path: str, data: dict[str, Any]) -> None:
+        if "totp" in data:
+            if set(data) != {"totp"}:
+                fail("invalid_request", "A alteração de TOTP deve ser enviada separadamente dos demais campos.")
+            self.totp_entry(path, data["totp"])
+            return
         args = ["edit", "-q", "__DATABASE__", path]
         for key, flag in (("title", "--title"), ("username", "--username"), ("url", "--url"), ("notes", "--notes")):
             if key in data: args += [flag, str(data[key])]
         if "password" in data: args.append("--password-prompt"); self.run(args, str(data["password"]) + "\n")
         else: self.run(args)
+
+    def totp_entry(self, path: str, uri: str | None = None, validate_only: bool = False) -> str:
+        """Read or atomically save a protected OTP field in the encrypted KDBX.
+
+        Reject duplicate/missing entries and concurrent changes. No secret is
+        written to subprocess arguments or unencrypted staging files.
+        """
+        if uri is not None:
+            if not isinstance(uri, str): fail("invalid_request", "totp deve ser uma URI otpauth válida.")
+            parsed = urlparse(uri)
+            query = parse_qs(parsed.query)
+            if parsed.scheme != "otpauth" or parsed.netloc != "totp" or not query.get("secret"):
+                fail("invalid_request", "totp deve ser uma URI otpauth válida.")
+        try:
+            from pykeepass import PyKeePass
+        except ImportError: fail("dependency_missing", "A edição de TOTP requer pykeepass.")
+        temporary = None
+        try:
+            database = Path(self.database)
+            original = database.read_bytes()
+            original_hash = hashlib.sha256(original).digest()
+            keepass = PyKeePass(io.BytesIO(original), password=self.password, keyfile=self.key_file)
+            entries = [entry for entry in keepass.entries if normalize("/".join(entry.path)) == normalize(path)]
+            if len(entries) != 1: fail("entry_not_unique", "Entrada ausente ou duplicada; o cofre não foi alterado.")
+            entry = entries[0]
+            if uri is None or validate_only: return entry.otp or ""
+            # PyKeePass reserves otp and does not expose a public protection setter.
+            entry._set_string_field("otp", uri, True)
+            encrypted = io.BytesIO()
+            keepass.save(encrypted)
+            # Validate that the new KDBX opens before replacing the original.
+            verified = PyKeePass(io.BytesIO(encrypted.getvalue()), password=self.password, keyfile=self.key_file)
+            checked = [e for e in verified.entries if normalize("/".join(e.path)) == normalize(path)]
+            if len(checked) != 1 or checked[0].otp != uri: fail("totp_save_failed", "Falha ao validar TOTP salvo.")
+            with tempfile.NamedTemporaryFile(dir=database.parent, prefix=database.name + ".", suffix=".kdbx", delete=False) as target:
+                temporary = Path(target.name)
+                target.write(encrypted.getvalue())
+                target.flush()
+                os.fsync(target.fileno())
+            if hashlib.sha256(database.read_bytes()).digest() != original_hash:
+                fail("vault_changed", "O cofre mudou durante a operação; repita após sincronizá-lo.")
+            os.replace(temporary, database)
+            temporary = None
+            return ""
+        except VaultError: raise
+        except Exception: fail("totp_save_failed", "Não foi possível acessar ou salvar o TOTP no cofre.")
+        finally:
+            if temporary is not None: temporary.unlink(missing_ok=True)
 
     def attachment(self, operation: str, request: dict[str, Any]) -> Any:
         path, name = str(request["path"]), str(request["name"])
@@ -206,6 +265,12 @@ def execute(request: dict[str, Any], profile: dict[str, Any], vault: dict[str, A
         field, path = str(request["field"]), str(request["path"])
         return {"entry": path, "field": field, "value": keepass.show(path, field)}
     if operation in {"add", "edit"}:
+        values = request.get("values", {})
+        if operation == "edit" and ("totp" in values or request.get("validate_only") is True):
+            if request.get("confirm") is not True: fail("confirmation_required", "Alterar TOTP requer confirm: true.")
+            if request.get("validate_only") is True:
+                keepass.totp_entry(str(request["path"]), validate_only=True)
+                return {"entry": str(request["path"]), "validated": True}
         getattr(keepass, operation)(str(request["path"]), request.get("values", {})); return {"entry": str(request["path"]), "operation": operation, "saved": True}
     if operation == "delete": keepass.run(["rm", "-q", "__DATABASE__", str(request["path"])]); return {"entry": str(request["path"]), "operation": operation, "deleted": True}
     if operation == "copy":

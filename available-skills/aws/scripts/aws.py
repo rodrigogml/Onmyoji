@@ -16,13 +16,14 @@ import tomllib
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+from iam_access import READ_OPERATIONS as IAM_READ_OPERATIONS, WRITE_OPERATIONS as IAM_WRITE_OPERATIONS, IamError, execute as execute_iam
 
 
 VERSION = 1
 AWS_KEYS = {"cli_path", "region", "expected_account_id", "timeout_seconds", "max_attempts"}
 VAULT_KEYS = {"command", "script", "config", "entry_path", "auth_json"}
-READ_OPERATIONS = {"identity.get", "s3.bucket.list", "s3.bucket.location", "s3.object.list", "s3.object.head", "iam.role.list", "s3.batch.job.describe"}
-WRITE_OPERATIONS = {"s3.object.upload", "s3.object.download", "s3.object.download.batch", "s3.object.copy", "s3.object.delete", "iam.role.create", "iam.role.policy.put", "s3.batch.restore.create"}
+READ_OPERATIONS = {"identity.get", "s3.bucket.list", "s3.bucket.location", "s3.object.list", "s3.object.head", "iam.role.list", "s3.batch.job.describe"} | IAM_READ_OPERATIONS
+WRITE_OPERATIONS = {"s3.object.upload", "s3.object.download", "s3.object.download.batch", "s3.object.copy", "s3.object.delete", "iam.role.create", "iam.role.policy.put", "s3.batch.restore.create"} | IAM_WRITE_OPERATIONS
 
 
 class SafeError(Exception):
@@ -95,6 +96,22 @@ def vault_field(config: dict[str, Any], field: str) -> str:
     if result.returncode != 0 or not response.get("ok") or not isinstance(response.get("result", {}).get("value"), str):
         raise SafeError("vault_read_failed", "The AWS credential could not be read from KeePassVault.")
     return response["result"]["value"]
+
+
+def vault_request(config: dict[str, Any], operation: str, profile: str, path: str, **params: Any) -> dict[str, Any]:
+    """Transfer secrets through subprocess stdin/stdout, without logging them."""
+    command = [sys.executable, str(Path(__file__).resolve().parents[2] / "keepass-vault" / "scripts" / "keepass_vault.py"),
+               "--config", str(Path(config["config_path"]).parent / "keepass.toml"), "--profile", profile]
+    request = {"operation": operation, "path": path, "auth": {"mode": "configured"}, "confirm": True, **params}
+    try:
+        result = subprocess.run(command, input=json.dumps(request), text=True, encoding="utf-8", capture_output=True,
+                                timeout=config["timeout"], check=False)
+        response = json.loads(result.stdout)
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        raise SafeError("vault_unavailable", "The KeePassVault provider could not complete the request.") from None
+    if result.returncode or not response.get("ok"):
+        raise SafeError("vault_request_failed", "The KeePassVault provider rejected the request.")
+    return response["result"]
 
 
 def aws_environment(config: dict[str, Any], access_key_id: str, secret_access_key: str, directory: str) -> dict[str, str]:
@@ -229,6 +246,13 @@ def execute(config: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
     if not region:
         raise SafeError("region_required", "A region must be specified in the request because the selected profile has no default region.")
     config = {**config, "region": region}
+    if operation in IAM_READ_OPERATIONS | IAM_WRITE_OPERATIONS:
+        try:
+            data = execute_iam(config, request, vault_field,
+                               lambda op, profile, path, **params: vault_request(config, op, profile, path, **params))
+        except IamError as exc:
+            raise SafeError(exc.code, exc.message) from None
+        return {"version": VERSION, "ok": True, "operation": operation, "data": data}
     if operation == "s3.object.download.batch":
         data = download_batch(config, request)
     if operation == "identity.get":
@@ -298,7 +322,7 @@ def main() -> int:
         response = error(operation, exc.code, exc.message)
     except json.JSONDecodeError:
         response = error(operation, "invalid_request", "The request is not valid JSON.")
-    print(json.dumps(response, ensure_ascii=False))
+    print(json.dumps(response, ensure_ascii=False, default=lambda value: value.isoformat()))
     return 0 if response["ok"] else 1
 
 

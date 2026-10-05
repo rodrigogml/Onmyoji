@@ -4,9 +4,11 @@ import json
 import os
 import tempfile
 import unittest
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).parent))
 SPEC = importlib.util.spec_from_file_location("aws_skill", Path(__file__).with_name("aws.py"))
 aws = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(aws)
