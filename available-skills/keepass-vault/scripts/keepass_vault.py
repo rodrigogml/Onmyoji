@@ -226,11 +226,22 @@ class KeePass:
             # Preserve metadata/permissions on the encrypted replacement.
             import shutil
             shutil.copystat(database, temporary)
-            os.replace(temporary, database)
+            for attempt in range(6):
+                try:
+                    os.replace(temporary, database)
+                    break
+                except PermissionError as exc:
+                    if getattr(exc, "winerror", None) != 32 or attempt == 5:
+                        raise
+                    # A sync client may briefly hold the new encrypted file.
+                    import time
+                    time.sleep(0.2)
             temporary = None
             return ""
         except VaultError: raise
-        except PermissionError: fail("vault_write_denied", "O cofre não permite substituição; verifique permissões e editores abertos.")
+        except PermissionError as exc:
+            fail("vault_write_denied_" + stage + "_" + str(getattr(exc, "winerror", 0)),
+                 "O cofre não permite substituição; verifique permissões e editores abertos.")
         except Exception: fail("totp_save_failed_" + stage, "Não foi possível acessar ou salvar o TOTP no cofre.")
         finally:
             if temporary is not None: temporary.unlink(missing_ok=True)
