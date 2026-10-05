@@ -7,6 +7,8 @@ import os
 import subprocess
 import sys
 import tomllib
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -101,10 +103,12 @@ def output(completed: Any, secrets: list[str]) -> dict[str, Any]:
         if not line.strip():
             continue
         try:
-            candidate = json.loads(line)
+            candidate = json.loads(redact(line, secrets))
         except json.JSONDecodeError:
             candidate = None
         if isinstance(candidate, dict) and candidate.get("version") == 1 and isinstance(candidate.get("resource"), str) and isinstance(candidate.get("items"), list):
+            if candidate["resource"] == "accountStatements":
+                validate_statement_page(candidate)
             lookups.append(candidate)
         else:
             stdout.append(redact(line, secrets))
@@ -116,6 +120,57 @@ def output(completed: Any, secrets: list[str]) -> dict[str, Any]:
     if stderr:
         data["stderr"] = stderr
     return data
+
+
+def validate_statement_page(page: dict[str, Any]) -> None:
+    """Reject incomplete or malformed pages before using them for reconciliation."""
+    def integer(value: Any, minimum: int = 0) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
+
+    def money(value: Any) -> bool:
+        if not isinstance(value, str):
+            return False
+        try:
+            amount = Decimal(value)
+            return amount.is_finite() and amount >= 0
+        except InvalidOperation:
+            return False
+
+    valid = (integer(page.get("offset")) and integer(page.get("limit"), 1)
+             and page["limit"] <= 1000 and isinstance(page.get("hasMore"), bool)
+             and len(page["items"]) <= page["limit"])
+    if not valid:
+        raise BIS10CMDError("invalid_statement_response", "Paginação de lançamentos inválida ou ausente.")
+    if page["hasMore"]:
+        if (len(page["items"]) != page["limit"] or not integer(page.get("nextOffset"), 1)
+                or page["nextOffset"] != page["offset"] + page["limit"]):
+            raise BIS10CMDError("invalid_statement_response", "Continuação da consulta de lançamentos inválida.")
+    elif "nextOffset" in page:
+        raise BIS10CMDError("invalid_statement_response", "Página final não pode indicar continuação.")
+    identifiers: set[int] = set()
+    for item in page["items"]:
+        if (not isinstance(item, dict) or not integer(item.get("id"), 1) or item["id"] in identifiers
+                or not integer(item.get("accountId"), 1) or not money(item.get("value"))
+                or item.get("operation") not in {"CREDIT", "DEBIT"}
+                or item.get("type") not in {"MANUAL", "TRANSFER", "BILLS"}
+                or not isinstance(item.get("categories"), list)):
+            raise BIS10CMDError("invalid_statement_response", "Lançamento financeiro incompleto ou inválido.")
+        identifiers.add(item["id"])
+        try:
+            if not isinstance(item.get("date"), str):
+                raise ValueError()
+            datetime.fromisoformat(item["date"])
+        except ValueError as exc:
+            raise BIS10CMDError("invalid_statement_response", "Data do lançamento inválida.") from exc
+        for category in item["categories"]:
+            if (not isinstance(category, dict) or not integer(category.get("id"), 1)
+                    or not isinstance(category.get("name"), str) or not money(category.get("value"))):
+                raise BIS10CMDError("invalid_statement_response", "Categoria do lançamento inválida.")
+        counterpart = item.get("counterpart")
+        if counterpart is not None and (not isinstance(counterpart, dict)
+                or not integer(counterpart.get("id"), 1) or not integer(counterpart.get("accountId"), 1)
+                or counterpart.get("operation") not in {"CREDIT", "DEBIT"} or not money(counterpart.get("value"))):
+            raise BIS10CMDError("invalid_statement_response", "Contrapartida da transferência inválida.")
 
 
 def run(config: dict[str, dict[str, Any]], request: dict[str, Any]) -> dict[str, Any]:
@@ -144,6 +199,11 @@ def run(config: dict[str, dict[str, Any]], request: dict[str, Any]) -> dict[str,
     data = output(completed, secrets)
     if completed.returncode:
         raise BIS10CMDError("bis10cmd_error", "O BIS10CMD retornou erro.", data)
+    query_count = sum(name == "accountstatement" and bool(args) and args[0].casefold() in {"get", "list"}
+                      for name, args in commands)
+    pages = [item for item in data.get("lookups", []) if item["resource"] == "accountStatements"]
+    if query_count != len(pages):
+        raise BIS10CMDError("statement_query_unavailable", "O cliente não retornou todas as consultas estruturadas de lançamentos. Verifique a versão do BIS10CMD.")
     return data
 
 

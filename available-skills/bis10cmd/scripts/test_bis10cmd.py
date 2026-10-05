@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,12 @@ import bis10cmd
 
 
 class BIS10CMDTests(unittest.TestCase):
+    def statement_page(self):
+        return {"version": 1, "resource": "accountStatements", "offset": 0, "limit": 200, "hasMore": False,
+                "items": [{"id": 10, "accountId": 5, "date": "2026-09-14T00:00", "displayLine": "GPT - Créditos",
+                           "value": "104.70", "operation": "DEBIT", "type": "MANUAL",
+                           "categories": [{"id": 98, "name": "Estrutura TI / Informática", "value": "104.70"}]}]}
+
     def setUp(self) -> None:
         self.runtime = tempfile.TemporaryDirectory()
         self.root = Path(self.runtime.name)
@@ -60,3 +67,57 @@ class BIS10CMDTests(unittest.TestCase):
             with self.assertRaises(bis10cmd.BIS10CMDError) as error:
                 bis10cmd.run(self.config, {"version": 1, "commands": [{"name": "ping", "args": []}]})
         self.assertEqual(error.exception.data, {"messages": ["[REDACTED]"], "stderr": ["[REDACTED]"]})
+
+    def test_statement_response_preserves_decimal_strings_and_unicode(self) -> None:
+        page = self.statement_page()
+        completed = type("Result", (), {"stdout": json.dumps(page), "stderr": ""})()
+        result = bis10cmd.output(completed, [])
+        self.assertEqual(result["lookups"][0], page)
+
+    def test_statement_response_redacts_secrets_in_structured_fields(self) -> None:
+        page = self.statement_page()
+        page["items"][0]["notes"] = "secret"
+        completed = type("Result", (), {"stdout": json.dumps(page), "stderr": ""})()
+        self.assertEqual(bis10cmd.output(completed, ["secret"])["lookups"][0]["items"][0]["notes"], "[REDACTED]")
+
+    def test_statement_response_rejects_malformed_records_and_pagination(self) -> None:
+        mutations = [lambda p: p.pop("hasMore"), lambda p: p.update(limit=0),
+                     lambda p: p.update(hasMore=True, nextOffset=200),
+                     lambda p: p.update(nextOffset=200), lambda p: p["items"].append(p["items"][0]),
+                     lambda p: p["items"][0].update(value=104.70), lambda p: p["items"][0].update(value="NaN"),
+                     lambda p: p["items"][0].update(value="-1"), lambda p: p["items"][0].update(id=True),
+                     lambda p: p["items"][0].update(date="invalid"), lambda p: p["items"][0].update(operation="EXPENSE"),
+                     lambda p: p["items"][0].update(categories=None),
+                     lambda p: p["items"][0]["categories"][0].update(value=104.70),
+                     lambda p: p["items"][0].update(counterpart={"id": 11})]
+        for index, mutate in enumerate(mutations):
+            with self.subTest(case=index):
+                page = copy.deepcopy(self.statement_page())
+                mutate(page)
+                with self.assertRaises(bis10cmd.BIS10CMDError):
+                    bis10cmd.validate_statement_page(page)
+
+    def test_statement_response_accepts_empty_and_continuing_pages(self) -> None:
+        page = self.statement_page()
+        page.update(limit=1, hasMore=True, nextOffset=1)
+        bis10cmd.validate_statement_page(page)
+        page.update(items=[], hasMore=False)
+        page.pop("nextOffset")
+        bis10cmd.validate_statement_page(page)
+
+    @patch("bis10cmd.subprocess.run")
+    def test_statement_query_connects_and_selects_company_before_read(self, run) -> None:
+        run.side_effect = [self.provider("jndi-user"), self.provider("jndi-secret"), self.provider("bis-user"), self.provider("bis-secret"),
+                           type("Result", (), {"returncode": 0, "stdout": json.dumps(self.statement_page()), "stderr": ""})()]
+        result = bis10cmd.run(self.config, {"version": 1, "commands": [
+            {"name": "company", "args": ["id", "2"]}, {"name": "accountStatement", "args": ["get", "id", "10"]}]})
+        self.assertEqual(run.call_args_list[-1].args[0][-8:], ["-connect", "-company", "id", "2", "-accountStatement", "get", "id", "10"])
+        self.assertEqual(result["lookups"][0]["items"][0]["id"], 10)
+
+    @patch("bis10cmd.subprocess.run")
+    def test_statement_query_rejects_client_without_structured_response(self, run) -> None:
+        run.side_effect = [self.provider("jndi-user"), self.provider("jndi-secret"), self.provider("bis-user"), self.provider("bis-secret"),
+                           type("Result", (), {"returncode": 0, "stdout": "Ajuda antiga", "stderr": ""})()]
+        with self.assertRaises(bis10cmd.BIS10CMDError) as error:
+            bis10cmd.run(self.config, {"version": 1, "commands": [{"name": "accountStatement", "args": ["get", "id", "10"]}]})
+        self.assertEqual(error.exception.code, "statement_query_unavailable")
