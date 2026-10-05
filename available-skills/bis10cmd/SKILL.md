@@ -22,9 +22,11 @@ Envie JSON v1 pela entrada padrão:
 }
 ```
 
-O wrapper aceita `help`, `facade`, `login`, `connect`, `ping`, `session` e `accountStatement`. Para `ping`, `session` e `accountStatement`, ele inclui `-connect` quando a sequência ainda não tiver estabelecido conexão.
+O wrapper aceita `help`, `facade`, `login`, `connect`, `ping`, `session`, `accountStatement`, `accounts`, `categories`, `costCenters`, `companies` e `company`. Para comandos autenticados, ele inclui `-connect` quando a sequência ainda não tiver estabelecido conexão. Selecione a empresa desejada explicitamente na mesma sequência antes das consultas financeiras.
 
-O BIS10CMD ainda não produz saída estruturada. O resultado retorna mensagens textuais de `stdout` e, quando houver, `stderr`; a skill não interpreta valores financeiros a partir desse texto.
+As consultas cadastrais e `accountStatement get/list` retornam JSON v1 em `data.lookups`. As consultas de lançamentos usam o recurso `accountStatements`, com valores decimais em texto e paginação validada. Consuma todas as páginas até `hasMore=false` antes de concluir uma conferência de duplicidade. Mensagens funcionais e `stderr` continuam disponíveis; não extraia valores financeiros de texto livre.
+
+Se uma consulta não retornar resposta estruturada, verifique a versão do JAR instalado. A sincronização desta skill não atualiza o executável Java.
 
 ## Segurança
 
