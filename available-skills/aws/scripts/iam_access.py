@@ -108,9 +108,15 @@ def provision_mfa(iam: Any, request: dict[str, Any], account: str, vault: Any) -
     vault("edit", profile, path, values={}, validate_only=True)
     existing_uri = vault("read", profile, path, field="otp")["value"]
     existing = all_items(iam, "list_virtual_mfa_devices", "VirtualMFADevices", AssignmentStatus="Unassigned")
-    if any(item["SerialNumber"] == expected_serial for item in existing):
+    orphan = next((item for item in existing if item["SerialNumber"] == expected_serial), None)
+    if orphan and not existing_uri and request.get("recreate_unassigned") is True:
+        # Explicit recovery applies only to the requested unassigned device;
+        # the earlier user-MFA check prevents removing an active authenticator.
+        invoke(iam, "delete_virtual_mfa_device", SerialNumber=expected_serial)
+        orphan = None
+    if orphan:
         if not existing_uri:
-            raise IamError("mfa_seed_unavailable", "An unassigned device exists without a saved seed; manual recovery is required.")
+            raise IamError("mfa_seed_unavailable", "An unassigned device exists without a saved seed; explicit recovery is required.")
         seed = seed_from_uri(existing_uri)
         created = False
     else:

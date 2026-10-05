@@ -105,12 +105,13 @@ def vault_request(config: dict[str, Any], operation: str, profile: str, path: st
     request = {"operation": operation, "path": path, "auth": {"mode": "configured"}, "confirm": True, **params}
     try:
         result = subprocess.run(command, input=json.dumps(request), text=True, encoding="utf-8", capture_output=True,
-                                timeout=config["timeout"], check=False)
+                                timeout=config["timeout"], check=False, env={**os.environ, "PYTHONUTF8": "1"})
         response = json.loads(result.stdout)
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
         raise SafeError("vault_unavailable", "The KeePassVault provider could not complete the request.") from None
     if result.returncode or not response.get("ok"):
-        raise SafeError("vault_request_failed", "The KeePassVault provider rejected the request.")
+        code = response.get("error", {}).get("code", "vault_request_failed")
+        raise SafeError("vault_request_failed", f"The KeePassVault provider rejected the request ({code}).")
     return response["result"]
 
 

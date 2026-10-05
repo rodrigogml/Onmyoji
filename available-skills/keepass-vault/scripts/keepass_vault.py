@@ -195,6 +195,7 @@ class KeePass:
             from pykeepass import PyKeePass
         except ImportError: fail("dependency_missing", "A edição de TOTP requer pykeepass.")
         temporary = None
+        stage = "load"
         try:
             database = Path(self.database)
             original = database.read_bytes()
@@ -206,12 +207,14 @@ class KeePass:
             if uri is None or validate_only: return entry.otp or ""
             # PyKeePass reserves otp and does not expose a public protection setter.
             entry._set_string_field("otp", uri, True)
+            stage = "serialize"
             encrypted = io.BytesIO()
             keepass.save(encrypted)
             # Validate that the new KDBX opens before replacing the original.
             verified = PyKeePass(io.BytesIO(encrypted.getvalue()), password=self.password, keyfile=self.key_file)
             checked = [e for e in verified.entries if normalize("/".join(e.path)) == normalize(path)]
             if len(checked) != 1 or checked[0].otp != uri: fail("totp_save_failed", "Falha ao validar TOTP salvo.")
+            stage = "staging"
             with tempfile.NamedTemporaryFile(dir=database.parent, prefix=database.name + ".", suffix=".kdbx", delete=False) as target:
                 temporary = Path(target.name)
                 target.write(encrypted.getvalue())
@@ -219,11 +222,16 @@ class KeePass:
                 os.fsync(target.fileno())
             if hashlib.sha256(database.read_bytes()).digest() != original_hash:
                 fail("vault_changed", "O cofre mudou durante a operação; repita após sincronizá-lo.")
+            stage = "replace"
+            # Preserve metadata/permissions on the encrypted replacement.
+            import shutil
+            shutil.copystat(database, temporary)
             os.replace(temporary, database)
             temporary = None
             return ""
         except VaultError: raise
-        except Exception: fail("totp_save_failed", "Não foi possível acessar ou salvar o TOTP no cofre.")
+        except PermissionError: fail("vault_write_denied", "O cofre não permite substituição; verifique permissões e editores abertos.")
+        except Exception: fail("totp_save_failed_" + stage, "Não foi possível acessar ou salvar o TOTP no cofre.")
         finally:
             if temporary is not None: temporary.unlink(missing_ok=True)
 

@@ -37,7 +37,7 @@ O wrapper KeePass aceita `read` com `field: "otp"` para integrações internas e
 O KDBX é recriptografado e validado antes da substituição atômica. Uma comparação do conteúdo original impede sobrescrever alterações detectadas durante a operação; não substitui coordenação com editores externos. Sincronize/reabra o cofre em outros editores antes de salvá-lo novamente. Somente staging criptografado é usado, no diretório do próprio cofre.
 
 > [!IMPORTANT]
-> Não existe transação distribuída entre AWS e KeePass. Se o TOTP foi salvo e a ativação falhou, a mesma operação pode retomar o dispositivo não atribuído. Se a gravação falhou após criar o dispositivo, ele permanece não atribuído e requer recuperação manual. O wrapper não apaga dispositivos nem substitui outro MFA ou TOTP automaticamente.
+> Não existe transação distribuída entre AWS e KeePass. Se o TOTP foi salvo e a ativação falhou, a mesma operação pode retomar o dispositivo não atribuído. Se a gravação falhou após criar o dispositivo, ele permanece não atribuído. Nesse caso, `recreate_unassigned: true` autoriza explicitamente remover somente esse dispositivo não atribuído e recriá-lo. O wrapper não substitui outro MFA ou TOTP automaticamente. Não utilize essa recuperação para remover dispositivos de outros fluxos.
 
 Após provisionar, consulte o perfil de console, o MFA e as políticas anexadas para confirmar o resultado. O root não recebe políticas IAM adicionais. O provisionamento não habilita acesso IAM ao console de faturamento: essa preferência da conta é independente das políticas e deve ser verificada no console AWS.
 
