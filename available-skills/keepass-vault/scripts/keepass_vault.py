@@ -52,6 +52,21 @@ def within(value: str, roots: list[str]) -> bool:
     return any(value == normalize(root) or value.startswith(normalize(root) + "/") for root in roots)
 
 
+def replace_encrypted_database(source: Path, destination: Path) -> None:
+    """Atomically replace a KDBX while retaining the destination's Windows ACL."""
+    if os.name != "nt":
+        os.replace(source, destination)
+        return
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    replace = kernel.ReplaceFileW
+    replace.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPCWSTR,
+                        wintypes.DWORD, ctypes.c_void_p, ctypes.c_void_p]
+    replace.restype = wintypes.BOOL
+    if not replace(str(destination), str(source), None, 0, None, None):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
 def check_request(request: dict[str, Any], profile: dict[str, Any]) -> str:
     operation = request.get("operation")
     if operation not in ALL_OPERATIONS: fail("unsupported_operation", "Operação não suportada.")
@@ -228,7 +243,7 @@ class KeePass:
             shutil.copystat(database, temporary)
             for attempt in range(6):
                 try:
-                    os.replace(temporary, database)
+                    replace_encrypted_database(temporary, database)
                     break
                 except PermissionError as exc:
                     if getattr(exc, "winerror", None) != 32 or attempt == 5:
