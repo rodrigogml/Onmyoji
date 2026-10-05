@@ -4,7 +4,8 @@ timeout_seconds = 30
 max_attempts = 3
 [profiles.example]
 cli_path = "aws"
-region = "sa-east-1"
+# Optional default; when empty, each wrapper request must provide region.
+region = ""
 expected_account_id = ""
 vault_profile = "example"
 vault_entry_path = "AWS/example"

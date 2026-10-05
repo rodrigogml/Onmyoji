@@ -70,9 +70,12 @@ def load_config(path: str, profile_name: str) -> dict[str, Any]:
     account_id = aws.get("expected_account_id", vault.get("expected_account_id", ""))
     if account_id and (not account_id.isdigit() or len(account_id) != 12):
         raise SafeError("invalid_config", "expected_account_id must contain 12 digits.")
+    region = vault.get("region", "")
+    if not isinstance(region, str):
+        raise SafeError("invalid_config", "The profile region must be a string; use an empty string for no default region.")
     return {
         "config_path": path,
-        "cli_path": vault.get("cli_path", "aws"), "region": vault.get("region", ""),
+        "cli_path": vault.get("cli_path", "aws"), "region": region.strip(),
         "expected_account_id": account_id, "timeout": timeout, "attempts": attempts,
         "vault": {"entry_path": vault.get("vault_entry_path", ""), "profile": vault.get("vault_profile", "")}, "auth": {"mode": "configured"},
     }
@@ -142,7 +145,8 @@ def download_batch(config: dict[str, Any], request: dict[str, Any]) -> dict[str,
         raise SafeError("source_not_found", "The download manifest does not exist.")
     destination.mkdir(parents=True, exist_ok=True)
     failures_path.parent.mkdir(parents=True, exist_ok=True)
-    total = sum(1 for line in manifest.open(encoding="utf-8") if line.strip())
+    with manifest.open(encoding="utf-8") as source:
+        total = sum(1 for line in source if line.strip())
     access_key_id = vault_field(config, "username")
     secret_access_key = vault_field(config, "password")
     started_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
@@ -219,6 +223,12 @@ def execute(config: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
         raise SafeError("unsupported_operation", "The requested operation is not supported.")
     if operation in WRITE_OPERATIONS and request.get("confirm") is not True:
         raise SafeError("confirmation_required", "This operation requires confirm: true.")
+    region = require_string(request, "region").strip() if "region" in request else config["region"]
+    if "region" in request and not region:
+        raise SafeError("invalid_request", "'region' must be a non-empty string.")
+    if not region:
+        raise SafeError("region_required", "A region must be specified in the request because the selected profile has no default region.")
+    config = {**config, "region": region}
     if operation == "s3.object.download.batch":
         data = download_batch(config, request)
     if operation == "identity.get":

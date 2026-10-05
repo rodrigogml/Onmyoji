@@ -8,7 +8,7 @@ sys.path.insert(0,str(SKILL.parent))
 from setup_ui import choose_keepass_profile,item,prompt,result,screen,suggested_vault_entry
 from setup_profile_api import Field,handle as handle_profile,simple_save,wrapper_test
 DEFAULTS={"timeout_seconds":30,"max_attempts":3}
-FIELDS=(("cli_path","Executável AWS CLI","aws"),("region","Região","sa-east-1"),("expected_account_id","Conta AWS esperada (opcional)",""),("vault_profile","Perfil KeePass","example"),("vault_entry_path","Entrada KeePass","AWS/example"))
+FIELDS=(("cli_path","Executável AWS CLI","aws"),("region","Região padrão (opcional; vazio exige região no comando)",""),("expected_account_id","Conta AWS esperada (opcional)",""),("vault_profile","Perfil KeePass","example"),("vault_entry_path","Entrada KeePass","AWS/example"))
 PROFILE_FIELDS=tuple(Field(key,label,default,key in {'vault_profile','vault_entry_path'}) for key,label,default in FIELDS)
 def path(root):return root/'configs'/'aws.toml'
 def load(file):return tomllib.loads(file.read_text(encoding='utf-8')) if file.exists() else {'schema_version':1,'defaults':dict(DEFAULTS),'profiles':{}}
@@ -60,7 +60,7 @@ def configure(root):
     item('X.','Voltar');field=prompt('Editar [X volta]: ').strip().casefold()
     if field.isdigit() and 1<=int(field)<=len(FIELDS):
      key,label,_=FIELDS[int(field)-1];value=choose_keepass_profile(root,profile.get(key,'')) if key=='vault_profile' else prompt(f'{label} [X cancela]: ').strip()
-     if value and value.casefold() not in {'x','\x1b'}:profile[key]=value;save(file,data)
+     if value is not None and (value or key=='region') and value.casefold() not in {'x','\x1b'}:profile[key]=value;save(file,data)
   else:result(False,'Opção inválida.')
 def main():
  parser=argparse.ArgumentParser();parser.add_argument('--onmyoji-root',type=Path);parser.add_argument('--action',default='configure');parser.add_argument('--json',action='store_true');parser.add_argument('--profile');parser.add_argument('--set',action='append');parser.add_argument('--confirm-delete');args=parser.parse_args();root=args.onmyoji_root.resolve() if args.onmyoji_root else SKILL.parents[1];info={'id':'aws','title':'AWS','description':'S3 e IAM com credenciais no KeePass Vault.'}
