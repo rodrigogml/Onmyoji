@@ -20,6 +20,7 @@ Os novos comandos são:
 | `iam.user.mfa.provision` | `user_name`, `device_name`, `password_vault_profile`, `password_vault_entry_path`, `confirm` | Cria, salva e ativa o dispositivo virtual; retorna somente seu identificador e estado. |
 | `iam.user.policy.list` | `user_name` | Lista políticas gerenciadas anexadas. |
 | `iam.user.inline-policy.list` | `user_name` | Lista nomes das políticas inline. |
+| `iam.user.inline-policy.get` | `user_name`, `policy_name` | Consulta o documento de uma política inline para verificar a concessão. |
 | `iam.user.groups.list` | `user_name` | Lista os grupos do usuário. |
 | `iam.user.policy.attach` | `user_name`, `policy_arn`, `confirm` | Anexa a política explicitamente indicada. |
 | `iam.user.policy.put` | `user_name`, `policy_name`, `policy_document`, `confirm` | Salva uma política inline; pode substituir a política com esse nome. |

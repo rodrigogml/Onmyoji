@@ -85,6 +85,26 @@ class IamTests(unittest.TestCase):
         result = self.run_operation({**self.request, "operation": "iam.user.policy.list"})
         self.assertEqual([p["PolicyName"] for p in result["AttachedPolicies"]], ["one", "two"])
 
+    def test_inline_policy_contents_can_be_verified(self):
+        expected = {"UserName": USER, "PolicyName": "LightsailResourceReadOnly", "PolicyDocument": {"Statement": []}}
+        self.sdk.get_user_policy.return_value = {**expected, "ResponseMetadata": {}}
+        result = self.run_operation({**self.request, "operation": "iam.user.inline-policy.get", "policy_name": "LightsailResourceReadOnly"})
+        self.assertEqual(result, expected)
+
+    def test_recovery_recreates_only_explicitly_requested_unassigned_device(self):
+        request = {"user_name": USER, "device_name": "owner", "password_vault_profile": "vault", "password_vault_entry_path": "Passwords/owner"}
+        self.sdk.list_mfa_devices.return_value = {"MFADevices": []}
+        self.sdk.list_virtual_mfa_devices.return_value = {"VirtualMFADevices": [{"SerialNumber": SERIAL}]}
+        self.vault.return_value = {"value": ""}
+        with self.assertRaises(iam.IamError) as error:
+            iam.provision_mfa(self.sdk, request, ACCOUNT, self.vault)
+        self.assertEqual(error.exception.code, "mfa_seed_unavailable")
+        self.sdk.delete_virtual_mfa_device.assert_not_called()
+        self.sdk.create_virtual_mfa_device.side_effect = Exception("stop after recovery")
+        with self.assertRaises(iam.IamError):
+            iam.provision_mfa(self.sdk, {**request, "recreate_unassigned": True}, ACCOUNT, self.vault)
+        self.sdk.delete_virtual_mfa_device.assert_called_once_with(SerialNumber=SERIAL)
+
     def test_sdk_errors_never_echo_submitted_secrets(self):
         error = Exception("private secret in error")
         error.response = {"Error": {"Code": "PasswordPolicyViolation", "Message": "private secret"}}

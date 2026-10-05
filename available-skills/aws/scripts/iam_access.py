@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 READ_OPERATIONS = {
     "iam.user.get", "iam.user.login.get", "iam.user.mfa.list",
-    "iam.user.policy.list", "iam.user.inline-policy.list", "iam.user.groups.list",
+    "iam.user.policy.list", "iam.user.inline-policy.list", "iam.user.inline-policy.get", "iam.user.groups.list",
 }
 WRITE_OPERATIONS = {
     "iam.user.create", "iam.user.login.create", "iam.user.mfa.provision",
@@ -174,6 +174,9 @@ def execute(config: dict[str, Any], request: dict[str, Any], credential: Any, va
         return {"user": invoke(iam, "create_user", UserName=user)["User"]}
     if operation == "iam.user.login.get":
         return {"login_profile": invoke(iam, "get_login_profile", UserName=user)["LoginProfile"]}
+    if operation == "iam.user.inline-policy.get":
+        result = invoke(iam, "get_user_policy", UserName=user, PolicyName=required(request, "policy_name"))
+        return {key: result[key] for key in ("UserName", "PolicyName", "PolicyDocument")}
     if operation == "iam.user.login.create":
         profile = required(request, "password_vault_profile")
         path = required(request, "password_vault_entry_path")
