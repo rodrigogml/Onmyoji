@@ -22,4 +22,6 @@ Ao alterar arquivos `README.md`, `AGENTS.md`, `SKILL.md` ou qualquer arquivo `.m
 	5. Enquanto a proposta não estiver aprovada, o agente pode corrigir ou substituir somente o arquivo `.proposed`, seguindo o retorno do usuário.
 	6. A incorporação de qualquer alteração ao arquivo original é feita exclusivamente pelo usuário, ou aplicadas pelo agente quando a mando do usuário. O usuário também pode descartar o arquivo `.proposed` quando desejar.
 	7. Não considere conteúdo de arquivos `.proposed` criados por outros fluxos. O conteúdo vigente é sempre o do arquivo principal.
+	8. Quando o usuário aprovar totalmente a proposta do arquivo `.proposed`, o arquivo `.proposed` deve ser eliminado.
+	9. Se ao subir o código para o repositório existirem arquivos `.proposed` no repositório, ainda pendentes de aprovação ou descarte, avise o usuário para que pendências de edição não fiquem para trás.
 
