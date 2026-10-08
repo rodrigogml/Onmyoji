@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Secure JSON wrapper for the Omie departments API."""
+"""Secure JSON wrapper for registered Omie ERP operations."""
 
 from __future__ import annotations
 
@@ -36,6 +36,7 @@ class Settings:
 
 
 ENDPOINTS = {
+    "customers": "https://app.omie.com.br/api/v1/geral/clientes/",
     "departments": "https://app.omie.com.br/api/v1/geral/departamentos/",
     "projects": "https://app.omie.com.br/api/v1/geral/projetos/",
     "categories": "https://app.omie.com.br/api/v1/geral/categorias/",
@@ -50,6 +51,8 @@ ENDPOINTS = {
 }
 
 OPERATIONS = {
+    "customers.list": ("customers", "ListarClientes", False),
+    "customers.get": ("customers", "ConsultarCliente", False),
     "departments.list": ("departments", "ListarDepartamentos", False),
     "departments.get": ("departments", "ConsultarDepartamento", False),
     "departments.create": ("departments", "IncluirDepartamento", True),
@@ -304,11 +307,75 @@ def nfe_params(operation: str, params: Mapping[str, Any], body: Mapping[str, Any
     fail("unsupported_operation", "Operação de NF-e não permitida.")
 
 
+CUSTOMER_KEYS = {"codigo_cliente_omie", "codigo_cliente_integracao"}
+CUSTOMER_FILTER_FIELDS = CUSTOMER_KEYS | {"cnpj_cpf", "razao_social", "nome_fantasia", "inativo", "tags"}
+CUSTOMER_LIST_FIELDS = {"pagina", "registros_por_pagina", "apenas_importado_api", "filtrar_por_data_de", "filtrar_por_data_ate", "filtrar_por_hora_de", "filtrar_por_hora_ate", "filtrar_apenas_inclusao", "filtrar_apenas_alteracao", "exibir_caracteristicas", "exibir_obs", "clientesFiltro"}
+
+
+def customer_filter(source: Any, *, identifier: bool = False) -> dict[str, Any]:
+    """Validate supported customer/supplier filters without changing API matching semantics.
+
+    Raise invalid_request for unsupported fields or invalid types/lengths and
+    missing_parameter when a detail lookup has no Omie or integration identifier.
+    """
+    allowed = CUSTOMER_KEYS if identifier else CUSTOMER_FILTER_FIELDS
+    if not isinstance(source, Mapping) or set(source) - allowed:
+        fail("invalid_request", "Filtro de cliente/fornecedor deve ser um objeto com campos permitidos.")
+    result = dict(source)
+    if identifier and not result:
+        fail("missing_parameter", "codigo_cliente_omie ou codigo_cliente_integracao é obrigatório.")
+    for field, value in result.items():
+        if field == "codigo_cliente_omie":
+            if type(value) is not int or value < 1:
+                fail("invalid_request", "codigo_cliente_omie deve ser um inteiro positivo.")
+        elif field == "tags":
+            if not isinstance(value, list) or not value:
+                fail("invalid_request", "tags deve ser uma lista não vazia de objetos com tag.")
+            for tag in value:
+                if not isinstance(tag, Mapping) or set(tag) != {"tag"} or not isinstance(tag["tag"], str) or not tag["tag"].strip():
+                    fail("invalid_request", "Cada tag deve conter somente uma string tag não vazia.")
+        elif field == "inativo":
+            if value not in ("S", "N"):
+                fail("invalid_request", "inativo deve ser S ou N.")
+        else:
+            limit = {"codigo_cliente_integracao": 60, "cnpj_cpf": 20, "razao_social": 60, "nome_fantasia": 100}[field]
+            if not isinstance(value, str) or not value.strip() or len(value) > limit:
+                fail("invalid_request", f"{field} deve ser uma string não vazia de até {limit} caracteres.")
+    return result
+
+
+def customer_params(operation: str, params: Mapping[str, Any]) -> dict[str, Any]:
+    """Build read-only shared customer/supplier requests, limited to 50 rows per page.
+
+    Raise invalid_request for invalid pagination, flags or filters. Detail lookups
+    accept identifiers only; CNPJ/CPF and names belong in list.clientesFiltro.
+    """
+    if operation == "customers.get":
+        return customer_filter(params, identifier=True)
+    for field in ("page", "page_size", "pagina", "registros_por_pagina"):
+        if field in params and (type(params[field]) is not int or params[field] < 1):
+            fail("invalid_request", f"{field} deve ser um inteiro positivo.")
+    result = pagination(params, CUSTOMER_LIST_FIELDS)
+    if result["registros_por_pagina"] > 50:
+        fail("invalid_request", "registros_por_pagina deve ser no máximo 50.")
+    if "clientesFiltro" in result:
+        result["clientesFiltro"] = customer_filter(result["clientesFiltro"])
+    for field in ("apenas_importado_api", "filtrar_apenas_inclusao", "filtrar_apenas_alteracao", "exibir_caracteristicas", "exibir_obs"):
+        if field in result and result[field] not in ("S", "N"):
+            fail("invalid_request", f"{field} deve ser S ou N.")
+    for field in ("filtrar_por_data_de", "filtrar_por_data_ate", "filtrar_por_hora_de", "filtrar_por_hora_ate"):
+        if field in result and (not isinstance(result[field], str) or not result[field].strip()):
+            fail("invalid_request", f"{field} deve ser uma string não vazia.")
+    return result
+
+
 def build_params(operation: str, request: Mapping[str, Any]) -> dict[str, Any]:
     params = request.get("params") or {}
     body = request.get("body") or {}
     if not isinstance(params, Mapping) or not isinstance(body, Mapping):
         fail("invalid_request", "params e body devem ser objetos JSON.")
+    if operation in {"customers.list", "customers.get"}:
+        return customer_params(operation, params)
     if operation == "departments.list":
         return pagination(params, set())
     if operation in {"departments.get", "departments.delete"}:

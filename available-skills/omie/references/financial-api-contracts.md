@@ -22,3 +22,9 @@ O wrapper chama `IncluirLancCC` com `cabecalho.nCodCC` para a origem, `transfere
 Para criar título a pagar ou a receber, envie ao menos `codigo_lancamento_integracao`, `codigo_cliente_fornecedor`, `data_vencimento`, `valor_documento` e `codigo_categoria`; `data_previsao` é recomendado para o fluxo financeiro. Para baixar um título, envie sua chave, `codigo_conta_corrente`, `valor` e `data`.
 
 Todas as operações de escrita exigem `confirm: true`, incluindo baixas, cancelamentos, conciliações e operações em lote.
+
+## Identificar o cliente ou fornecedor
+
+Antes de lançar, localize o cadastro com `customers.list` por `params.clientesFiltro.cnpj_cpf`, razão social ou nome fantasia; consulte o detalhe com `customers.get` pelo identificador. O mesmo cadastro atende clientes e fornecedores. Use o `codigo_cliente_omie` retornado em `body.codigo_cliente_fornecedor` nos títulos (ou `body.titles[].codigo_cliente_fornecedor` nos lotes) e em `body.customer_id` nos lançamentos diretos, que o wrapper converte para `detalhes.nCodCliente`.
+
+Veja [Clientes e fornecedores](api-contracts.md#clientes-e-fornecedores) para exemplos, busca por trecho de nome, paginação, verificação de documento e tratamento de candidatos ambíguos ou inativos. Uma falha de consulta não comprova inexistência; somente use o ID depois de validar o cadastro retornado.

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from omie import ENDPOINTS, OmieError, build_params, call_api, load_settings, main
+from omie import OPERATIONS, ENDPOINTS, OmieError, build_params, call_api, load_settings, main
 
 
 class OmieTests(unittest.TestCase):
@@ -25,6 +25,92 @@ app_secret_field = "password"
 ''', encoding="utf-8")
         self.addCleanup(lambda: Path(filename).unlink(missing_ok=True))
         return filename
+
+    def test_customer_list_filters_and_pagination(self):
+        for field, value in (("cnpj_cpf", "18.511.742/0001-47"), ("razao_social", "Omie"), ("nome_fantasia", "Omie"), ("codigo_cliente_omie", 123), ("codigo_cliente_integracao", "F-1"), ("inativo", "N"), ("tags", [{"tag": "Fornecedor"}])):
+            with self.subTest(field=field):
+                filters = {field: value}
+                self.assertEqual(build_params("customers.list", {"params": {"page": 2, "page_size": 10, "clientesFiltro": filters}}), {"pagina": 2, "registros_por_pagina": 10, "clientesFiltro": filters})
+        self.assertEqual(build_params("customers.list", {}), {"pagina": 1, "registros_por_pagina": 50})
+        self.assertEqual(build_params("customers.list", {"params": {"pagina": 3, "registros_por_pagina": 1, "apenas_importado_api": "N", "exibir_obs": "S", "filtrar_por_data_de": "01/10/2026"}}), {"pagina": 3, "registros_por_pagina": 1, "apenas_importado_api": "N", "exibir_obs": "S", "filtrar_por_data_de": "01/10/2026"})
+
+    def test_customer_filter_accepts_documented_length_boundaries(self):
+        for field, limit in (("codigo_cliente_integracao", 60), ("cnpj_cpf", 20), ("razao_social", 60), ("nome_fantasia", 100)):
+            with self.subTest(field=field):
+                filters = {field: "x" * limit}
+                self.assertEqual(build_params("customers.list", {"params": {"clientesFiltro": filters}})["clientesFiltro"], filters)
+
+    def test_invented_supplier_operation_fails_without_loading_credentials(self):
+        for operation in ("suppliers.list", "ListarClientes", "ConsultarFornecedor"):
+            with self.subTest(operation=operation), patch("omie.load_settings") as settings, patch("omie.credentials") as vault, patch("sys.argv", ["omie.py", "--config", "profile.toml", "--profile", "laveli"]), patch("sys.stdin", io.StringIO(json.dumps({"version": 1, "operation": operation}))), patch("sys.stdout", new_callable=io.StringIO) as output:
+                self.assertEqual(main(), 1)
+                self.assertEqual(json.loads(output.getvalue())["error"]["code"], "unsupported_operation")
+                settings.assert_not_called()
+                vault.assert_not_called()
+
+    def test_customer_get_accepts_only_registered_identifiers(self):
+        for params in ({"codigo_cliente_omie": 123}, {"codigo_cliente_integracao": "F-1"}, {"codigo_cliente_omie": 123, "codigo_cliente_integracao": "F-1"}):
+            with self.subTest(params=params):
+                self.assertEqual(build_params("customers.get", {"params": params}), params)
+        with self.assertRaises(OmieError) as error:
+            build_params("customers.get", {})
+        self.assertEqual(error.exception.code, "missing_parameter")
+
+    def test_customer_invalid_filters_fail_before_api(self):
+        invalid_filters = [None, [], "Omie", {"extra": "x"}]
+        invalid_filters += [{"codigo_cliente_omie": value} for value in (None, True, 0, -1, 1.5, "123")]
+        invalid_filters += [{field: value} for field, limit in (("codigo_cliente_integracao", 60), ("cnpj_cpf", 20), ("razao_social", 60), ("nome_fantasia", 100)) for value in (None, 123, "", " ", "x" * (limit + 1))]
+        invalid_filters += [{"inativo": value} for value in (None, [], "X")]
+        invalid_filters += [{"tags": value} for value in (None, {}, [], [None], [{"tag": None}], [{"tag": ""}], [{"tag": " "}], [{"tag": "Fornecedor", "extra": "x"}])]
+        for filters in invalid_filters:
+            with self.subTest(filters=filters), self.assertRaises(OmieError) as error:
+                build_params("customers.list", {"params": {"clientesFiltro": filters}})
+            self.assertEqual(error.exception.code, "invalid_request")
+        for params in ({"cnpj_cpf": "18511742000147"}, {"supplier_id": 1}, {"codigo_cliente_omie": False}, {"codigo_cliente_integracao": None}):
+            with self.subTest(params=params), self.assertRaises(OmieError):
+                build_params("customers.get", {"params": params})
+
+    def test_customer_pagination_flags_and_dates_reject_invalid_values(self):
+        for field in ("page", "page_size", "pagina", "registros_por_pagina"):
+            for value in (None, False, "2", 0, -1, 1.5):
+                with self.subTest(field=field, value=value), self.assertRaises(OmieError) as error:
+                    build_params("customers.list", {"params": {field: value}})
+                self.assertEqual(error.exception.code, "invalid_request")
+        for params in ({"page_size": 51}, {"apenas_importado_api": None}, {"exibir_obs": "X"}, {"filtrar_por_data_de": 1}, {"filtrar_por_hora_de": " "}, {"cnpj_cpf": "18511742000147"}):
+            with self.subTest(params=params), self.assertRaises(OmieError):
+                build_params("customers.list", {"params": params})
+
+    @patch("omie.urllib.request.urlopen")
+    def test_customer_cli_sends_registered_method_and_preserves_ids(self, urlopen):
+        class Response:
+            def __init__(self, data): self.data = data
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def read(self): return json.dumps(self.data).encode()
+        customer = {"codigo_cliente_omie": 123, "cnpj_cpf": "18.511.742/0001-47", "razao_social": "Omie", "tags": [{"tag": "Fornecedor"}], "inativo": "N"}
+        for operation, params, data, method in (
+            ("customers.list", {"clientesFiltro": {"cnpj_cpf": customer["cnpj_cpf"]}}, {"clientes_cadastro": [customer], "pagina": 1, "total_de_paginas": 2}, "ListarClientes"),
+            ("customers.get", {"codigo_cliente_omie": 123}, customer, "ConsultarCliente"),
+        ):
+            with self.subTest(operation=operation):
+                urlopen.return_value = Response(data)
+                request = {"version": 1, "operation": operation, "params": params}
+                with patch("omie.load_settings", return_value=load_settings(self.profile(), "laveli")), patch("omie.credentials", return_value=("key", "secret")), patch("sys.argv", ["omie.py", "--config", "profile.toml", "--profile", "laveli"]), patch("sys.stdin", io.StringIO(json.dumps(request))), patch("sys.stdout", new_callable=io.StringIO) as output:
+                    self.assertEqual(main(), 0)
+                response = json.loads(output.getvalue())
+                self.assertEqual(response["data"], data)
+                http_request = urlopen.call_args.args[0]
+                self.assertEqual(http_request.full_url, "https://app.omie.com.br/api/v1/geral/clientes/")
+                self.assertEqual(json.loads(http_request.data), {"call": method, "app_key": "key", "app_secret": "secret", "param": [build_params(operation, request)]})
+                self.assertFalse(OPERATIONS[operation][2])
+
+    def test_customer_id_is_reused_by_financial_operations(self):
+        customer_id = 123
+        for operation in ("payables.create", "receivables.create"):
+            title = build_params(operation, {"body": {"codigo_lancamento_integracao": "T-1", "codigo_cliente_fornecedor": customer_id, "data_vencimento": "08/10/2026", "valor_documento": 100, "codigo_categoria": "2.01"}})
+            self.assertEqual(title["codigo_cliente_fornecedor"], customer_id)
+        transaction = build_params("account-transactions.create", {"body": {"integration_id": "L-1", "account_id": 1, "date": "08/10/2026", "amount": 100, "category_code": "2.01", "document_type": "PAG", "customer_id": customer_id}})
+        self.assertEqual(transaction["detalhes"]["nCodCliente"], customer_id)
 
     def test_profile_and_pagination(self):
         settings = load_settings(self.profile(), "laveli")
