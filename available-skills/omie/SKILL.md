@@ -18,3 +18,10 @@ Leia [Contratos da API](references/api-contracts.md#clientes-e-fornecedores) ant
 Não invente operações como `suppliers.list`, `ConsultarFornecedor` ou `ListarFornecedores`: elas não estão registradas no wrapper. Para CNPJ, use a listagem filtrada; a consulta individual aceita somente IDs. Percorra `data.total_de_paginas` e valide o CNPJ retornado antes de escolher `codigo_cliente_omie`. Para parte de nome, a referência explica a busca local paginada, sem presumir suporte a curingas pela API.
 
 Use o ID retornado como `body.codigo_cliente_fornecedor` em contas a pagar/receber, `body.customer_id` em lançamentos diretos e `params.nIdFornecedor` na listagem de recebimentos de NF-e. Consulte [Contratos financeiros](references/financial-api-contracts.md) para os demais campos e a confirmação de escrita. A consulta não cria nem altera cadastros; inclusão de clientes/fornecedores ainda não é uma operação disponível neste wrapper.
+
+
+## Consultar tipos de documento
+
+Use `document-types.list` para pesquisar o catálogo de tipos de documento dos títulos e `document-types.get` com `params.codigo` para conferir código e descrição. Consulte [Contratos da API](references/api-contracts.md#tipos-de-documento-dos-títulos) para validação, respostas e exemplos. O serviço não possui paginação. Não confunda esse catálogo com `document_type` dos lançamentos diretos.
+
+Para trocar o tipo de um título existente, use `payables.update` com o código validado em `codigo_tipo_documento`, preservando os demais dados. Se o título estiver pago, não recrie o título, não cancele o pagamento nem registre outra baixa para realizar essa correção. Confira os dados e a situação após a atualização; respeite eventual restrição da Omie.

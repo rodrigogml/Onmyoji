@@ -26,7 +26,7 @@ O wrapper sempre envia `call`, `app_key`, `app_secret` e `param` (um array com u
 
 ## Paginação e filtros
 
-Todas as listagens aceitam `page` ou `pagina`, e `page_size` ou `registros_por_pagina`; ambos devem ser inteiros positivos.
+As listagens paginadas de cadastros abaixo aceitam `page` ou `pagina`, e `page_size` ou `registros_por_pagina`; ambos devem ser inteiros positivos.
 
 `projects.list` também aceita `apenas_importado_api`, `ordenar_por`, `ordem_descrescente`, `filtrar_por_data_de`, `filtrar_por_data_ate`, `filtrar_apenas_inclusao`, `filtrar_apenas_alteracao` e `nome_projeto`.
 
@@ -130,3 +130,29 @@ O subconjunto exposto de `clientesFiltro` é: `codigo_cliente_omie` (inteiro pos
 - [ConsultarCliente: identificadores](https://api.omie.com.br/docs/operacoes/geral/clientes:ConsultarCliente).
 - [Serviço de clientes: campos e estruturas retornadas](https://app.omie.com.br/api/v1/geral/clientes/). O [WSDL](https://app.omie.com.br/api/v1/geral/clientes/?WSDL) confirma `clientesFiltro` como estrutura única; a tabela HTML antiga apresenta a estrutura como array.
 - [Cadastro compartilhado e classificação por tags](https://ajuda.omie.com.br/pt-BR/articles/6596048-cadastrando-um-cliente-ou-fornecedor-via-api).
+
+
+## Tipos de documento dos títulos
+
+| Operação | Método Omie | Parâmetros | Retorno em `data` |
+|---|---|---|---|
+| `document-types.list` | `PesquisarTipoDocumento` | `params.codigo` opcional, padrão `""` | `tipo_documento_cadastro`, lista com `codigo` e `descricao` |
+| `document-types.get` | `ConsultarTipoDocumento` | `params.codigo` obrigatório e não vazio | Objeto com `codigo` e `descricao` |
+
+Ambas são leituras no endpoint fixo `/api/v1/geral/tiposdoc/`, usando exclusivamente o perfil Omie e o provedor KeePass existentes. Não exigem `confirm`. `codigo` deve ser string de até cinco caracteres; strings apenas com espaços são inválidas. Campos adicionais, paginação e `body` não vazio são rejeitados. `params` e `body`, quando presentes, devem ser objetos. A pesquisa sem código consulta o catálogo; não há paginação nesse contrato oficial. A resposta nativa é preservada, sem transformação de códigos ou descrições.
+
+```json
+{"version":1,"operation":"document-types.list"}
+{"version":1,"operation":"document-types.get","params":{"codigo":"FAT"}}
+```
+
+Ausência de código no detalhe gera `missing_parameter`; tipos, comprimentos ou campos inválidos geram `invalid_request`, antes da leitura de credenciais. Erros continuam no envelope `ok=false`: `omie_api_error` para falha de negócio em resposta JSON, `omie_http_error` para HTTP, `network_error` para conexão e `invalid_response` para JSON inválido. Mensagens externas não são expostas.
+
+Em 08/10/2026, pesquisa e consultas individuais autenticadas no perfil `laveli` confirmaram: `99999` = Outros, `NFE` = Nota Fiscal Eletrônica, `FAT` = Fatura. Esses valores são evidência da consulta, não uma enumeração fixa do wrapper. Consulte o catálogo para outros códigos.
+
+> [!IMPORTANT]
+> Este catálogo orienta `codigo_tipo_documento` de contas a pagar/receber. Não use seus códigos para inferir os valores de `document_type` (`cTipo`) dos lançamentos diretos; são contratos distintos.
+
+Para corrigir um título existente, consulte `payables.get`, preserve seus campos editáveis e envie `payables.update` com o mesmo `codigo_lancamento_omie` e `codigo_tipo_documento` validado, usando `confirm:true` após autorização. Não copie indiscriminadamente campos de resposta para o body. Não use criação, upsert, nova baixa ou cancelamento para trocar o tipo de um título pago. Consulte novamente e compare valor, datas, categoria, projeto, rateio e situação/pagamento. Se a Omie impedir a alteração de um título pago, interrompa e encaminhe a restrição, sem recriá-lo ou mudar sua baixa. O teste local valida o encaminhamento dos campos; não garante que o servidor permita a edição de todo título pago.
+
+Fonte: [Contrato oficial TiposDocumentoCadastro](https://app.omie.com.br/api/v1/geral/tiposdoc/).

@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,6 +11,87 @@ from omie import OPERATIONS, ENDPOINTS, OmieError, build_params, call_api, load_
 
 
 class OmieTests(unittest.TestCase):
+    def test_document_catalog_parameters(self):
+        for request in ({}, {"params": {}}, {"params": {"codigo": ""}}, {"params": {"codigo": "99999"}}):
+            with self.subTest(request=request):
+                self.assertEqual(build_params("document-types.list", request), {"codigo": request.get("params", {}).get("codigo", "")})
+        self.assertEqual(build_params("document-types.get", {"params": {"codigo": "FAT"}}), {"codigo": "FAT"})
+
+    def test_document_catalog_rejects_invalid_parameters(self):
+        invalid = [
+            {"params": {"codigo": value}} for value in (None, True, 123, [], {}, "123456", " ")
+        ] + [
+            {"params": value} for value in (None, False, [], "FAT")
+        ] + [
+            {"params": {"page": 1}}, {"params": {"descricao": "Fatura"}},
+            {"params": {"endpoint": "https://example.org"}},
+            {"params": {"method": "ConsultarTipoDocumento"}},
+            {"body": {"codigo": "FAT"}}, {"body": None}, {"body": []},
+        ]
+        for operation in ("document-types.list", "document-types.get"):
+            for request in invalid:
+                with self.subTest(operation=operation, request=request), self.assertRaises(OmieError) as error:
+                    build_params(operation, request)
+                self.assertEqual(error.exception.code, "invalid_request")
+        for request in ({}, {"params": {}}, {"params": {"codigo": ""}}):
+            with self.subTest(request=request), self.assertRaises(OmieError) as error:
+                build_params("document-types.get", request)
+            self.assertEqual(error.exception.code, "missing_parameter")
+
+    def test_document_catalog_cli_routes_reads_and_preserves_native_response(self):
+        cases = (
+            ("document-types.list", {}, "PesquisarTipoDocumento", {"tipo_documento_cadastro": [{"codigo": "FAT", "descricao": "Fatura"}]}),
+            ("document-types.get", {"codigo": "FAT"}, "ConsultarTipoDocumento", {"codigo": "FAT", "descricao": "Fatura"}),
+        )
+        for operation, params, method, response in cases:
+            request = {"version": 1, "operation": operation, "params": params}
+            with self.subTest(operation=operation), patch("omie.load_settings", return_value=load_settings(self.profile(), "laveli")), patch("omie.credentials", return_value=("key", "secret")) as credentials, patch("omie.call_api", return_value=response) as call, patch("sys.argv", ["omie.py", "--config", "profile.ini", "--profile", "laveli"]), patch("sys.stdin", io.StringIO(json.dumps(request))), patch("sys.stdout", new_callable=io.StringIO) as output:
+                self.assertEqual(main(), 0)
+                self.assertEqual(json.loads(output.getvalue())["data"], response)
+                self.assertEqual(call.call_args.args[3:5], ("https://app.omie.com.br/api/v1/geral/tiposdoc/", method))
+                self.assertEqual(call.call_args.args[5], {"codigo": params.get("codigo", "")})
+                credentials.assert_called_once()
+                self.assertFalse(OPERATIONS[operation][2])
+
+    def test_invalid_document_catalog_request_does_not_read_credentials(self):
+        request = {"version": 1, "operation": "document-types.get", "params": {"codigo": 1}}
+        with patch("omie.load_settings", return_value=load_settings(self.profile(), "laveli")), patch("omie.credentials") as credentials, patch("omie.call_api") as call, patch("sys.argv", ["omie.py", "--config", "profile.ini", "--profile", "laveli"]), patch("sys.stdin", io.StringIO(json.dumps(request))), patch("sys.stdout", new_callable=io.StringIO) as output:
+            self.assertEqual(main(), 1)
+            self.assertEqual(json.loads(output.getvalue())["error"]["code"], "invalid_request")
+            credentials.assert_not_called()
+            call.assert_not_called()
+
+    @patch("omie.urllib.request.urlopen")
+    def test_document_catalog_api_errors_are_sanitized(self, urlopen):
+        settings = load_settings(self.profile(), "laveli")
+        failures = (
+            (json.dumps({"faultcode": "SOAP-ENV:Client", "faultstring": "secret"}).encode(), "omie_api_error"),
+            (b"not json secret", "invalid_response"),
+        )
+        for payload, code in failures:
+            urlopen.return_value.__enter__.return_value.read.return_value = payload
+            with self.subTest(code=code), self.assertRaises(OmieError) as error:
+                call_api(settings, "key", "secret", ENDPOINTS["document_types"], "ConsultarTipoDocumento", {"codigo": "FAT"})
+            self.assertEqual(error.exception.code, code)
+            self.assertNotIn("secret", error.exception.message)
+        urlopen.side_effect = urllib.error.HTTPError(ENDPOINTS["document_types"], 403, "secret", {}, None)
+        with self.assertRaises(OmieError) as error:
+            call_api(settings, "key", "secret", ENDPOINTS["document_types"], "ConsultarTipoDocumento", {"codigo": "FAT"})
+        self.assertEqual(error.exception.code, "omie_http_error")
+        self.assertEqual(error.exception.status, 403)
+        self.assertNotIn("secret", error.exception.message)
+
+    def test_payable_type_update_preserves_title_fields_without_payment(self):
+        body = {
+            "codigo_lancamento_omie": 9015289825, "codigo_tipo_documento": "FAT",
+            "valor_documento": 100, "data_vencimento": "08/10/2026", "data_emissao": "01/10/2026",
+            "data_previsao": "08/10/2026", "codigo_categoria": "2.01", "codigo_projeto": 123,
+            "categorias": [{"codigo_categoria": "2.01", "percentual": 100}],
+            "distribuicao": [{"codigo_departamento": "D1", "percentual": 100}],
+        }
+        self.assertEqual(build_params("payables.update", {"body": body}), body)
+        self.assertEqual(OPERATIONS["payables.update"], ("payables", "AlterarContaPagar", True))
+
     def profile(self):
         handle, filename = tempfile.mkstemp(suffix=".ini")
         os.close(handle)

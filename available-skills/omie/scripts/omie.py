@@ -36,6 +36,7 @@ class Settings:
 
 
 ENDPOINTS = {
+    "document_types": "https://app.omie.com.br/api/v1/geral/tiposdoc/",
     "customers": "https://app.omie.com.br/api/v1/geral/clientes/",
     "departments": "https://app.omie.com.br/api/v1/geral/departamentos/",
     "projects": "https://app.omie.com.br/api/v1/geral/projetos/",
@@ -51,6 +52,8 @@ ENDPOINTS = {
 }
 
 OPERATIONS = {
+    "document-types.list": ("document_types", "PesquisarTipoDocumento", False),
+    "document-types.get": ("document_types", "ConsultarTipoDocumento", False),
     "customers.list": ("customers", "ListarClientes", False),
     "customers.get": ("customers", "ConsultarCliente", False),
     "departments.list": ("departments", "ListarDepartamentos", False),
@@ -369,7 +372,29 @@ def customer_params(operation: str, params: Mapping[str, Any]) -> dict[str, Any]
     return result
 
 
+def document_type_params(operation: str, request: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate the title document catalog's native codigo (up to five characters).
+
+    Search defaults to an empty code for the catalog; detail requires a code.
+    Raise invalid_request for unknown fields, bodies, invalid types or lengths,
+    and missing_parameter for absent/blank detail codes. No pagination exists.
+    These codes do not define the cTipo contract of direct account transactions.
+    """
+    params = request.get("params", {})
+    body = request.get("body", {})
+    if not isinstance(params, Mapping) or set(params) - {"codigo"} or not isinstance(body, Mapping) or body:
+        fail("invalid_request", "Use somente params.codigo; esta leitura não aceita body ou paginação.")
+    code = params.get("codigo", "")
+    if not isinstance(code, str) or len(code) > 5 or (code and not code.strip()):
+        fail("invalid_request", "codigo deve ser uma string de até 5 caracteres.")
+    if operation == "document-types.get" and not code:
+        fail("missing_parameter", "codigo é obrigatório para consultar o tipo de documento.")
+    return {"codigo": code}
+
+
 def build_params(operation: str, request: Mapping[str, Any]) -> dict[str, Any]:
+    if operation in {"document-types.list", "document-types.get"}:
+        return document_type_params(operation, request)
     params = request.get("params") or {}
     body = request.get("body") or {}
     if not isinstance(params, Mapping) or not isinstance(body, Mapping):
