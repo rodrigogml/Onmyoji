@@ -148,11 +148,33 @@ Ambas são leituras no endpoint fixo `/api/v1/geral/tiposdoc/`, usando exclusiva
 
 Ausência de código no detalhe gera `missing_parameter`; tipos, comprimentos ou campos inválidos geram `invalid_request`, antes da leitura de credenciais. Erros continuam no envelope `ok=false`: `omie_api_error` para falha de negócio em resposta JSON, `omie_http_error` para HTTP, `network_error` para conexão e `invalid_response` para JSON inválido. Mensagens externas não são expostas.
 
-Em 08/10/2026, pesquisa e consultas individuais autenticadas no perfil `laveli` confirmaram: `99999` = Outros, `NFE` = Nota Fiscal Eletrônica, `FAT` = Fatura. Esses valores são evidência da consulta, não uma enumeração fixa do wrapper. Consulte o catálogo para outros códigos.
+Em 08/10/2026, pesquisa e consultas individuais autenticadas no perfil `laveli` confirmaram: `99999` = Outros, `NFE` = Nota Fiscal Eletrônica, `FAT` = Fatura. Consulta individual também confirmou `NFS` = Nota Fiscal de Serviço. Esses valores são evidência da consulta, não uma enumeração fixa do wrapper. Consulte o catálogo para outros códigos.
 
 > [!IMPORTANT]
-> Este catálogo orienta `codigo_tipo_documento` de contas a pagar/receber. Não use seus códigos para inferir os valores de `document_type` (`cTipo`) dos lançamentos diretos; são contratos distintos.
+> O wrapper disponibiliza `99999`, `NFE`, `FAT` e `NFS` tanto em `codigo_tipo_documento` de contas a pagar/receber quanto em `document_type` (`cTipo`) dos lançamentos diretos, preservando o código escolhido. A aceitação da Omie é específica de cada serviço; o catálogo de títulos não comprova aceitação em lançamentos diretos. Consulte os contratos financeiros para essa distinção.
 
 Para corrigir um título existente, consulte `payables.get`, preserve seus campos editáveis e envie `payables.update` com o mesmo `codigo_lancamento_omie` e `codigo_tipo_documento` validado, usando `confirm:true` após autorização. Não copie indiscriminadamente campos de resposta para o body. Não use criação, upsert, nova baixa ou cancelamento para trocar o tipo de um título pago. Consulte novamente e compare valor, datas, categoria, projeto, rateio e situação/pagamento. Se a Omie impedir a alteração de um título pago, interrompa e encaminhe a restrição, sem recriá-lo ou mudar sua baixa. O teste local valida o encaminhamento dos campos; não garante que o servidor permita a edição de todo título pago.
 
 Fonte: [Contrato oficial TiposDocumentoCadastro](https://app.omie.com.br/api/v1/geral/tiposdoc/).
+
+
+## Cadastro de contraparte por CNPJ
+
+`customers.create` exige `confirm:true` e `body.cnpj_cpf` (CNPJ numérico de 14 dígitos ou máscara `XX.XXX.XXX/XXXX-XX`) e `body.razao_social` (string não vazia de até 60 caracteres). `body.codigo_cliente_integracao` é opcional, não vazio e de até 60 caracteres; quando omitido, o wrapper usa `CNPJ-` seguido dos 14 dígitos. O CNPJ é enviado com máscara. A validação é de formato, não de dígitos verificadores ou situação fiscal. O escopo inicial não inclui CPF nem CNPJ alfanumérico. Campos adicionais e `params` não vazio são rejeitados; `body` e `params`, se presentes, devem ser objetos JSON.
+
+```json
+{"version":1,"operation":"customers.create","confirm":true,"body":{"cnpj_cpf":"52.438.909/0001-20","razao_social":"RAZÃO SOCIAL CONFORME DOCUMENTO"}}
+```
+
+O exemplo contém um placeholder de razão social: use a razão social efetiva da contraparte, não apenas uma abreviação presumida.
+
+Antes de incluir, o wrapper chama `ListarClientes` com 50 registros por página e `apenas_importado_api:"N"`, sem filtros de documento, nome, situação ou tags. Percorre todas as páginas e compara o CNPJ sem pontuação, evitando depender de correspondência por máscara da API. Não há limite fixo de quantidade de clientes. Metadados ausentes/inconsistentes, totais alterados, páginas incompletas ou IDs repetidos geram `invalid_response`; falhas de rede/API propagam o erro e impedem a inclusão. Essa varredura tem custo proporcional ao catálogo inteiro.
+
+Se existir um único cadastro ativo com o CNPJ, retorna `data.codigo_cliente_omie`, `data.created:false` e o cadastro em `data.customer`, sem chamar inclusão ou alteração. A razão social informada não substitui a existente. Mais de uma correspondência gera `ambiguous_customer`; cadastro inativo gera `customer_inactive`. Não crie duplicata para contornar esses erros.
+
+Se não existir correspondência, chama exclusivamente `IncluirCliente` no endpoint fixo `/api/v1/geral/clientes/`, com o perfil e KeePass configurados. Uma resposta de sucesso deve trazer `codigo_status` zero e ID positivo; retorna os campos nativos e `data.created:true`, incluindo `data.codigo_cliente_omie`. Status de erro gera `omie_api_error` com mensagem sanitizada; ID ausente/inválido gera `invalid_response`. O ID pode ser usado como `customer_id` dos lançamentos diretos ou `codigo_cliente_fornecedor` dos títulos. O wrapper não presume nem atribui tags de fornecedor.
+
+> [!IMPORTANT]
+> A consulta anterior à criação não é uma trava transacional contra alterações concorrentes. Mantenha o código de integração estável entre tentativas. A inclusão não tem retries automáticos: se houver timeout ou resposta incerta, consulte novamente antes de repetir, pois o servidor pode já ter criado o cadastro. Nenhuma alteração/upsert automática é feita para recuperar erros.
+
+Fonte: [Cadastro de clientes e fornecedores — Omie](https://app.omie.com.br/api/v1/geral/clientes/), métodos `ListarClientes` e `IncluirCliente`.
