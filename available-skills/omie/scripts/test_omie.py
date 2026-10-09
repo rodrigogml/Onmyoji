@@ -7,10 +7,159 @@ import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
-from omie import OPERATIONS, ENDPOINTS, OmieError, build_params, call_api, load_settings, main
+from omie import OPERATIONS, ENDPOINTS, DIRECT_DOCUMENT_TYPES, FINANCIAL_DOCUMENT_TYPES, OmieError, build_params, call_api, create_customer, load_settings, main
 
 
 class OmieTests(unittest.TestCase):
+    def test_customer_creation_validates_minimal_contract(self):
+        for cnpj in ("52438909000120", "52.438.909/0001-20"):
+            result = build_params("customers.create", {"body": {"cnpj_cpf": cnpj, "razao_social": "TELL"}})
+            self.assertEqual(result, {"cnpj_cpf": "52.438.909/0001-20", "razao_social": "TELL", "codigo_cliente_integracao": "CNPJ-52438909000120"})
+        body = {"cnpj_cpf": "52438909000120", "razao_social": "R" * 60, "codigo_cliente_integracao": "I" * 60}
+        self.assertEqual(build_params("customers.create", {"body": body})["codigo_cliente_integracao"], "I" * 60)
+        invalid = [
+            {"body": value} for value in (None, [], False, "TELL")
+        ] + [
+            {"body": {"cnpj_cpf": value, "razao_social": "TELL"}}
+            for value in (None, 52438909000120, True, "", "123", "5243890900012X", "52/438909000120", "５２４３８９０９０００１２０")
+        ] + [
+            {"body": {"cnpj_cpf": "52438909000120", "razao_social": value}}
+            for value in (None, "", " ", 1, "R" * 61)
+        ] + [
+            {"body": {**body, "codigo_cliente_integracao": value}} for value in (None, "", "I" * 61)
+        ] + [{"body": {**body, "codigo_cliente_omie": 1}}, {"body": body, "params": {"method": "UpsertCliente"}}, {"body": body, "params": None}]
+        for request in invalid:
+            with self.subTest(request=request), self.assertRaises(OmieError):
+                build_params("customers.create", request)
+
+    def customer_page(self, rows, page=1, pages=1, total=None):
+        return {"pagina": page, "total_de_paginas": pages, "total_de_registros": len(rows) if total is None else total, "clientes_cadastro": rows}
+
+    def customer_body(self):
+        return build_params("customers.create", {"body": {"cnpj_cpf": "52438909000120", "razao_social": "TELL"}})
+
+    @patch("omie.call_api")
+    def test_create_customer_finds_existing_cnpj_on_second_page(self, call):
+        rows = [{"codigo_cliente_omie": i, "cnpj_cpf": "", "inativo": "N"} for i in range(1, 51)]
+        match = {"codigo_cliente_omie": 57, "cnpj_cpf": "52.438.909/0001-20", "razao_social": "TELL LTDA", "inativo": "N"}
+        call.side_effect = [self.customer_page(rows, pages=2, total=51), self.customer_page([match], page=2, pages=2, total=51)]
+        result = create_customer(load_settings(self.profile(), "laveli"), "key", "secret", self.customer_body())
+        self.assertEqual(result["codigo_cliente_omie"], 57)
+        self.assertFalse(result["created"])
+        self.assertEqual(result["customer"], match)
+        self.assertEqual(call.call_count, 2)
+        for page, invocation in enumerate(call.call_args_list, 1):
+            self.assertEqual(invocation.args[4], "ListarClientes")
+            self.assertEqual(invocation.args[5], {"pagina": page, "registros_por_pagina": 50, "apenas_importado_api": "N"})
+
+    @patch("omie.call_api")
+    def test_create_customer_includes_only_after_complete_absence(self, call):
+        call.side_effect = [self.customer_page([], pages=0), {"codigo_cliente_omie": 123, "codigo_status": "0"}]
+        settings = load_settings(self.profile(), "laveli")
+        result = create_customer(settings, "key", "secret", self.customer_body())
+        self.assertEqual(result, {"codigo_cliente_omie": 123, "codigo_status": "0", "created": True})
+        self.assertEqual(call.call_args.args[4], "IncluirCliente")
+        self.assertEqual(call.call_args.args[5], self.customer_body())
+        self.assertEqual(call.call_args.args[0].retries, 0)
+        self.assertEqual(settings.retries, 2)
+
+    @patch("omie.call_api")
+    def test_customer_duplicates_inactive_and_incomplete_reads_prevent_write(self, call):
+        match = {"codigo_cliente_omie": 1, "cnpj_cpf": "52438909000120", "inativo": "N"}
+        cases = (
+            ([self.customer_page([match, {**match, "codigo_cliente_omie": 2}])], "ambiguous_customer"),
+            ([self.customer_page([{**match, "inativo": "S"}])], "customer_inactive"),
+            ([self.customer_page([{**match, "inativo": None}])], "invalid_response"),
+            ([{}], "invalid_response"),
+            ([self.customer_page([match], total=2)], "invalid_response"),
+            ([self.customer_page([match, match])], "invalid_response"),
+            ([self.customer_page([], pages=2, total=1)], "invalid_response"),
+            ([self.customer_page([match], pages=2, total=2), self.customer_page([{**match, "codigo_cliente_omie": 2}], page=2, pages=2, total=3)], "invalid_response"),
+            ([OmieError("network_error", "secret")], "network_error"),
+        )
+        for responses, code in cases:
+            call.reset_mock()
+            call.side_effect = responses
+            with self.subTest(code=code), self.assertRaises(OmieError) as error:
+                create_customer(load_settings(self.profile(), "laveli"), "key", "secret", self.customer_body())
+            self.assertEqual(error.exception.code, code)
+            self.assertTrue(all(invocation.args[4] == "ListarClientes" for invocation in call.call_args_list))
+
+    @patch("omie.call_api")
+    def test_customer_creation_rejects_business_failure_and_missing_id(self, call):
+        for response, code in (({"codigo_status": "1", "descricao_status": "secret"}, "omie_api_error"), ({"codigo_status": "0"}, "invalid_response"), ({"codigo_status": "0", "codigo_cliente_omie": True}, "invalid_response")):
+            call.side_effect = [self.customer_page([]), response]
+            with self.subTest(response=response), self.assertRaises(OmieError) as error:
+                create_customer(load_settings(self.profile(), "laveli"), "key", "secret", self.customer_body())
+            self.assertEqual(error.exception.code, code)
+            self.assertNotIn("secret", error.exception.message)
+
+    def test_customer_creation_confirmation_and_cli_routing(self):
+        request = {"version": 1, "operation": "customers.create", "body": {"cnpj_cpf": "52438909000120", "razao_social": "TELL"}}
+        with patch("omie.load_settings", return_value=load_settings(self.profile(), "laveli")), patch("omie.credentials", return_value=("key", "secret")) as credentials, patch("omie.create_customer", return_value={"codigo_cliente_omie": 123, "created": True}) as create, patch("sys.argv", ["omie.py", "--config", "profile.ini", "--profile", "laveli"]), patch("sys.stdout", new_callable=io.StringIO) as output:
+            with patch("sys.stdin", io.StringIO(json.dumps(request))):
+                self.assertEqual(main(), 1)
+            self.assertEqual(json.loads(output.getvalue())["error"]["code"], "confirmation_required")
+            credentials.assert_not_called()
+            create.assert_not_called()
+            output.seek(0)
+            output.truncate()
+            with patch("sys.stdin", io.StringIO(json.dumps({**request, "confirm": True}))):
+                self.assertEqual(main(), 0)
+            self.assertEqual(json.loads(output.getvalue())["data"]["codigo_cliente_omie"], 123)
+            self.assertEqual(create.call_args.args[3], self.customer_body())
+
+    def test_direct_transaction_types_and_note_identity(self):
+        body = {"integration_id": "TELL-NFSE-25", "id": 1, "account_id": 2, "date": "08/10/2026", "amount": 1280, "category_code": "2.01", "document_number": "25", "customer_id": 3, "note": "NFS-e 25 TELL CNPJ 52.438.909/0001-20"}
+        for operation in ("account-transactions.create", "account-transactions.update"):
+            for document_type in DIRECT_DOCUMENT_TYPES:
+                with self.subTest(operation=operation, document_type=document_type):
+                    result = build_params(operation, {"body": {**body, "document_type": document_type}})
+                    self.assertEqual(result["detalhes"]["cTipo"], document_type)
+                    self.assertEqual(result["detalhes"]["cNumDoc"], "25")
+                    self.assertEqual(result["detalhes"]["nCodCliente"], 3)
+                    self.assertEqual(result["detalhes"]["cObs"], body["note"])
+                    self.assertEqual(set(result), {"cCodIntLanc", "nCodLanc", "cabecalho", "detalhes"})
+            for value in ("PAG", "crt", "", None, True, [], {}):
+                with self.subTest(operation=operation, value=value), self.assertRaises(OmieError) as error:
+                    build_params(operation, {"body": {**body, "document_type": value}})
+                self.assertEqual(error.exception.code, "invalid_body")
+            for value in (None, 25, "", "x" * 21):
+                with self.subTest(operation=operation, value=value), self.assertRaises(OmieError):
+                    build_params(operation, {"body": {**body, "document_type": "CRT", "document_number": value}})
+
+    def test_four_document_types_are_preserved_in_all_financial_operations(self):
+        self.assertEqual(FINANCIAL_DOCUMENT_TYPES, {"99999", "NFE", "FAT", "NFS"})
+        title = {"codigo_lancamento_omie": 1, "codigo_lancamento_integracao": "NFS-25", "codigo_cliente_fornecedor": 2, "data_vencimento": "08/10/2026", "valor_documento": 1280, "codigo_categoria": "2.01", "codigo_projeto": 3, "distribuicao": []}
+        for kind in ("payables", "receivables"):
+            for action in ("create", "update", "upsert"):
+                for code in FINANCIAL_DOCUMENT_TYPES:
+                    with self.subTest(kind=kind, action=action, code=code):
+                        body = {**title, "codigo_tipo_documento": code}
+                        self.assertEqual(build_params(f"{kind}.{action}", {"body": body}), body)
+        transaction = {"integration_id": "TELL-NFSE-25", "id": 1, "account_id": 2, "date": "08/10/2026", "amount": 1280, "category_code": "2.01", "document_number": "25"}
+        for action in ("create", "update"):
+            for code in FINANCIAL_DOCUMENT_TYPES:
+                with self.subTest(action=action, code=code):
+                    result = build_params(f"account-transactions.{action}", {"body": {**transaction, "document_type": code}})
+                    self.assertEqual(result["detalhes"]["cTipo"], code)
+                    self.assertEqual(result["detalhes"]["cNumDoc"], "25")
+                    self.assertNotIn("diversos", result)
+
+    @patch("omie.urllib.request.urlopen")
+    def test_direct_transaction_processing_failure_is_not_reported_as_success(self, urlopen):
+        settings = load_settings(self.profile(), "laveli")
+        for status in ("1", 2, None, True, []):
+            urlopen.return_value.__enter__.return_value.read.return_value = json.dumps({"cCodStatus": status, "cDesStatus": "secret"}).encode()
+            with self.subTest(status=status), self.assertRaises(OmieError) as error:
+                call_api(settings, "key", "secret", ENDPOINTS["account_transactions"], "IncluirLancCC", {"detalhes": {"cTipo": "NFS"}})
+            self.assertEqual(error.exception.code, "omie_api_error")
+            self.assertNotIn("secret", error.exception.message)
+        for status in ("0", 0):
+            response = {"cCodStatus": status, "nCodLanc": 1}
+            urlopen.return_value.__enter__.return_value.read.return_value = json.dumps(response).encode()
+            self.assertEqual(call_api(settings, "key", "secret", ENDPOINTS["account_transactions"], "IncluirLancCC", {}), response)
+
     def test_document_catalog_parameters(self):
         for request in ({}, {"params": {}}, {"params": {"codigo": ""}}, {"params": {"codigo": "99999"}}):
             with self.subTest(request=request):
@@ -191,7 +340,7 @@ app_secret_field = "password"
         for operation in ("payables.create", "receivables.create"):
             title = build_params(operation, {"body": {"codigo_lancamento_integracao": "T-1", "codigo_cliente_fornecedor": customer_id, "data_vencimento": "08/10/2026", "valor_documento": 100, "codigo_categoria": "2.01"}})
             self.assertEqual(title["codigo_cliente_fornecedor"], customer_id)
-        transaction = build_params("account-transactions.create", {"body": {"integration_id": "L-1", "account_id": 1, "date": "08/10/2026", "amount": 100, "category_code": "2.01", "document_type": "PAG", "customer_id": customer_id}})
+        transaction = build_params("account-transactions.create", {"body": {"integration_id": "L-1", "account_id": 1, "date": "08/10/2026", "amount": 100, "category_code": "2.01", "document_type": "CRT", "customer_id": customer_id}})
         self.assertEqual(transaction["detalhes"]["nCodCliente"], customer_id)
 
     def test_profile_and_pagination(self):

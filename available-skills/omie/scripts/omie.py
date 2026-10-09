@@ -5,12 +5,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 import tomllib
@@ -56,6 +57,7 @@ OPERATIONS = {
     "document-types.get": ("document_types", "ConsultarTipoDocumento", False),
     "customers.list": ("customers", "ListarClientes", False),
     "customers.get": ("customers", "ConsultarCliente", False),
+    "customers.create": ("customers", "IncluirCliente", True),
     "departments.list": ("departments", "ListarDepartamentos", False),
     "departments.get": ("departments", "ConsultarDepartamento", False),
     "departments.create": ("departments", "IncluirDepartamento", True),
@@ -392,7 +394,90 @@ def document_type_params(operation: str, request: Mapping[str, Any]) -> dict[str
     return {"codigo": code}
 
 
+FINANCIAL_DOCUMENT_TYPES = frozenset({"99999", "NFE", "FAT", "NFS"})
+DIRECT_DOCUMENT_TYPES = FINANCIAL_DOCUMENT_TYPES | frozenset({"ADI", "BOL", "CRT", "CHQ", "CON", "CRE", "DRF", "DAS", "DEB", "DIN", "DOC", "GUIA", "PROT", "REC", "RPA", "TED", "TRA"})
+
+
+def customer_create_params(request: Mapping[str, Any]) -> dict[str, Any]:
+    """Build a minimal CNPJ counterparty; reject invalid_body/invalid_request.
+
+    Accept numeric or masked CNPJ, a legal name up to 60 characters and an
+    optional integration ID up to 60 characters. Generate a stable ID from CNPJ
+    when omitted. This validates format, not tax registration or check digits.
+    """
+    body, params = request.get("body", {}), request.get("params", {})
+    if not isinstance(body, Mapping) or not isinstance(params, Mapping) or params:
+        fail("invalid_request", "customers.create exige body e não aceita params.")
+    result = copy_fields(body, {"cnpj_cpf", "razao_social", "codigo_cliente_integracao"})
+    cnpj = result.get("cnpj_cpf")
+    if not isinstance(cnpj, str) or not re.fullmatch(r"(?:[0-9]{14}|[0-9]{2}\.[0-9]{3}\.[0-9]{3}/[0-9]{4}-[0-9]{2})", cnpj):
+        fail("invalid_body", "cnpj_cpf deve ser CNPJ com 14 dígitos ou máscara XX.XXX.XXX/XXXX-XX.")
+    digits = re.sub(r"[^0-9]", "", cnpj)
+    result["cnpj_cpf"] = f"{digits[:2]}.{digits[2:5]}.{digits[5:8]}/{digits[8:12]}-{digits[12:]}"
+    result["razao_social"] = require_string(result.get("razao_social"), "razao_social", max_length=60)
+    result["codigo_cliente_integracao"] = require_string(result.get("codigo_cliente_integracao", f"CNPJ-{digits}"), "codigo_cliente_integracao", max_length=60)
+    return result
+
+
+def create_customer(settings: Settings, key: str, secret: str, body: Mapping[str, Any]) -> dict[str, Any]:
+    """Reuse a unique active CNPJ before IncluirCliente; never update a match.
+
+    Scan every unfiltered page, including inactive/non-API customers. Raise
+    invalid_response on incomplete/inconsistent results, ambiguous_customer on
+    multiple CNPJ matches, customer_inactive on an inactive match and
+    omie_api_error on a nonzero inclusion status. Network/API failures propagate.
+    Inclusion has no automatic retries; a stable integration ID helps reconcile
+    uncertain outcomes, but this read-before-write is not a transactional lock.
+    """
+    wanted = re.sub(r"[^0-9]", "", body["cnpj_cpf"])
+    matches: list[Mapping[str, Any]] = []
+    seen: set[int] = set()
+    page, totals = 1, None
+    while True:
+        response = call_api(settings, key, secret, ENDPOINTS["customers"], "ListarClientes", {"pagina": page, "registros_por_pagina": 50, "apenas_importado_api": "N"})
+        if not isinstance(response, Mapping):
+            fail("invalid_response", "Consulta prévia de clientes incompleta.")
+        rows = response.get("clientes_cadastro")
+        pages, count = response.get("total_de_paginas"), response.get("total_de_registros")
+        if not isinstance(rows, list) or type(pages) is not int or pages < 0 or type(count) is not int or count < 0 or type(response.get("pagina")) is not int or response["pagina"] != page or len(rows) > 50:
+            fail("invalid_response", "Paginação de clientes inválida; inclusão não executada.")
+        if (count > 0 and pages != (count + 49) // 50) or (count == 0 and pages not in (0, 1)):
+            fail("invalid_response", "Totais da consulta prévia de clientes são inconsistentes.")
+        if totals is None:
+            totals = (pages, count)
+        if totals != (pages, count) or (not rows and count > 0):
+            fail("invalid_response", "Consulta de clientes mudou ou está incompleta; repita a consulta.")
+        for row in rows:
+            if not isinstance(row, Mapping) or type(row.get("codigo_cliente_omie")) is not int or row["codigo_cliente_omie"] < 1 or row["codigo_cliente_omie"] in seen or not isinstance(row.get("cnpj_cpf"), str):
+                fail("invalid_response", "Cadastro retornado na consulta prévia é inválido.")
+            seen.add(row["codigo_cliente_omie"])
+            if re.sub(r"[^0-9]", "", row["cnpj_cpf"]) == wanted:
+                matches.append(row)
+        if page >= pages:
+            break
+        page += 1
+    if len(seen) != totals[1]:
+        fail("invalid_response", "Consulta prévia não recuperou todos os clientes.")
+    if len(matches) > 1:
+        fail("ambiguous_customer", "Mais de um cadastro possui o CNPJ; resolva a duplicidade antes de usar o ID.")
+    if matches:
+        match = matches[0]
+        if match.get("inativo") not in ("S", "N"):
+            fail("invalid_response", "Situação do cadastro existente não foi informada.")
+        if match["inativo"] == "S":
+            fail("customer_inactive", "O CNPJ já existe em cadastro inativo; não foi criada duplicata.")
+        return {"codigo_cliente_omie": match["codigo_cliente_omie"], "created": False, "customer": dict(match)}
+    response = call_api(replace(settings, retries=0), key, secret, ENDPOINTS["customers"], "IncluirCliente", body)
+    if not isinstance(response, Mapping) or type(response.get("codigo_status")) not in (str, int) or response["codigo_status"] not in ("0", 0):
+        fail("omie_api_error", "A inclusão do cliente não retornou status de sucesso.")
+    if type(response.get("codigo_cliente_omie")) is not int or response["codigo_cliente_omie"] < 1:
+        fail("invalid_response", "A inclusão não retornou codigo_cliente_omie válido; consulte antes de repetir.")
+    return {**response, "created": True}
+
+
 def build_params(operation: str, request: Mapping[str, Any]) -> dict[str, Any]:
+    if operation == "customers.create":
+        return customer_create_params(request)
     if operation in {"document-types.list", "document-types.get"}:
         return document_type_params(operation, request)
     params = request.get("params") or {}
@@ -482,6 +567,10 @@ def build_params(operation: str, request: Mapping[str, Any]) -> dict[str, Any]:
         for field in ("account_id", "date", "amount", "category_code", "document_type"):
             if field not in transaction:
                 fail("invalid_body", f"{field} é obrigatório.")
+        if not isinstance(transaction["document_type"], str) or transaction["document_type"] not in DIRECT_DOCUMENT_TYPES:
+            fail("invalid_body", "document_type não está entre os tipos disponibilizados pelo wrapper.")
+        if "document_number" in transaction:
+            require_string(transaction["document_number"], "document_number", max_length=20)
         result = {"cabecalho": {"nCodCC": transaction["account_id"], "dDtLanc": transaction["date"], "nValorLanc": transaction["amount"]}, "detalhes": {"cCodCateg": transaction["category_code"], "cTipo": transaction["document_type"]}}
         if "integration_id" in transaction:
             result["cCodIntLanc"] = transaction["integration_id"]
@@ -536,6 +625,8 @@ def call_api(settings: Settings, app_key: str, app_secret: str, endpoint: str, m
             fail("invalid_response", "A API Omie retornou uma resposta inválida.")
         if isinstance(result, Mapping) and result.get("faultstring"):
             fail("omie_api_error", "A API Omie retornou um erro de negócio.")
+        if isinstance(result, Mapping) and "cCodStatus" in result and (type(result["cCodStatus"]) not in (str, int) or result["cCodStatus"] not in ("0", 0)):
+            fail("omie_api_error", "A API Omie retornou uma falha no processamento do lançamento.")
         return result
     fail("request_failed", "A requisição Omie não foi concluída.")
 
@@ -558,7 +649,10 @@ def main() -> int:
         settings = load_settings(args.config, args.profile)
         params = build_params(operation, request)
         key, secret = credentials(settings)
-        data = call_api(settings, key, secret, ENDPOINTS[endpoint_name], method, params)
+        if operation == "customers.create":
+            data = create_customer(settings, key, secret, params)
+        else:
+            data = call_api(settings, key, secret, ENDPOINTS[endpoint_name], method, params)
         print(json.dumps({"version": 1, "ok": True, "operation": operation, "data": data}, ensure_ascii=True))
         return 0
     except json.JSONDecodeError:
