@@ -32,6 +32,57 @@ class OmieTests(unittest.TestCase):
             with self.subTest(request=request), self.assertRaises(OmieError):
                 build_params("customers.create", request)
 
+    def test_customer_creation_accepts_cpf_and_preserves_leading_zero(self):
+        for document in ("01234567890", "012.345.678-90"):
+            with self.subTest(document=document):
+                body = {"cnpj_cpf": document, "razao_social": "NOME COMPLETO"}
+                result = build_params("customers.create", {"body": body})
+                self.assertEqual(result, {"cnpj_cpf": "012.345.678-90", "razao_social": "NOME COMPLETO", "codigo_cliente_integracao": "CPF-01234567890"})
+                body["codigo_cliente_integracao"] = "FORN-PESSOA-1"
+                self.assertEqual(build_params("customers.create", {"body": body})["codigo_cliente_integracao"], "FORN-PESSOA-1")
+        for document in (1234567890, "0123456789", "012345678901", "0123456789X", "012.345678-90", "012/345/678-90", " 01234567890", "01234567890\n", "０１２３４５６７８９０"):
+            with self.subTest(document=document), self.assertRaises(OmieError) as error:
+                build_params("customers.create", {"body": {"cnpj_cpf": document, "razao_social": "NOME COMPLETO"}})
+            self.assertEqual(error.exception.code, "invalid_body")
+
+    @patch("omie.call_api")
+    def test_cpf_creation_reuses_paginated_match_and_blocks_unsafe_reads(self, call):
+        body = build_params("customers.create", {"body": {"cnpj_cpf": "01234567890", "razao_social": "NOME COMPLETO"}})
+        settings = load_settings(self.profile(), "laveli")
+        for document in ("01234567890", "012.345.678-90"):
+            rows = [{"codigo_cliente_omie": i, "cnpj_cpf": "", "inativo": "N"} for i in range(1, 51)]
+            match = {"codigo_cliente_omie": 51, "cnpj_cpf": document, "razao_social": "NOME EXISTENTE", "inativo": "N"}
+            call.reset_mock()
+            call.side_effect = [self.customer_page(rows, pages=2, total=51), self.customer_page([match], page=2, pages=2, total=51)]
+            with self.subTest(document=document):
+                self.assertEqual(create_customer(settings, "key", "secret", body), {"codigo_cliente_omie": 51, "created": False, "customer": match})
+                self.assertEqual(call.call_count, 2)
+                self.assertTrue(all(invocation.args[4] == "ListarClientes" for invocation in call.call_args_list))
+        cases = (
+            ([self.customer_page([match, {**match, "codigo_cliente_omie": 52, "cnpj_cpf": "01234567890"}])], "ambiguous_customer"),
+            ([self.customer_page([{**match, "inativo": "S"}])], "customer_inactive"),
+            ([self.customer_page([match], total=2)], "invalid_response"),
+            ([OmieError("network_error", "unavailable")], "network_error"),
+        )
+        for responses, code in cases:
+            call.reset_mock()
+            call.side_effect = responses
+            with self.subTest(code=code), self.assertRaises(OmieError) as error:
+                create_customer(settings, "key", "secret", body)
+            self.assertEqual(error.exception.code, code)
+            self.assertTrue(all(invocation.args[4] == "ListarClientes" for invocation in call.call_args_list))
+
+    @patch("omie.call_api")
+    def test_cpf_inclusion_sends_official_fields_after_document_absence(self, call):
+        body = build_params("customers.create", {"body": {"cnpj_cpf": "01234567890", "razao_social": "NOME COMPLETO"}})
+        cnpj = {"codigo_cliente_omie": 1, "cnpj_cpf": "01234567890000", "inativo": "N"}
+        call.side_effect = [self.customer_page([cnpj]), {"codigo_status": "0", "codigo_cliente_omie": 123}]
+        result = create_customer(load_settings(self.profile(), "laveli"), "key", "secret", body)
+        self.assertTrue(result["created"])
+        self.assertEqual(call.call_count, 2)
+        self.assertEqual(call.call_args.args[3:6], (ENDPOINTS["customers"], "IncluirCliente", {"cnpj_cpf": "012.345.678-90", "razao_social": "NOME COMPLETO", "codigo_cliente_integracao": "CPF-01234567890"}))
+        self.assertEqual(call.call_args.args[0].retries, 0)
+
     def customer_page(self, rows, page=1, pages=1, total=None):
         return {"pagina": page, "total_de_paginas": pages, "total_de_registros": len(rows) if total is None else total, "clientes_cadastro": rows}
 
@@ -95,19 +146,20 @@ class OmieTests(unittest.TestCase):
             self.assertNotIn("secret", error.exception.message)
 
     def test_customer_creation_confirmation_and_cli_routing(self):
-        request = {"version": 1, "operation": "customers.create", "body": {"cnpj_cpf": "52438909000120", "razao_social": "TELL"}}
-        with patch("omie.load_settings", return_value=load_settings(self.profile(), "laveli")), patch("omie.credentials", return_value=("key", "secret")) as credentials, patch("omie.create_customer", return_value={"codigo_cliente_omie": 123, "created": True}) as create, patch("sys.argv", ["omie.py", "--config", "profile.ini", "--profile", "laveli"]), patch("sys.stdout", new_callable=io.StringIO) as output:
-            with patch("sys.stdin", io.StringIO(json.dumps(request))):
-                self.assertEqual(main(), 1)
-            self.assertEqual(json.loads(output.getvalue())["error"]["code"], "confirmation_required")
-            credentials.assert_not_called()
-            create.assert_not_called()
-            output.seek(0)
-            output.truncate()
-            with patch("sys.stdin", io.StringIO(json.dumps({**request, "confirm": True}))):
-                self.assertEqual(main(), 0)
-            self.assertEqual(json.loads(output.getvalue())["data"]["codigo_cliente_omie"], 123)
-            self.assertEqual(create.call_args.args[3], self.customer_body())
+        for document in ("52438909000120", "01234567890"):
+            request = {"version": 1, "operation": "customers.create", "body": {"cnpj_cpf": document, "razao_social": "TELL"}}
+            with patch("omie.load_settings", return_value=load_settings(self.profile(), "laveli")), patch("omie.credentials", return_value=("key", "secret")) as credentials, patch("omie.create_customer", return_value={"codigo_cliente_omie": 123, "created": True}) as create, patch("sys.argv", ["omie.py", "--config", "profile.ini", "--profile", "laveli"]), patch("sys.stdout", new_callable=io.StringIO) as output:
+                with patch("sys.stdin", io.StringIO(json.dumps(request))):
+                    self.assertEqual(main(), 1)
+                self.assertEqual(json.loads(output.getvalue())["error"]["code"], "confirmation_required")
+                credentials.assert_not_called()
+                create.assert_not_called()
+                output.seek(0)
+                output.truncate()
+                with patch("sys.stdin", io.StringIO(json.dumps({**request, "confirm": True}))):
+                    self.assertEqual(main(), 0)
+                self.assertEqual(json.loads(output.getvalue())["data"]["codigo_cliente_omie"], 123)
+                self.assertEqual(create.call_args.args[3], build_params("customers.create", request))
 
     def test_direct_transaction_types_and_note_identity(self):
         body = {"integration_id": "TELL-NFSE-25", "id": 1, "account_id": 2, "date": "08/10/2026", "amount": 1280, "category_code": "2.01", "document_number": "25", "customer_id": 3, "note": "NFS-e 25 TELL CNPJ 52.438.909/0001-20"}

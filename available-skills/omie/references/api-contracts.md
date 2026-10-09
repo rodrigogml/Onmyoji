@@ -158,19 +158,25 @@ Para corrigir um título existente, consulte `payables.get`, preserve seus campo
 Fonte: [Contrato oficial TiposDocumentoCadastro](https://app.omie.com.br/api/v1/geral/tiposdoc/).
 
 
-## Cadastro de contraparte por CNPJ
+## Cadastro de contraparte por CNPJ ou CPF
 
-`customers.create` exige `confirm:true` e `body.cnpj_cpf` (CNPJ numérico de 14 dígitos ou máscara `XX.XXX.XXX/XXXX-XX`) e `body.razao_social` (string não vazia de até 60 caracteres). `body.codigo_cliente_integracao` é opcional, não vazio e de até 60 caracteres; quando omitido, o wrapper usa `CNPJ-` seguido dos 14 dígitos. O CNPJ é enviado com máscara. A validação é de formato, não de dígitos verificadores ou situação fiscal. O escopo inicial não inclui CPF nem CNPJ alfanumérico. Campos adicionais e `params` não vazio são rejeitados; `body` e `params`, se presentes, devem ser objetos JSON.
+`customers.create` exige `confirm:true` e `body.cnpj_cpf` (CPF numérico de 11 dígitos ou máscara `XXX.XXX.XXX-XX`, ou CNPJ numérico de 14 dígitos ou máscara `XX.XXX.XXX/XXXX-XX`) e `body.razao_social` (razão social ou nome completo da pessoa física; string não vazia de até 60 caracteres). `body.codigo_cliente_integracao` é opcional, não vazio e de até 60 caracteres; quando omitido, o wrapper usa `CPF-` seguido dos 11 dígitos ou `CNPJ-` seguido dos 14 dígitos, conforme o documento. O documento é enviado com a máscara correspondente; zeros à esquerda são preservados porque o campo exige string. A validação é de formato, não de dígitos verificadores ou situação fiscal. CNPJ alfanumérico permanece fora do escopo. Campos adicionais e `params` não vazio são rejeitados; `body` e `params`, se presentes, devem ser objetos JSON.
 
 ```json
 {"version":1,"operation":"customers.create","confirm":true,"body":{"cnpj_cpf":"52.438.909/0001-20","razao_social":"RAZÃO SOCIAL CONFORME DOCUMENTO"}}
 ```
 
-O exemplo contém um placeholder de razão social: use a razão social efetiva da contraparte, não apenas uma abreviação presumida.
+O exemplo contém um placeholder de razão social: use a razão social efetiva da contraparte, não apenas uma abreviação presumida. Para CPF, informe o nome completo em `razao_social`. Exemplo de formato com CPF fictício (não enviar como cadastro real):
 
-Antes de incluir, o wrapper chama `ListarClientes` com 50 registros por página e `apenas_importado_api:"N"`, sem filtros de documento, nome, situação ou tags. Percorre todas as páginas e compara o CNPJ sem pontuação, evitando depender de correspondência por máscara da API. Não há limite fixo de quantidade de clientes. Metadados ausentes/inconsistentes, totais alterados, páginas incompletas ou IDs repetidos geram `invalid_response`; falhas de rede/API propagam o erro e impedem a inclusão. Essa varredura tem custo proporcional ao catálogo inteiro.
+```json
+{"version":1,"operation":"customers.create","confirm":true,"body":{"cnpj_cpf":"012.345.678-90","razao_social":"NOME COMPLETO DA PESSOA"}}
+```
 
-Se existir um único cadastro ativo com o CNPJ, retorna `data.codigo_cliente_omie`, `data.created:false` e o cadastro em `data.customer`, sem chamar inclusão ou alteração. A razão social informada não substitui a existente. Mais de uma correspondência gera `ambiguous_customer`; cadastro inativo gera `customer_inactive`. Não crie duplicata para contornar esses erros.
+Compatibilidade verificada em 09/10/2026 no [contrato oficial de ClientesCadastro](https://app.omie.com.br/api/v1/geral/clientes/): `IncluirCliente` aceita CNPJ ou CPF em `cnpj_cpf` (string de até 20 caracteres). O campo `pessoa_fisica` está marcado como deprecated e não é enviado pelo wrapper. A verificação foi documental e por testes locais com respostas simuladas, sem inclusão em conta real da Omie.
+
+Antes de incluir, o wrapper chama `ListarClientes` com 50 registros por página e `apenas_importado_api:"N"`, sem filtros de documento, nome, situação ou tags. Percorre todas as páginas e compara o CPF/CNPJ sem pontuação, evitando depender de correspondência por máscara da API. Não há limite fixo de quantidade de clientes. Metadados ausentes/inconsistentes, totais alterados, páginas incompletas ou IDs repetidos geram `invalid_response`; falhas de rede/API propagam o erro e impedem a inclusão. Essa varredura tem custo proporcional ao catálogo inteiro.
+
+Se existir um único cadastro ativo com o CPF/CNPJ, retorna `data.codigo_cliente_omie`, `data.created:false` e o cadastro em `data.customer`, sem chamar inclusão ou alteração. A razão social informada não substitui a existente. Mais de uma correspondência gera `ambiguous_customer`; cadastro inativo gera `customer_inactive`. Não crie duplicata para contornar esses erros.
 
 Se não existir correspondência, chama exclusivamente `IncluirCliente` no endpoint fixo `/api/v1/geral/clientes/`, com o perfil e KeePass configurados. Uma resposta de sucesso deve trazer `codigo_status` zero e ID positivo; retorna os campos nativos e `data.created:true`, incluindo `data.codigo_cliente_omie`. Status de erro gera `omie_api_error` com mensagem sanitizada; ID ausente/inválido gera `invalid_response`. O ID pode ser usado como `customer_id` dos lançamentos diretos ou `codigo_cliente_fornecedor` dos títulos. O wrapper não presume nem atribui tags de fornecedor.
 

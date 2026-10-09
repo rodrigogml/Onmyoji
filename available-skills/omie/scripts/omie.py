@@ -399,32 +399,37 @@ DIRECT_DOCUMENT_TYPES = FINANCIAL_DOCUMENT_TYPES | frozenset({"ADI", "BOL", "CRT
 
 
 def customer_create_params(request: Mapping[str, Any]) -> dict[str, Any]:
-    """Build a minimal CNPJ counterparty; reject invalid_body/invalid_request.
+    """Build a minimal CPF/CNPJ counterparty; reject invalid_body/invalid_request.
 
-    Accept numeric or masked CNPJ, a legal name up to 60 characters and an
-    optional integration ID up to 60 characters. Generate a stable ID from CNPJ
+    Accept numeric or masked CPF/CNPJ, a legal or full personal name up to 60 characters and an
+    optional integration ID up to 60 characters. Generate a stable ID from the document
     when omitted. This validates format, not tax registration or check digits.
     """
     body, params = request.get("body", {}), request.get("params", {})
     if not isinstance(body, Mapping) or not isinstance(params, Mapping) or params:
         fail("invalid_request", "customers.create exige body e não aceita params.")
     result = copy_fields(body, {"cnpj_cpf", "razao_social", "codigo_cliente_integracao"})
-    cnpj = result.get("cnpj_cpf")
-    if not isinstance(cnpj, str) or not re.fullmatch(r"(?:[0-9]{14}|[0-9]{2}\.[0-9]{3}\.[0-9]{3}/[0-9]{4}-[0-9]{2})", cnpj):
-        fail("invalid_body", "cnpj_cpf deve ser CNPJ com 14 dígitos ou máscara XX.XXX.XXX/XXXX-XX.")
-    digits = re.sub(r"[^0-9]", "", cnpj)
-    result["cnpj_cpf"] = f"{digits[:2]}.{digits[2:5]}.{digits[5:8]}/{digits[8:12]}-{digits[12:]}"
+    document = result.get("cnpj_cpf")
+    if not isinstance(document, str) or not re.fullmatch(r"(?:[0-9]{11}|[0-9]{3}\.[0-9]{3}\.[0-9]{3}-[0-9]{2}|[0-9]{14}|[0-9]{2}\.[0-9]{3}\.[0-9]{3}/[0-9]{4}-[0-9]{2})", document):
+        fail("invalid_body", "cnpj_cpf deve ser CPF com 11 dígitos ou máscara XXX.XXX.XXX-XX, ou CNPJ com 14 dígitos ou máscara XX.XXX.XXX/XXXX-XX.")
+    digits = re.sub(r"[^0-9]", "", document)
+    document_type = "CPF" if len(digits) == 11 else "CNPJ"
+    result["cnpj_cpf"] = (
+        f"{digits[:3]}.{digits[3:6]}.{digits[6:9]}-{digits[9:]}"
+        if document_type == "CPF"
+        else f"{digits[:2]}.{digits[2:5]}.{digits[5:8]}/{digits[8:12]}-{digits[12:]}"
+    )
     result["razao_social"] = require_string(result.get("razao_social"), "razao_social", max_length=60)
-    result["codigo_cliente_integracao"] = require_string(result.get("codigo_cliente_integracao", f"CNPJ-{digits}"), "codigo_cliente_integracao", max_length=60)
+    result["codigo_cliente_integracao"] = require_string(result.get("codigo_cliente_integracao", f"{document_type}-{digits}"), "codigo_cliente_integracao", max_length=60)
     return result
 
 
 def create_customer(settings: Settings, key: str, secret: str, body: Mapping[str, Any]) -> dict[str, Any]:
-    """Reuse a unique active CNPJ before IncluirCliente; never update a match.
+    """Reuse a unique active CPF/CNPJ before IncluirCliente; never update a match.
 
     Scan every unfiltered page, including inactive/non-API customers. Raise
     invalid_response on incomplete/inconsistent results, ambiguous_customer on
-    multiple CNPJ matches, customer_inactive on an inactive match and
+    multiple document matches, customer_inactive on an inactive match and
     omie_api_error on a nonzero inclusion status. Network/API failures propagate.
     Inclusion has no automatic retries; a stable integration ID helps reconcile
     uncertain outcomes, but this read-before-write is not a transactional lock.
@@ -459,13 +464,13 @@ def create_customer(settings: Settings, key: str, secret: str, body: Mapping[str
     if len(seen) != totals[1]:
         fail("invalid_response", "Consulta prévia não recuperou todos os clientes.")
     if len(matches) > 1:
-        fail("ambiguous_customer", "Mais de um cadastro possui o CNPJ; resolva a duplicidade antes de usar o ID.")
+        fail("ambiguous_customer", "Mais de um cadastro possui o CPF/CNPJ; resolva a duplicidade antes de usar o ID.")
     if matches:
         match = matches[0]
         if match.get("inativo") not in ("S", "N"):
             fail("invalid_response", "Situação do cadastro existente não foi informada.")
         if match["inativo"] == "S":
-            fail("customer_inactive", "O CNPJ já existe em cadastro inativo; não foi criada duplicata.")
+            fail("customer_inactive", "O CPF/CNPJ já existe em cadastro inativo; não foi criada duplicata.")
         return {"codigo_cliente_omie": match["codigo_cliente_omie"], "created": False, "customer": dict(match)}
     response = call_api(replace(settings, retries=0), key, secret, ENDPOINTS["customers"], "IncluirCliente", body)
     if not isinstance(response, Mapping) or type(response.get("codigo_status")) not in (str, int) or response["codigo_status"] not in ("0", 0):

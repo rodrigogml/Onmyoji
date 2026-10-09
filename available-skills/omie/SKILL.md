@@ -15,9 +15,9 @@ Configure com `setupSkill.py`. A credencial é lida de uma entrada KeePass usand
 
 Leia [Contratos da API](references/api-contracts.md#clientes-e-fornecedores) antes de localizar um cadastro. `customers.list` chama `ListarClientes`, com CNPJ/CPF, razão social ou nome fantasia em `params.clientesFiltro` (objeto JSON); `customers.get` chama `ConsultarCliente`, com `codigo_cliente_omie` ou `codigo_cliente_integracao`. Ambas são leituras e consultam o cadastro compartilhado de clientes e fornecedores.
 
-Não invente operações como `suppliers.list`, `ConsultarFornecedor` ou `ListarFornecedores`: elas não estão registradas no wrapper. Para CNPJ, use a listagem filtrada; a consulta individual aceita somente IDs. Percorra `data.total_de_paginas` e valide o CNPJ retornado antes de escolher `codigo_cliente_omie`. Para parte de nome, a referência explica a busca local paginada, sem presumir suporte a curingas pela API.
+Não invente operações como `suppliers.list`, `ConsultarFornecedor` ou `ListarFornecedores`: elas não estão registradas no wrapper. Para CNPJ/CPF, use a listagem filtrada; a consulta individual aceita somente IDs. Percorra `data.total_de_paginas` e valide o CNPJ/CPF retornado antes de escolher `codigo_cliente_omie`. Para parte de nome, a referência explica a busca local paginada, sem presumir suporte a curingas pela API.
 
-Use o ID retornado como `body.codigo_cliente_fornecedor` em contas a pagar/receber, `body.customer_id` em lançamentos diretos e `params.nIdFornecedor` na listagem de recebimentos de NF-e. Consulte [Contratos financeiros](references/financial-api-contracts.md) para os demais campos e a confirmação de escrita. As consultas não criam nem alteram cadastros. Para cadastrar por CNPJ, use `customers.create` conforme o contrato abaixo.
+Use o ID retornado como `body.codigo_cliente_fornecedor` em contas a pagar/receber, `body.customer_id` em lançamentos diretos e `params.nIdFornecedor` na listagem de recebimentos de NF-e. Consulte [Contratos financeiros](references/financial-api-contracts.md) para os demais campos e a confirmação de escrita. As consultas não criam nem alteram cadastros. Para cadastrar por CNPJ ou CPF, use `customers.create` conforme o contrato abaixo.
 
 
 ## Consultar tipos de documento
@@ -27,9 +27,9 @@ Use `document-types.list` para pesquisar o catálogo de tipos de documento dos t
 Para trocar o tipo de um título existente, use `payables.update` com o código validado em `codigo_tipo_documento`, preservando os demais dados. Se o título estiver pago, não recrie o título, não cancele o pagamento nem registre outra baixa para realizar essa correção. Confira os dados e a situação após a atualização; respeite eventual restrição da Omie.
 
 
-## Cadastrar contraparte por CNPJ
+## Cadastrar contraparte por CNPJ ou CPF
 
-Use `customers.create` com `confirm:true`, `body.cnpj_cpf` e a razão social efetiva em `body.razao_social`. O wrapper consulta todos os cadastros antes de incluir, reutiliza um único cadastro ativo com o mesmo CNPJ e devolve `data.codigo_cliente_omie`. Interrompe se o cadastro estiver inativo, houver múltiplas correspondências ou a consulta falhar/estiver incompleta. Leia [Cadastro por CNPJ](references/api-contracts.md#cadastro-de-contraparte-por-cnpj) para limites, código de integração estável, resultado e recuperação de respostas incertas.
+Use `customers.create` com `confirm:true`, `body.cnpj_cpf` e a razão social ou o nome completo efetivo em `body.razao_social`. O wrapper consulta todos os cadastros antes de incluir, reutiliza um único cadastro ativo com o mesmo CNPJ/CPF e devolve `data.codigo_cliente_omie`. Interrompe se o cadastro estiver inativo, houver múltiplas correspondências ou a consulta falhar/estiver incompleta. Leia [Cadastro por CNPJ ou CPF](references/api-contracts.md#cadastro-de-contraparte-por-cnpj-ou-cpf) para limites, código de integração estável, resultado e recuperação de respostas incertas.
 
 ## Escolher o tipo de documento financeiro
 
