@@ -223,6 +223,15 @@ PAYMENT_FIELDS = {"codigo_lancamento", "codigo_lancamento_integracao", "codigo_b
 LIST_FIELDS = {"pagina", "registros_por_pagina", "apenas_importado_api", "ordenar_por", "ordem_descrescente", "filtrar_por_data_de", "filtrar_por_data_ate", "filtrar_apenas_inclusao", "filtrar_apenas_alteracao", "filtrar_por_emissao_de", "filtrar_por_emissao_ate", "filtrar_por_registro_de", "filtrar_por_registro_ate", "filtrar_conta_corrente", "filtrar_cliente", "filtrar_por_cpf_cnpj", "filtrar_por_status", "filtrar_por_projeto", "exibir_obs"}
 
 
+def title_body(operation: str, body: Mapping[str, Any]) -> dict[str, Any]:
+    """Preserva o campo de boleto de contas a pagar; rejeita valores vazios ou maiores que 70 caracteres."""
+    allowed = TITLE_FIELDS | ({"codigo_barras_ficha_compensacao"} if operation.startswith("payables.") else set())
+    title = copy_fields(body, allowed)
+    if "codigo_barras_ficha_compensacao" in title:
+        require_string(title["codigo_barras_ficha_compensacao"], "codigo_barras_ficha_compensacao", max_length=70)
+    return title
+
+
 def financial_params(operation: str, params: Mapping[str, Any], body: Mapping[str, Any]) -> dict[str, Any]:
     if operation.endswith(".list"):
         return pagination(params, LIST_FIELDS)
@@ -242,7 +251,7 @@ def financial_params(operation: str, params: Mapping[str, Any], body: Mapping[st
             fail("invalid_body", "A chave do título e distribuicao são obrigatórias.")
         return allocation
     if operation.endswith(".create") or operation.endswith(".update") or operation.endswith(".upsert"):
-        title = copy_fields(body, TITLE_FIELDS)
+        title = title_body(operation, body)
         if operation.endswith(".create") and not {"codigo_lancamento_integracao", "codigo_cliente_fornecedor", "data_vencimento", "valor_documento", "codigo_categoria"} <= set(title):
             fail("invalid_body", "Título exige código de integração, cliente/fornecedor, vencimento, valor e categoria.")
         return title
@@ -254,7 +263,7 @@ def financial_params(operation: str, params: Mapping[str, Any], body: Mapping[st
         if not all(isinstance(item, Mapping) for item in titles):
             fail("invalid_body", "titles deve conter apenas objetos JSON.")
         key = "conta_pagar_cadastro" if operation.startswith("payables.") else "conta_receber_cadastro"
-        return {"lote": batch["lote"], key: [copy_fields(item, TITLE_FIELDS) for item in titles]}
+        return {"lote": batch["lote"], key: [title_body(operation, item) for item in titles]}
     if operation in {"payables.pay", "receivables.receive"}:
         payment = copy_fields(body, PAYMENT_FIELDS)
         if not {"valor", "data", "codigo_conta_corrente"} <= set(payment) or not (set(payment) & {"codigo_lancamento", "codigo_lancamento_integracao"}):

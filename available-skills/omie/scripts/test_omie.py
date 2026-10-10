@@ -11,6 +11,26 @@ from omie import OPERATIONS, ENDPOINTS, DIRECT_DOCUMENT_TYPES, FINANCIAL_DOCUMEN
 
 
 class OmieTests(unittest.TestCase):
+    def test_payable_barcode_preserved_in_titles_and_batches(self):
+        body = {"codigo_lancamento_integracao": "TEST-BOLETO", "codigo_cliente_fornecedor": 1, "data_vencimento": "27/10/2026", "valor_documento": 440, "codigo_categoria": "2.11.97"}
+        for barcode in ("00190.00009 01234.567890 12345.678901 1 10000000000100", "1" * 70):
+            title = {**body, "codigo_barras_ficha_compensacao": barcode}
+            for operation in ("payables.create", "payables.update", "payables.upsert"):
+                with self.subTest(operation=operation, barcode=barcode):
+                    self.assertEqual(build_params(operation, {"body": title}), title)
+            for operation in ("payables.create-batch", "payables.upsert-batch"):
+                self.assertEqual(build_params(operation, {"body": {"lote": 1, "titles": [title]}})["conta_pagar_cadastro"], [title])
+        self.assertEqual(build_params("payables.create", {"body": body}), body)
+
+    def test_payable_barcode_rejects_invalid_values_and_receivables(self):
+        for barcode in (None, False, 123, "", " ", "1" * 71):
+            title = {"codigo_barras_ficha_compensacao": barcode}
+            for operation, request in (("payables.update", {"body": title}), ("payables.create-batch", {"body": {"lote": 1, "titles": [title]}})):
+                with self.subTest(operation=operation, barcode=barcode), self.assertRaises(OmieError):
+                    build_params(operation, request)
+        with self.assertRaises(OmieError):
+            build_params("receivables.update", {"body": {"codigo_barras_ficha_compensacao": "123"}})
+
     def test_customer_creation_validates_minimal_contract(self):
         for cnpj in ("52438909000120", "52.438.909/0001-20"):
             result = build_params("customers.create", {"body": {"cnpj_cpf": cnpj, "razao_social": "TELL"}})

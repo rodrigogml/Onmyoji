@@ -63,3 +63,12 @@ Esse fragmento não é uma requisição completa: também são necessários `acc
 Esse fluxo chama somente `IncluirLancCC` ou `AlterarLancCC`, não cria conta a pagar, não realiza baixa e não envia comando de conciliação. As requisições não aceitam `conciliar_documento`/`diversos` nem campos de conciliação. Após uma resposta de sucesso, consulte `account-transactions.get` pelo ID retornado e confira conta, valor, tipo, número, observação, fornecedor e os dados de conciliação retornados em `diversos`. A ausência de comando de conciliação não garante o comportamento de configurações ou automações externas da conta.
 
 Fontes: [Catálogo oficial TiposDocumentoCadastro](https://app.omie.com.br/api/v1/geral/tiposdoc/) e [Contrato oficial ContaCorrenteLancamentos](https://app.omie.com.br/api/v1/financas/contacorrentelancamentos/).
+
+
+## Linha digitável de contas a pagar
+
+`payables.create`, `payables.update`, `payables.upsert` e suas operações em lote aceitam `codigo_barras_ficha_compensacao` no título. O campo deve ser texto não vazio de até 70 caracteres e é encaminhado sem alterar espaços, pontuação ou zeros à esquerda. A validação local verifica o formato do campo, não os dígitos verificadores do boleto. O campo não é aceito em contas a receber.
+
+Após a escrita, consultar o título e conferir a linha gravada. Esse cadastro não executa pagamento nem envia instrução de conciliação. A observação pode conter uma linha adicional com `Linha digitável: <linha do boleto>` quando solicitado; ela não substitui o campo próprio para o fluxo de pagamento.
+
+Fonte: [Contrato oficial de Contas a Pagar](https://app.omie.com.br/api/v1/financas/contapagar/), campo `codigo_barras_ficha_compensacao`.
