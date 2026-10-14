@@ -31,6 +31,7 @@ def main(argv: list[str] | None = None) -> int:
     telegram = sub.add_parser("telegram"); telegram_sub = telegram.add_subparsers(dest="telegram_action", required=True)
     telegram_sub.add_parser("status"); telegram_sub.add_parser("owners"); telegram_sub.add_parser("sync-commands"); pairing = telegram_sub.add_parser("pair-request"); pairing.add_argument("--ttl", type=int, default=300)
     send = telegram_sub.add_parser("send"); send.add_argument("chat_id", type=int); send.add_argument("text")
+    btg_monitor = sub.add_parser("btg-monitor"); btg_monitor.add_argument("btg_action", choices=["status"])
     miniapps = sub.add_parser("mini-apps"); miniapps_sub = miniapps.add_subparsers(dest="miniapps_action", required=True)
     miniapps_sub.add_parser("status"); miniapps_sub.add_parser("diagnose"); miniapps_sub.add_parser("list"); events = miniapps_sub.add_parser("events"); events.add_argument("--id"); events.add_argument("--limit", type=int, default=100)
     create_app = miniapps_sub.add_parser("create"); create_app.add_argument("--request", required=True, help="JSON da publicação")
@@ -73,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, KeyError) as error: parser.error(f"daemon não está em execução nesta instância: {error}")
     if args.action == "list-services": method, params = "list-services", {}
     elif args.action in {"start", "stop", "restart", "enable", "disable", "status"}: method, params = args.action, {"service": args.service}
+    elif args.action == "btg-monitor": method, params = "btg-monitor.status", {}
     elif args.action == "telegram":
         methods = {"status": "telegram.status", "owners": "telegram.owners", "sync-commands": "telegram.sync-commands", "pair-request": "telegram.pair-request", "send": "telegram.send"}
         method = methods[args.telegram_action]; params = {"ttl_seconds": args.ttl} if args.telegram_action == "pair-request" else ({"chat_id": args.chat_id, "text": args.text} if args.telegram_action == "send" else {})

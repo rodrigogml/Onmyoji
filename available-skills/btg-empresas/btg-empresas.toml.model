@@ -1,0 +1,21 @@
+schema_version = 1
+
+[defaults]
+timeout_seconds = 30
+
+# Configure pelo setup. Use uma entrada KeePass dedicada com acesso read_write.
+# password=client_secret; notes é administrado como JSON OAuth pelo wrapper.
+[profiles.example]
+environment = "sandbox"
+company_id = "30306294000145"
+account_id = "PREENCHER_ID_DA_CONTA"
+account_number = "PREENCHER_NUMERO_DA_CONTA"
+branch_code = "50"
+workspace = "C:/opt/Shikigami-Exemplo-Work"
+vault_profile = "PREENCHER_PERFIL_KEEPASS"
+vault_entry_path = "Integrations/BTG/example"
+client_id = "PREENCHER_CLIENT_ID"
+redirect_uri = "http://127.0.0.1:8765/callback"
+scopes = "openid empresas.btgpactual.com/accounts.readonly brn:btg:empresas:banking:payments brn:btg:empresas:banking:direct-debit"
+max_amount = "1000000.00"
+monitor_enabled = false

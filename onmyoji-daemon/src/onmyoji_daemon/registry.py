@@ -24,9 +24,14 @@ def miniapps_command(data_dir: Path) -> list[str]:
     return [str(executable if executable.is_file() else Path(sys.executable)), "-m", "onmyoji_daemon.miniapps", "--data-dir", str(data_dir)]
 
 
+def btg_monitor_command(data_dir: Path) -> list[str]:
+    return [sys.executable, "-m", "onmyoji_daemon.btg_payments_monitor", "--data-dir", str(data_dir)]
+
+
 SERVICES: dict[str, ServiceSpec] = {
     "telegram": ServiceSpec("telegram", "telegram.", telegram_command, "Gateway Telegram da instância"),
     "mini-apps": ServiceSpec("mini-apps", "mini-apps.", miniapps_command, "Gateway de Mini Apps da instância"),
+    "btg-payments-monitor": ServiceSpec("btg-payments-monitor", "btg-monitor.", btg_monitor_command, "Acompanhamento de pagamentos BTG por consultas"),
 }
 
 # Namespace reservado para o futuro task-scheduler. Só um ServiceSpec poderá ativá-lo.

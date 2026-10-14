@@ -13,9 +13,10 @@ from onmyoji_daemon.management import default_service_description, default_servi
 
 def test_supervisor_exposes_registered_services(tmp_path):
     supervisor = Supervisor(tmp_path)
-    assert [item["name"] for item in supervisor.handle("list-services", {})] == ["telegram", "mini-apps"]
+    assert [item["name"] for item in supervisor.handle("list-services", {})] == ["telegram", "mini-apps", "btg-payments-monitor"]
     assert supervisor.handle("status", {"service": "telegram"})["enabled"] is False
     assert supervisor.handle("status", {"service": "mini-apps"})["enabled"] is False
+    assert supervisor.handle("status", {"service": "btg-payments-monitor"})["enabled"] is False
 
 
 def test_supervisor_service_output_redacts_sensitive_values(tmp_path):

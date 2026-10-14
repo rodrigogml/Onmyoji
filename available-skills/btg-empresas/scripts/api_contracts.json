@@ -1,0 +1,507 @@
+{
+  "retrievedAt": "2026-10-14",
+  "operations": {
+    "payments.create": {
+      "method": "post",
+      "path": "/{companyId}/banking/payments",
+      "parameters": [
+        {
+          "name": "companyId",
+          "schema": {
+            "type": "string"
+          },
+          "in": "path",
+          "required": true
+        },
+        {
+          "name": "x-idempotency-key",
+          "schema": {
+            "type": "string"
+          },
+          "in": "header",
+          "required": false
+        }
+      ],
+      "responses": {
+        "201": {},
+        "400": {},
+        "401": {},
+        "403": {},
+        "404": {},
+        "500": {}
+      },
+      "source": "https://developers.empresas.btgpactual.com/docs/api-specs-target/Banking%20-%20Payments/criar-iniciacao-de-pagamento-ou-transferencia"
+    },
+    "payments.remote-list": {
+      "method": "get",
+      "path": "/{companyId}/banking/payments",
+      "parameters": [
+        {
+          "name": "companyId",
+          "schema": {
+            "type": "string"
+          },
+          "in": "path",
+          "required": true
+        },
+        {
+          "name": "pageSize",
+          "schema": {
+            "type": "number"
+          },
+          "in": "query",
+          "required": true
+        },
+        {
+          "name": "pageNumber",
+          "schema": {
+            "type": "number"
+          },
+          "in": "query",
+          "required": true
+        },
+        {
+          "name": "paymentType",
+          "schema": {
+            "type": "string"
+          },
+          "in": "query",
+          "required": false
+        },
+        {
+          "name": "receiver",
+          "schema": {
+            "type": "string"
+          },
+          "in": "query",
+          "required": false
+        },
+        {
+          "name": "batchId",
+          "schema": {
+            "type": "string"
+          },
+          "in": "query",
+          "required": false
+        },
+        {
+          "name": "minPaymentDate",
+          "schema": {
+            "type": "string"
+          },
+          "in": "query",
+          "required": false
+        },
+        {
+          "name": "maxPaymentDate",
+          "schema": {
+            "type": "string"
+          },
+          "in": "query",
+          "required": false
+        },
+        {
+          "name": "minAmount",
+          "schema": {
+            "type": "number"
+          },
+          "in": "query",
+          "required": false
+        },
+        {
+          "name": "maxAmount",
+          "schema": {
+            "type": "number"
+          },
+          "in": "query",
+          "required": false
+        },
+        {
+          "name": "status",
+          "schema": {
+            "type": "string"
+          },
+          "in": "query",
+          "required": false
+        }
+      ],
+      "responses": {
+        "200": {},
+        "401": {},
+        "403": {}
+      },
+      "source": "https://developers.empresas.btgpactual.com/docs/api-specs-target/Banking%20-%20Payments/listar-iniciacao-de-pagamento-ou-transferencia"
+    },
+    "payments.remote-get": {
+      "method": "get",
+      "path": "/{companyId}/banking/payments/{paymentId}",
+      "parameters": [
+        {
+          "name": "companyId",
+          "schema": {
+            "type": "string"
+          },
+          "in": "path",
+          "required": true
+        },
+        {
+          "name": "paymentId",
+          "schema": {
+            "type": "string"
+          },
+          "in": "path",
+          "required": true
+        },
+        {
+          "name": "x-idempotency-key",
+          "schema": {
+            "type": "string"
+          },
+          "in": "header"
+        }
+      ],
+      "responses": {
+        "200": {},
+        "401": {},
+        "403": {}
+      },
+      "source": "https://developers.empresas.btgpactual.com/docs/api-specs-target/Banking%20-%20Payments/listar-um-pagamento-ou-transferencia-especifico"
+    },
+    "payments.cancel-scheduled": {
+      "method": "delete",
+      "path": "/{companyId}/banking/payments/{paymentId}",
+      "parameters": [
+        {
+          "name": "companyId",
+          "schema": {
+            "type": "string"
+          },
+          "in": "path",
+          "required": true
+        },
+        {
+          "name": "paymentId",
+          "schema": {
+            "type": "string"
+          },
+          "in": "path",
+          "required": true
+        },
+        {
+          "name": "x-idempotency-key",
+          "schema": {
+            "type": "string"
+          },
+          "in": "header"
+        }
+      ],
+      "responses": {
+        "204": {},
+        "401": {},
+        "403": {}
+      },
+      "source": "https://developers.empresas.btgpactual.com/docs/api-specs-target/Banking%20-%20Payments/cancelar-um-pagamento-ou-transferencia-agendado"
+    },
+    "payments.cancel-pending": {
+      "method": "delete",
+      "path": "/{companyId}/banking/payments/approvals/{paymentId}",
+      "parameters": [
+        {
+          "name": "companyId",
+          "schema": {
+            "type": "string"
+          },
+          "in": "path",
+          "required": true
+        },
+        {
+          "name": "paymentId",
+          "schema": {
+            "type": "string"
+          },
+          "in": "path",
+          "required": true
+        },
+        {
+          "name": "x-idempotency-key",
+          "schema": {
+            "type": "string"
+          },
+          "in": "header"
+        }
+      ],
+      "responses": {
+        "200": {}
+      },
+      "source": "https://developers.empresas.btgpactual.com/docs/api-specs-target/Banking%20-%20Payments/cancelar-pagamento-ou-transferencia-pendente-de-aprovacao"
+    },
+    "payments.receipt": {
+      "method": "get",
+      "path": "/{companyId}/banking/payments/{paymentId}/receipt",
+      "parameters": [
+        {
+          "name": "paymentId",
+          "schema": {
+            "type": "string"
+          },
+          "in": "path",
+          "required": true
+        },
+        {
+          "name": "Accept",
+          "schema": {
+            "type": "string"
+          },
+          "in": "header",
+          "required": true
+        },
+        {
+          "name": "companyId",
+          "schema": {
+            "type": "string"
+          },
+          "in": "path",
+          "required": true
+        }
+      ],
+      "responses": {
+        "200": {}
+      },
+      "source": "https://developers.empresas.btgpactual.com/docs/api-specs-target/Banking%20-%20Payments/obter-recibo"
+    },
+    "barcodes.get": {
+      "method": "get",
+      "path": "/{companyId}/banking/payments/barcodes",
+      "parameters": [
+        {
+          "name": "companyId",
+          "schema": {
+            "type": "string"
+          },
+          "in": "path",
+          "required": true
+        },
+        {
+          "name": "codes",
+          "schema": {
+            "type": "string"
+          },
+          "in": "query",
+          "required": true
+        }
+      ],
+      "responses": {
+        "200": {}
+      },
+      "source": "https://developers.empresas.btgpactual.com/docs/api-specs-target/Banking%20-%20Payments/consulta-por-codigo-de-barras"
+    },
+    "accounts.get": {
+      "method": "get",
+      "path": "/{companyId}/banking/accounts",
+      "parameters": [
+        {
+          "name": "companyId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "accountOrigin",
+          "in": "query",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "enum": [
+              "OPEN_FINANCE"
+            ]
+          }
+        }
+      ],
+      "responses": {
+        "200": {}
+      },
+      "source": "https://developers.empresas.btgpactual.com/docs/api-specs-target/Banking%20-%20Accounts/consultar-dados-da-conta"
+    },
+    "balances.get": {
+      "method": "get",
+      "path": "/{companyId}/banking/accounts/{accountId}/balances",
+      "parameters": [
+        {
+          "name": "companyId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "accountId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {}
+      },
+      "source": "https://developers.empresas.btgpactual.com/docs/api-specs-target/Banking%20-%20Accounts/consultar-saldo"
+    },
+    "statements.list": {
+      "method": "get",
+      "path": "/{companyId}/banking/accounts/{accountId}/statements",
+      "parameters": [
+        {
+          "name": "companyId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "accountId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "startDate",
+          "in": "query",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "endDate",
+          "in": "query",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "type",
+          "in": "query",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "enum": [
+              "simple",
+              "withdraw-applications",
+              "yields"
+            ]
+          }
+        },
+        {
+          "name": "pageSize",
+          "in": "query",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {}
+      },
+      "source": "https://developers.empresas.btgpactual.com/docs/api-specs-target/Banking%20-%20Accounts/consultar-extrato-por-account-id"
+    },
+    "dda.list": {
+      "method": "get",
+      "path": "/{companyId}/banking/direct-debit/debits",
+      "parameters": [
+        {
+          "name": "pageNumber",
+          "in": "query",
+          "schema": {
+            "type": "integer"
+          }
+        },
+        {
+          "name": "pageSize",
+          "in": "query",
+          "schema": {
+            "type": "integer"
+          }
+        },
+        {
+          "name": "payeeDocument",
+          "in": "query",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "payeeBankCode",
+          "in": "query",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "status",
+          "in": "query",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "minAmount",
+          "in": "query",
+          "schema": {
+            "type": "number"
+          }
+        },
+        {
+          "name": "maxAmount",
+          "in": "query",
+          "schema": {
+            "type": "number"
+          }
+        },
+        {
+          "name": "minDueDate",
+          "in": "query",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "maxDueDate",
+          "in": "query",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "hidden",
+          "in": "query",
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "companyId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {},
+        "400": {},
+        "403": {}
+      },
+      "source": "https://developers.empresas.btgpactual.com/docs/api-specs-target/Banking%20-%20DDA/get-debits"
+    }
+  }
+}

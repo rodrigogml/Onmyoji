@@ -32,7 +32,7 @@ def test_cli_treats_failed_service_start_as_failure(monkeypatch, capsys):
 def test_cli_routes_miniapps_diagnose_to_the_gateway(monkeypatch, capsys):
     monkeypatch.setattr(cli, "endpoint", lambda _root: ("127.0.0.1", 1234, "token"))
     received = {}
-    monkeypatch.setattr(cli, "call", lambda _host, _port, _token, method, params: received.update(method=method, params=params) or {"local_ready": True})
+    monkeypatch.setattr(cli, "call", lambda _host, _port, _token, method, params, **kwargs: received.update(method=method, params=params) or {"local_ready": True})
 
     result = cli.main(["--onmyoji-root", ".", "mini-apps", "diagnose"])
 
