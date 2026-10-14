@@ -11,6 +11,8 @@ Use `scripts/omie.py --config <CODEX_HOME>/configs/omie.toml --profile <perfil>`
 
 Configure com `setupSkill.py`. A credencial é lida de uma entrada KeePass usando o perfil configurado: `app_key` e `app_secret` normalmente estão nos campos `username` e `password`. Confirme toda escrita antes de enviar `confirm: true`. Consulte as referências desta skill para os formatos de cada operação.
 
+Não tente acessar o sistema utilizando outro recurso (como acesso por navegador, desktop, etc.) que não o script da skill. Não tente contornar com nenhum tipo de artifício o acesso à omie. Incapacidaeds e/ou falhas do script da skill devem ser reportados ao usuário.
+
 ## Consultar clientes e fornecedores
 
 Leia [Contratos da API](references/api-contracts.md#clientes-e-fornecedores) antes de localizar um cadastro. `customers.list` chama `ListarClientes`, com CNPJ/CPF, razão social ou nome fantasia em `params.clientesFiltro` (objeto JSON); `customers.get` chama `ConsultarCliente`, com `codigo_cliente_omie` ou `codigo_cliente_integracao`. Ambas são leituras e consultam o cadastro compartilhado de clientes e fornecedores.
