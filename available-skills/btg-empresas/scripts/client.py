@@ -50,6 +50,8 @@ def validate_profile(config: Path, name: str, value: dict[str, Any]) -> dict[str
     require(not uri.username and not uri.password and not uri.fragment, "invalid_config", "Redirect URI inválida.")
     require({"openid", "empresas.btgpactual.com/accounts.readonly", "brn:btg:empresas:banking:payments"} <= set(profile["scopes"].split()), "invalid_config", "Escopos openid, accounts.readonly e payments obrigatórios.")
     require(type(profile.get("monitor_enabled", False)) is bool, "invalid_config", "monitor_enabled deve ser booleano.")
+    profile["oauth_mode"] = profile.get("oauth_mode", "manual")
+    require(profile["oauth_mode"] in {"manual", "remote"}, "invalid_config", "oauth_mode deve ser manual ou remote.")
     money(profile.get("max_amount", "1000000.00"))
     for key, default in (("timeout_seconds", 30), ("pending_interval", 300), ("scheduled_interval", 3600), ("confirmed_interval", 86400), ("confirmation_days", 7), ("max_pages", 20), ("max_pending_days", 30)):
         value = profile.get(key, default)
@@ -140,11 +142,12 @@ class Client:
     def binding(self) -> str:
         return digest({"environment": self.profile["environment"], "clientId": self.profile["client_id"], "redirect": self.profile["redirect_uri"]})
 
-    def auth_start(self) -> dict[str, Any]:
+    def auth_start(self, *, state: str | None = None, session_id: str | None = None) -> dict[str, Any]:
         with credential_lock(self.profile):
             data = self.auth_data()
-            verifier, state = secrets.token_urlsafe(48), secrets.token_urlsafe(32)
-            data["pending"] = {"state": state, "verifier": verifier, "binding": self.binding(), "expiresAt": time.time() + 600}
+            require(data.get("pending", {}).get("expiresAt", 0) <= time.time(), "authorization_pending", "Existe consentimento pendente; conclua, cancele ou aguarde expiração.")
+            verifier, state = secrets.token_urlsafe(48), state or secrets.token_urlsafe(32)
+            data["pending"] = {"state": state, "verifier": verifier, "binding": self.binding(), "context": context(self.profile), "sessionId": session_id, "expiresAt": time.time() + 600}
             self.save_auth(data)
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
         query = {"response_type": "code", "client_id": self.profile["client_id"], "redirect_uri": self.profile["redirect_uri"], "scope": self.profile["scopes"], "state": state, "code_challenge": challenge, "code_challenge_method": "S256"}
@@ -170,16 +173,55 @@ class Client:
         require(not old or old.get("operatorId") == operator, "operator_changed", "Operador mudou durante renovação; obtenha novo consentimento.")
         return {"access_token": raw["access_token"], "refresh_token": refresh, "expiresAt": time.time() + int(raw["expires_in"]), "operatorId": operator, "binding": self.binding()}
 
-    def auth_complete(self, code: str, state: str) -> dict[str, Any]:
+    def auth_complete(self, code: str, state: str, *, session_id: str | None = None, verify_account: bool = False) -> dict[str, Any]:
         with credential_lock(self.profile):
             data = self.auth_data()
             pending = data.get("pending", {})
             require(isinstance(state, str) and secrets.compare_digest(str(pending.get("state", "")), state) and bool(state), "invalid_oauth_state", "State OAuth divergente.")
             require(pending.get("binding") == self.binding() and pending.get("expiresAt", 0) > time.time(), "expired_oauth_state", "Consentimento expirado ou ambiente divergente.")
-            data["tokens"] = self.token_request({"grant_type": "authorization_code", "code": text(code, "Código OAuth", 4000), "redirect_uri": self.profile["redirect_uri"], "code_verifier": pending["verifier"]})
+            require(pending.get("sessionId") == session_id and pending.get("context", context(self.profile)) == context(self.profile), "invalid_oauth_session", "Sessão OAuth não corresponde ao contexto.")
+            candidate = self.token_request({"grant_type": "authorization_code", "code": text(code, "Código OAuth", 4000), "redirect_uri": self.profile["redirect_uri"], "code_verifier": pending["verifier"]})
+            if verify_account:
+                self.verify_account(token_override=candidate)
+            data["tokens"] = candidate
+            data["lastAuthorization"] = {"sessionId": session_id, "status": "completed", "completedAt": time.time()}
             data.pop("pending", None)
             self.save_auth(data)
         return {"authenticated": True, "environment": self.profile["environment"]}
+
+    def auth_cancel(self, session_id: str) -> dict[str, Any]:
+        with credential_lock(self.profile):
+            data = self.auth_data()
+            pending = data.get("pending", {})
+            require(pending.get("sessionId") == session_id, "invalid_oauth_session", "Consentimento pertence a outra sessão.")
+            data.pop("pending", None)
+            data["lastAuthorization"] = {"sessionId": session_id, "status": "cancelled", "completedAt": time.time()}
+            self.save_auth(data)
+        return {"cancelled": True}
+
+    def auth_status(self) -> dict[str, Any]:
+        with credential_lock(self.profile):
+            data = self.auth_data()
+        tokens = data.get("tokens", {})
+        last = data.get("lastAuthorization")
+        last = {key: last.get(key) for key in ("sessionId", "status", "completedAt")} if isinstance(last, dict) else None
+        return {"authenticated": tokens.get("binding") == self.binding() and tokens.get("expiresAt", 0) > time.time(), "pending": data.get("pending", {}).get("expiresAt", 0) > time.time(), "lastAuthorization": last, "source": "vault-metadata"}
+
+    def remote_oauth(self, action: str, *, session_id: str | None = None, confirm: bool = False) -> dict[str, Any]:
+        root = Path(self.profile["_config"]).parent.parent
+        source = root / "onmyoji-daemon" / "src"
+        if source.is_dir() and str(source) not in sys.path:
+            sys.path.insert(0, str(source))
+        try:
+            from onmyoji_daemon.supervisor import endpoint
+            from onmyoji_daemon.rpc import call
+            params = {"skill": "btg-empresas", "profile": self.profile["_profile"], "confirm": confirm}
+            if session_id:
+                params["session_id"] = session_id
+            host, port, token = endpoint(root)
+            return call(host, port, token, "mini-apps.oauth." + action, params, timeout=200)
+        except (OSError, ValueError, ImportError, RuntimeError) as error:
+            raise BtgError("remote_oauth_unavailable", "OAuth remoto indisponível; confira Gateway, Tunnel, callback e perfil.") from error
 
     def token(self) -> dict[str, Any]:
         with credential_lock(self.profile):
@@ -217,7 +259,7 @@ class Client:
         except (urllib.error.URLError, TimeoutError, OSError) as error:
             raise BtgError("bank_unavailable", "Falha de comunicação com BTG; resultado de escrita pode ser desconhecido.") from error
 
-    def call(self, operation: str, *, payment_id: str | None = None, params: dict[str, Any] | None = None, body: Any = None, key: str | None = None, expected_operator: str | None = None) -> Any:
+    def call(self, operation: str, *, payment_id: str | None = None, params: dict[str, Any] | None = None, body: Any = None, key: str | None = None, expected_operator: str | None = None, token_override: dict[str, Any] | None = None) -> Any:
         require(operation in CONTRACTS, "unsupported_operation", "Operação BTG não registrada.")
         contract, profile = CONTRACTS[operation], self.profile
         params = params or {}
@@ -233,7 +275,7 @@ class Client:
         path = contract["path"].replace("{companyId}", urllib.parse.quote(profile["company_id"], safe="")).replace("{accountId}", urllib.parse.quote(profile["account_id"], safe=""))
         if "{paymentId}" in path:
             path = path.replace("{paymentId}", urllib.parse.quote(text(payment_id, "ID bancário", 200), safe=""))
-        token = self.token()
+        token = token_override or self.token()
         require(expected_operator is None or expected_operator == token["operatorId"], "operator_changed", "Operador divergente da tentativa persistida.")
         headers = {"Authorization": "Bearer " + token["access_token"], "Accept": "application/pdf" if operation == "payments.receipt" else "application/json"}
         if key:
@@ -247,8 +289,8 @@ class Client:
         require(str(status) in contract["responses"], "invalid_bank_response", "Status HTTP não previsto no contrato.",)
         return result
 
-    def verify_account(self) -> dict[str, Any]:
-        result = self.call("accounts.get")
+    def verify_account(self, token_override: dict[str, Any] | None = None) -> dict[str, Any]:
+        result = self.call("accounts.get", token_override=token_override)
         require(isinstance(result, dict) and isinstance(result.get("data"), list), "invalid_bank_response", "Lista de contas incompleta.")
         rows = [row for row in result["data"] if isinstance(row, dict) and row.get("accountId") == self.profile["account_id"]]
         require(len(rows) == 1, "context_mismatch", "Conta não encontrada ou ambígua no consentimento.")

@@ -205,12 +205,21 @@ class Engine:
         require(isinstance(operation, str), "invalid_request", "Informe operation.")
         params = request.get("params", {})
         require(isinstance(params, dict), "invalid_request", "params deve ser objeto.")
-        if operation in {"payments.prepare", "payments.submit", "payments.cancel", "auth.start", "auth.complete"}:
+        if operation in {"payments.prepare", "payments.submit", "payments.cancel", "auth.start", "auth.complete", "auth.cancel"}:
             require(request.get("confirm") is True, "confirmation_required", "Operação exige autorização explícita e confirm:true.")
         if operation == "auth.start":
+            if self.profile.get("oauth_mode") == "remote":
+                return self.client.remote_oauth("start", confirm=True)
             return self.client.auth_start()
         if operation == "auth.complete":
+            require(self.profile.get("oauth_mode") != "remote", "automatic_callback_required", "No modo remoto, conclua pelo callback do Gateway.")
             return self.client.auth_complete(request.get("code"), request.get("state"))
+        if operation == "auth.callback-info":
+            return self.client.remote_oauth("info")
+        if operation == "auth.status":
+            return self.client.remote_oauth("status", session_id=text(params.get("session_id"), "Sessão OAuth", 100)) if params.get("session_id") else self.client.auth_status()
+        if operation == "auth.cancel":
+            return self.client.remote_oauth("cancel", session_id=text(params.get("session_id"), "Sessão OAuth", 100), confirm=True)
         if operation in READS:
             if operation == "accounts.get":
                 return self.client.verify_account()

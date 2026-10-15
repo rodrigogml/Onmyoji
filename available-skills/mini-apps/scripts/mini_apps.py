@@ -14,9 +14,10 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("action", choices=["status", "list", "events", "create", "inspect", "update", "publish", "unpublish", "reload", "delete", "tunnel", "tls"])
+    parser = argparse.ArgumentParser(); parser.add_argument("action", choices=["status", "list", "events", "create", "inspect", "update", "publish", "unpublish", "reload", "delete", "tunnel", "tls", "oauth"])
+    parser.add_argument("--oauth-action", choices=["info", "start", "status", "cancel"]); parser.add_argument("--skill"); parser.add_argument("--profile"); parser.add_argument("--session-id")
     parser.add_argument("--id"); parser.add_argument("--limit", type=int, default=100); parser.add_argument("--request"); parser.add_argument("--values"); parser.add_argument("--tunnel-action", choices=["status", "configure", "provision", "start", "stop", "restart", "install-cloudflared"]); parser.add_argument("--tls-action", choices=["status", "install-trust"]); parser.add_argument("--confirm", action="store_true"); args = parser.parse_args()
-    command = [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(ROOT), "mini-apps"] + ([] if args.action in {"tunnel", "tls"} else [args.action])
+    command = [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(ROOT), "mini-apps"] + ([] if args.action in {"tunnel", "tls", "oauth"} else [args.action])
     if args.action in {"inspect", "publish", "unpublish", "reload", "delete"}:
         if not args.id: parser.error("--id é obrigatório")
         command.append(args.id)
@@ -40,6 +41,13 @@ def main() -> int:
         if not args.tls_action: parser.error("--tls-action é obrigatório")
         command += ["tls", args.tls_action]
         if args.tls_action == "install-trust" and args.confirm: command.append("--confirm")
+    if args.action == "oauth":
+        if not args.oauth_action: parser.error("--oauth-action é obrigatório")
+        command += ["oauth", args.oauth_action]
+        if args.skill: command += ["--skill", args.skill]
+        if args.profile: command += ["--profile", args.profile]
+        if args.session_id: command += ["--session-id", args.session_id]
+        if args.confirm: command.append("--confirm")
     # A skill deve funcionar tanto na instalacao do daemon quanto diretamente
     # a partir do checkout do Onmyoji.
     environment = os.environ.copy()

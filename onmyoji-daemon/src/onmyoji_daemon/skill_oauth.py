@@ -1,0 +1,198 @@
+"""Sessões OAuth de skills, com callback estável e adaptadores locais fechados."""
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import secrets
+import sqlite3
+import subprocess
+import sys
+import threading
+import time
+import urllib.parse
+import uuid
+from pathlib import Path
+from typing import Any, Callable
+
+
+class OAuthError(ValueError):
+    """Erro funcional sanitizado, sem valores recebidos de provedores."""
+
+
+def ensure(condition: bool, message: str) -> None:
+    if not condition:
+        raise OAuthError(message)
+
+
+def hash_value(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+class SkillOAuth:
+    def __init__(self, root: Path, workspace: Path, public_origin: Callable[[], str]):
+        self.root, self.workspace = root.resolve(), workspace.resolve()
+        ensure(not self.workspace.is_relative_to(self.root), "Workspace OAuth deve ser externo ao CODEX_HOME")
+        self.public_origin = public_origin
+        directory = self.workspace / ".onmyoji" / "skill-oauth"
+        ensure(directory.resolve().is_relative_to(self.workspace), "OAuth workspace inválido")
+        directory.mkdir(parents=True, exist_ok=True)
+        self.path = directory / "sessions.sqlite3"
+        self.lock = threading.RLock()
+        with self.connection() as con:
+            con.executescript("""
+            CREATE TABLE IF NOT EXISTS authorization (
+              id TEXT PRIMARY KEY, skill TEXT NOT NULL, profile TEXT NOT NULL,
+              stateHash TEXT NOT NULL UNIQUE, binding TEXT NOT NULL,
+              issuer TEXT NOT NULL, redirectUri TEXT NOT NULL,
+              status TEXT NOT NULL, createdAt REAL NOT NULL, expiresAt REAL NOT NULL,
+              processingAt REAL, completedAt REAL, errorCode TEXT, issuerRequired INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS authorization_active ON authorization(skill,profile)
+              WHERE status IN ('creating','awaiting','processing');
+            """)
+
+    def connection(self) -> sqlite3.Connection:
+        con = sqlite3.connect(self.path, timeout=30)
+        con.row_factory = sqlite3.Row
+        return con
+
+    def adapter(self, skill: str, profile: str, action: str, **values: Any) -> dict[str, Any]:
+        ensure(isinstance(skill, str) and bool(re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", skill)), "Skill OAuth inválida")
+        ensure(isinstance(profile, str) and bool(re.fullmatch(r"[A-Za-z0-9_-]+", profile)), "Perfil OAuth inválido")
+        ensure(action in {"describe", "start", "complete", "cancel"}, "Ação OAuth inválida")
+        candidates = [self.root / "available-skills" / skill / "scripts" / "oauth_adapter.py", self.root / "shikigami" / "skills" / skill / "scripts" / "oauth_adapter.py"]
+        script = next((p for p in candidates if p.is_file()), None)
+        ensure(script is not None and script.resolve().is_relative_to(self.root), "Skill não possui adaptador OAuth local")
+        request = {"version": 1, "action": action, "profile": profile, **values}
+        try:
+            result = subprocess.run([sys.executable, str(script), "--onmyoji-root", str(self.root)], input=json.dumps(request), text=True, encoding="utf-8", capture_output=True, timeout=180)
+            payload = json.loads(result.stdout)
+        except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+            raise OAuthError("Adaptador OAuth indisponível; verifique o perfil") from error
+        ensure(result.returncode == 0 and isinstance(payload, dict) and payload.get("ok") is True and isinstance(payload.get("data"), dict), "Adaptador OAuth recusou a operação; consulte o perfil")
+        return payload["data"]
+
+    def describe(self, skill: str, profile: str) -> dict[str, Any]:
+        origin = self.public_origin()
+        parsed = urllib.parse.urlsplit(origin)
+        ensure(parsed.scheme == "https" and bool(parsed.hostname) and not parsed.username and not parsed.password and parsed.path in {"", "/"} and not parsed.query and not parsed.fragment, "Origem OAuth pública inválida")
+        metadata = self.adapter(skill, profile, "describe")
+        fields = {"issuer", "authorizationEndpoint", "redirectUri", "workspace", "binding"}
+        ensure(fields <= set(metadata) <= fields | {"requireIssuer"}, "Metadados do adaptador OAuth inválidos")
+        ensure(all(isinstance(metadata[k], str) and bool(metadata[k]) for k in fields) and type(metadata.get("requireIssuer", False)) is bool, "Metadados OAuth incompletos")
+        for field in ("issuer", "authorizationEndpoint"):
+            value = urllib.parse.urlsplit(metadata[field])
+            ensure(value.scheme == "https" and bool(value.hostname) and not value.username and not value.password and not value.fragment, "URI OAuth inválida")
+        ensure(Path(metadata["workspace"]).resolve().is_relative_to(self.workspace), "Workspace OAuth deve pertencer à instância")
+        callback = origin.rstrip("/") + "/oauth/skills/" + skill + "/callback"
+        return {**metadata, "callbackUrl": callback, "redirectMatches": callback == metadata["redirectUri"]}
+
+    @staticmethod
+    def expire(con: sqlite3.Connection) -> None:
+        stamp = time.time()
+        con.execute("UPDATE authorization SET status='expired',completedAt=? WHERE status IN ('creating','awaiting') AND expiresAt<=?", (stamp, stamp))
+        con.execute("UPDATE authorization SET status='interrupted',completedAt=?,errorCode='interrupted' WHERE status='processing' AND processingAt<?", (stamp, stamp - 300))
+
+    def info(self, skill: str, profile: str) -> dict[str, Any]:
+        data = self.describe(skill, profile)
+        return {"skill": skill, "profile": profile, "callbackUrl": data["callbackUrl"], "configuredRedirectUri": data["redirectUri"], "redirectMatches": data["redirectMatches"]}
+
+    def start(self, skill: str, profile: str, confirm: bool) -> dict[str, Any]:
+        ensure(confirm is True, "Autorização explícita exigida para iniciar OAuth")
+        data = self.describe(skill, profile)
+        ensure(data["redirectMatches"], "Cadastre a URL de callback no provedor e no perfil antes de iniciar")
+        identifier, state, stamp = uuid.uuid4().hex, secrets.token_urlsafe(32), time.time()
+        with self.lock, self.connection() as con:
+            self.expire(con)
+            try:
+                con.execute("INSERT INTO authorization(id,skill,profile,stateHash,binding,issuer,redirectUri,status,createdAt,expiresAt,issuerRequired) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (identifier, skill, profile, hash_value(state), data["binding"], data["issuer"], data["redirectUri"], "creating", stamp, stamp + 600, int(data.get("requireIssuer", False))))
+            except sqlite3.IntegrityError as error:
+                raise OAuthError("Existe autorização ativa para este perfil; conclua ou cancele") from error
+        try:
+            result = self.adapter(skill, profile, "start", state=state, sessionId=identifier, redirectUri=data["redirectUri"])
+            url = result.get("authorizationUrl")
+            ensure(isinstance(url, str) and len(url) <= 16000, "URL de autorização inválida")
+            parsed = urllib.parse.urlsplit(url)
+            endpoint = urllib.parse.urlsplit(data["authorizationEndpoint"])
+            query = urllib.parse.parse_qs(parsed.query)
+            ensure(not {"client_secret", "access_token", "refresh_token", "code", "code_verifier"} & set(query), "URL de autorização contém dados secretos ou retorno OAuth")
+            ensure((parsed.scheme, parsed.netloc, parsed.path) == (endpoint.scheme, endpoint.netloc, endpoint.path) and not parsed.fragment, "URL de autorização diverge do provedor")
+            ensure(query.get("state") == [state] and query.get("redirect_uri") == [data["redirectUri"]] and query.get("response_type") == ["code"], "URL OAuth sem vínculo correto com sessão/callback")
+            ttl = result.get("expiresIn")
+            ensure(type(ttl) is int and 30 <= ttl <= 600, "Expiração OAuth inválida")
+            with self.lock, self.connection() as con:
+                changed = con.execute("UPDATE authorization SET status='awaiting',expiresAt=? WHERE id=? AND status='creating'", (time.time() + ttl, identifier)).rowcount
+                ensure(changed == 1, "Autorização foi encerrada durante a criação")
+            return {"sessionId": identifier, "authorizationUrl": url, "callbackUrl": data["callbackUrl"], "expiresIn": ttl, "status": "awaiting"}
+        except Exception:
+            try:
+                self.adapter(skill, profile, "cancel", sessionId=identifier)
+            except Exception:
+                pass
+            self.finish(identifier, "failed", "start_failed")
+            raise
+
+    def finish(self, identifier: str, status: str, error: str | None = None) -> None:
+        with self.lock, self.connection() as con:
+            con.execute("UPDATE authorization SET status=?,errorCode=?,completedAt=? WHERE id=?", (status, error, time.time(), identifier))
+
+    def status(self, identifier: str, skill: str | None = None, profile: str | None = None) -> dict[str, Any]:
+        with self.lock, self.connection() as con:
+            self.expire(con)
+            row = con.execute("SELECT * FROM authorization WHERE id=?", (identifier,)).fetchone()
+            ensure(row is not None and (skill is None or row["skill"] == skill) and (profile is None or row["profile"] == profile), "Sessão OAuth não encontrada neste contexto")
+            return {key: row[key] for key in ("id", "skill", "profile", "status", "createdAt", "expiresAt", "completedAt", "errorCode")}
+
+    def cancel(self, identifier: str, confirm: bool, skill: str | None = None, profile: str | None = None) -> dict[str, Any]:
+        ensure(confirm is True, "Confirme o cancelamento OAuth")
+        with self.lock, self.connection() as con:
+            self.expire(con)
+            row = con.execute("SELECT * FROM authorization WHERE id=?", (identifier,)).fetchone()
+            ensure(row is not None and (skill is None or row["skill"] == skill) and (profile is None or row["profile"] == profile), "Sessão OAuth não encontrada neste contexto")
+            ensure(row["status"] == "awaiting", "Sessão não pode ser cancelada nesta situação")
+            changed = con.execute("UPDATE authorization SET status='cancelled',completedAt=? WHERE id=? AND status='awaiting'", (time.time(), identifier)).rowcount
+            ensure(changed == 1, "Sessão mudou durante o cancelamento")
+        try:
+            self.adapter(row["skill"], row["profile"], "cancel", sessionId=identifier)
+        except Exception:
+            self.finish(identifier, "cancelled", "cancellation_cleanup_failed")
+            raise
+        return self.status(identifier, skill, profile)
+
+    def callback(self, skill: str, query: dict[str, list[str]]) -> str:
+        ensure(len(query.get("state", [])) == 1, "Callback OAuth sem state único")
+        state = query["state"][0]
+        ensure(isinstance(state, str) and 20 <= len(state) <= 200, "State OAuth inválido")
+        with self.lock, self.connection() as con:
+            self.expire(con)
+            row = con.execute("SELECT * FROM authorization WHERE stateHash=? AND skill=?", (hash_value(state), skill)).fetchone()
+            ensure(row is not None and row["status"] == "awaiting", "Callback OAuth expirado, consumido ou desconhecido")
+            code, error, issuer = query.get("code", []), query.get("error", []), query.get("iss", [])
+            ensure(len(issuer) <= 1 and (not issuer or issuer == [row["issuer"]]), "Emissor OAuth divergente")
+            ensure(not row["issuerRequired"] or issuer == [row["issuer"]] or len(error) == 1 and not code, "Emissor OAuth ausente")
+            ensure((len(code) == 1 and not error and 0 < len(code[0]) <= 4096) or (len(error) == 1 and not code and 0 < len(error[0]) <= 200), "Callback OAuth inválido")
+            changed = con.execute("UPDATE authorization SET status='processing',processingAt=? WHERE id=? AND status='awaiting'", (time.time(), row["id"])).rowcount
+            ensure(changed == 1, "Callback OAuth já foi consumido")
+        try:
+            data = self.describe(row["skill"], row["profile"])
+            ensure(data["binding"] == row["binding"] and data["redirectUri"] == row["redirectUri"] and data["redirectMatches"] and data["issuer"] == row["issuer"], "Perfil OAuth mudou durante a autorização")
+            if error:
+                self.adapter(row["skill"], row["profile"], "cancel", sessionId=row["id"])
+                self.finish(row["id"], "denied" if error[0] == "access_denied" else "failed", "provider_denied" if error[0] == "access_denied" else "provider_error")
+            else:
+                result = self.adapter(row["skill"], row["profile"], "complete", code=code[0], state=state, sessionId=row["id"], redirectUri=row["redirectUri"])
+                ensure(result.get("authenticated") is True, "Adaptador não confirmou autorização")
+                self.finish(row["id"], "completed")
+        except Exception:
+            try:
+                self.adapter(row["skill"], row["profile"], "cancel", sessionId=row["id"])
+            except Exception:
+                pass
+            self.finish(row["id"], "failed", "completion_failed")
+        return row["id"]
+
+    def result(self, identifier: str) -> str:
+        data = self.status(identifier)
+        labels = {"completed": "Autorização concluída. Você pode voltar ao chat.", "denied": "A autorização foi recusada. Você pode voltar ao chat.", "expired": "Este link de autorização expirou.", "cancelled": "A autorização foi cancelada.", "failed": "Não foi possível concluir a autorização. Consulte o agente no chat.", "interrupted": "A autorização foi interrompida. Consulte o agente no chat."}
+        return labels.get(data["status"], "A autorização está em andamento. Consulte o agente no chat.")

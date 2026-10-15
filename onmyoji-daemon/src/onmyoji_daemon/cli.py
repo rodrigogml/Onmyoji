@@ -34,6 +34,13 @@ def main(argv: list[str] | None = None) -> int:
     btg_monitor = sub.add_parser("btg-monitor"); btg_monitor.add_argument("btg_action", choices=["status"])
     miniapps = sub.add_parser("mini-apps"); miniapps_sub = miniapps.add_subparsers(dest="miniapps_action", required=True)
     miniapps_sub.add_parser("status"); miniapps_sub.add_parser("diagnose"); miniapps_sub.add_parser("list"); events = miniapps_sub.add_parser("events"); events.add_argument("--id"); events.add_argument("--limit", type=int, default=100)
+    oauth = miniapps_sub.add_parser("oauth"); oauth_sub = oauth.add_subparsers(dest="oauth_action", required=True)
+    for action in ("info", "start", "status", "cancel"):
+        command = oauth_sub.add_parser(action)
+        command.add_argument("--skill", required=action in {"info", "start"})
+        command.add_argument("--profile", required=action in {"info", "start"})
+        command.add_argument("--session-id", required=action in {"status", "cancel"})
+        command.add_argument("--confirm", action="store_true")
     create_app = miniapps_sub.add_parser("create"); create_app.add_argument("--request", required=True, help="JSON da publicação")
     inspect_app = miniapps_sub.add_parser("inspect"); inspect_app.add_argument("id")
     update_app = miniapps_sub.add_parser("update"); update_app.add_argument("id"); update_app.add_argument("--values", required=True, help="JSON parcial")
@@ -80,7 +87,13 @@ def main(argv: list[str] | None = None) -> int:
         method = methods[args.telegram_action]; params = {"ttl_seconds": args.ttl} if args.telegram_action == "pair-request" else ({"chat_id": args.chat_id, "text": args.text} if args.telegram_action == "send" else {})
     else:
         action = args.miniapps_action
-        if action == "tunnel":
+        if action == "oauth":
+            method = "mini-apps.oauth." + args.oauth_action
+            params = {"confirm": args.confirm}
+            if args.skill: params["skill"] = args.skill
+            if args.profile: params["profile"] = args.profile
+            if args.session_id: params["session_id"] = args.session_id
+        elif action == "tunnel":
             method = f"mini-apps.tunnel.{args.tunnel_action}"
             params = json.loads(args.values) if args.tunnel_action == "configure" else ({"confirm": True} if args.tunnel_action in {"provision", "install-cloudflared"} and args.confirm else {})
         elif action == "tls":
@@ -94,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
             elif action in {"publish", "unpublish", "reload", "delete"}: params = {"id": args.id}
             else: params = {}
     timeout = 30 if args.action == "mini-apps" and args.miniapps_action == "tls" and args.tls_action == "install-trust" else 5
+    if args.action == "mini-apps" and args.miniapps_action == "oauth": timeout = 200 if args.oauth_action in {"start", "cancel", "info"} else 5
     try:
         response = call(host, port, token, method, params, timeout=timeout)
     except (OSError, RpcError, TimeoutError) as error:

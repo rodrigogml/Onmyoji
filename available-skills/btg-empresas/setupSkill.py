@@ -25,6 +25,7 @@ FIELDS = (
     Field("vault_entry_path", "Entrada KeePass dedicada", required=True),
     Field("client_id", "Client ID do aplicativo", required=True),
     Field("redirect_uri", "Redirect URI cadastrado no BTG", required=True),
+    Field("oauth_mode", "OAuth remote (Gateway/Tunnel) ou manual", "remote"),
     Field("scopes", "Escopos oficiais habilitados", "openid empresas.btgpactual.com/accounts.readonly brn:btg:empresas:banking:payments brn:btg:empresas:banking:direct-debit", required=True),
     Field("max_amount", "Limite local por pagamento em BRL", "1000000.00"),
     Field("monitor_enabled", "Monitorar perfil quando serviço estiver ativo", False),

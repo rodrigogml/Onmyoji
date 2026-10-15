@@ -27,7 +27,9 @@ Envie `{"version":1,"operation":"auth.start","confirm":true}` após autorizaçã
 {"version":1,"operation":"auth.complete","code":"CODIGO_DO_CALLBACK","state":"STATE_DO_CALLBACK","confirm":true}
 ```
 
-O wrapper implementa PKCE/state, mas não inicia um servidor de callback. O redirect loopback do modelo exige captura manual da URL, mesmo que a página não abra. O código vence conforme o banco; o estado local vale 10 minutos. Depois, execute `profile-test` para conferir empresa e conta sem movimentar dinheiro.
+Esse procedimento manual continua disponível em perfis antigos sem `oauth_mode` ou com `oauth_mode="manual"`. Novos perfis sugerem `oauth_mode="remote"` e utilizam o [OAuth compartilhado do Gateway Mini Apps](skill-oauth.md). Nesse modo, configure o callback estável retornado por `auth.callback-info`, cadastre-o no BTG e apresente a authorizationUrl de `auth.start` no chat. O navegador retorna pelo Tunnel e o adaptador confere empresa/conta antes de salvar os tokens. `auth.status` com `params.session_id` acompanha a sessão e `auth.cancel` com confirmação a encerra. `auth.complete` manual é recusado no modo remoto.
+
+O estado local vale 10 minutos e o código vence conforme o banco. Depois do consentimento, execute `profile-test` para conferir o acesso sem movimentar dinheiro. O modelo agora usa um exemplo de URL externa; substitua pelo hostname real do Tunnel.
 
 ## Preparação e envio
 

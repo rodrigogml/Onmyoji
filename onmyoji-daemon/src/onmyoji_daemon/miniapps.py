@@ -31,6 +31,7 @@ from aiohttp import web
 from .rpc import RpcServer
 from .miniapps_pki import ensure_material, install_trust, server_context
 from .miniapps_tunnel import TunnelController, TunnelError
+from .skill_oauth import OAuthError, SkillOAuth
 
 
 STATES = {"CREATED", "PUBLISHED_UNCLAIMED", "ACTIVE", "UNPUBLISHED", "EXPIRED", "ERROR", "DELETED"}
@@ -135,6 +136,8 @@ class MiniAppsGateway:
         self.http_loop: asyncio.AbstractEventLoop | None = None; self.http_thread: threading.Thread | None = None
         self.http_runner: web.AppRunner | None = None; self.last_error: str | None = None
         self.tunnel = TunnelController(self.root, self.data_dir, f"https://localhost:{self.http_port}")
+        self.skill_oauth: SkillOAuth | None = None
+        self.oauth_callback_hits: dict[str, list[float]] = {}
         self._migrate()
         self._restore_publications()
 
@@ -567,6 +570,13 @@ class MiniAppsGateway:
 
     def rpc(self, method: str, params: dict[str, Any]) -> Any:
         action = method.removeprefix("mini-apps.")
+        if action.startswith("oauth."):
+            broker = self._oauth_broker()
+            if action == "oauth.info": return broker.info(str(params["skill"]), str(params["profile"]))
+            if action == "oauth.start": return broker.start(str(params["skill"]), str(params["profile"]), params.get("confirm") is True)
+            if action == "oauth.status": return broker.status(str(params["session_id"]), params.get("skill"), params.get("profile"))
+            if action == "oauth.cancel": return broker.cancel(str(params["session_id"]), params.get("confirm") is True, params.get("skill"), params.get("profile"))
+            raise ValueError("unknown OAuth method")
         if action == "status": return {"state": "running", "http_port": self.http_port, "apps": len(self.list()), "last_error": self.last_error}
         if action == "diagnose": return self.diagnose()
         if action == "list": return self.list()
@@ -635,6 +645,45 @@ class MiniAppsGateway:
         except TunnelError as error: raise web.HTTPBadRequest(text=str(error))
         raise web.HTTPMethodNotAllowed(request.method, [])
 
+    def _oauth_origin(self) -> str:
+        tunnel = self.tunnel.status()
+        if not self.http_runner or not tunnel.get("provisioned") or not tunnel.get("running"):
+            raise OAuthError("Inicie o Gateway e o Tunnel provisionado para OAuth remoto")
+        return "https://" + str(tunnel["hostname"])
+
+    def _oauth_broker(self) -> SkillOAuth:
+        with self.lock:
+            if self.skill_oauth is None:
+                self.skill_oauth = SkillOAuth(self.root, self._workspace(), self._oauth_origin)
+            return self.skill_oauth
+
+    @staticmethod
+    def _oauth_page(message: str, status: int = 200) -> web.Response:
+        import html
+        body = '<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Autorização da integração</title><main><h1>Autorização da integração</h1><p>' + html.escape(message) + '</p></main></html>'
+        return web.Response(text=body, content_type="text/html", status=status, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'", "X-Content-Type-Options": "nosniff"})
+
+    async def skill_oauth_callback(self, request: web.Request) -> web.StreamResponse:
+        peer, stamp = request.remote or "unknown", time.time()
+        hits = [value for value in self.oauth_callback_hits.get(peer, []) if value > stamp - 60]
+        if len(hits) >= 30:
+            return self._oauth_page("Muitas tentativas. Aguarde antes de tentar novamente.", 429)
+        hits.append(stamp); self.oauth_callback_hits[peer] = hits
+        try:
+            broker = self._oauth_broker()
+            query = {key: request.query.getall(key) for key in request.query.keys()}
+            identifier = await asyncio.to_thread(broker.callback, request.match_info["skill"], query)
+        except (ValueError, OSError, sqlite3.Error):
+            return self._oauth_page("Retorno inválido, expirado ou já utilizado. Consulte o agente no chat.", 400)
+        raise web.HTTPSeeOther("/oauth/result/" + identifier, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+
+    async def skill_oauth_result(self, request: web.Request) -> web.Response:
+        try:
+            message = self._oauth_broker().result(request.match_info["session_id"])
+        except (ValueError, OSError, sqlite3.Error):
+            return self._oauth_page("Autorização não encontrada.", 404)
+        return self._oauth_page(message)
+
     async def _http_main(self) -> None:
         app = web.Application(client_max_size=MAX_BODY_BYTES)
         async def start_cleanup(_app: web.Application) -> None:
@@ -657,10 +706,12 @@ class MiniAppsGateway:
         app.router.add_route("GET", "/internal/v1/status", self.admin_status)
         app.router.add_route("GET", "/internal/v1/tunnel", self.admin_tunnel)
         app.router.add_route("POST", "/internal/v1/tunnel/{action:configure|provision|start|stop|restart|install-cloudflared}", self.admin_tunnel)
+        app.router.add_route("GET", "/oauth/skills/{skill}/callback", self.skill_oauth_callback)
+        app.router.add_route("GET", "/oauth/result/{session_id}", self.skill_oauth_result)
         app.router.add_route("*", "/a/{app_id}/{tail:.*}", self.public_request)
         app.router.add_route("*", "/a/{app_id}", self.public_request)
         tls_dir = self.data_dir / "tls"; ensure_material(tls_dir)
-        self.http_runner = web.AppRunner(app); await self.http_runner.setup(); site = web.TCPSite(self.http_runner, "127.0.0.1", self.http_port, ssl_context=server_context(tls_dir)); await site.start()
+        self.http_runner = web.AppRunner(app, access_log=None); await self.http_runner.setup(); site = web.TCPSite(self.http_runner, "127.0.0.1", self.http_port, ssl_context=server_context(tls_dir)); await site.start()
 
     def start_http(self) -> None:
         ready = threading.Event()
