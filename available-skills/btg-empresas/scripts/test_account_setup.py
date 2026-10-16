@@ -31,7 +31,7 @@ def configured(tmp_path):
     path.parent.mkdir(parents=True)
     (tmp_path / "work").mkdir()
     (path.parent / "onmyoji-system.toml").write_text('[codex]\nproject_directory = ' + json.dumps(str(tmp_path / "work")), encoding="utf-8")
-    value = {"environment": "sandbox", "company_id": "30306294000145", "vault_profile": "vault", "vault_entry_path": "BTG/test", "redirect_uri": "https://apps.example.com/oauth/skills/btg-empresas/callback", "scopes": "openid brn:btg:empresas:banking:accounts brn:btg:empresas:banking:payments", "oauth_mode": "remote"}
+    value = {"environment": "sandbox", "company_id": "30306294000145", "vault_profile": "vault", "vault_entry_path": "BTG/test", "redirect_uri": "https://apps.example.com/oauth/skills/btg-empresas/callback", "scopes": "openid empresas.btgpactual.com/accounts.readonly brn:btg:empresas:banking:payments", "oauth_mode": "remote"}
     data = {"schema_version": 1, "defaults": {"timeout_seconds": 30}, "profiles": {"test": value}}
     assert setup.save(path, data)[0]
     return path, load_profile(path, "test")
