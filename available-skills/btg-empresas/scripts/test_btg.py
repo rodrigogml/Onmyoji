@@ -183,6 +183,15 @@ def test_ambiguous_and_incomplete_listing_never_bind_payment(profile, body):
     assert engine.store.get(row["id"])["bankPaymentId"] is None
 
 
+def test_listing_ignores_unreferenced_items_without_tags(profile, body):
+    engine, bank, row = prepared_engine(profile, body)
+    engine.submit(row["id"], row["preparationHash"])
+    unrelated = bank.payment()
+    unrelated.pop("tags", None)
+    bank.call = lambda *a, **kw: {"data": [unrelated], "_links": {}}
+    assert engine.refresh(row["id"])["lastError"] == "payment_unresolved"
+
+
 def test_wrong_account_or_amount_cannot_be_associated(profile, body):
     engine, bank, row = prepared_engine(profile, body)
     engine.submit(row["id"], row["preparationHash"])

@@ -117,7 +117,11 @@ class Engine:
             for value in result["data"]:
                 require(isinstance(value, dict), "invalid_bank_response", "Item bancário inválido.")
                 tags = value.get("tags")
-                require(isinstance(tags, dict), "invalid_bank_response", "Item bancário sem referência estruturada.")
+                # Listagens podem conter pagamentos sem tags; eles não podem
+                # ser associados com segurança ao registro local e devem ser
+                # ignorados durante a recuperação.
+                if not isinstance(tags, dict):
+                    continue
                 if tags.get("externalId") == row["id"]:
                     self.validate_match(row, value)
                     matches.append(value)
