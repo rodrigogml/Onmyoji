@@ -24,7 +24,6 @@ FIELDS = (
     Field("branch_code", "Agência (opcional, filtro para descoberta)", "", preserve_text=True),
     Field("vault_profile", "Perfil KeePass com leitura e escrita", required=True),
     Field("vault_entry_path", "Entrada KeePass dedicada", required=True),
-    Field("client_id", "Client ID do aplicativo", required=True),
     Field("redirect_uri", "Redirect URI cadastrado no BTG", required=True),
     Field("oauth_mode", "OAuth remote (Gateway/Tunnel) ou manual", "remote"),
     Field("scopes", "Escopos oficiais habilitados", "openid empresas.btgpactual.com/accounts.readonly brn:btg:empresas:banking:payments brn:btg:empresas:banking:direct-debit", required=True),
@@ -47,6 +46,7 @@ def connect(name: str, path: Path, *, confirm: bool) -> dict:
     client = Client(load_profile(path, name))
     if client.profile["oauth_mode"] != "remote":
         raise BtgError("remote_mode_required", "Use oauth_mode=remote para conectar pelo setup.")
+    client.client_id()
     return client.remote_oauth("start", confirm=confirm)
 
 

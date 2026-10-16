@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import copy
+import base64
 import importlib.util
 import json
 import sys
 from pathlib import Path
 from unittest.mock import Mock
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -29,7 +31,7 @@ def configured(tmp_path):
     path.parent.mkdir(parents=True)
     (tmp_path / "work").mkdir()
     (path.parent / "onmyoji-system.toml").write_text('[codex]\nproject_directory = ' + json.dumps(str(tmp_path / "work")), encoding="utf-8")
-    value = {"environment": "sandbox", "company_id": "30306294000145", "vault_profile": "vault", "vault_entry_path": "BTG/test", "client_id": "app", "redirect_uri": "https://apps.example.com/oauth/skills/btg-empresas/callback", "scopes": "openid empresas.btgpactual.com/accounts.readonly brn:btg:empresas:banking:payments", "oauth_mode": "remote"}
+    value = {"environment": "sandbox", "company_id": "30306294000145", "vault_profile": "vault", "vault_entry_path": "BTG/test", "redirect_uri": "https://apps.example.com/oauth/skills/btg-empresas/callback", "scopes": "openid empresas.btgpactual.com/accounts.readonly brn:btg:empresas:banking:payments", "oauth_mode": "remote"}
     data = {"schema_version": 1, "defaults": {"timeout_seconds": 30}, "profiles": {"test": value}}
     assert setup.save(path, data)[0]
     return path, load_profile(path, "test")
@@ -41,6 +43,7 @@ def account(**changes):
 
 def authenticated_client(profile, response):
     client, vault = Client(profile), {}
+    client.vault = Mock(return_value="vault-client-id")
     client.auth_data = lambda: copy.deepcopy(vault)
     def save(value):
         vault.clear(); vault.update(copy.deepcopy(value))
@@ -55,6 +58,8 @@ def test_profile_creation_does_not_require_account_id_or_number(configured):
     path, profile = configured
     assert profile["account_id"] == profile["account_number"] == profile["branch_code"] == ""
     assert "account_id" not in {f.name for f in setup.FIELDS}
+    assert "client_id" not in {f.name for f in setup.FIELDS}
+    assert "client_id" not in simple_load(path, {})["profiles"]["test"]
     assert "workspace" not in {f.name for f in setup.FIELDS}
     assert "workspace" not in simple_load(path, {})["profiles"]["test"]
     data = simple_load(path, {})
@@ -65,6 +70,63 @@ def test_profile_creation_does_not_require_account_id_or_number(configured):
     code, response = handle(action="profile-update", profile_name="other", values=["company_id=30306294000145", "branch_code=50", "max_amount=10.00"], confirm_delete=None, path=path, load=setup.load, save=setup.save, fields=setup.FIELDS)
     assert code == 0 and response["ok"]
     assert load_profile(path, "other")["branch_code"] == "50"
+
+
+def test_oauth_uses_client_id_from_keepass_username(configured):
+    _, profile = configured
+    client = Client(profile)
+    client.vault = Mock(side_effect=lambda operation, field: {"username": "vault-app", "password": "vault-secret"}[field])
+    client.auth_data = lambda: {}
+    client.save_auth = Mock()
+    session = client.auth_start(state="state", session_id="session")
+    assert parse_qs(urlsplit(session["authorizationUrl"]).query)["client_id"] == ["vault-app"]
+    client.http = Mock(return_value=(200, {"access_token": "access", "expires_in": 600, "refresh_token": "refresh"}))
+    client.token_request({"grant_type": "authorization_code", "code": "code"}, old={"operatorId": "operator"})
+    basic = client.http.call_args.args[3]["Authorization"].removeprefix("Basic ")
+    assert base64.b64decode(basic).decode() == "vault-app:vault-secret"
+    assert "vault-secret" not in session["authorizationUrl"]
+    assert client.vault.call_args_list[0].args == ("read", "username")
+
+
+def test_missing_keepass_client_id_reports_field_without_preventing_profile_save(configured):
+    path, profile = configured
+    before = path.read_bytes()
+    client = Client(profile)
+    client.vault = Mock(return_value="")
+    with pytest.raises(BtgError) as error:
+        client.client_id()
+    assert error.value.code == "client_id_missing"
+    assert "username" in str(error.value) and "password" in str(error.value)
+    assert path.read_bytes() == before
+
+
+def test_explicit_legacy_client_id_remains_compatible(configured):
+    _, profile = configured
+    client = Client(dict(profile, client_id="legacy-app"))
+    client.vault = Mock(side_effect=AssertionError("Legacy ID must not read username"))
+    assert client.client_id() == "legacy-app"
+    client.vault.assert_not_called()
+
+
+def test_full_setup_form_saves_without_prompting_for_app_id(configured, monkeypatch):
+    path, profile = configured
+    values = {"environment": "sandbox", "company_id": "30306294000145", "account_number": "", "branch_code": "", "vault_entry_path": "BTG/new", "redirect_uri": profile["redirect_uri"], "oauth_mode": "remote", "scopes": profile["scopes"], "max_amount": "10.00", "monitor_enabled": "false"}
+    answers = iter(["1", "new", *[values[f.name] for f in setup.FIELDS if f.name != "vault_profile"], "x"])
+    prompts, messages = [], []
+    def answer(message):
+        prompts.append(message)
+        return next(answers)
+    monkeypatch.setattr(setup_profile_api, "prompt", answer)
+    monkeypatch.setattr(setup_profile_api, "choose_keepass_profile", lambda *a: "vault")
+    monkeypatch.setattr(setup_profile_api, "result", lambda *a: messages.append(a))
+    monkeypatch.setattr(setup_profile_api, "screen", lambda *a: None)
+    monkeypatch.setattr(setup_profile_api, "item", lambda *a: None)
+    connected = Mock()
+    interactive_configure(root=path.parent.parent, path=path, title="BTG", subtitle="", integration="btg-empresas", defaults=setup.DEFAULTS, fields=setup.FIELDS, save=setup.save, after_save=connected)
+    assert messages[-1][0], messages
+    assert "new" in simple_load(path, {})["profiles"]
+    assert not any("Client ID" in p or "ID do aplicativo" in p for p in prompts)
+    connected.assert_called_once_with("new", path)
 
 
 @pytest.mark.parametrize("central", [None, "broken [", "[codex]", '[codex]\nproject_directory = ""', '[codex]\nproject_directory = 5', '[codex]\nproject_directory = "relative/path"'])

@@ -4,7 +4,7 @@ schema_version = 1
 timeout_seconds = 30
 
 # Configure pelo setup. Use uma entrada KeePass dedicada com acesso read_write.
-# password=client_secret; notes é administrado como JSON OAuth pelo wrapper.
+# username=client_id; password=client_secret; notes é administrado como JSON OAuth pelo wrapper.
 [profiles.example]
 environment = "sandbox"
 company_id = "30306294000145"
@@ -15,7 +15,6 @@ branch_code = ""
 # A pasta de trabalho vem de configs/onmyoji-system.toml: codex.project_directory.
 vault_profile = "PREENCHER_PERFIL_KEEPASS"
 vault_entry_path = "Integrations/BTG/example"
-client_id = "PREENCHER_CLIENT_ID"
 redirect_uri = "https://miniapps.example.com/oauth/skills/btg-empresas/callback"
 oauth_mode = "remote"
 scopes = "openid empresas.btgpactual.com/accounts.readonly brn:btg:empresas:banking:payments brn:btg:empresas:banking:direct-debit"

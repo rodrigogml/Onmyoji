@@ -55,8 +55,9 @@ def instance_workspace(config: Path) -> Path:
 
 def validate_profile(config: Path, name: str, value: dict[str, Any]) -> dict[str, Any]:
     profile = dict(value)
-    for key in ("company_id", "vault_profile", "vault_entry_path", "client_id", "redirect_uri", "scopes"):
+    for key in ("company_id", "vault_profile", "vault_entry_path", "redirect_uri", "scopes"):
         profile[key] = text(profile.get(key), key, 2000)
+    profile["client_id"] = text(profile["client_id"], "client_id", 2000) if profile.get("client_id") not in (None, "") else ""
     for key in ("account_id", "account_number", "branch_code"):
         profile[key] = text(profile[key], key, 2000) if profile.get(key) not in (None, "") else ""
     require(profile.get("environment") in {"sandbox", "production"}, "invalid_config", "Selecione sandbox ou production.")
@@ -131,6 +132,7 @@ class Client:
         self.id_base = "https://id." + ("sandbox." if profile["environment"] == "sandbox" else "") + "btgpactual.com"
         self.opener = urllib.request.build_opener(NoRedirect())
         self.deadline: float | None = None
+        self._client_id: str | None = None
 
     def vault(self, operation: str, field: str | None = None, value: str | None = None) -> Any:
         config = Path(self.profile["_config"])
@@ -162,8 +164,20 @@ class Client:
     def save_auth(self, value: dict[str, Any]) -> None:
         self.vault("edit", value=json.dumps(value))
 
+    def client_id(self) -> str:
+        """Leia o Client ID de username no KeePass; aceite perfis legados explícitos.
+
+        A configuração pode ser salva sem acessar o vault. A credencial só é
+        exigida na conexão, com mensagem específica se username estiver vazio.
+        """
+        if self._client_id is None:
+            value = self.profile.get("client_id") or self.vault("read", "username")
+            require(isinstance(value, str) and bool(value.strip()), "client_id_missing", "Preencha o campo Nome de usuário (username) da entrada KeePass BTG com o Client ID do aplicativo. O Client Secret deve ficar em Senha (password).")
+            self._client_id = text(value, "Client ID no KeePass", 2000)
+        return self._client_id
+
     def binding(self) -> str:
-        return digest({"environment": self.profile["environment"], "clientId": self.profile["client_id"], "redirect": self.profile["redirect_uri"]})
+        return digest({"environment": self.profile["environment"], "clientId": self.client_id(), "redirect": self.profile["redirect_uri"]})
 
     def auth_start(self, *, state: str | None = None, session_id: str | None = None) -> dict[str, Any]:
         with credential_lock(self.profile):
@@ -173,13 +187,13 @@ class Client:
             data["pending"] = {"state": state, "verifier": verifier, "binding": self.binding(), "context": context(self.profile), "sessionId": session_id, "expiresAt": time.time() + 600}
             self.save_auth(data)
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
-        query = {"response_type": "code", "client_id": self.profile["client_id"], "redirect_uri": self.profile["redirect_uri"], "scope": self.profile["scopes"], "state": state, "code_challenge": challenge, "code_challenge_method": "S256"}
+        query = {"response_type": "code", "client_id": self.client_id(), "redirect_uri": self.profile["redirect_uri"], "scope": self.profile["scopes"], "state": state, "code_challenge": challenge, "code_challenge_method": "S256"}
         return {"authorizationUrl": self.id_base + "/oauth2/authorize?" + urllib.parse.urlencode(query), "expiresIn": 600}
 
     def token_request(self, fields: dict[str, str], old: dict[str, Any] | None = None) -> dict[str, Any]:
         secret = self.vault("read", "password")
         require(isinstance(secret, str) and bool(secret), "credential_missing", "Client secret ausente no campo password do KeePass.")
-        basic = base64.b64encode((self.profile["client_id"] + ":" + secret).encode()).decode()
+        basic = base64.b64encode((self.client_id() + ":" + secret).encode()).decode()
         _, raw = self.http(self.id_base + "/oauth2/token", "POST", urllib.parse.urlencode(fields).encode(), {"Authorization": "Basic " + basic, "Content-Type": "application/x-www-form-urlencoded"})
         require(isinstance(raw, dict) and isinstance(raw.get("access_token"), str) and isinstance(raw.get("expires_in"), (int, Decimal)) and int(raw["expires_in"]) > 0, "invalid_token_response", "Resposta OAuth incompleta.")
         refresh = raw.get("refresh_token") or (old or {}).get("refresh_token")
