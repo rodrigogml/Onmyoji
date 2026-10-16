@@ -298,6 +298,14 @@ def test_closed_client_routes_block_redirects_and_arbitrary_queries(profile):
         NoRedirect().redirect_request(None, None, 302, "redirect", {}, "https://evil")
 
 
+def test_payment_creation_accepts_async_202_response(profile):
+    client = Client(profile)
+    client.token = lambda: {"access_token": "secret", "operatorId": "operator"}
+    client.http = Mock(return_value=(202, {"batchId": "batch", "contractGuid": "contract", "operationNeedsApproval": True}))
+    result = client.call("payments.create", body={"items": []}, expected_operator="operator")
+    assert result["batchId"] == "batch" and result["operationNeedsApproval"] is True
+
+
 def test_config_requires_external_workspace_and_cli_errors_are_safe(profile, tmp_path):
     config = Path(profile["_config"])
     config.parent.mkdir(parents=True)
