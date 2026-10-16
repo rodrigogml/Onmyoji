@@ -254,12 +254,14 @@ class Client:
             sys.path.insert(0, str(source))
         try:
             from onmyoji_daemon.supervisor import endpoint
-            from onmyoji_daemon.rpc import call
+            from onmyoji_daemon.rpc import RpcError, call
             params = {"skill": "btg-empresas", "profile": self.profile["_profile"], "confirm": confirm}
             if session_id:
                 params["session_id"] = session_id
             host, port, token = endpoint(root)
             return call(host, port, token, "mini-apps.oauth." + action, params, timeout=200)
+        except RpcError as error:
+            raise BtgError("remote_oauth_rejected", "OAuth remoto recusado pelo Gateway: " + str(error)) from error
         except (OSError, ValueError, ImportError, RuntimeError) as error:
             raise BtgError("remote_oauth_unavailable", "OAuth remoto indisponível; confira Gateway, Tunnel, callback e perfil.") from error
 
