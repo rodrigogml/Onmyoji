@@ -218,4 +218,8 @@ class SkillOAuth:
     def result(self, identifier: str) -> str:
         data = self.status(identifier)
         labels = {"completed": "Autorização concluída. Você pode voltar ao chat.", "denied": "A autorização foi recusada. Você pode voltar ao chat.", "expired": "Este link de autorização expirou.", "cancelled": "A autorização foi cancelada.", "failed": "Não foi possível concluir a autorização. Consulte o agente no chat.", "interrupted": "A autorização foi interrompida. Consulte o agente no chat."}
-        return labels.get(data["status"], "A autorização está em andamento. Consulte o agente no chat.")
+        message = labels.get(data["status"], "A autorização está em andamento. Consulte o agente no chat.")
+        code = data.get("errorCode")
+        if data["status"] == "failed" and isinstance(code, str) and re.fullmatch(r"[a-z0-9_]+", code):
+            message += " Código técnico: " + code + "."
+        return message
