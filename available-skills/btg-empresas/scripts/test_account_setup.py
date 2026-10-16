@@ -196,13 +196,25 @@ def test_callback_discovers_and_persists_account_before_reporting_success(config
     assert simple_load(path, {})["profiles"]["untouched"] == data["profiles"]["untouched"]
 
 
+def test_discovery_derives_redundant_identity_from_account_id(configured):
+    _, profile = configured
+    row = account()
+    row.pop("taxId")
+    row.pop("bankCode")
+    client = Client(profile)
+    client.call = Mock(return_value={"data": [row]})
+    discovered = client.discover_account()
+    assert discovered["taxId"] == "30306294000145"
+    assert discovered["bankCode"] == "208"
+
+
 @pytest.mark.parametrize("response,code", [
     ({}, "invalid_bank_response"), ({"data": []}, "account_not_found"),
     ({"data": [account(taxId="11111111000111")]}, "account_not_found"),
     ({"data": [account(bankCode=999)]}, "account_not_found"),
     ({"data": [account(), account(accountId="other", number="000124")]}, "account_ambiguous"),
     ({"data": [account(accountId=None)]}, "invalid_request"),
-    ({"data": [account(number=None)]}, "invalid_bank_response"),
+    ({"data": [account(accountId="other", number=None)]}, "invalid_bank_response"),
 ])
 def test_discovery_failure_preserves_profile_and_existing_tokens(configured, response, code):
     path, profile = configured
