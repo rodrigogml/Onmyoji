@@ -9,7 +9,7 @@ A implementação oferece consultas PJ, pagamentos individuais e memória persis
 
 Use `setupOnmyoji.py` para selecionar BTG Empresas ou execute `available-skills/btg-empresas/setupSkill.py --action configure`. O contrato JSON de perfis também oferece `profile-schema`, `profile-create`, `profile-update`, `profile-list`, `profile-test` e `profile-delete`.
 
-Um perfil informa ambiente, CNPJ, aplicativo/redirect URI, escopos e referências KeePass. A pasta de trabalho é lida da configuração central `configs/onmyoji-system.toml`, em `codex.project_directory`; o setup BTG não solicita nem grava esse campo em novos perfis. Ela deve existir e ficar fora do CODEX_HOME. Se estiver ausente ou inválida, configure **Codex-CLI → Pasta do projeto** no setup principal. Perfis antigos com `workspace` continuam aceitos quando o caminho coincide com o central; divergências interrompem a operação para evitar abandonar o histórico, sem mover dados automaticamente.
+Um perfil informa ambiente, CNPJ, escopos e referências KeePass. A URI de redirect não é escolhida pelo usuário: o setup a calcula a partir do hostname público do Tunnel e da rota fixa da skill. Consulte-a a qualquer momento com `py -3 available-skills/btg-empresas/setupSkill.py --action callback-info` e cadastre exatamente o campo `callbackUrl` no aplicativo BTG. A pasta de trabalho é lida da configuração central `configs/onmyoji-system.toml`, em `codex.project_directory`; o setup BTG não solicita nem grava esse campo em novos perfis. Ela deve existir e ficar fora do CODEX_HOME. Se estiver ausente ou inválida, configure **Codex-CLI → Pasta do projeto** no setup principal. Perfis antigos com `workspace` continuam aceitos quando o caminho coincide com o central; divergências interrompem a operação para evitar abandonar o histórico, sem mover dados automaticamente.
 
 O setup não solicita o ID da conta. Número e agência são filtros opcionais para selecionar uma conta quando houver mais de uma. No sandbox, use o CNPJ fictício `30306294000145`; os dados da conta também são fictícios. Não troque empresa ou conta de um perfil para reaproveitar registros antigos.
 
@@ -41,7 +41,7 @@ Envie `{"version":1,"operation":"auth.start","confirm":true}` após autorizaçã
 
 Esse procedimento manual continua disponível em perfis antigos sem `oauth_mode` ou com `oauth_mode="manual"`. Novos perfis sugerem `oauth_mode="remote"` e utilizam o [OAuth compartilhado do Gateway Mini Apps](skill-oauth.md). Nesse modo, configure o callback estável retornado por `auth.callback-info`, cadastre-o no BTG e apresente a authorizationUrl de `auth.start` no chat. O navegador retorna pelo Tunnel e o adaptador confere empresa/conta antes de salvar os tokens. `auth.status` com `params.session_id` acompanha a sessão e `auth.cancel` com confirmação a encerra. `auth.complete` manual é recusado no modo remoto.
 
-O estado local vale 10 minutos e o código vence conforme o banco. Depois do consentimento, execute `profile-test` para conferir o acesso sem movimentar dinheiro. O modelo agora usa um exemplo de URL externa; substitua pelo hostname real do Tunnel.
+O estado local vale 10 minutos e o código vence conforme o banco. Depois do consentimento, execute `profile-test` para conferir o acesso sem movimentar dinheiro. A URI exibida pelo setup é a mesma rota pública usada pelo callback do Gateway.
 
 ## Preparação e envio
 

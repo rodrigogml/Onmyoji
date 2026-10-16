@@ -571,6 +571,11 @@ class MiniAppsGateway:
     def rpc(self, method: str, params: dict[str, Any]) -> Any:
         action = method.removeprefix("mini-apps.")
         if action.startswith("oauth."):
+            if action == "oauth.callback-url":
+                skill = str(params.get("skill", "")).strip()
+                if not skill or "/" in skill:
+                    raise ValueError("skill inválida")
+                return {"skill": skill, "callbackUrl": self._oauth_origin().rstrip("/") + "/oauth/skills/" + skill + "/callback"}
             broker = self._oauth_broker()
             if action == "oauth.info": return broker.info(str(params["skill"]), str(params["profile"]))
             if action == "oauth.start": return broker.start(str(params["skill"]), str(params["profile"]), params.get("confirm") is True)

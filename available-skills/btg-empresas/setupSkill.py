@@ -24,18 +24,41 @@ FIELDS = (
     Field("branch_code", "Agência (opcional, filtro para descoberta)", "", preserve_text=True),
     Field("vault_profile", "Perfil KeePass com leitura e escrita", required=True),
     Field("vault_entry_path", "Entrada KeePass dedicada", required=True),
-    Field("redirect_uri", "Redirect URI cadastrado no BTG", required=True),
+    # Mantido apenas para compatibilidade com perfis/CLI antigos; o menu não o solicita.
+    Field("redirect_uri", "Redirect URI calculado pelo Tunnel", ""),
     Field("oauth_mode", "OAuth remote (Gateway/Tunnel) ou manual", "remote"),
     Field("scopes", "Escopos oficiais habilitados", "openid empresas.btgpactual.com/accounts.readonly brn:btg:empresas:banking:payments brn:btg:empresas:banking:direct-debit", required=True),
     Field("max_amount", "Limite local por pagamento em BRL", "1000000.00", preserve_text=True),
     Field("monitor_enabled", "Monitorar perfil quando serviço estiver ativo", False),
 )
+INTERACTIVE_FIELDS = tuple(field for field in FIELDS if field.name != "redirect_uri")
 
 def load(path: Path) -> dict:
     return simple_load(path, DEFAULTS)
 
+
+def callback_info(root: Path) -> dict:
+    """Obtenha do daemon a URI pública derivada do Tunnel e da rota da skill."""
+    source = root / "onmyoji-daemon" / "src"
+    if str(source) not in sys.path:
+        sys.path.insert(0, str(source))
+    try:
+        from onmyoji_daemon.rpc import call
+        from onmyoji_daemon.supervisor import endpoint
+        host, port, token = endpoint(root)
+        return call(host, port, token, "mini-apps.oauth.callback-url", {"skill": "btg-empresas"}, timeout=5)
+    except (OSError, ValueError, KeyError, ImportError, RuntimeError) as error:
+        raise BtgError("callback_unavailable", "Não foi possível calcular a URI: inicie o Gateway e o Tunnel provisionado.") from error
+
 def save(path: Path, data: dict) -> tuple[bool, str]:
     try:
+        existing = load(path).get("profiles", {}) if path.exists() else {}
+        legacy_redirect = next((value.get("redirect_uri") for value in existing.values() if isinstance(value, dict) and value.get("redirect_uri")), None)
+        for profile in data.get("profiles", {}).values():
+            if profile.get("oauth_mode", "remote") == "remote" and not profile.get("redirect_uri"):
+                # Preserve a known URI for offline profile duplication; new
+                # installations calculate it from the running Tunnel below.
+                profile["redirect_uri"] = legacy_redirect or callback_info(path.parent.parent)["callbackUrl"]
         return save_configuration(path, data)
     except (BtgError, OSError, ValueError, TypeError, KeyError) as error:
         return False, str(error)
@@ -91,7 +114,7 @@ def test(name: str, path: Path, data: dict) -> tuple[bool, str]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--onmyoji-root", type=Path, default=ROOT)
-    parser.add_argument("--action", choices=["describe", "status", "configure", "profile-connect", "profile-schema", "profile-list", "profile-create", "profile-update", "profile-delete", "profile-test"], default="configure")
+    parser.add_argument("--action", choices=["describe", "status", "configure", "callback-info", "profile-connect", "profile-schema", "profile-list", "profile-create", "profile-update", "profile-delete", "profile-test"], default="configure")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--profile")
     parser.add_argument("--set", action="append")
@@ -104,6 +127,15 @@ def main() -> int:
     if args.action == "describe":
         print(json.dumps({"id": "btg-empresas", "title": "BTG Empresas", "description": "Conta PJ, pagamentos individuais e memória rastreável; OAuth no KeePass."}, ensure_ascii=False))
         return 0
+    if args.action == "callback-info":
+        try:
+            data = callback_info(args.onmyoji_root)
+            data["instructions"] = "Cadastre exatamente callbackUrl no aplicativo BTG antes de concluir o OAuth."
+            print(json.dumps({"ok": True, "data": data}, ensure_ascii=False))
+            return 0
+        except BtgError as error:
+            print(json.dumps({"ok": False, "error": {"code": error.code, "message": str(error)}}, ensure_ascii=False))
+            return 2
     if args.action == "status":
         try:
             data = load(path)
@@ -137,7 +169,13 @@ def main() -> int:
         if not load_profile(path, name)["account_id"]:
             after_save(name, path)
         return test(name, path, data)
-    interactive_configure(root=args.onmyoji_root, path=path, title="BTG Empresas", subtitle="Ao salvar, conecte ao BTG para descobrir a conta automaticamente", integration="btg-empresas", defaults=DEFAULTS, fields=FIELDS, test=interactive_test, save=save, after_save=after_save)
+    try:
+        callback = callback_info(args.onmyoji_root)["callbackUrl"]
+        print("Cadastre esta URI de redirect no aplicativo BTG (calculada pelo Tunnel):", callback, flush=True)
+    except BtgError as error:
+        result(False, str(error))
+        return 2
+    interactive_configure(root=args.onmyoji_root, path=path, title="BTG Empresas", subtitle="A URI de redirect é calculada automaticamente; ao salvar, conecte ao BTG para descobrir a conta", integration="btg-empresas", defaults=DEFAULTS, fields=INTERACTIVE_FIELDS, test=interactive_test, save=save, after_save=after_save)
     return 0
 
 if __name__ == "__main__":

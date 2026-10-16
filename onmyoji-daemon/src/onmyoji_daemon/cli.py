@@ -35,9 +35,9 @@ def main(argv: list[str] | None = None) -> int:
     miniapps = sub.add_parser("mini-apps"); miniapps_sub = miniapps.add_subparsers(dest="miniapps_action", required=True)
     miniapps_sub.add_parser("status"); miniapps_sub.add_parser("diagnose"); miniapps_sub.add_parser("list"); events = miniapps_sub.add_parser("events"); events.add_argument("--id"); events.add_argument("--limit", type=int, default=100)
     oauth = miniapps_sub.add_parser("oauth"); oauth_sub = oauth.add_subparsers(dest="oauth_action", required=True)
-    for action in ("info", "start", "status", "cancel"):
+    for action in ("callback-url", "info", "start", "status", "cancel"):
         command = oauth_sub.add_parser(action)
-        command.add_argument("--skill", required=action in {"info", "start"})
+        command.add_argument("--skill", required=action in {"callback-url", "info", "start"})
         command.add_argument("--profile", required=action in {"info", "start"})
         command.add_argument("--session-id", required=action in {"status", "cancel"})
         command.add_argument("--confirm", action="store_true")
