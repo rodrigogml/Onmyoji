@@ -19,6 +19,10 @@ from typing import Any, Callable
 class OAuthError(ValueError):
     """Erro funcional sanitizado, sem valores recebidos de provedores."""
 
+    def __init__(self, message: str, code: str | None = None):
+        super().__init__(message)
+        self.code = code
+
 
 def ensure(condition: bool, message: str) -> None:
     if not condition:
@@ -73,7 +77,7 @@ class SkillOAuth:
         if not (result.returncode == 0 and isinstance(payload, dict) and payload.get("ok") is True and isinstance(payload.get("data"), dict)):
             error = payload.get("error", {}) if isinstance(payload, dict) else {}
             code = error.get("code") if isinstance(error, dict) else None
-            raise OAuthError("Adaptador OAuth recusou a operação" + (" (" + str(code) + ")" if isinstance(code, str) and re.fullmatch(r"[a-z0-9_]+", code) else ""))
+            raise OAuthError("Adaptador OAuth recusou a operação" + (" (" + str(code) + ")" if isinstance(code, str) and re.fullmatch(r"[a-z0-9_]+", code) else ""), code if isinstance(code, str) and re.fullmatch(r"[a-z0-9_]+", code) else None)
         return payload["data"]
 
     def describe(self, skill: str, profile: str) -> dict[str, Any]:
