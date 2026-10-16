@@ -208,6 +208,14 @@ def test_discovery_derives_redundant_identity_from_account_id(configured):
     assert discovered["bankCode"] == "208"
 
 
+def test_discovery_accepts_unique_company_scoped_account_with_aliases(configured):
+    _, profile = configured
+    client = Client(profile)
+    client.call = Mock(return_value={"data": [{"accountId": "sandbox-account", "accountNumber": "000123", "branch": 50}]})
+    discovered = client.discover_account()
+    assert discovered["number"] == "000123" and discovered["branchCode"] == 50
+
+
 @pytest.mark.parametrize("response,code", [
     ({}, "invalid_bank_response"), ({"data": []}, "account_not_found"),
     ({"data": [account(taxId="11111111000111")]}, "account_not_found"),

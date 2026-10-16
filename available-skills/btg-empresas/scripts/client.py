@@ -94,16 +94,20 @@ def normalized_account(value: Any) -> dict[str, Any] | None:
     """Normalize a identidade redundante da conta sem aceitar divergências."""
     if not isinstance(value, dict):
         return None
-    account_id = value.get("accountId")
+    result = dict(value)
+    for target, alias in (("number", "accountNumber"), ("branchCode", "branch"), ("bankCode", "bank")):
+        if result.get(target) in (None, "") and result.get(alias) not in (None, ""):
+            result[target] = result[alias]
+    account_id = result.get("accountId")
     match = re.fullmatch(r"(\d{14})-(\d{3})-(\d+)-(\d+)", account_id) if isinstance(account_id, str) else None
     if not match:
-        return dict(value)
+        return result
     derived = dict(zip(("taxId", "bankCode", "branchCode", "number"), match.groups()))
     for field, expected in derived.items():
-        supplied = value.get(field)
+        supplied = result.get(field)
         if supplied not in (None, "") and str(supplied) != expected:
-            return dict(value)
-    return dict(value, **derived)
+            return result
+    return dict(result, **derived)
 
 
 @contextlib.contextmanager
@@ -374,7 +378,9 @@ class Client:
         rows = [row for value in result["data"] if (row := normalized_account(value)) is not None and row["accountId"] == self.profile["account_id"]]
         require(len(rows) == 1, "context_mismatch", "Conta não encontrada ou ambígua no consentimento.")
         row = rows[0]
-        require(str(row.get("taxId")) == self.profile["company_id"] and str(row.get("number")) == self.profile["account_number"] and str(row.get("branchCode")) == self.profile["branch_code"] and str(row.get("bankCode")) == "208", "context_mismatch", "Empresa/conta diverge do perfil BTG.")
+        require(row.get("taxId") in (None, "") or str(row["taxId"]) == self.profile["company_id"], "context_mismatch", "Empresa diverge do perfil BTG.")
+        require(row.get("bankCode") in (None, "") or str(row["bankCode"]) == "208", "context_mismatch", "Banco diverge do perfil BTG.")
+        require(str(row.get("number")) == self.profile["account_number"] and str(row.get("branchCode")) == self.profile["branch_code"], "context_mismatch", "Conta diverge do perfil BTG.")
         return row
 
     def discover_account(self, token_override: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -386,7 +392,8 @@ class Client:
         result = self.call("accounts.get", token_override=token_override)
         require(isinstance(result, dict) and isinstance(result.get("data"), list), "invalid_bank_response", "Lista de contas incompleta.")
         rows = [row for value in result["data"] if (row := normalized_account(value)) is not None
-                and str(row.get("taxId")) == self.profile["company_id"] and str(row.get("bankCode")) == "208"
+                and (row.get("taxId") in (None, "") or str(row["taxId"]) == self.profile["company_id"])
+                and (row.get("bankCode") in (None, "") or str(row["bankCode"]) == "208")
                 and all(not self.profile[key] or str(row.get(field)) == self.profile[key]
                         for key, field in (("account_id", "accountId"), ("account_number", "number"), ("branch_code", "branchCode")))]
         require(bool(rows), "account_not_found", "Nenhuma conta BTG corresponde à empresa e aos filtros do perfil.")
