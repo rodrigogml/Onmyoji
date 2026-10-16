@@ -19,7 +19,7 @@ from setup_ui import prompt, result
 DEFAULTS = {"timeout_seconds": 30}
 REQUIRED_SCOPES = (
     {"value": "openid", "purpose": "Identidade OAuth e emissão do ID token."},
-    {"value": "empresas.btgpactual.com/accounts.readonly", "purpose": "Consulta das contas PJ e descoberta do account_id."},
+    {"value": "brn:btg:empresas:banking:accounts", "purpose": "Consulta das contas PJ, saldo, extrato e descoberta do account_id."},
     {"value": "brn:btg:empresas:banking:payments", "purpose": "Preparação, autorização, consulta e comprovante de pagamentos."},
 )
 OPTIONAL_SCOPES = (

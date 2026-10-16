@@ -72,7 +72,7 @@ def validate_profile(config: Path, name: str, value: dict[str, Any]) -> dict[str
     uri = urllib.parse.urlsplit(profile["redirect_uri"])
     require(uri.scheme == "https" or uri.scheme == "http" and uri.hostname in {"localhost", "127.0.0.1"}, "invalid_config", "Redirect URI deve usar HTTPS ou loopback HTTP.")
     require(not uri.username and not uri.password and not uri.fragment, "invalid_config", "Redirect URI inválida.")
-    require({"openid", "empresas.btgpactual.com/accounts.readonly", "brn:btg:empresas:banking:payments"} <= set(profile["scopes"].split()), "invalid_config", "Escopos openid, accounts.readonly e payments obrigatórios.")
+    require({"openid", "brn:btg:empresas:banking:accounts", "brn:btg:empresas:banking:payments"} <= set(profile["scopes"].split()), "invalid_config", "Escopos openid, banking:accounts e banking:payments obrigatórios.")
     require(type(profile.get("monitor_enabled", False)) is bool, "invalid_config", "monitor_enabled deve ser booleano.")
     profile["oauth_mode"] = profile.get("oauth_mode", "manual")
     require(profile["oauth_mode"] in {"manual", "remote"}, "invalid_config", "oauth_mode deve ser manual ou remote.")

@@ -17,7 +17,7 @@ from contracts import BtgError
 
 @pytest.fixture
 def profile(tmp_path):
-    return {"environment": "sandbox", "company_id": "30306294000145", "account_id": "account", "account_number": "001", "branch_code": "50", "workspace": str(tmp_path / "work"), "vault_profile": "vault", "vault_entry_path": "BTG/test", "client_id": "app", "redirect_uri": "https://apps.example.com/oauth/skills/btg-empresas/callback", "scopes": "openid empresas.btgpactual.com/accounts.readonly brn:btg:empresas:banking:payments", "max_amount": "1000.00", "timeout_seconds": 1, "max_pages": 2, "pending_interval": 300, "scheduled_interval": 3600, "confirmed_interval": 86400, "confirmation_days": 7, "oauth_mode": "remote", "_config": str(tmp_path / "code" / "configs" / "btg-empresas.toml"), "_profile": "test"}
+    return {"environment": "sandbox", "company_id": "30306294000145", "account_id": "account", "account_number": "001", "branch_code": "50", "workspace": str(tmp_path / "work"), "vault_profile": "vault", "vault_entry_path": "BTG/test", "client_id": "app", "redirect_uri": "https://apps.example.com/oauth/skills/btg-empresas/callback", "scopes": "openid brn:btg:empresas:banking:accounts brn:btg:empresas:banking:payments", "max_amount": "1000.00", "timeout_seconds": 1, "max_pages": 2, "pending_interval": 300, "scheduled_interval": 3600, "confirmed_interval": 86400, "confirmation_days": 7, "oauth_mode": "remote", "_config": str(tmp_path / "code" / "configs" / "btg-empresas.toml"), "_profile": "test"}
 
 
 def client_with_vault(profile):
