@@ -211,7 +211,7 @@ class Client:
             state = state or secrets.token_urlsafe(32)
             data["pending"] = {"state": state, "binding": self.binding(), "context": context(self.profile), "sessionId": session_id, "expiresAt": time.time() + 600}
             self.save_auth(data)
-        query = {"response_type": "code", "client_id": self.client_id(), "redirect_uri": self.profile["redirect_uri"], "scope": self.profile["scopes"], "state": state, "prompt": "login"}
+        query = {"response_type": "code", "client_id": self.client_id(), "redirect_uri": self.profile["redirect_uri"], "scope": self.profile["scopes"], "state": state, "resource": bank_company_id(self.profile), "prompt": "consent"}
         return {"authorizationUrl": self.id_base + "/oauth2/authorize?" + urllib.parse.urlencode(query), "expiresIn": 600}
 
     def token_request(self, fields: dict[str, str], old: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -242,12 +242,15 @@ class Client:
             require(pending.get("binding") == self.binding() and pending.get("expiresAt", 0) > time.time(), "expired_oauth_state", "Consentimento expirado ou ambiente divergente.")
             require(pending.get("sessionId") == session_id and pending.get("context", context(self.profile)) == context(self.profile), "invalid_oauth_session", "Sessão OAuth não corresponde ao contexto.")
             candidate = self.token_request({"grant_type": "authorization_code", "code": text(code, "Código OAuth", 4000), "redirect_uri": self.profile["redirect_uri"]})
+            data["provisionalTokens"] = candidate
+            self.save_auth(data)
             if not self.profile["account_id"]:
                 row = self.discover_account(token_override=candidate)
                 self.persist_account(row)
             elif verify_account:
                 self.verify_account(token_override=candidate)
             data["tokens"] = candidate
+            data.pop("provisionalTokens", None)
             data["lastAuthorization"] = {"sessionId": session_id, "status": "completed", "completedAt": time.time()}
             data.pop("pending", None)
             self.save_auth(data)

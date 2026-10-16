@@ -264,7 +264,8 @@ def test_oauth_state_tokens_and_operator_rotation(profile):
     client.auth_data = lambda: copy.deepcopy(saved)
     client.save_auth = lambda value: (saved.clear(), saved.update(copy.deepcopy(value)))
     start = client.auth_start()
-    assert "prompt=login" in start["authorizationUrl"]
+    assert "prompt=consent" in start["authorizationUrl"]
+    assert "resource=30306294000145" in start["authorizationUrl"]
     assert "code_challenge" not in start["authorizationUrl"]
     assert "verifier" not in saved["pending"]
     with pytest.raises(BtgError):

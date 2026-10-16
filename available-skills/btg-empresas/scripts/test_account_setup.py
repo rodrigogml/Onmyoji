@@ -247,6 +247,7 @@ def test_discovery_failure_preserves_profile_and_existing_tokens(configured, res
         client.auth_complete("code", "state", session_id="session", verify_account=True)
     assert error.value.code == code
     assert path.read_bytes() == before and vault["tokens"]["access_token"] == "existing-token"
+    assert vault["provisionalTokens"]["access_token"] == "private-token"
 
 
 def test_filters_select_only_the_requested_account(configured):
