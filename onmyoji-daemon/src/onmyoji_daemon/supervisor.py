@@ -159,7 +159,8 @@ class Supervisor:
         for name, service in self.services.items():
             if method.startswith(service.spec.namespace):
                 if not service.process or service.process.poll() is not None: raise RuntimeError(f"{name} is not running")
-                return call(self.host, service.port, service.token, method, params)
+                timeout = 200 if method.startswith("mini-apps.oauth.") else 5
+                return call(self.host, service.port, service.token, method, params, timeout=timeout)
         if method == "shutdown": self.stop_event.set(); return {"state": "stopping"}
         raise ValueError("unknown method")
 
