@@ -17,6 +17,15 @@ from account_setup import save_configuration
 from setup_ui import prompt, result
 
 DEFAULTS = {"timeout_seconds": 30}
+REQUIRED_SCOPES = (
+    {"value": "openid", "purpose": "Identidade OAuth e emissão do ID token."},
+    {"value": "empresas.btgpactual.com/accounts.readonly", "purpose": "Consulta das contas PJ e descoberta do account_id."},
+    {"value": "brn:btg:empresas:banking:payments", "purpose": "Preparação, autorização, consulta e comprovante de pagamentos."},
+)
+OPTIONAL_SCOPES = (
+    {"value": "brn:btg:empresas:banking:direct-debit", "purpose": "Consulta e operação de Débito Direto Autorizado (DDA), quando habilitado no BTG."},
+)
+DEFAULT_SCOPES = " ".join(item["value"] for item in REQUIRED_SCOPES + OPTIONAL_SCOPES)
 FIELDS = (
     Field("environment", "Ambiente sandbox ou production", "sandbox", required=True),
     Field("company_id", "CNPJ com 14 dígitos (sandbox: 30306294000145)", required=True, preserve_text=True),
@@ -27,11 +36,12 @@ FIELDS = (
     # Mantido apenas para compatibilidade com perfis/CLI antigos; o menu não o solicita.
     Field("redirect_uri", "Redirect URI calculado pelo Tunnel", ""),
     Field("oauth_mode", "OAuth remote (Gateway/Tunnel) ou manual", "remote"),
-    Field("scopes", "Escopos oficiais habilitados", "openid empresas.btgpactual.com/accounts.readonly brn:btg:empresas:banking:payments brn:btg:empresas:banking:direct-debit", required=True),
+    # Compatibilidade para perfis/CLI antigos; o menu usa os escopos oficiais fixos.
+    Field("scopes", "Escopos oficiais definidos pela skill", DEFAULT_SCOPES),
     Field("max_amount", "Limite local por pagamento em BRL", "1000000.00", preserve_text=True),
     Field("monitor_enabled", "Monitorar perfil quando serviço estiver ativo", False),
 )
-INTERACTIVE_FIELDS = tuple(field for field in FIELDS if field.name != "redirect_uri")
+INTERACTIVE_FIELDS = tuple(field for field in FIELDS if field.name not in {"redirect_uri", "scopes"})
 
 def load(path: Path) -> dict:
     return simple_load(path, DEFAULTS)
@@ -50,6 +60,11 @@ def callback_info(root: Path) -> dict:
     except (OSError, ValueError, KeyError, ImportError, RuntimeError) as error:
         raise BtgError("callback_unavailable", "Não foi possível calcular a URI: inicie o Gateway e o Tunnel provisionado.") from error
 
+
+def application_info() -> dict:
+    """Descreva as chaves que devem ser cadastradas no aplicativo BTG."""
+    return {"requiredScopes": list(REQUIRED_SCOPES), "optionalScopes": list(OPTIONAL_SCOPES)}
+
 def save(path: Path, data: dict) -> tuple[bool, str]:
     try:
         existing = load(path).get("profiles", {}) if path.exists() else {}
@@ -59,6 +74,8 @@ def save(path: Path, data: dict) -> tuple[bool, str]:
                 # Preserve a known URI for offline profile duplication; new
                 # installations calculate it from the running Tunnel below.
                 profile["redirect_uri"] = legacy_redirect or callback_info(path.parent.parent)["callbackUrl"]
+            if not profile.get("scopes"):
+                profile["scopes"] = DEFAULT_SCOPES
         return save_configuration(path, data)
     except (BtgError, OSError, ValueError, TypeError, KeyError) as error:
         return False, str(error)
@@ -114,7 +131,7 @@ def test(name: str, path: Path, data: dict) -> tuple[bool, str]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--onmyoji-root", type=Path, default=ROOT)
-    parser.add_argument("--action", choices=["describe", "status", "configure", "callback-info", "profile-connect", "profile-schema", "profile-list", "profile-create", "profile-update", "profile-delete", "profile-test"], default="configure")
+    parser.add_argument("--action", choices=["describe", "status", "configure", "callback-info", "application-info", "profile-connect", "profile-schema", "profile-list", "profile-create", "profile-update", "profile-delete", "profile-test"], default="configure")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--profile")
     parser.add_argument("--set", action="append")
@@ -136,6 +153,9 @@ def main() -> int:
         except BtgError as error:
             print(json.dumps({"ok": False, "error": {"code": error.code, "message": str(error)}}, ensure_ascii=False))
             return 2
+    if args.action == "application-info":
+        print(json.dumps({"ok": True, "data": application_info()}, ensure_ascii=False))
+        return 0
     if args.action == "status":
         try:
             data = load(path)
@@ -171,6 +191,13 @@ def main() -> int:
         return test(name, path, data)
     try:
         callback = callback_info(args.onmyoji_root)["callbackUrl"]
+        app = application_info()
+        print("Configure o aplicativo BTG com estas chaves OAuth obrigatórias:", flush=True)
+        for item in app["requiredScopes"]:
+            print(f"  - {item['value']}: {item['purpose']}", flush=True)
+        print("Chaves OAuth opcionais:", flush=True)
+        for item in app["optionalScopes"]:
+            print(f"  - {item['value']}: {item['purpose']}", flush=True)
         print("Cadastre esta URI de redirect no aplicativo BTG (calculada pelo Tunnel):", callback, flush=True)
     except BtgError as error:
         result(False, str(error))
