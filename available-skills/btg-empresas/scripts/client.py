@@ -62,7 +62,6 @@ def validate_profile(config: Path, name: str, value: dict[str, Any]) -> dict[str
         profile[key] = text(profile[key], key, 2000) if profile.get(key) not in (None, "") else ""
     require(profile.get("environment") in {"sandbox", "production"}, "invalid_config", "Selecione sandbox ou production.")
     require(profile["company_id"].isdigit() and len(profile["company_id"]) == 14, "invalid_config", "Informe CNPJ com 14 dígitos.")
-    require(profile["environment"] != "sandbox" or profile["company_id"] == "30306294000145", "invalid_sandbox_company", "No sandbox BTG, use o CNPJ fixo 30306294000145.")
     require(all(not profile[k] or profile[k].isdigit() for k in ("branch_code", "account_number")), "invalid_config", "Conta e agência inválidas.")
     require(not profile["account_id"] or bool(profile["branch_code"] and profile["account_number"]), "invalid_config", "Conta identificada exige número e agência.")
     workspace = instance_workspace(config)

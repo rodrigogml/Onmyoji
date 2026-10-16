@@ -31,6 +31,7 @@ class Field:
     suggest: Callable[[str], Any] | None = None
     inherit_default: bool = False
     preserve_text: bool = False
+    clearable: bool = False
 
 
 def _name(value: str | None) -> str:
@@ -61,7 +62,7 @@ def _public(name: str, profile: dict[str, Any], fields: tuple[Field, ...]) -> di
 
 
 def _schema(fields: tuple[Field, ...]) -> list[dict[str, Any]]:
-    return [{"name": field.name, "description": field.description, "required_on_create": field.required, "default": "[CONFIGURADO]" if field.secret and field.default else field.default, "inherit_default_when_empty": field.inherit_default} for field in fields]
+    return [{"name": field.name, "description": field.description, "required_on_create": field.required, "default": "[CONFIGURADO]" if field.secret and field.default else field.default, "inherit_default_when_empty": field.inherit_default, "clearable": field.clearable} for field in fields]
 
 
 def handle(*, action: str, profile_name: str | None, values: list[str] | None, confirm_delete: str | None, path: Path, load: Callable[[Path], dict[str, Any]], save: Callable[[Path, dict[str, Any]], tuple[bool, str]], fields: tuple[Field, ...], test: Callable[[str, Path, dict[str, Any]], tuple[bool, str]] | None = None) -> tuple[int, dict[str, Any]]:
@@ -181,8 +182,10 @@ def interactive_configure(*, root: Path, path: Path, title: str, subtitle: str, 
         if field.name == "vault_profile" or field.name.endswith("_vault_profile"): return choose_keepass_profile(root, str(default or ""))
         shown = "" if default is None else str(default)
         suffix = "; vazio = padrão" if field.inherit_default else ""
+        if field.clearable: suffix += "; LIMPAR = remover"
         value = prompt(f"{field.description} [{shown}{suffix}]: ").strip()
         if value.casefold() in {"x", "\x1b"}: return None
+        if field.clearable and value.casefold() == "limpar": return ""
         if field.inherit_default and not value: return inherit
         value = default if not value else value if field.preserve_text else _value(value)
         if field.required and not value:

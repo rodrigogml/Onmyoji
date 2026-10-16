@@ -100,11 +100,10 @@ def test_missing_keepass_client_id_reports_field_without_preventing_profile_save
     assert path.read_bytes() == before
 
 
-def test_sandbox_rejects_company_other_than_fixed_btg_identity(configured):
+def test_sandbox_accepts_company_configured_for_the_application(configured):
     _, profile = configured
-    with pytest.raises(BtgError) as error:
-        validate_profile(Path(profile["_config"]), "test", dict(profile, company_id="54928055000195"))
-    assert error.value.code == "invalid_sandbox_company"
+    updated = validate_profile(Path(profile["_config"]), "test", dict(profile, company_id="54928055000195"))
+    assert updated["company_id"] == "54928055000195"
 
 
 def test_explicit_legacy_client_id_remains_compatible(configured):
@@ -328,3 +327,15 @@ def test_shared_menu_calls_connection_hook_only_after_successful_save(tmp_path, 
     else:
         connected.assert_not_called()
     assert save.call_args.args[1]["profiles"]["test"] == {"field": "30306294000145"}
+
+
+def test_shared_menu_explicitly_clears_optional_field(tmp_path, monkeypatch):
+    answers = iter(["2", "1", "1", "LIMPAR", "x"])
+    monkeypatch.setattr(setup_profile_api, "prompt", lambda *a: next(answers))
+    monkeypatch.setattr(setup_profile_api, "result", lambda *a: None)
+    monkeypatch.setattr(setup_profile_api, "screen", lambda *a: None)
+    monkeypatch.setattr(setup_profile_api, "item", lambda *a: None)
+    data = {"schema_version": 1, "defaults": {}, "profiles": {"test": {"account_number": "5587269"}}}
+    save = Mock(return_value=(True, "saved"))
+    interactive_configure(root=tmp_path, path=tmp_path / "config.toml", title="test", subtitle="test", integration="test", defaults={}, fields=(Field("account_number", "Conta", preserve_text=True, clearable=True),), load=lambda *_: copy.deepcopy(data), save=save)
+    assert save.call_args.args[1]["profiles"]["test"]["account_number"] == ""
