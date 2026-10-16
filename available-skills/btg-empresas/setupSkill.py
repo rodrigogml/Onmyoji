@@ -90,6 +90,16 @@ def connect(name: str, path: Path, *, confirm: bool) -> dict:
     return client.remote_oauth("start", confirm=confirm)
 
 
+def clear_vault_pending(name: str, path: Path) -> bool:
+    """Cancele o estado OAuth pendente persistido no KeePass."""
+    client = Client(load_profile(path, name))
+    pending = client.auth_data().get("pending")
+    if not isinstance(pending, dict) or not pending.get("sessionId"):
+        return False
+    client.auth_cancel(str(pending["sessionId"]))
+    return True
+
+
 def after_save(name: str, path: Path) -> None:
     """Ofereça conexão após salvar; aguarde o navegador sem ler código ou token."""
     try:
@@ -111,6 +121,13 @@ def after_save(name: str, path: Path) -> None:
                 else:
                     result(False, "Operação KeePass não concluída; nenhuma autorização foi iniciada.")
                     return
+            elif error.code == "remote_oauth_rejected" and "authorization_pending" in str(error):
+                retry = prompt("Há uma autorização pendente salva no KeePass. Limpar e iniciar uma nova? [S/n]: ").strip().casefold()
+                if retry not in {"", "s", "sim"}:
+                    result(False, "Autorização pendente do KeePass preservada.")
+                    return
+                clear_vault_pending(name, path)
+                session = connect(name, path, confirm=True)
             else:
                 if error.code != "remote_oauth_rejected" or "autorização ativa" not in str(error).casefold():
                     raise
