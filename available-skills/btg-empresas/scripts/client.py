@@ -6,6 +6,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -297,7 +298,21 @@ class Client:
                 except ValueError as error:
                     raise BtgError("invalid_bank_response", "BTG não retornou JSON válido.", status) from error
         except urllib.error.HTTPError as error:
-            raise BtgError("bank_http_error", f"BTG retornou HTTP {error.code}.", error.code) from error
+            provider, provider_code = "", ""
+            try:
+                payload = json.loads(error.read(65537).decode("utf-8", "replace"))
+                name = payload.get("name") if isinstance(payload, dict) else None
+                if isinstance(name, str):
+                    provider = re.sub(r"[^a-z0-9]+", "_", name.casefold()).strip("_")[:80]
+                message = payload.get("message") if isinstance(payload, dict) else None
+                match = re.search(r"\[([a-z0-9_-]{1,32})\]", message, re.IGNORECASE) if isinstance(message, str) else None
+                if match:
+                    provider_code = match.group(1).casefold()
+            except (OSError, ValueError, TypeError):
+                pass
+            details = "_".join(value for value in (provider, provider_code) if value)
+            code = "bank_http_error_" + str(error.code) + (("_" + details) if details else "")
+            raise BtgError(code, f"BTG retornou HTTP {error.code}.", error.code) from error
         except (urllib.error.URLError, TimeoutError, OSError) as error:
             raise BtgError("bank_unavailable", "Falha de comunicação com BTG; resultado de escrita pode ser desconhecido.") from error
 

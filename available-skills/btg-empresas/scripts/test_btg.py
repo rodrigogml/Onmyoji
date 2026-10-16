@@ -395,6 +395,18 @@ def test_http_handles_pdf_json_errors_timeouts_and_size(profile):
         with pytest.raises(BtgError) as caught:
             client.http(client.base, "GET", None, {})
         assert "secret" not in str(caught.value)
+    provider_error = urllib.error.HTTPError(
+        client.base,
+        404,
+        "secret-error",
+        {},
+        io.BytesIO(b'{"name":"TokenIssueError","message":"[A050305] secret detail"}'),
+    )
+    client.opener.open = Mock(side_effect=provider_error)
+    with pytest.raises(BtgError) as caught:
+        client.http(client.base, "GET", None, {})
+    assert caught.value.code == "bank_http_error_404_tokenissueerror_a050305"
+    assert "secret" not in str(caught.value)
     client.deadline = time.monotonic() - 1
     with pytest.raises(BtgError):
         client.http(client.base, "GET", None, {})
