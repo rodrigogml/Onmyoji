@@ -28,7 +28,7 @@ OPTIONAL_SCOPES = (
 DEFAULT_SCOPES = " ".join(item["value"] for item in REQUIRED_SCOPES + OPTIONAL_SCOPES)
 FIELDS = (
     Field("environment", "Ambiente sandbox ou production", "sandbox", required=True),
-    Field("company_id", "CNPJ com 14 dígitos (sandbox: 30306294000145)", required=True, preserve_text=True),
+    Field("company_id", "CNPJ da empresa (sandbox usa obrigatoriamente 30306294000145)", "30306294000145", required=True, preserve_text=True),
     Field("account_number", "Número da conta (opcional, filtro para descoberta)", "", preserve_text=True),
     Field("branch_code", "Agência (opcional, filtro para descoberta)", "", preserve_text=True),
     Field("vault_profile", "Perfil KeePass com leitura e escrita", required=True),

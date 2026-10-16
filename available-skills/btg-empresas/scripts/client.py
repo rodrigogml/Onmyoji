@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import base64
 import contextlib
-import hashlib
 import json
 import os
 import re
@@ -63,6 +62,7 @@ def validate_profile(config: Path, name: str, value: dict[str, Any]) -> dict[str
         profile[key] = text(profile[key], key, 2000) if profile.get(key) not in (None, "") else ""
     require(profile.get("environment") in {"sandbox", "production"}, "invalid_config", "Selecione sandbox ou production.")
     require(profile["company_id"].isdigit() and len(profile["company_id"]) == 14, "invalid_config", "Informe CNPJ com 14 dígitos.")
+    require(profile["environment"] != "sandbox" or profile["company_id"] == "30306294000145", "invalid_sandbox_company", "No sandbox BTG, use o CNPJ fixo 30306294000145.")
     require(all(not profile[k] or profile[k].isdigit() for k in ("branch_code", "account_number")), "invalid_config", "Conta e agência inválidas.")
     require(not profile["account_id"] or bool(profile["branch_code"] and profile["account_number"]), "invalid_config", "Conta identificada exige número e agência.")
     workspace = instance_workspace(config)
@@ -189,11 +189,10 @@ class Client:
         with credential_lock(self.profile):
             data = self.auth_data()
             require(data.get("pending", {}).get("expiresAt", 0) <= time.time(), "authorization_pending", "Existe consentimento pendente; conclua, cancele ou aguarde expiração.")
-            verifier, state = secrets.token_urlsafe(48), state or secrets.token_urlsafe(32)
-            data["pending"] = {"state": state, "verifier": verifier, "binding": self.binding(), "context": context(self.profile), "sessionId": session_id, "expiresAt": time.time() + 600}
+            state = state or secrets.token_urlsafe(32)
+            data["pending"] = {"state": state, "binding": self.binding(), "context": context(self.profile), "sessionId": session_id, "expiresAt": time.time() + 600}
             self.save_auth(data)
-        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
-        query = {"response_type": "code", "client_id": self.client_id(), "redirect_uri": self.profile["redirect_uri"], "scope": self.profile["scopes"], "state": state, "code_challenge": challenge, "code_challenge_method": "S256"}
+        query = {"response_type": "code", "client_id": self.client_id(), "redirect_uri": self.profile["redirect_uri"], "scope": self.profile["scopes"], "state": state, "prompt": "login"}
         return {"authorizationUrl": self.id_base + "/oauth2/authorize?" + urllib.parse.urlencode(query), "expiresIn": 600}
 
     def token_request(self, fields: dict[str, str], old: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -223,7 +222,7 @@ class Client:
             require(isinstance(state, str) and secrets.compare_digest(str(pending.get("state", "")), state) and bool(state), "invalid_oauth_state", "State OAuth divergente.")
             require(pending.get("binding") == self.binding() and pending.get("expiresAt", 0) > time.time(), "expired_oauth_state", "Consentimento expirado ou ambiente divergente.")
             require(pending.get("sessionId") == session_id and pending.get("context", context(self.profile)) == context(self.profile), "invalid_oauth_session", "Sessão OAuth não corresponde ao contexto.")
-            candidate = self.token_request({"grant_type": "authorization_code", "code": text(code, "Código OAuth", 4000), "redirect_uri": self.profile["redirect_uri"], "code_verifier": pending["verifier"]})
+            candidate = self.token_request({"grant_type": "authorization_code", "code": text(code, "Código OAuth", 4000), "redirect_uri": self.profile["redirect_uri"]})
             if not self.profile["account_id"]:
                 row = self.discover_account(token_override=candidate)
                 self.persist_account(row)

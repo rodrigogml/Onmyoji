@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
-from client import Client, load_profile
+from client import Client, load_profile, validate_profile
 from account_setup import save_configuration
 from btg import Engine
 from contracts import BtgError
@@ -98,6 +98,13 @@ def test_missing_keepass_client_id_reports_field_without_preventing_profile_save
     assert error.value.code == "client_id_missing"
     assert "username" in str(error.value) and "password" in str(error.value)
     assert path.read_bytes() == before
+
+
+def test_sandbox_rejects_company_other_than_fixed_btg_identity(configured):
+    _, profile = configured
+    with pytest.raises(BtgError) as error:
+        validate_profile(Path(profile["_config"]), "test", dict(profile, company_id="54928055000195"))
+    assert error.value.code == "invalid_sandbox_company"
 
 
 def test_explicit_legacy_client_id_remains_compatible(configured):
