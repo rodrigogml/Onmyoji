@@ -40,7 +40,11 @@ def main() -> int:
         require(len(raw) <= 16384, "invalid_request", "Requisição OAuth excede limite.")
         result, code = {"ok": True, "data": dispatch(args.onmyoji_root, json.loads(raw))}, 0
     except (BtgError, OSError, ValueError, KeyError, TypeError, AttributeError) as error:
-        result, code = {"ok": False, "error": {"code": getattr(error, "code", "oauth_adapter_failed"), "message": "Confira perfil, consentimento e credenciais BTG."}}, 2
+        error_code = getattr(error, "code", "oauth_adapter_failed")
+        status = getattr(error, "status", None)
+        if error_code == "bank_http_error" and isinstance(status, int) and 100 <= status <= 599:
+            error_code = f"{error_code}_{status}"
+        result, code = {"ok": False, "error": {"code": error_code, "message": "Confira perfil, consentimento e credenciais BTG."}}, 2
     print(json.dumps(result, ensure_ascii=False))
     return code
 
