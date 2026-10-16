@@ -143,7 +143,7 @@ class Client:
         if operation == "edit":
             request.update(values={"notes": value}, confirm=True)
         try:
-            result = subprocess.run([sys.executable, str(script), "--config", str(config.parent / "keepass.toml"), "--profile", self.profile["vault_profile"]], input=json.dumps(request), text=True, encoding="utf-8", capture_output=True, timeout=60)
+            result = subprocess.run([sys.executable, str(script), "--config", str(config.parent / "keepass.toml"), "--profile", self.profile["vault_profile"]], input=json.dumps(request), text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=60)
             payload = json.loads(result.stdout)
         except (OSError, ValueError, subprocess.TimeoutExpired) as error:
             raise BtgError("vault_unavailable", "Não foi possível acessar o KeePass.") from error
