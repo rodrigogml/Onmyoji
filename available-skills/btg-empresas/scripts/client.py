@@ -37,11 +37,14 @@ def load_profile(config: Path, name: str) -> dict[str, Any]:
 
 def validate_profile(config: Path, name: str, value: dict[str, Any]) -> dict[str, Any]:
     profile = dict(value)
-    for key in ("company_id", "account_id", "account_number", "branch_code", "workspace", "vault_profile", "vault_entry_path", "client_id", "redirect_uri", "scopes"):
+    for key in ("company_id", "workspace", "vault_profile", "vault_entry_path", "client_id", "redirect_uri", "scopes"):
         profile[key] = text(profile.get(key), key, 2000)
+    for key in ("account_id", "account_number", "branch_code"):
+        profile[key] = text(profile[key], key, 2000) if profile.get(key) not in (None, "") else ""
     require(profile.get("environment") in {"sandbox", "production"}, "invalid_config", "Selecione sandbox ou production.")
     require(profile["company_id"].isdigit() and len(profile["company_id"]) == 14, "invalid_config", "Informe CNPJ com 14 dígitos.")
-    require(profile["branch_code"].isdigit() and profile["account_number"].isdigit(), "invalid_config", "Conta e agência inválidas.")
+    require(all(not profile[k] or profile[k].isdigit() for k in ("branch_code", "account_number")), "invalid_config", "Conta e agência inválidas.")
+    require(not profile["account_id"] or bool(profile["branch_code"] and profile["account_number"]), "invalid_config", "Conta identificada exige número e agência.")
     workspace = Path(profile["workspace"])
     root = config.resolve().parent.parent
     require(workspace.is_absolute() and not workspace.resolve().is_relative_to(root), "invalid_workspace", "Workspace deve ser absoluto e externo ao CODEX_HOME.")
@@ -66,12 +69,12 @@ def context(profile: dict[str, Any]) -> str:
 
 
 @contextlib.contextmanager
-def credential_lock(profile: dict[str, Any]):
+def credential_lock(profile: dict[str, Any], *, scope: str | None = None):
     """Serialize rotação de token por entrada do vault entre processos."""
     root = Path(profile["workspace"]) / ".onmyoji" / "btg-empresas" / "locks"
     require(root.resolve().is_relative_to(Path(profile["workspace"]).resolve()), "invalid_workspace", "Locks devem permanecer dentro do workspace.")
     root.mkdir(parents=True, exist_ok=True)
-    name = digest({k: profile[k] for k in ("vault_profile", "vault_entry_path")})
+    name = digest(scope) if scope is not None else digest({k: profile[k] for k in ("vault_profile", "vault_entry_path")})
     with (root / (name + ".lock")).open("a+b") as stream:
         if stream.tell() == 0:
             stream.write(b"0"); stream.flush()
@@ -181,7 +184,10 @@ class Client:
             require(pending.get("binding") == self.binding() and pending.get("expiresAt", 0) > time.time(), "expired_oauth_state", "Consentimento expirado ou ambiente divergente.")
             require(pending.get("sessionId") == session_id and pending.get("context", context(self.profile)) == context(self.profile), "invalid_oauth_session", "Sessão OAuth não corresponde ao contexto.")
             candidate = self.token_request({"grant_type": "authorization_code", "code": text(code, "Código OAuth", 4000), "redirect_uri": self.profile["redirect_uri"], "code_verifier": pending["verifier"]})
-            if verify_account:
+            if not self.profile["account_id"]:
+                row = self.discover_account(token_override=candidate)
+                self.persist_account(row)
+            elif verify_account:
                 self.verify_account(token_override=candidate)
             data["tokens"] = candidate
             data["lastAuthorization"] = {"sessionId": session_id, "status": "completed", "completedAt": time.time()}
@@ -261,6 +267,7 @@ class Client:
 
     def call(self, operation: str, *, payment_id: str | None = None, params: dict[str, Any] | None = None, body: Any = None, key: str | None = None, expected_operator: str | None = None, token_override: dict[str, Any] | None = None) -> Any:
         require(operation in CONTRACTS, "unsupported_operation", "Operação BTG não registrada.")
+        require(operation == "accounts.get" or bool(self.profile["account_id"]), "account_setup_required", "Conclua a conexão da conta pelo setup BTG antes de operar.")
         contract, profile = CONTRACTS[operation], self.profile
         params = params or {}
         allowed = {p["name"] for p in contract["parameters"] if p["in"] == "query"}
@@ -290,6 +297,7 @@ class Client:
         return result
 
     def verify_account(self, token_override: dict[str, Any] | None = None) -> dict[str, Any]:
+        require(bool(self.profile["account_id"]), "account_setup_required", "Conclua a conexão da conta pelo setup BTG.")
         result = self.call("accounts.get", token_override=token_override)
         require(isinstance(result, dict) and isinstance(result.get("data"), list), "invalid_bank_response", "Lista de contas incompleta.")
         rows = [row for row in result["data"] if isinstance(row, dict) and row.get("accountId") == self.profile["account_id"]]
@@ -297,3 +305,31 @@ class Client:
         row = rows[0]
         require(str(row.get("taxId")) == self.profile["company_id"] and str(row.get("number")) == self.profile["account_number"] and str(row.get("branchCode")) == self.profile["branch_code"] and str(row.get("bankCode")) == "208", "context_mismatch", "Empresa/conta diverge do perfil BTG.")
         return row
+
+    def discover_account(self, token_override: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Obtenha uma conta BTG única da empresa, respeitando filtros já informados.
+
+        Não escolhe a primeira conta nem substitui uma conta já configurada.
+        Ausência, ambiguidade ou resposta incompleta impedem a persistência.
+        """
+        result = self.call("accounts.get", token_override=token_override)
+        require(isinstance(result, dict) and isinstance(result.get("data"), list), "invalid_bank_response", "Lista de contas incompleta.")
+        rows = [row for row in result["data"] if isinstance(row, dict)
+                and str(row.get("taxId")) == self.profile["company_id"] and str(row.get("bankCode")) == "208"
+                and all(not self.profile[key] or str(row.get(field)) == self.profile[key]
+                        for key, field in (("account_id", "accountId"), ("account_number", "number"), ("branch_code", "branchCode")))]
+        require(bool(rows), "account_not_found", "Nenhuma conta BTG corresponde à empresa e aos filtros do perfil.")
+        require(len(rows) == 1, "account_ambiguous", "Mais de uma conta disponível; informe número/agência no setup para selecionar e conecte novamente.")
+        row = rows[0]
+        text(row.get("accountId"), "ID da conta retornado pelo BTG", 2000)
+        require(isinstance(row.get("number"), str) and row["number"].isdigit() and str(row.get("branchCode", "")).isdigit(), "invalid_bank_response", "Número/agência ausentes na resposta BTG.")
+        return row
+
+    def persist_account(self, row: dict[str, Any]) -> None:
+        """Salve os identificadores descobertos sem trocar empresa ou conta existente.
+
+        Grava o TOML por substituição atômica e recusa perfil alterado durante o
+        consentimento. Não grava tokens ou outros dados da resposta bancária.
+        """
+        from account_setup import persist_account
+        persist_account(self.profile, row)

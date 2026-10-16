@@ -9,7 +9,17 @@ A implementação oferece consultas PJ, pagamentos individuais e memória persis
 
 Use `setupOnmyoji.py` para selecionar BTG Empresas ou execute `available-skills/btg-empresas/setupSkill.py --action configure`. O contrato JSON de perfis também oferece `profile-schema`, `profile-create`, `profile-update`, `profile-list`, `profile-test` e `profile-delete`.
 
-Um perfil informa ambiente, CNPJ, ID/número/agência da conta, workspace externo absoluto, aplicativo/redirect URI, escopos e referências KeePass. Não troque empresa ou conta de um perfil para reaproveitar registros antigos. Os IDs devem ser obtidos no cadastro/documentação da conta; o teste confere os dados contra a conta consentida.
+Um perfil informa ambiente, CNPJ, workspace externo absoluto, aplicativo/redirect URI, escopos e referências KeePass. O setup não solicita o ID da conta. Número e agência são filtros opcionais para selecionar uma conta quando houver mais de uma. No sandbox, use o CNPJ fictício `30306294000145`; os dados da conta também são fictícios. Não troque empresa ou conta de um perfil para reaproveitar registros antigos.
+
+Ao salvar um perfil novo, o setup oferece iniciar a conexão OAuth remota e apresenta o link para abrir no navegador. Após o consentimento, o callback consulta `GET /{companyId}/banking/accounts`, exige uma única conta BTG da empresa compatível com os filtros e grava `account_id`, `account_number` e `branch_code` no TOML. Os tokens permanecem no KeePass. Sem conta compatível, com múltiplas contas ou se o perfil mudou durante a conexão, o setup não conclui a descoberta. Corrija empresa/filtros e use **Testar perfil** para retomar. Cancelar a conexão preserva o perfil pendente; pagamentos e monitoramento permanecem bloqueados até obter a conta.
+
+Para configuração por JSON/CLI, crie o perfil sem `account_id` e inicie a conexão explicitamente:
+
+```powershell
+py -3 available-skills/btg-empresas/setupSkill.py --action profile-connect --profile <perfil> --confirm
+```
+
+Essa ação retorna `authorizationUrl` e `sessionId`; o callback salva a conta mesmo que o comando já tenha encerrado. Consulte `auth.status` com `params.session_id` para acompanhar. A ação `status` do setup distingue configuração válida de conta pronta por `ready` e `pending_accounts`. Perfis já completos continuam sujeitos à conferência da conta consentida e não têm seus identificadores substituídos pela descoberta.
 
 Crie uma entrada KeePass dedicada, com `password` contendo o client secret e `notes` vazio ou `{}`. O perfil KeePass precisa de acesso `read_write`, pois o wrapper guarda e renova tokens em `notes`. Não reutilize notes com anotações pessoais. Tokens, códigos OAuth e verifier não entram na memória de pagamentos. A entrada deve ser distinta por aplicativo/ambiente; perfis que a compartilhem precisam usar o mesmo workspace para compartilhar o lock de renovação.
 

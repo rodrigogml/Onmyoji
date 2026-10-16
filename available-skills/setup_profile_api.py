@@ -30,6 +30,7 @@ class Field:
     secret: bool = False
     suggest: Callable[[str], Any] | None = None
     inherit_default: bool = False
+    preserve_text: bool = False
 
 
 def _name(value: str | None) -> str:
@@ -49,7 +50,9 @@ def _updates(values: list[str] | None, fields: tuple[Field, ...]) -> dict[str, A
     for item in values or []:
         key, separator, raw = item.partition("=")
         if not separator or key not in allowed: raise ValueError(f"Campo inválido em --set: {key or item}.")
-        result[key] = _value(raw)
+        field = next(field for field in fields if field.name == key)
+        value = _value(raw)
+        result[key] = (value if isinstance(value, str) else raw) if field.preserve_text else value
     return result
 
 
@@ -157,7 +160,7 @@ def recover_simple_load(path: Path, defaults: dict[str, Any]) -> dict[str, Any]:
         return data
 
 
-def interactive_configure(*, root: Path, path: Path, title: str, subtitle: str, integration: str, defaults: dict[str, Any], fields: tuple[Field, ...], default_fields: tuple[Field, ...] = (), test: Callable[[str, Path, dict[str, Any]], tuple[bool, str]] | None = None, load: Callable[[Path, dict[str, Any]], dict[str, Any]] = simple_load) -> None:
+def interactive_configure(*, root: Path, path: Path, title: str, subtitle: str, integration: str, defaults: dict[str, Any], fields: tuple[Field, ...], default_fields: tuple[Field, ...] = (), test: Callable[[str, Path, dict[str, Any]], tuple[bool, str]] | None = None, load: Callable[[Path, dict[str, Any]], dict[str, Any]] = simple_load, save: Callable[[Path, dict[str, Any]], tuple[bool, str]] = simple_save, after_save: Callable[[str, Path], None] | None = None) -> None:
     """Configure perfis locais sem expor segredos ou duplicar menus de skills."""
     def choose(profiles: dict[str, Any], action: str) -> str | None:
         names = sorted(profiles)
@@ -181,7 +184,7 @@ def interactive_configure(*, root: Path, path: Path, title: str, subtitle: str, 
         value = prompt(f"{field.description} [{shown}{suffix}]: ").strip()
         if value.casefold() in {"x", "\x1b"}: return None
         if field.inherit_default and not value: return inherit
-        value = default if not value else _value(value)
+        value = default if not value else value if field.preserve_text else _value(value)
         if field.required and not value:
             result(False, f"{field.description} é obrigatório.")
             return None
@@ -218,7 +221,7 @@ def interactive_configure(*, root: Path, path: Path, title: str, subtitle: str, 
             if not value:
                 result(False, "Informe um valor para o padrão."); continue
             data["defaults"][field.name] = _value(value)
-            ok, message = simple_save(path, data); result(ok, message)
+            ok, message = save(path, data); result(ok, message)
             continue
         if action == "1":
             name = prompt("Nome do perfil [X cancela]: ").strip()
@@ -236,7 +239,8 @@ def interactive_configure(*, root: Path, path: Path, title: str, subtitle: str, 
                 if value is not inherit: candidate[field.name] = value
             else:
                 profiles[name] = candidate
-                ok, message = simple_save(path, data); result(ok, message)
+                ok, message = save(path, data); result(ok, message)
+                if ok and after_save is not None: after_save(name, path)
             continue
         allowed = {"2", "3"} | ({"4"} if test is not None else set())
         if action not in allowed:
@@ -250,7 +254,7 @@ def interactive_configure(*, root: Path, path: Path, title: str, subtitle: str, 
         if name is None: continue
         if action == "3":
             if prompt(f"Digite EXCLUIR para remover {name}: ").strip() == "EXCLUIR":
-                del profiles[name]; ok, message = simple_save(path, data); result(ok, message)
+                del profiles[name]; ok, message = save(path, data); result(ok, message)
             else: result(False, "Operação cancelada.")
             continue
         if action == "4":
@@ -277,7 +281,8 @@ def interactive_configure(*, root: Path, path: Path, title: str, subtitle: str, 
             continue
         if value is inherit: profile.pop(field.name, None)
         else: profile[field.name] = value
-        ok, message = simple_save(path, data); result(ok, message)
+        ok, message = save(path, data); result(ok, message)
+        if ok and after_save is not None: after_save(name, path)
 
 
 def _test_error_details(payload: dict[str, Any]) -> str:

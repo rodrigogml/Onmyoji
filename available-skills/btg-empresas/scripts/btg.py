@@ -45,7 +45,14 @@ def payment_view(row: dict[str, Any]) -> dict[str, Any]:
 class Engine:
     def __init__(self, profile: dict[str, Any], client: Client | None = None):
         self.profile, self.client = profile, client or Client(profile)
-        self.store = Store(Path(profile["workspace"]), context(profile), profile["_profile"])
+        self._store = None
+
+    @property
+    def store(self) -> Store:
+        require(bool(self.profile["account_id"]), "account_setup_required", "Conclua a conexão da conta pelo setup BTG antes de operar.")
+        if self._store is None:
+            self._store = Store(Path(self.profile["workspace"]), context(self.profile), self.profile["_profile"])
+        return self._store
 
     def check_barcode(self, item: dict[str, Any]) -> dict[str, Any]:
         code = next(iter(item["detail"].values()))
@@ -220,6 +227,7 @@ class Engine:
             return self.client.remote_oauth("status", session_id=text(params.get("session_id"), "Sessão OAuth", 100)) if params.get("session_id") else self.client.auth_status()
         if operation == "auth.cancel":
             return self.client.remote_oauth("cancel", session_id=text(params.get("session_id"), "Sessão OAuth", 100), confirm=True)
+        require(bool(self.profile["account_id"]), "account_setup_required", "Conclua a conexão da conta pelo setup BTG antes de operar.")
         if operation in READS:
             if operation == "accounts.get":
                 return self.client.verify_account()

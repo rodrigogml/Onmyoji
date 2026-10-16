@@ -8,9 +8,10 @@ timeout_seconds = 30
 [profiles.example]
 environment = "sandbox"
 company_id = "30306294000145"
-account_id = "PREENCHER_ID_DA_CONTA"
-account_number = "PREENCHER_NUMERO_DA_CONTA"
-branch_code = "50"
+# O callback consulta a API e salva account_id, account_number e branch_code.
+# Número/agência vazios permitem descoberta; preencha somente para filtrar múltiplas contas.
+account_number = ""
+branch_code = ""
 workspace = "C:/opt/Shikigami-Exemplo-Work"
 vault_profile = "PREENCHER_PERFIL_KEEPASS"
 vault_entry_path = "Integrations/BTG/example"
