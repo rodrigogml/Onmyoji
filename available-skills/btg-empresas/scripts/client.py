@@ -143,11 +143,16 @@ class Client:
             request["field"] = field
         if operation == "edit":
             request.update(values={"notes": value}, confirm=True)
-        try:
-            result = subprocess.run([sys.executable, str(script), "--config", str(config.parent / "keepass.toml"), "--profile", self.profile["vault_profile"]], input=json.dumps(request), text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=60)
-            payload = json.loads(result.stdout)
-        except (OSError, ValueError, subprocess.TimeoutExpired) as error:
-            raise BtgError("vault_unavailable", "Não foi possível acessar o KeePass.") from error
+        for attempt in range(3):
+            try:
+                result = subprocess.run([sys.executable, str(script), "--config", str(config.parent / "keepass.toml"), "--profile", self.profile["vault_profile"]], input=json.dumps(request), text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=60)
+                payload = json.loads(result.stdout)
+            except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+                raise BtgError("vault_unavailable", "Não foi possível acessar o KeePass.") from error
+            transient = operation == "edit" and isinstance(payload, dict) and (payload.get("error") or {}).get("code") == "keepass_error"
+            if result.returncode == 0 or not transient or attempt == 2:
+                break
+            time.sleep(1)
         require(result.returncode == 0 and isinstance(payload, dict) and payload.get("ok") is True, "vault_failed", "KeePass recusou a operação; confira permissões do perfil.")
         return payload.get("result", {}).get("value") if operation == "read" else payload.get("result")
 

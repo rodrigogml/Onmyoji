@@ -435,6 +435,24 @@ def test_vault_read_write_errors_and_auth_state_validation(profile, monkeypatch)
     assert client.auth_data() == {"tokens": {}}
 
 
+def test_vault_retries_transient_keepass_edit(profile, monkeypatch):
+    from types import SimpleNamespace
+    client = Client(profile)
+    calls = []
+    responses = [
+        {"ok": False, "error": {"code": "keepass_error", "message": "locked"}},
+        {"ok": True, "result": {"edited": True}},
+    ]
+    def run(*args, **kwargs):
+        calls.append(kwargs["input"])
+        payload = responses.pop(0)
+        return SimpleNamespace(returncode=0 if payload["ok"] else 2, stdout=json.dumps(payload))
+    monkeypatch.setattr("client.subprocess.run", run)
+    monkeypatch.setattr("client.time.sleep", lambda _: None)
+    assert client.vault("edit", value="{}") == {"edited": True}
+    assert len(calls) == 2
+
+
 def test_dispatch_local_queries_and_authorization_are_closed(profile, body):
     engine, bank, row = prepared_engine(profile, body)
     for operation in ["payments.prepare", "payments.submit", "auth.start", "auth.complete"]:
