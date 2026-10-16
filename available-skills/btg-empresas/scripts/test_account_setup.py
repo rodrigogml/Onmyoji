@@ -104,6 +104,11 @@ def test_sandbox_accepts_company_configured_for_the_application(configured):
     _, profile = configured
     updated = validate_profile(Path(profile["_config"]), "test", dict(profile, company_id="54928055000195"))
     assert updated["company_id"] == "54928055000195"
+    client = Client(updated)
+    client.token = lambda: {"access_token": "secret", "operatorId": "operator"}
+    client.http = Mock(return_value=(200, {"data": []}))
+    client.call("accounts.get")
+    assert "/30306294000145/banking/accounts" in client.http.call_args.args[0]
 
 
 def test_explicit_legacy_client_id_remains_compatible(configured):

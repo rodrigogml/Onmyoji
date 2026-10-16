@@ -16,6 +16,11 @@ class BtgError(Exception):
         self.code, self.message, self.status = code, message, status
 
 
+def bank_company_id(profile: dict[str, Any]) -> str:
+    """Retorne o tenant técnico usado pela API no ambiente selecionado."""
+    return "30306294000145" if profile.get("environment") == "sandbox" else str(profile["company_id"])
+
+
 def require(condition: bool, code: str, message: str) -> None:
     if not condition:
         raise BtgError(code, message)
@@ -140,7 +145,7 @@ def prepare_item(body: Any, profile: dict[str, Any], identifier: str) -> tuple[d
         payer = detail.get("taxPayer")
         require(isinstance(payer, dict) and set(payer) == {"id", "name"}, "invalid_request", "Informe taxPayer.id e name.")
         beneficiary({"name": payer["name"], "taxId": payer["id"]})
-        require(payer["id"] == profile["company_id"], "context_mismatch", "Pagador DARF diverge da empresa do perfil.")
+        require(payer["id"] == bank_company_id(profile), "context_mismatch", "Pagador DARF diverge da empresa autorizada no BTG.")
         for key in ("expireDate", "baselinePeriodDate"):
             detail[key] = date(detail.get(key))
         detail["treasuryRevenueCode"] = text(detail.get("treasuryRevenueCode"), "Código da Receita", 20)

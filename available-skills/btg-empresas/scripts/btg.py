@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from client import Client, context, load_profile
-from contracts import BtgError, bank_date, date, digest, future, money, now, prepare_item, public, require, text
+from contracts import BtgError, bank_company_id, bank_date, date, digest, future, money, now, prepare_item, public, require, text
 from store import Store
 
 
@@ -129,7 +129,7 @@ class Engine:
 
     def validate_match(self, row: dict[str, Any], value: dict[str, Any]) -> None:
         debit = value.get("debitParty")
-        require(isinstance(debit, dict) and debit.get("taxId") == self.profile["company_id"] and debit.get("number") == self.profile["account_number"] and debit.get("branchCode") == self.profile["branch_code"], "context_mismatch", "Pagamento bancário pertence a outra empresa/conta.")
+        require(isinstance(debit, dict) and debit.get("taxId") == bank_company_id(self.profile) and debit.get("number") == self.profile["account_number"] and debit.get("branchCode") == self.profile["branch_code"], "context_mismatch", "Pagamento bancário pertence a outra empresa/conta.")
         require(money(value.get("amount")) * 100 == row["amountCents"], "amount_mismatch", "Valor bancário diverge do rastreamento.")
         item = json.loads(row["item"])
         require(value.get("type") == item["type"] or value.get("type") == "PIX" and item["type"].startswith("PIX_"), "type_mismatch", "Modalidade bancária diverge do rastreamento.")

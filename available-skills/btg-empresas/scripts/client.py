@@ -18,7 +18,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from contracts import BtgError, CONTRACTS, digest, json_exact, money, require, text
+from contracts import BtgError, CONTRACTS, bank_company_id, digest, json_exact, money, require, text
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -86,7 +86,7 @@ def validate_profile(config: Path, name: str, value: dict[str, Any]) -> dict[str
 
 
 def context(profile: dict[str, Any]) -> str:
-    return digest({k: profile[k] for k in ("environment", "company_id", "account_id", "account_number", "branch_code")})
+    return digest({**{k: profile[k] for k in ("environment", "company_id", "account_id", "account_number", "branch_code")}, "bank_company_id": bank_company_id(profile)})
 
 
 def normalized_account(value: Any) -> dict[str, Any] | None:
@@ -353,7 +353,7 @@ class Client:
                 require(value in schema["enum"], "invalid_query", "Valor de consulta fora do contrato.")
             if name in {"pageNumber", "pageSize"}:
                 require(not isinstance(value, bool) and str(value).isdigit() and 1 <= int(value) <= 1000, "invalid_query", "Paginação remota inválida.")
-        path = contract["path"].replace("{companyId}", urllib.parse.quote(profile["company_id"], safe="")).replace("{accountId}", urllib.parse.quote(profile["account_id"], safe=""))
+        path = contract["path"].replace("{companyId}", urllib.parse.quote(bank_company_id(profile), safe="")).replace("{accountId}", urllib.parse.quote(profile["account_id"], safe=""))
         if "{paymentId}" in path:
             path = path.replace("{paymentId}", urllib.parse.quote(text(payment_id, "ID bancário", 200), safe=""))
         token = token_override or self.token()
@@ -377,7 +377,7 @@ class Client:
         rows = [row for value in result["data"] if (row := normalized_account(value)) is not None and row["accountId"] == self.profile["account_id"]]
         require(len(rows) == 1, "context_mismatch", "Conta não encontrada ou ambígua no consentimento.")
         row = rows[0]
-        require(row.get("taxId") in (None, "") or str(row["taxId"]) == self.profile["company_id"], "context_mismatch", "Empresa diverge do perfil BTG.")
+        require(row.get("taxId") in (None, "") or str(row["taxId"]) == bank_company_id(self.profile), "context_mismatch", "Empresa diverge do consentimento BTG.")
         require(row.get("bankCode") in (None, "") or str(row["bankCode"]) == "208", "context_mismatch", "Banco diverge do perfil BTG.")
         require(str(row.get("number")) == self.profile["account_number"] and str(row.get("branchCode")) == self.profile["branch_code"], "context_mismatch", "Conta diverge do perfil BTG.")
         return row
@@ -391,7 +391,7 @@ class Client:
         result = self.call("accounts.get", token_override=token_override)
         require(isinstance(result, dict) and isinstance(result.get("data"), list), "invalid_bank_response", "Lista de contas incompleta.")
         rows = [row for value in result["data"] if (row := normalized_account(value)) is not None
-                and (row.get("taxId") in (None, "") or str(row["taxId"]) == self.profile["company_id"])
+                and (row.get("taxId") in (None, "") or str(row["taxId"]) == bank_company_id(self.profile))
                 and (row.get("bankCode") in (None, "") or str(row["bankCode"]) == "208")
                 and all(not self.profile[key] or str(row.get(field)) == self.profile[key]
                         for key, field in (("account_id", "accountId"), ("account_number", "number"), ("branch_code", "branchCode")))]
