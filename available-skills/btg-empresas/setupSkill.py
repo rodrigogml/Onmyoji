@@ -103,15 +103,24 @@ def after_save(name: str, path: Path) -> None:
         try:
             session = connect(name, path, confirm=True)
         except BtgError as error:
-            if error.code != "remote_oauth_rejected" or "autorização ativa" not in str(error).casefold():
-                raise
-            replace = prompt("Já existe uma autorização pendente para este perfil. Substituir e gerar um novo link? [S/n]: ").strip().casefold()
-            if replace not in {"", "s", "sim"}:
-                result(False, "Autorização pendente preservada. Use Testar perfil para continuar.")
-                return
-            client = Client(load_profile(path, name))
-            client.remote_oauth("cancel-active", confirm=True)
-            session = connect(name, path, confirm=True)
+            if error.code == "remote_oauth_rejected" and "vault_failed" in str(error):
+                retry = prompt("O KeePass recusou temporariamente a operação. Tentar novamente? [S/n]: ").strip().casefold()
+                if retry in {"", "s", "sim"}:
+                    time.sleep(2)
+                    session = connect(name, path, confirm=True)
+                else:
+                    result(False, "Operação KeePass não concluída; nenhuma autorização foi iniciada.")
+                    return
+            else:
+                if error.code != "remote_oauth_rejected" or "autorização ativa" not in str(error).casefold():
+                    raise
+                replace = prompt("Já existe uma autorização pendente para este perfil. Substituir e gerar um novo link? [S/n]: ").strip().casefold()
+                if replace not in {"", "s", "sim"}:
+                    result(False, "Autorização pendente preservada. Use Testar perfil para continuar.")
+                    return
+                client = Client(load_profile(path, name))
+                client.remote_oauth("cancel-active", confirm=True)
+                session = connect(name, path, confirm=True)
         print("Abra este link no seu navegador (ou encaminhe-o pelo chat):", flush=True)
         print(session["authorizationUrl"], flush=True)
         client = Client(profile)
