@@ -144,6 +144,21 @@ class SkillOAuth:
             ensure(row is not None and (skill is None or row["skill"] == skill) and (profile is None or row["profile"] == profile), "Sessão OAuth não encontrada neste contexto")
             return {key: row[key] for key in ("id", "skill", "profile", "status", "createdAt", "expiresAt", "completedAt", "errorCode")}
 
+    def active(self, skill: str, profile: str) -> dict[str, Any] | None:
+        """Retorne a autorização ativa para que o setup possa oferecer substituição."""
+        with self.lock, self.connection() as con:
+            self.expire(con)
+            row = con.execute("SELECT * FROM authorization WHERE skill=? AND profile=? AND status IN ('creating','awaiting','processing') ORDER BY createdAt DESC LIMIT 1", (skill, profile)).fetchone()
+            if row is None:
+                return None
+            return {key: row[key] for key in ("id", "skill", "profile", "status", "createdAt", "expiresAt")}
+
+    def cancel_active(self, skill: str, profile: str, confirm: bool) -> dict[str, Any]:
+        """Cancele a autorização ativa do perfil após confirmação explícita."""
+        active = self.active(skill, profile)
+        ensure(active is not None, "Não existe autorização ativa para este perfil")
+        return self.cancel(active["id"], confirm, skill, profile)
+
     def cancel(self, identifier: str, confirm: bool, skill: str | None = None, profile: str | None = None) -> dict[str, Any]:
         ensure(confirm is True, "Confirme o cancelamento OAuth")
         with self.lock, self.connection() as con:

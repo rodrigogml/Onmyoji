@@ -578,6 +578,8 @@ class MiniAppsGateway:
                 return {"skill": skill, "callbackUrl": self._oauth_origin().rstrip("/") + "/oauth/skills/" + skill + "/callback"}
             broker = self._oauth_broker()
             if action == "oauth.info": return broker.info(str(params["skill"]), str(params["profile"]))
+            if action == "oauth.active": return broker.active(str(params["skill"]), str(params["profile"]))
+            if action == "oauth.cancel-active": return broker.cancel_active(str(params["skill"]), str(params["profile"]), params.get("confirm") is True)
             if action == "oauth.start": return broker.start(str(params["skill"]), str(params["profile"]), params.get("confirm") is True)
             if action == "oauth.status": return broker.status(str(params["session_id"]), params.get("skill"), params.get("profile"))
             if action == "oauth.cancel": return broker.cancel(str(params["session_id"]), params.get("confirm") is True, params.get("skill"), params.get("profile"))

@@ -35,10 +35,10 @@ def main(argv: list[str] | None = None) -> int:
     miniapps = sub.add_parser("mini-apps"); miniapps_sub = miniapps.add_subparsers(dest="miniapps_action", required=True)
     miniapps_sub.add_parser("status"); miniapps_sub.add_parser("diagnose"); miniapps_sub.add_parser("list"); events = miniapps_sub.add_parser("events"); events.add_argument("--id"); events.add_argument("--limit", type=int, default=100)
     oauth = miniapps_sub.add_parser("oauth"); oauth_sub = oauth.add_subparsers(dest="oauth_action", required=True)
-    for action in ("callback-url", "info", "start", "status", "cancel"):
+    for action in ("callback-url", "info", "active", "start", "status", "cancel", "cancel-active"):
         command = oauth_sub.add_parser(action)
-        command.add_argument("--skill", required=action in {"callback-url", "info", "start"})
-        command.add_argument("--profile", required=action in {"info", "start"})
+        command.add_argument("--skill", required=action in {"callback-url", "info", "active", "start", "cancel-active"})
+        command.add_argument("--profile", required=action in {"info", "active", "start", "cancel-active"})
         command.add_argument("--session-id", required=action in {"status", "cancel"})
         command.add_argument("--confirm", action="store_true")
     create_app = miniapps_sub.add_parser("create"); create_app.add_argument("--request", required=True, help="JSON da publicação")
@@ -107,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
             elif action in {"publish", "unpublish", "reload", "delete"}: params = {"id": args.id}
             else: params = {}
     timeout = 30 if args.action == "mini-apps" and args.miniapps_action == "tls" and args.tls_action == "install-trust" else 5
-    if args.action == "mini-apps" and args.miniapps_action == "oauth": timeout = 200 if args.oauth_action in {"start", "cancel", "info"} else 5
+    if args.action == "mini-apps" and args.miniapps_action == "oauth": timeout = 200 if args.oauth_action in {"start", "cancel", "info", "active", "cancel-active"} else 5
     try:
         response = call(host, port, token, method, params, timeout=timeout)
     except (OSError, RpcError, TimeoutError) as error:

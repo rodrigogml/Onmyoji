@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[3]
 
 def main() -> int:
     parser = argparse.ArgumentParser(); parser.add_argument("action", choices=["status", "list", "events", "create", "inspect", "update", "publish", "unpublish", "reload", "delete", "tunnel", "tls", "oauth"])
-    parser.add_argument("--oauth-action", choices=["callback-url", "info", "start", "status", "cancel"]); parser.add_argument("--skill"); parser.add_argument("--profile"); parser.add_argument("--session-id")
+    parser.add_argument("--oauth-action", choices=["callback-url", "info", "active", "start", "status", "cancel", "cancel-active"]); parser.add_argument("--skill"); parser.add_argument("--profile"); parser.add_argument("--session-id")
     parser.add_argument("--id"); parser.add_argument("--limit", type=int, default=100); parser.add_argument("--request"); parser.add_argument("--values"); parser.add_argument("--tunnel-action", choices=["status", "configure", "provision", "start", "stop", "restart", "install-cloudflared"]); parser.add_argument("--tls-action", choices=["status", "install-trust"]); parser.add_argument("--confirm", action="store_true"); args = parser.parse_args()
     command = [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(ROOT), "mini-apps"] + ([] if args.action in {"tunnel", "tls", "oauth"} else [args.action])
     if args.action in {"inspect", "publish", "unpublish", "reload", "delete"}:

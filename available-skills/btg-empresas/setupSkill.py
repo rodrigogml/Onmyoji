@@ -100,7 +100,18 @@ def after_save(name: str, path: Path) -> None:
         if answer not in {"", "s", "sim"}:
             result(False, "Perfil salvo, mas conta pendente. Use Testar perfil para retomar a conexão.")
             return
-        session = connect(name, path, confirm=True)
+        try:
+            session = connect(name, path, confirm=True)
+        except BtgError as error:
+            if error.code != "remote_oauth_rejected" or "autorização ativa" not in str(error).casefold():
+                raise
+            replace = prompt("Já existe uma autorização pendente para este perfil. Substituir e gerar um novo link? [S/n]: ").strip().casefold()
+            if replace not in {"", "s", "sim"}:
+                result(False, "Autorização pendente preservada. Use Testar perfil para continuar.")
+                return
+            client = Client(load_profile(path, name))
+            client.remote_oauth("cancel-active", confirm=True)
+            session = connect(name, path, confirm=True)
         print("Abra este link no seu navegador (ou encaminhe-o pelo chat):", flush=True)
         print(session["authorizationUrl"], flush=True)
         client = Client(profile)
