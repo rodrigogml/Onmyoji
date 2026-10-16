@@ -182,8 +182,8 @@ def main() -> int:
             print(json.dumps({"ok": False, "error": {"code": getattr(error, "code", "invalid_config"), "message": str(error)}}, ensure_ascii=False))
             return 2
     if args.action.startswith("profile-"):
-        code, result = handle(action=args.action, profile_name=args.profile, values=args.set, confirm_delete=args.confirm_delete, path=path, load=load, save=save, fields=FIELDS, test=test)
-        print(json.dumps(result, ensure_ascii=False))
+        code, response = handle(action=args.action, profile_name=args.profile, values=args.set, confirm_delete=args.confirm_delete, path=path, load=load, save=save, fields=FIELDS, test=test)
+        print(json.dumps(response, ensure_ascii=False))
         return code
     def interactive_test(name: str, path: Path, data: dict) -> tuple[bool, str]:
         if not load_profile(path, name)["account_id"]:
