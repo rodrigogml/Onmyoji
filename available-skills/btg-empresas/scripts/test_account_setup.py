@@ -109,6 +109,16 @@ def test_sandbox_accepts_company_configured_for_the_application(configured):
     client.http = Mock(return_value=(200, {"data": []}))
     client.call("accounts.get")
     assert "/30306294000145/banking/accounts" in client.http.call_args.args[0]
+    assert client.http.call_args.args[3]["x-response"] == "success"
+
+
+def test_production_does_not_send_sandbox_response_header(configured):
+    _, profile = configured
+    client = Client(dict(profile, environment="production"))
+    client.token = lambda: {"access_token": "secret", "operatorId": "operator"}
+    client.http = Mock(return_value=(200, {"data": []}))
+    client.call("accounts.get")
+    assert "x-response" not in client.http.call_args.args[3]
 
 
 def test_explicit_legacy_client_id_remains_compatible(configured):

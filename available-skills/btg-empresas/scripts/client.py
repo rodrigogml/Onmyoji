@@ -359,6 +359,8 @@ class Client:
         token = token_override or self.token()
         require(expected_operator is None or expected_operator == token["operatorId"], "operator_changed", "Operador divergente da tentativa persistida.")
         headers = {"Authorization": "Bearer " + token["access_token"], "Accept": "application/pdf" if operation == "payments.receipt" else "application/json"}
+        if profile["environment"] == "sandbox":
+            headers["x-response"] = "success"
         if key:
             headers["x-idempotency-key"] = key
         raw = None
