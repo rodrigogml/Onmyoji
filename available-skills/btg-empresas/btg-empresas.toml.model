@@ -12,7 +12,7 @@ company_id = "30306294000145"
 # Número/agência vazios permitem descoberta; preencha somente para filtrar múltiplas contas.
 account_number = ""
 branch_code = ""
-workspace = "C:/opt/Shikigami-Exemplo-Work"
+# A pasta de trabalho vem de configs/onmyoji-system.toml: codex.project_directory.
 vault_profile = "PREENCHER_PERFIL_KEEPASS"
 vault_entry_path = "Integrations/BTG/example"
 client_id = "PREENCHER_CLIENT_ID"

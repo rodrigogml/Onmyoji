@@ -22,7 +22,6 @@ FIELDS = (
     Field("company_id", "CNPJ com 14 dígitos (sandbox: 30306294000145)", required=True, preserve_text=True),
     Field("account_number", "Número da conta (opcional, filtro para descoberta)", "", preserve_text=True),
     Field("branch_code", "Agência (opcional, filtro para descoberta)", "", preserve_text=True),
-    Field("workspace", "Workspace externo absoluto", required=True),
     Field("vault_profile", "Perfil KeePass com leitura e escrita", required=True),
     Field("vault_entry_path", "Entrada KeePass dedicada", required=True),
     Field("client_id", "Client ID do aplicativo", required=True),

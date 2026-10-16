@@ -26,7 +26,10 @@ SPEC.loader.exec_module(setup)
 @pytest.fixture
 def configured(tmp_path):
     path = tmp_path / "code" / "configs" / "btg-empresas.toml"
-    value = {"environment": "sandbox", "company_id": "30306294000145", "workspace": str(tmp_path / "work"), "vault_profile": "vault", "vault_entry_path": "BTG/test", "client_id": "app", "redirect_uri": "https://apps.example.com/oauth/skills/btg-empresas/callback", "scopes": "openid empresas.btgpactual.com/accounts.readonly brn:btg:empresas:banking:payments", "oauth_mode": "remote"}
+    path.parent.mkdir(parents=True)
+    (tmp_path / "work").mkdir()
+    (path.parent / "onmyoji-system.toml").write_text('[codex]\nproject_directory = ' + json.dumps(str(tmp_path / "work")), encoding="utf-8")
+    value = {"environment": "sandbox", "company_id": "30306294000145", "vault_profile": "vault", "vault_entry_path": "BTG/test", "client_id": "app", "redirect_uri": "https://apps.example.com/oauth/skills/btg-empresas/callback", "scopes": "openid empresas.btgpactual.com/accounts.readonly brn:btg:empresas:banking:payments", "oauth_mode": "remote"}
     data = {"schema_version": 1, "defaults": {"timeout_seconds": 30}, "profiles": {"test": value}}
     assert setup.save(path, data)[0]
     return path, load_profile(path, "test")
@@ -52,6 +55,8 @@ def test_profile_creation_does_not_require_account_id_or_number(configured):
     path, profile = configured
     assert profile["account_id"] == profile["account_number"] == profile["branch_code"] == ""
     assert "account_id" not in {f.name for f in setup.FIELDS}
+    assert "workspace" not in {f.name for f in setup.FIELDS}
+    assert "workspace" not in simple_load(path, {})["profiles"]["test"]
     data = simple_load(path, {})
     values = [key + "=" + json.dumps(value) for key, value in data["profiles"]["test"].items()]
     code, response = handle(action="profile-create", profile_name="other", values=values, confirm_delete=None, path=path, load=setup.load, save=setup.save, fields=setup.FIELDS)
@@ -60,6 +65,49 @@ def test_profile_creation_does_not_require_account_id_or_number(configured):
     code, response = handle(action="profile-update", profile_name="other", values=["company_id=30306294000145", "branch_code=50", "max_amount=10.00"], confirm_delete=None, path=path, load=setup.load, save=setup.save, fields=setup.FIELDS)
     assert code == 0 and response["ok"]
     assert load_profile(path, "other")["branch_code"] == "50"
+
+
+@pytest.mark.parametrize("central", [None, "broken [", "[codex]", '[codex]\nproject_directory = ""', '[codex]\nproject_directory = 5', '[codex]\nproject_directory = "relative/path"'])
+def test_missing_or_invalid_central_workspace_requires_main_setup(configured, central):
+    path, _ = configured
+    system = path.parent / "onmyoji-system.toml"
+    if central is None:
+        system.unlink()
+    else:
+        system.write_text(central, encoding="utf-8")
+    with pytest.raises(BtgError) as error:
+        load_profile(path, "test")
+    assert error.value.code == "invalid_workspace"
+    assert "setup principal" in str(error.value)
+
+
+@pytest.mark.parametrize("inside_root", [True, False])
+def test_central_workspace_must_be_external_and_exist(configured, tmp_path, inside_root):
+    path, _ = configured
+    workspace = path.parent if inside_root else tmp_path / "missing"
+    (path.parent / "onmyoji-system.toml").write_text('[codex]\nproject_directory = ' + json.dumps(str(workspace)), encoding="utf-8")
+    with pytest.raises(BtgError) as error:
+        load_profile(path, "test")
+    assert error.value.code == "invalid_workspace"
+
+
+def test_legacy_workspace_must_match_central_without_moving_history(configured, tmp_path):
+    path, profile = configured
+    data = simple_load(path, {})
+    data["profiles"]["test"]["workspace"] = profile["workspace"]
+    simple_save(path, data)
+    assert load_profile(path, "test")["workspace"] == profile["workspace"]
+    history = Path(profile["workspace"]) / ".onmyoji" / "btg-empresas" / "payments.sqlite3"
+    history.parent.mkdir(parents=True, exist_ok=True)
+    history.write_bytes(b"existing-history")
+    other = tmp_path / "other-work"
+    other.mkdir()
+    (path.parent / "onmyoji-system.toml").write_text('[codex]\nproject_directory = ' + json.dumps(str(other)), encoding="utf-8")
+    with pytest.raises(BtgError) as error:
+        load_profile(path, "test")
+    assert error.value.code == "invalid_workspace" and "histórico" in str(error.value)
+    assert history.read_bytes() == b"existing-history"
+    assert not (other / ".onmyoji").exists()
 
 
 def test_callback_discovers_and_persists_account_before_reporting_success(configured):

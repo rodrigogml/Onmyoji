@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from setup_profile_api import simple_load, simple_render, simple_save
-from client import credential_lock, load_profile, validate_profile
+from client import credential_lock, instance_workspace, load_profile, validate_profile
 from contracts import digest, require
 
 
@@ -21,6 +21,8 @@ def save_configuration(path: Path, data: dict) -> tuple[bool, str]:
     """Valide perfis e serialize gravações com a descoberta feita pelo callback."""
     profiles = [validate_profile(path, name, value) for name, value in data["profiles"].items()]
     previous = simple_load(path, {})
+    if previous["profiles"]:
+        profiles.append({"workspace": str(instance_workspace(path)), "_config": str(path.resolve())})
     for value in previous["profiles"].values():
         workspace = value.get("workspace") if isinstance(value, dict) else None
         if isinstance(workspace, str) and Path(workspace).is_absolute() and not Path(workspace).resolve().is_relative_to(path.resolve().parent.parent):

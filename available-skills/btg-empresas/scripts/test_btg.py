@@ -299,6 +299,8 @@ def test_closed_client_routes_block_redirects_and_arbitrary_queries(profile):
 def test_config_requires_external_workspace_and_cli_errors_are_safe(profile, tmp_path):
     config = Path(profile["_config"])
     config.parent.mkdir(parents=True)
+    Path(profile["workspace"]).mkdir()
+    (config.parent / "onmyoji-system.toml").write_text('[codex]\nproject_directory = ' + json.dumps(profile["workspace"]), encoding="utf-8")
     def write(value):
         values = {k: v for k, v in value.items() if not k.startswith("_")}
         config.write_text('[profiles.test]\n' + '\n'.join(k + '=' + json.dumps(v) for k, v in values.items()), encoding="utf-8")
@@ -577,6 +579,10 @@ def test_cli_stdin_contract_and_persistence_errors(profile, body, monkeypatch, c
 
 
 def test_setup_validates_profile_without_writing_invalid_candidate(profile, tmp_path):
+    config = Path(profile["_config"])
+    config.parent.mkdir(parents=True)
+    Path(profile["workspace"]).mkdir()
+    (config.parent / "onmyoji-system.toml").write_text('[codex]\nproject_directory = ' + json.dumps(profile["workspace"]), encoding="utf-8")
     import importlib.util
     spec = importlib.util.spec_from_file_location("btg_setup_test", Path(__file__).parents[1] / "setupSkill.py")
     module = importlib.util.module_from_spec(spec)

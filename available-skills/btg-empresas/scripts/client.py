@@ -35,9 +35,27 @@ def load_profile(config: Path, name: str) -> dict[str, Any]:
     return validate_profile(config, name, profile)
 
 
+def instance_workspace(config: Path) -> Path:
+    """Leia a pasta central da instância, sem fallback para a pasta atual.
+
+    Configuração ausente, inválida ou interna ao CODEX_HOME exige corrigir
+    a Pasta do projeto no setup principal antes de usar a integração.
+    """
+    root = config.resolve().parent.parent
+    try:
+        system = tomllib.loads((root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8"))
+        raw = system["codex"]["project_directory"]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise BtgError("invalid_workspace", "Configure a Pasta do projeto no menu Codex-CLI do setup principal (configs/onmyoji-system.toml).") from error
+    require(isinstance(raw, str) and bool(raw.strip()), "invalid_workspace", "Configure a Pasta do projeto no menu Codex-CLI do setup principal.")
+    workspace = Path(raw)
+    require(workspace.is_absolute() and not workspace.resolve().is_relative_to(root) and workspace.is_dir(), "invalid_workspace", "A Pasta do projeto central deve existir, ter caminho absoluto e ficar fora do CODEX_HOME. Corrija-a no setup principal.")
+    return workspace.resolve()
+
+
 def validate_profile(config: Path, name: str, value: dict[str, Any]) -> dict[str, Any]:
     profile = dict(value)
-    for key in ("company_id", "workspace", "vault_profile", "vault_entry_path", "client_id", "redirect_uri", "scopes"):
+    for key in ("company_id", "vault_profile", "vault_entry_path", "client_id", "redirect_uri", "scopes"):
         profile[key] = text(profile.get(key), key, 2000)
     for key in ("account_id", "account_number", "branch_code"):
         profile[key] = text(profile[key], key, 2000) if profile.get(key) not in (None, "") else ""
@@ -45,9 +63,11 @@ def validate_profile(config: Path, name: str, value: dict[str, Any]) -> dict[str
     require(profile["company_id"].isdigit() and len(profile["company_id"]) == 14, "invalid_config", "Informe CNPJ com 14 dígitos.")
     require(all(not profile[k] or profile[k].isdigit() for k in ("branch_code", "account_number")), "invalid_config", "Conta e agência inválidas.")
     require(not profile["account_id"] or bool(profile["branch_code"] and profile["account_number"]), "invalid_config", "Conta identificada exige número e agência.")
-    workspace = Path(profile["workspace"])
-    root = config.resolve().parent.parent
-    require(workspace.is_absolute() and not workspace.resolve().is_relative_to(root), "invalid_workspace", "Workspace deve ser absoluto e externo ao CODEX_HOME.")
+    workspace = instance_workspace(config)
+    legacy = profile.get("workspace")
+    if legacy is not None:
+        require(isinstance(legacy, str) and bool(legacy.strip()) and Path(legacy).is_absolute() and os.path.normcase(str(Path(legacy).resolve())) == os.path.normcase(str(workspace)), "invalid_workspace", "O workspace antigo do perfil BTG difere da Pasta do projeto central. Migre o histórico antes de alterar os caminhos; nenhum dado foi movido.")
+    profile["workspace"] = str(workspace)
     uri = urllib.parse.urlsplit(profile["redirect_uri"])
     require(uri.scheme == "https" or uri.scheme == "http" and uri.hostname in {"localhost", "127.0.0.1"}, "invalid_config", "Redirect URI deve usar HTTPS ou loopback HTTP.")
     require(not uri.username and not uri.password and not uri.fragment, "invalid_config", "Redirect URI inválida.")
