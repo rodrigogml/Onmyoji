@@ -39,8 +39,8 @@ def main() -> int:
         raw = sys.stdin.read(16385)
         require(len(raw) <= 16384, "invalid_request", "Requisição OAuth excede limite.")
         result, code = {"ok": True, "data": dispatch(args.onmyoji_root, json.loads(raw))}, 0
-    except (BtgError, OSError, ValueError, KeyError, TypeError, AttributeError):
-        result, code = {"ok": False, "error": {"code": "oauth_adapter_failed", "message": "Confira perfil, consentimento e credenciais BTG."}}, 2
+    except (BtgError, OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+        result, code = {"ok": False, "error": {"code": getattr(error, "code", "oauth_adapter_failed"), "message": "Confira perfil, consentimento e credenciais BTG."}}, 2
     print(json.dumps(result, ensure_ascii=False))
     return code
 

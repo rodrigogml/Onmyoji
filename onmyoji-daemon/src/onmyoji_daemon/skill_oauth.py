@@ -70,7 +70,10 @@ class SkillOAuth:
             payload = json.loads(result.stdout)
         except (OSError, ValueError, subprocess.TimeoutExpired) as error:
             raise OAuthError("Adaptador OAuth indisponível; verifique o perfil") from error
-        ensure(result.returncode == 0 and isinstance(payload, dict) and payload.get("ok") is True and isinstance(payload.get("data"), dict), "Adaptador OAuth recusou a operação; consulte o perfil")
+        if not (result.returncode == 0 and isinstance(payload, dict) and payload.get("ok") is True and isinstance(payload.get("data"), dict)):
+            error = payload.get("error", {}) if isinstance(payload, dict) else {}
+            code = error.get("code") if isinstance(error, dict) else None
+            raise OAuthError("Adaptador OAuth recusou a operação" + (" (" + str(code) + ")" if isinstance(code, str) and re.fullmatch(r"[a-z0-9_]+", code) else ""))
         return payload["data"]
 
     def describe(self, skill: str, profile: str) -> dict[str, Any]:
@@ -125,7 +128,7 @@ class SkillOAuth:
                 changed = con.execute("UPDATE authorization SET status='awaiting',expiresAt=? WHERE id=? AND status='creating'", (time.time() + ttl, identifier)).rowcount
                 ensure(changed == 1, "Autorização foi encerrada durante a criação")
             return {"sessionId": identifier, "authorizationUrl": url, "callbackUrl": data["callbackUrl"], "expiresIn": ttl, "status": "awaiting"}
-        except Exception:
+        except Exception as error:
             try:
                 self.adapter(skill, profile, "cancel", sessionId=identifier)
             except Exception:
@@ -199,12 +202,13 @@ class SkillOAuth:
                 result = self.adapter(row["skill"], row["profile"], "complete", code=code[0], state=state, sessionId=row["id"], redirectUri=row["redirectUri"])
                 ensure(result.get("authenticated") is True, "Adaptador não confirmou autorização")
                 self.finish(row["id"], "completed")
-        except Exception:
+        except Exception as error:
             try:
                 self.adapter(row["skill"], row["profile"], "cancel", sessionId=row["id"])
             except Exception:
                 pass
-            self.finish(row["id"], "failed", "completion_failed")
+            code = getattr(error, "code", None)
+            self.finish(row["id"], "failed", code if isinstance(code, str) and re.fullmatch(r"[a-z0-9_]+", code) else "completion_failed")
         return row["id"]
 
     def result(self, identifier: str) -> str:
