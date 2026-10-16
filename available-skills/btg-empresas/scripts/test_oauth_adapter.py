@@ -43,8 +43,10 @@ def test_remote_session_requires_matching_context_and_preserves_old_tokens(profi
     with pytest.raises(BtgError):
         client.auth_complete("code", "broker-generated-state", session_id="session", verify_account=True)
     assert "tokens" not in saved
+    assert "pending" not in saved
+    client.auth_start(state="new-state", session_id="new-session")
     client.verify_account = Mock(return_value={"accountId": "account"})
-    assert client.auth_complete("code", "broker-generated-state", session_id="session", verify_account=True)["authenticated"]
+    assert client.auth_complete("code", "new-state", session_id="new-session", verify_account=True)["authenticated"]
     assert client.verify_account.call_args.kwargs["token_override"]["access_token"] == "private-access-token"
     assert "pending" not in saved
     saved["lastAuthorization"]["access_token"] = "private-secret"

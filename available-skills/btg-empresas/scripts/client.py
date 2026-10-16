@@ -248,6 +248,12 @@ class Client:
             require(isinstance(state, str) and secrets.compare_digest(str(pending.get("state", "")), state) and bool(state), "invalid_oauth_state", "State OAuth divergente.")
             require(pending.get("binding") == self.binding() and pending.get("expiresAt", 0) > time.time(), "expired_oauth_state", "Consentimento expirado ou ambiente divergente.")
             require(pending.get("sessionId") == session_id and pending.get("context", context(self.profile)) == context(self.profile), "invalid_oauth_session", "Sessão OAuth não corresponde ao contexto.")
+            # O callback já foi consumido pelo Gateway; não preserve uma
+            # pendência que possa bloquear uma nova tentativa se a troca do
+            # código, a descoberta da conta ou o KeePass falhar depois.
+            data.pop("pending", None)
+            data["lastAuthorization"] = {"sessionId": session_id, "status": "processing", "startedAt": time.time()}
+            self.save_auth(data)
             candidate = self.token_request({"grant_type": "authorization_code", "code": text(code, "Código OAuth", 4000), "redirect_uri": self.profile["redirect_uri"]})
             data["provisionalTokens"] = candidate
             self.save_auth(data)
@@ -259,7 +265,6 @@ class Client:
             data["tokens"] = candidate
             data.pop("provisionalTokens", None)
             data["lastAuthorization"] = {"sessionId": session_id, "status": "completed", "completedAt": time.time()}
-            data.pop("pending", None)
             self.save_auth(data)
         return {"authenticated": True, "environment": self.profile["environment"]}
 
