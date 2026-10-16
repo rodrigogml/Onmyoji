@@ -109,6 +109,13 @@ def normalized_account(value: Any) -> dict[str, Any] | None:
     return dict(result, **derived)
 
 
+def account_company_matches(profile: dict[str, Any], row: dict[str, Any]) -> bool:
+    """Valide o CNPJ real em produção e aceite a identidade fictícia do mock."""
+    if profile["environment"] == "sandbox":
+        return True
+    return row.get("taxId") in (None, "") or str(row["taxId"]) == bank_company_id(profile)
+
+
 @contextlib.contextmanager
 def credential_lock(profile: dict[str, Any], *, scope: str | None = None):
     """Serialize rotação de token por entrada do vault entre processos."""
@@ -382,7 +389,7 @@ class Client:
         rows = [row for value in result["data"] if (row := normalized_account(value)) is not None and row["accountId"] == self.profile["account_id"]]
         require(len(rows) == 1, "context_mismatch", "Conta não encontrada ou ambígua no consentimento.")
         row = rows[0]
-        require(row.get("taxId") in (None, "") or str(row["taxId"]) == bank_company_id(self.profile), "context_mismatch", "Empresa diverge do consentimento BTG.")
+        require(account_company_matches(self.profile, row), "context_mismatch", "Empresa diverge do consentimento BTG.")
         require(row.get("bankCode") in (None, "") or str(row["bankCode"]) == "208", "context_mismatch", "Banco diverge do perfil BTG.")
         require(str(row.get("number")) == self.profile["account_number"] and str(row.get("branchCode")) == self.profile["branch_code"], "context_mismatch", "Conta diverge do perfil BTG.")
         return row
@@ -396,7 +403,7 @@ class Client:
         result = self.call("accounts.get", token_override=token_override)
         require(isinstance(result, dict) and isinstance(result.get("data"), list), "invalid_bank_response", "Lista de contas incompleta.")
         rows = [row for value in result["data"] if (row := normalized_account(value)) is not None
-                and (row.get("taxId") in (None, "") or str(row["taxId"]) == bank_company_id(self.profile))
+                and account_company_matches(self.profile, row)
                 and (row.get("bankCode") in (None, "") or str(row["bankCode"]) == "208")
                 and all(not self.profile[key] or str(row.get(field)) == self.profile[key]
                         for key, field in (("account_id", "accountId"), ("account_number", "number"), ("branch_code", "branchCode")))]

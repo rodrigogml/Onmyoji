@@ -230,9 +230,24 @@ def test_discovery_accepts_unique_company_scoped_account_with_aliases(configured
     assert discovered["number"] == "000123" and discovered["branchCode"] == 50
 
 
+def test_sandbox_accepts_mock_account_with_fictitious_tax_id(configured):
+    _, profile = configured
+    client = Client(profile)
+    client.call = Mock(return_value={"data": [account(taxId="11111111000111")]})
+    assert client.discover_account()["accountId"] == account()["accountId"]
+
+
+def test_production_rejects_account_from_another_company(configured):
+    _, profile = configured
+    client = Client(dict(profile, environment="production"))
+    client.call = Mock(return_value={"data": [account(taxId="11111111000111")]})
+    with pytest.raises(BtgError) as error:
+        client.discover_account()
+    assert error.value.code == "account_not_found"
+
+
 @pytest.mark.parametrize("response,code", [
     ({}, "invalid_bank_response"), ({"data": []}, "account_not_found"),
-    ({"data": [account(taxId="11111111000111")]}, "account_not_found"),
     ({"data": [account(bankCode=999)]}, "account_not_found"),
     ({"data": [account(), account(accountId="other", number="000124")]}, "account_ambiguous"),
     ({"data": [account(accountId=None)]}, "invalid_request"),
