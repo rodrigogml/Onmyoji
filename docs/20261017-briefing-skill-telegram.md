@@ -66,7 +66,26 @@ Um grupo e seus tópicos, ou uma DM com tópicos e seus tópicos individuais, n�
 - Cadastro de um tópico específico;
 - Tópico criado pelo agente para uma conversa, mas não necessariamente cadastrado como destino autônomo no catálogo.
 
-**Pendência P2:** definir se /channel em um tópico registra **somente o tópico**, e se o grupo/DM base exige cadastro separado. Recomendação inicial: cadastrar somente o contexto em que o comando foi executado.
+**Decisão P2 — Aprovada em 2026-10-17: cadastro granular no contexto exato do comando.**
+
+| Contexto onde `/channel` é executado | O que pode ser registrado |
+| --- | --- |
+| DM tradicional, sem tópicos | Somente a DM inteira |
+| DM com tópicos, dentro de um tópico | Somente aquele tópico |
+| Grupo sem tópicos | Somente o grupo inteiro |
+| Grupo com tópicos, dentro do tópico Geral | Somente o tópico Geral |
+| Grupo com tópicos, dentro de um tópico específico | Somente aquele tópico |
+
+Registrar um grupo, DM ou tópico **não** registra automaticamente outros tópicos existentes ou futuros. Cada contexto é uma unidade independente do catálogo.
+
+**Autorização do comando:**
+- **Grupos e tópicos (inclusive tópico em DM):** somente o **owner** pode executar `/channel` para gerir o cadastro. Usuários não-owner **não** podem solicitar aprovação para esses contextos. Ao tentarem, o gateway deve responder explicitamente que a operação é exclusiva do **proprietário** (tradução exibida ao usuário para `owner`, mantendo a terminologia interna `owner`).
+- **DM tradicional de terceiro, sem tópico:** permanece a exceção aprovada em P1: a pessoa pode solicitar cadastro na própria DM, que só será efetivado após aprovação do owner no Telegram.
+- O comando identifica o contexto a partir de onde foi executado; não aceita que o usuário cadastre outro grupo/tópico apontando um ID arbitrário.
+
+Exemplo de resposta de acesso negado nos grupos/tópicos: **"Esta operação é permitida apenas ao proprietário."**
+
+Esse controle se aplica ao menu de consulta, registro e remoção administrado por `/channel` no contexto correspondente. Não confundir a possibilidade de receber mensagens no grupo com autorização para cadastrá-lo.
 
 **Pendência P3:** decidir se um tópico criado a pedido do owner pela skill, dentro de um chat previamente registrado, aparece automaticamente como *destino independente* no catálogo. Recomendação inicial: **não**; sua criação estabelece a conversa e sua associação, mas cadastro de catálogo continua exigindo /channel. Isso não é cadastro passivo por receber mensagens.
 
@@ -158,7 +177,7 @@ Em uma DM ou grupo sem tópicos, várias comunicações podem compartilhar a mes
 
 1. **Owner:** pode listar, enviar a qualquer canal **registrado**, solicitar tópicos/conversas quando permitidos e remover registros. Não há restrição artificial de destino por tipo ou conteúdo do documento; o owner administra o sistema.
 2. **Não-owner:** não recebe capacidade geral de operação da skill; não pode solicitar envio de documentos nem iniciar comunicações para canais diferentes da conversa vigente. O tratamento de suas mensagens no próprio canal continua sujeito à política atual/futura do gateway.
-3. **Cadastro:** não é permitido pela skill. /channel é a porta de entrada obrigatória de registro no próprio Telegram, com política de autorização a concluir.
+3. **Cadastro:** não é permitido pela skill. `/channel` é a porta de entrada obrigatória de registro no próprio Telegram. Nas DMs tradicionais de terceiros, solicita-se aprovação do owner (P1); nos grupos e tópicos, só o owner pode executar o comando, sem fluxo de solicitação por terceiros (P2).
 4. **Plataforma:** o bot só pode enviar quando a Bot API e as permissões efetivas do chat permitirem.
 5. **Isolamento:** o direito do owner de **enviar** material a qualquer canal registrado não concede a terceiros acesso à thread/contexto privado do owner.
 
@@ -205,13 +224,15 @@ O reconhecimento passivo de chats/tópicos **não** deverá alimentá-los automa
 | R08 | Enviar texto, arquivos, imagem, áudio e perguntas usando recursos do gateway | Decidido |
 | R09 | Enviar de UI/CLI sem depender de conversa Telegram ativa | Decidido |
 | R10 | Enviar a outro canal sem mesclar/alterar a conversa de origem | Decidido |
-| R11 | Criar/reutilizar tópicos quando habilitados e permitidos | Decidido (ver P2/P3) |
+| R11 | Criar/reutilizar tópicos quando habilitados e permitidos | Decidido (ver P3) |
 | R12 | Associar tópico do owner à thread da origem quando compatível | Objetivo aceito; viabilidade P5 |
 | R13 | Em destinatário terceiro/grupo, isolar thread e contexto da origem | Decidido |
 | R14 | Respostas de não-owner obedecem às permissões do gateway | Decidido; políticas futuras |
 | R15 | Execução futura pode declarar destino/audiência prévia, sem enviar obrigatoriamente | Diretriz futura, fora do desenvolvimento atual |
 | R16 | Remover cadastro não implica apagar automaticamente recursos Telegram/Codex | Proposta; detalhamento P4 |
 | R17 | Suportar perguntas/menus; espera síncrona somente quando houver suporte à execução | Decidido; viabilidade a testar |
+| R18 | `/channel` cadastra só o chat/tópico onde foi executado, nunca canais irmãos | Decidido — P2 resolvida |
+| R19 | Em grupos e tópicos só o owner pode executar `/channel`; não-owner recebe negativa explícita usando “proprietário” | Decidido — P2 resolvida |
 
 ## 9. Fora de escopo agora
 
@@ -226,7 +247,7 @@ O reconhecimento passivo de chats/tópicos **não** deverá alimentá-los automa
 ## 10. Pendências para decisão — uma por vez
 
 1. **P1 — RESOLVIDA (2026-10-17):** terceiro solicita pelo `/channel` em sua própria DM; gateway encaminha pedido ao owner via Telegram; owner aprova/rejeita no menu; somente a aprovação cadastra a DM. Não confere novas permissões ao terceiro.
-2. **P2 — Escopo do /channel:** cadastro do chat-base versus tópico específico; evitar cadastro implícito de todos os tópicos.
+2. **P2 — RESOLVIDA (2026-10-17):** `/channel` gerencia apenas o chat/tópico exato em que foi executado, sem cadastrar irmãos. Em grupos e tópicos, somente owner; não-owner recebe negativa explícita (“proprietário”), sem fluxo de aprovação. Mantida a exceção P1 para solicitação em DM tradicional de terceiros.
 3. **P3 — Tópicos criados pela skill:** se ficam apenas associados à conversa ou entram no catálogo como destinos independentes.
 4. **P4 — Remoção:** o que acontece com associações, respostas subsequentes e canais anteriormente cadastrados.
 5. **P5 — Thread compartilhada:** identificação da thread atual e retomada segura entre Codex UI/CLI e App Server; ordenação de turnos.
@@ -250,4 +271,4 @@ A skill estará aderente ao objetivo quando, em testes controlados:
 
 ---
 
-**Próxima discussão:** P2, escopo do `/channel` quando o comando é executado dentro de um tópico: cadastrar somente o tópico ou também o chat-base? Atualizar este briefing a cada decisão antes de iniciar a implementação.
+**Próxima discussão:** P3, se um tópico criado pela skill por solicitação do owner, dentro de um canal previamente registrado, deve automaticamente integrar o catálogo permanente de destinos ou permanecer apenas como conversa criada/associada, até cadastro explícito via `/channel`. Atualizar este briefing a cada decisão antes de iniciar a implementação.
