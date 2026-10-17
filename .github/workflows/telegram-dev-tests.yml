@@ -20,14 +20,14 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install testing dependencies
-        run: python -m pip install --disable-pip-version-check pytest
+        run: python -m pip install --disable-pip-version-check -e 'onmyoji-daemon[test]'
       - name: Compile changed Python modules
         run: |
           python -m py_compile onmyoji-daemon/src/onmyoji_daemon/telegram.py
           python -m py_compile onmyoji-daemon/src/onmyoji_daemon/telegram_channels.py
           python -m py_compile available-skills/telegram/scripts/telegram.py
           python -m py_compile available-skills/telegram/setupSkill.py
-      - name: Run Telegram tests without Bot API
+      - name: Run full offline regression suite
         env:
           PYTHONPATH: onmyoji-daemon/src
-        run: python -m pytest -q onmyoji-daemon/tests/test_telegram.py onmyoji-daemon/tests/test_telegram_channels.py available-skills/telegram/scripts/test_telegram.py
+        run: python -m pytest -q
