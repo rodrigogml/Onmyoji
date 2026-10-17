@@ -33,8 +33,15 @@ class TelegramChannels:
                 CREATE TABLE IF NOT EXISTS telegram_channel_requests (
                   token TEXT PRIMARY KEY, conversation_id TEXT NOT NULL,
                   sender_id INTEGER NOT NULL, display_name TEXT NOT NULL,
-                  status TEXT NOT NULL, expires_at REAL NOT NULL)
+                  status TEXT NOT NULL, expires_at REAL NOT NULL,
+                  approval_message_ids TEXT NOT NULL DEFAULT '{}')
             """)
+            # Tolerar bancos criados antes da coluna sem perder solicitações.
+            try:
+                self.database.execute(
+                    "ALTER TABLE telegram_channel_requests ADD COLUMN approval_message_ids TEXT NOT NULL DEFAULT '{}'")
+            except Exception as error:
+                if "duplicate column" not in str(error).casefold(): raise
             self.database.commit()
 
     @staticmethod
@@ -135,12 +142,17 @@ class TelegramChannels:
         if pieces[0] == "cha":
             with self.database_lock:
                 row = self.database.execute(
-                    "SELECT conversation_id, sender_id, display_name, status, expires_at FROM telegram_channel_requests WHERE token=?",
+                    "SELECT conversation_id, sender_id, display_name, status, expires_at, approval_message_ids "
+                    "FROM telegram_channel_requests WHERE token=?",
                     (token,)).fetchone()
             if sender_id not in self.contacts.owners() or chat.get("type") != "private" or sender_id != chat_id:
                 return True
             if not row or row[3] != "pending" or row[4] < time.time():
                 self.api.send(chat_id, "Solicitação de cadastro expirada ou já processada.")
+                return True
+            # O owner precisa clicar no menu específico entregue na própria DM.
+            allowed_messages = json.loads(row[5] or "{}")
+            if allowed_messages.get(str(sender_id)) != message.get("message_id"):
                 return True
             if action not in {"approve", "reject"}: return True
             with self.database_lock:
@@ -205,7 +217,23 @@ class TelegramChannels:
                     {"text": "Aprovar", "callback_data": f"cha:{request_id}:approve"},
                     {"text": "Rejeitar", "callback_data": f"cha:{request_id}:reject"}]]}
                 try:
-                    self.api.send(owner_id, f"Solicitação /channel: {row[4]} (ID do solicitante: {sender_id}).", reply_markup=keyboard)
+                    owner_message = self.api.send(
+                        owner_id,
+                        f"Solicitação /channel: {row[4]} (ID do solicitante: {sender_id}).",
+                        reply_markup=keyboard)
+                    owner_message_id = owner_message.get("message_id") if isinstance(owner_message, dict) else None
+                    if not isinstance(owner_message_id, int):
+                        raise RuntimeError("Telegram não confirmou o menu de aprovação.")
+                    with self.database_lock:
+                        current = self.database.execute(
+                            "SELECT approval_message_ids FROM telegram_channel_requests WHERE token=?",
+                            (request_id,)).fetchone()
+                        mapping = json.loads(current[0] or "{}") if current else {}
+                        mapping[str(owner_id)] = owner_message_id
+                        self.database.execute(
+                            "UPDATE telegram_channel_requests SET approval_message_ids=? WHERE token=?",
+                            (json.dumps(mapping), request_id))
+                        self.database.commit()
                     notified += 1
                 except Exception as error:
                     self._record_error(error)
