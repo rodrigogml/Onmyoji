@@ -1,0 +1,33 @@
+name: Telegram outbound — desenvolvimento
+
+on:
+  push:
+    branches:
+      - feature/sdd-telegram-outbound-*
+  pull_request:
+    paths:
+      - "onmyoji-daemon/**"
+      - "available-skills/telegram/**"
+      - ".github/workflows/telegram-dev-tests.yml"
+
+jobs:
+  test-telegram:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install testing dependencies
+        run: python -m pip install --disable-pip-version-check pytest
+      - name: Compile changed Python modules
+        run: |
+          python -m py_compile onmyoji-daemon/src/onmyoji_daemon/telegram.py
+          python -m py_compile onmyoji-daemon/src/onmyoji_daemon/telegram_channels.py
+          python -m py_compile available-skills/telegram/scripts/telegram.py
+          python -m py_compile available-skills/telegram/setupSkill.py
+      - name: Run Telegram tests without Bot API
+        env:
+          PYTHONPATH: onmyoji-daemon/src
+        run: python -m pytest -q onmyoji-daemon/tests/test_telegram.py onmyoji-daemon/tests/test_telegram_channels.py
