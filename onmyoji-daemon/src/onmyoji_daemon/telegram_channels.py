@@ -208,7 +208,7 @@ class TelegramChannels:
             request_id = secrets.token_urlsafe(12)
             with self.database_lock:
                 self.database.execute(
-                    "INSERT INTO telegram_channel_requests VALUES (?, ?, ?, ?, 'pending', ?)",
+                    "INSERT INTO telegram_channel_requests (token, conversation_id, sender_id, display_name, status, expires_at) VALUES (?, ?, ?, ?, 'pending', ?)",
                     (request_id, row[0], sender_id, row[4], time.time() + 86400))
                 self.database.commit()
             notified = 0
