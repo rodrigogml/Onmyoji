@@ -265,10 +265,16 @@ class TelegramChannels:
             sent = self.api.send(chat_id, text, **topic_values)
         message_id = sent.get("message_id") if isinstance(sent, dict) else None
         if not isinstance(message_id, int): raise RuntimeError("Telegram não confirmou o ID da mensagem enviada.")
-        # A entrega foi confirmada; persistir os dados e somente depois expor sucesso.
-        attachment = self._archive_external_file(effective, path, kind) if path is not None else None
-        self._external_outbound_record(effective, message_id, text, attachment)
-        return {"sent": True, "channel": effective, "message_id": message_id, "topic_created": bool(title)}
+        # Um envio confirmado não deve parecer falha de transporte se a persistência
+        # local falhar; o aviso impede repetição inadvertida da mensagem.
+        response = {"sent": True, "channel": effective, "message_id": message_id, "topic_created": bool(title)}
+        try:
+            attachment = self._archive_external_file(effective, path, kind) if path is not None else None
+            self._external_outbound_record(effective, message_id, text, attachment)
+        except Exception as error:
+            self._record_error(error)
+            response["warning"] = "Telegram confirmou o envio, mas não foi possível preservar integralmente o contexto local."
+        return response
 
     def _archive_external_file(self, channel: str, path: Path, kind: str) -> dict[str, Any]:
         """Retém somente arquivo explicitamente enviado, no escopo do destino."""
