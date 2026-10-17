@@ -106,7 +106,24 @@ A skill deve:
 - Permitir remover um canal cadastrado quando solicitado pelo owner; a operação deve ser inequívoca e retornar confirmação.
 - **Não** oferecer operação de inclusão/cadastro pelo agente, nem um caminho alternativo para contornar o fluxo do Telegram.
 
-**Pendência P4:** definir efeitos da remoção sobre tópicos já criados, associações de thread e processamento de mensagens recebidas. Princípio provisório: remover do catálogo **não** apaga automaticamente chats, tópicos, mensagens ou threads do Codex.
+**Decisão P4 — Aprovada em 2026-10-17: remoção revoga o destino no catálogo, não encerra a conversa.**
+
+Ao remover um canal do catálogo pelo `/channel` ou pela skill, sob autoridade do owner:
+
+| Elemento | Comportamento após remoção |
+| --- | --- |
+| Catálogo | Remover o registro imediatamente; não apresentar o canal como destino cadastrado nas buscas/listagens. |
+| Envio proativo pela skill a partir de outra origem | Não permitir **novos envios direcionados** ao canal removido como destino do catálogo. |
+| Chat ou tópico no Telegram | Permanecer intacto; não apagar/fechar o chat ou tópico. |
+| Histórico de mensagens | Preservar. |
+| Thread Codex já associada | Preservar, sem excluir ou reiniciar. |
+| Associação Telegram ↔ Codex | Preservar. |
+| Mensagens recebidas nesse mesmo contexto | Continuar seguindo as regras normais de atendimento do gateway, inclusive a continuação da thread associada quando autorizada. |
+| Respostas do agente na conversa vigente | Continuar pelo fluxo normal do gateway; a remoção do catálogo não bloqueia respostas contextuais a mensagens recebidas. |
+
+**Distinção:** remover do catálogo equivale a revogar a elegibilidade para **novas comunicações iniciadas pela skill a partir de outras origens**. Não é revogação do atendimento naquele chat nem encerramento da associação existente.
+
+A remoção não deve afetar automaticamente outros tópicos/canais cadastrados individualmente. Se o owner quiser registrar novamente, deverá seguir o fluxo do `/channel`; a skill não pode recadastrar.
 
 ## 4. Capacidades esperadas da skill
 
@@ -237,7 +254,7 @@ O reconhecimento passivo de chats/tópicos **não** deverá alimentá-los automa
 | R13 | Em destinatário terceiro/grupo, isolar thread e contexto da origem | Decidido |
 | R14 | Respostas de não-owner obedecem às permissões do gateway | Decidido; políticas futuras |
 | R15 | Execução futura pode declarar destino/audiência prévia, sem enviar obrigatoriamente | Diretriz futura, fora do desenvolvimento atual |
-| R16 | Remover cadastro não implica apagar automaticamente recursos Telegram/Codex | Proposta; detalhamento P4 |
+| R16 | Remover cadastro impede novos envios proativos da skill para o destino, mas preserva chat/tópico, histórico, thread, associação e respostas do gateway à conversa vigente | Decidido — P4 resolvida |
 | R17 | Suportar perguntas/menus; espera síncrona somente quando houver suporte à execução | Decidido; viabilidade a testar |
 | R18 | `/channel` cadastra só o chat/tópico onde foi executado, nunca canais irmãos | Decidido — P2 resolvida |
 | R19 | Em grupos e tópicos só o owner pode executar `/channel`; não-owner recebe negativa explícita usando “proprietário” | Decidido — P2 resolvida |
@@ -258,7 +275,7 @@ O reconhecimento passivo de chats/tópicos **não** deverá alimentá-los automa
 1. **P1 — RESOLVIDA (2026-10-17):** terceiro solicita pelo `/channel` em sua própria DM; gateway encaminha pedido ao owner via Telegram; owner aprova/rejeita no menu; somente a aprovação cadastra a DM. Não confere novas permissões ao terceiro.
 2. **P2 — RESOLVIDA (2026-10-17):** `/channel` gerencia apenas o chat/tópico exato em que foi executado, sem cadastrar irmãos. Em grupos e tópicos, somente owner; não-owner recebe negativa explícita (“proprietário”), sem fluxo de aprovação. Mantida a exceção P1 para solicitação em DM tradicional de terceiros.
 3. **P3 — RESOLVIDA (2026-10-17):** criação de tópico pela skill não o registra como destino permanente. O tópico pode servir à conversa/associação que o criou; só passa ao catálogo de destinos após `/channel` executado pelo owner naquele tópico.
-4. **P4 — Remoção:** o que acontece com associações, respostas subsequentes e canais anteriormente cadastrados.
+4. **P4 — RESOLVIDA (2026-10-17):** remover um registro retira o destino do catálogo e impede novos envios proativos a ele via skill, sem apagar chat/tópico, histórico, thread Codex ou vínculo; gateway continua atendendo normalmente a conversa existente.
 5. **P5 — Thread compartilhada:** identificação da thread atual e retomada segura entre Codex UI/CLI e App Server; ordenação de turnos.
 6. **P6 — Chats sem tópicos:** roteamento de respostas a mensagens e concorrência de conversas distintas.
 7. **P7 — Perguntas e menus fora do turno Telegram:** comportamento assíncrono, validade e tratamento de respostas.
@@ -280,4 +297,4 @@ A skill estará aderente ao objetivo quando, em testes controlados:
 
 ---
 
-**Próxima discussão:** P4, efeitos da remoção de um registro do catálogo sobre envios futuros, conversas/associações existentes e tratamento de respostas recebidas pelo gateway. Atualizar este briefing a cada decisão antes de iniciar a implementação.
+**Próxima discussão:** P5, compartilhamento de thread entre UI/CLI Codex e Telegram: identificar a thread de origem, validar recuperação segura pelo App Server e definir o fallback se a associação não for tecnicamente possível. Atualizar este briefing a cada decisão antes de iniciar a implementação.
