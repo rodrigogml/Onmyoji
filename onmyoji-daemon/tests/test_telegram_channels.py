@@ -15,7 +15,7 @@ def gateway_for(tmp_path: Path) -> Gateway:
     root_config = tmp_path / "configs" / "onmyoji-system.toml"
     root_config.write_text('[codex]\nproject_directory = "' + tmp_path.as_posix() + '"\n', encoding="utf-8")
     cfg = tmp_path / "shikigami" / "daemon" / "telegram.toml"
-    cfg.parent.mkdir(parents=True)
+    cfg.parent.mkdir(parents=True, exist_ok=True)
     cfg.write_text('schema_version = 1\n[telegram]\nkeepass_profile="telegram"\ntoken_entry="token"\n', encoding="utf-8")
     gw = Gateway(Settings.load(tmp_path, data))
     gw.contacts.add_owner({"id": 9, "first_name": "Proprietário"})
