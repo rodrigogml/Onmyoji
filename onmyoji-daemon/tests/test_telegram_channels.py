@@ -158,3 +158,18 @@ def test_removal_does_not_destroy_existing_conversation(tmp_path):
     gw.database.commit()
     gw._channels_remove("9")
     assert gw.database.execute("SELECT codex_thread_id FROM conversations WHERE chat_id='9'").fetchone()[0] == "keep-me"
+
+
+
+def test_confirmed_send_returns_warning_instead_of_ambiguous_error_if_archive_fails(tmp_path):
+    gw = gateway_for(tmp_path)
+    gw.api = FakeApi()
+    gw._channel_register("9", "Owner", 9)
+    doc = tmp_path / "to-send.txt"
+    doc.write_text("exemplo", encoding="utf-8")
+    def fail_archive(*_args):
+        raise OSError("disco indisponível")
+    gw._archive_external_file = fail_archive
+    result = gw._outbound_send({"channel": "9", "path": str(doc), "kind": "document"})
+    assert result["sent"] and "warning" in result
+    assert len(gw.api.files) == 1
