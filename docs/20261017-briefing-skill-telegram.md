@@ -165,7 +165,7 @@ Nos chats com tópicos habilitados, a skill deverá poder criar tópico quando a
 | Origem | Destino | Comportamento requerido |
 | --- | --- | --- |
 | UI local do Codex (owner) | DM registrada do owner sem tópicos | Enviar diretamente; **proposta P5:** respostas são atendidas na conversa/thread próprias do gateway, nunca na thread da UI. A correlação de respostas segue P6. |
-| UI local do Codex (owner) | DM registrada do owner com tópicos | Criar/reutilizar tópico; **proposta P5:** não associar à thread da UI; primeira resposta autorizada inicia uma thread própria no gateway, que será reutilizada depois. |
+| UI local do Codex (owner) | DM registrada do owner com tópicos | Criar/reutilizar tópico; **proposta P5:** entrega é inserida logicamente no contexto Telegram de destino. Se já houver thread Telegram, preservá-la; se não, criar sob demanda na primeira interação autorizada. Nunca herdar a thread da UI. |
 | UI local do Codex (owner) | DM registrada de Maria | Enviar; **não** associar à thread privada do owner. |
 | UI local do Codex (owner) | Conversa solicitada com Maria | Nova thread/contexto independente e somente conteúdo compartilhável; respostas segundo a política da DM. |
 | UI local do Codex (owner) | Grupo/tópico registrado | Enviar; **não** associar automaticamente à thread privada do owner. |
@@ -176,32 +176,38 @@ Nos chats com tópicos habilitados, a skill deverá poder criar tópico quando a
 | Execução não interativa (futura) | Destino distinto da audiência da execução | Envio sem transferência automática da thread; nova conversa requer isolamento. |
 | Qualquer origem | Sem conteúdo relevante a comunicar | **Nenhum envio obrigatório**. |
 
-### 5.1. P5 — Proposta de simplificação: UI/CLI externa não compartilha thread com o Telegram
+### 5.1. P5 — Proposta refinada: inserir envios externos no contexto do destino, sem compartilhar threads
 
-**Estado: proposta registrada em 2026-10-17, aguardando confirmação final do owner.** Revisão da expectativa anterior de compartilhar a mesma thread entre UI Codex e gateway.
+**Estado: proposta atualizada em 2026-10-17; aguarda confirmação do owner.** A thread Codex que originou o envio permanece sob controle de seu cliente (UI/CLI ou gateway). A **skill telegram não transfere nem associa essa thread ao destino**. Sua responsabilidade é entregar conteúdo e registrar o conteúdo enviado **no contexto da conversa Telegram de destino**.
 
-**Constatações da implementação atual:**
-- O gateway possui seu **próprio** processo Codex App Server por instância e cria/recupera threads ligadas ao identificador da conversa Telegram.
-- O console interativo Onmyōji cria outro cliente/processo App Server e outra thread; a UI nativa do Codex não possui, neste repositório, canal de recepção de turnos/mensagens geradas pelo gateway.
-- O envio genérico via RPC permite alcançar o Telegram, **não** entregar mensagens ou respostas ao cliente que mantém a interface do Codex.
-- As ferramentas dinâmicas `send_message` e `ask_menu` existentes requerem um **turno ativo do gateway** (`app_turns`). `ask_menu` aguarda callback no próprio gateway, não no cliente da UI.
-- `_app_thread()` pode criar uma thread nova na primeira interação Telegram e retomar a mesma thread nas mensagens seguintes. Instruções de canal e configuração da thread também diferem entre os clientes.
+**Constatações no código atual:**
+- O gateway já possui uma identidade lógica por chat/tópico e campo `codex_thread_id` associado à conversa Telegram; `_app_thread()` retoma essa thread ou cria uma quando necessário.
+- O console interativo Onmyōji e o gateway criam seus próprios clientes App Server. Não há, no upstream atual, uma ponte para que uma resposta do Telegram apareça na UI nativa de uma execução externa.
+- O gateway possui `conversation_messages` e `_context_snapshot()`, mas `_cache_message()` é usado para mensagens recebidas de grupo; envios externos da skill **não são atualmente persistidos nesse histórico**.
+- Em grupos, `_group_message()` injeta um snapshot das mensagens recebidas no próximo turno; nas DMs, `_update()` envia principalmente o texto/anexos recebidos diretamente a `_enqueue_turn()`. Assim, apenas armazenar uma mensagem no SQLite **não insere automaticamente o conteúdo no histórico interno já persistido do Codex**.
+- As ferramentas contextuais `send_message` e `ask_menu` exigem um turno ativo do gateway, e não devem ser confundidas com o envio da nova skill a partir de qualquer origem.
 
-**Proposta de comportamento:**
-1. **Codex UI ou CLI externo → Telegram:** somente envio de conteúdo (texto, arquivo, pergunta como mensagem, mídia); não tentar anexar a thread de origem à conversa Telegram.
-2. **Tópico novo:** pode ser criado para organizar a entrega, mas não herda a thread Codex externa.
-3. **Primeira resposta recebida pelo Telegram:** se o gateway autorizar atendimento e o canal ainda não possuir thread, criar uma **nova thread Codex no gateway**. As próximas respostas reutilizam essa thread **da conversa Telegram**; não criar uma thread por mensagem.
-4. **Tópico/conversa Telegram já com thread:** continuar usando sua thread própria existente, sem substituí-la pela thread da UI.
-5. **Contexto da primeira resposta:** disponibilizar apenas a mensagem outbound e anexos/metadados relevantes **explicitamente enviados** naquele destino, para que o agente entenda o assunto; nunca importar o histórico completo da UI/CLI.
-6. **Perguntas feitas pela UI/CLI:** são envios assíncronos. O processamento da resposta ocorrerá no Telegram e **não retornará automaticamente** à UI/CLI de origem; não criar promessa de espera síncrona ou menu bloqueante entre clientes.
-7. **Conversas originadas e atendidas no próprio gateway:** permanecem com a thread Telegram já associada e o comportamento serial de turnos existente.
-8. **Eventos/execuções externas futuras:** seguem a mesma regra de envio sem associação; uma integração futura controlada integralmente pelo daemon poderá definir, separadamente, outro modelo sem ser requisito da skill atual.
+**Regra funcional proposta:**
+1. **Origem preservada:** o cliente que iniciou a execução (UI/CLI ou gateway) conserva integralmente sua própria thread; nenhum vínculo de thread cruzado é criado.
+2. **Destino com thread já associada:** a skill envia o conteúdo pelo Telegram e o gateway registra um **evento de mensagem enviada externamente** no histórico/contexto daquela conversa. **Não cria nem substitui a thread existente, nem dispara automaticamente um turno do Codex apenas para registrar esse envio.**
+3. **Destino sem thread associada:** a skill envia normalmente e registra o conteúdo no contexto Telegram; o gateway poderá **criar uma nova thread própria** na primeira resposta/solicitação autorizada que exija processamento, em vez de abrir threads desnecessárias apenas para entregas.
+4. **Próximo turno no destino:** o gateway incorpora mensagens externas pendentes e seus metadados/anexos pertinentes aos inputs/contexto oferecidos à thread **do destino**, sem apresentar a mensagem como ordem do usuário que está respondendo. Evitar inserção duplicada ou reprocessamento acidental.
+5. **Mensagem originada por outro contexto:** preservar proveniência (`external_outbound`, origem identificável internamente, tipo, ID Telegram, timestamp, texto/legenda, anexos relevantes). **O conteúdo enviado não herda a autoridade do owner nem as instruções da thread de origem.**
+6. **Retorno por Telegram:** respostas seguem a própria associação do chat/tópico Telegram e as regras de atendimento; não retornam automaticamente à UI/CLI externa que solicitou o envio.
+7. **Conversa já atendida pelo gateway:** preserva o comportamento atual de continuidade de sua thread; o envio de outro contexto é apenas mais um evento visível à conversa destinatária, sem causar execução imediata.
+8. **Perguntas originadas na UI/CLI:** são envios assíncronos; a resposta posterior é processada pelo gateway na conversa de destino. Espera síncrona/menus bloqueantes entre aplicações ficam fora desta etapa (P7).
+9. **Futuras execuções de eventos:** poderão usar esse mesmo contrato de envio externo; não é necessário criar agora o mecanismo de eventos nem compartilhar threads entre clientes.
 
-**Benefício:** reduz acoplamento entre aplicações, evita sincronização concorrente da mesma thread e mantém a função primária da skill: comunicação outbound a canais registrados.
+**Distinção técnica crítica: “inserção no contexto” não equivale a gravar um turno na thread interna do Codex.** A inserção desejada é **lógica e persistente no gateway**, disponibilizada ao modelo no próximo turno da conversa destinatária. Injetar diretamente mensagens na linha do tempo interna do Codex sem executar turno não deve ser requisito, pois não é um mecanismo já implementado neste gateway.
 
-**Limite importante:** a thread Telegram nova **não herda** o processamento anterior da UI; só conhece os itens efetivamente comunicados. Em DM/grupo sem tópicos, a resposta será roteada segundo a conversa existente e a política de ambiguidade ainda pendente em P6.
+**Efeitos e limites:**
+- Se uma thread já existir no destino, ela é preservada, e mensagens externas entram como histórico complementar, não como nova thread.
+- Em tópico novo, a conversa pode existir antes da primeira thread Codex (criação sob demanda).
+- Devem ser tratados anexos, referências válidas a arquivos e retenção para que o próximo turno conheça o que foi compartilhado, sem importar o contexto privado da origem.
+- Em chats sem tópicos, a atribuição de respostas ambíguas continua pendente (P6).
+- O modelo não deve “responder a si mesmo”: um envio outbound não é uma nova solicitação de execução.
 
-**A decidir com o owner:** confirmar que a skill não fará associação de threads oriundas de UI/CLI externa — inclusive na DM do próprio owner — e que uma pergunta enviada nesses contextos não suspende/retoma a execução original.
+**Ponto a confirmar com o owner:** aceitar **inserção lógica no histórico do gateway + fornecimento ao próximo turno** como significado de “mensagem inserida no contexto”, sem modificar diretamente o histórico interno do Codex e sem disparar turno na hora do envio.
 
 ### 5.2. Regra de isolamento: Maria e grupos
 
@@ -269,7 +275,7 @@ O reconhecimento passivo de chats/tópicos **não** deverá alimentá-los automa
 | R09 | Enviar de UI/CLI sem depender de conversa Telegram ativa | Decidido |
 | R10 | Enviar a outro canal sem mesclar/alterar a conversa de origem | Decidido |
 | R11 | Criar/reutilizar tópicos quando habilitados e permitidos | Decidido — P3 resolvida |
-| R12 | **Proposta P5:** UI/CLI externa apenas envia; resposta Telegram inicia/retoma thread própria do gateway, sem associar a thread da UI mesmo na DM do owner | Em revisão — aguarda confirmação do owner |
+| R12 | **Proposta P5:** envios de qualquer origem entram como eventos no contexto Telegram de destino; preservam thread Telegram existente ou criam sob demanda, sem associar thread da UI/CLI de origem | Em revisão — aguarda confirmação do owner |
 | R13 | Em destinatário terceiro/grupo, isolar thread e contexto da origem | Decidido |
 | R14 | Respostas de não-owner obedecem às permissões do gateway | Decidido; políticas futuras |
 | R15 | Execução futura pode declarar destino/audiência prévia, sem enviar obrigatoriamente | Diretriz futura, fora do desenvolvimento atual |
@@ -295,7 +301,7 @@ O reconhecimento passivo de chats/tópicos **não** deverá alimentá-los automa
 2. **P2 — RESOLVIDA (2026-10-17):** `/channel` gerencia apenas o chat/tópico exato em que foi executado, sem cadastrar irmãos. Em grupos e tópicos, somente owner; não-owner recebe negativa explícita (“proprietário”), sem fluxo de aprovação. Mantida a exceção P1 para solicitação em DM tradicional de terceiros.
 3. **P3 — RESOLVIDA (2026-10-17):** criação de tópico pela skill não o registra como destino permanente. O tópico pode servir à conversa/associação que o criou; só passa ao catálogo de destinos após `/channel` executado pelo owner naquele tópico.
 4. **P4 — RESOLVIDA (2026-10-17):** remover um registro retira o destino do catálogo e impede novos envios proativos a ele via skill, sem apagar chat/tópico, histórico, thread Codex ou vínculo; gateway continua atendendo normalmente a conversa existente.
-5. **P5 — EM REVISÃO (proposta 2026-10-17):** abandonar compartilhamento de threads entre Codex UI/CLI externo e gateway. UI/CLI só envia; primeira resposta autorizada no Telegram inicia uma thread própria do gateway (ou retoma a conversa Telegram existente), sem retorno à UI. Falta confirmação final do owner.
+5. **P5 — EM REVISÃO (refinada em 2026-10-17):** nenhuma thread é compartilhada entre clientes. A skill envia e registra mensagem externa no contexto do **destino**; se ele já tem thread Telegram, preservá-la; se não, criar thread sob demanda. O histórico persistido no gateway alimenta o próximo turno, sem executar Codex na hora do envio. Falta confirmação do owner.
 6. **P6 — Chats sem tópicos:** roteamento de respostas a mensagens e concorrência de conversas distintas.
 7. **P7 — Perguntas e menus fora do turno Telegram:** comportamento assíncrono, validade e tratamento de respostas.
 8. **P8 — Política do canal registrado como “mão dupla”:** delimitar a autorização de envio proativo da autorização de interagir/responder no gateway, especialmente para não-owner.
@@ -309,11 +315,11 @@ A skill estará aderente ao objetivo quando, em testes controlados:
 2. Uma conversa Telegram conseguir enviar conteúdo para seu próprio canal ou para outro registrado, sem modificar o contexto original.
 3. O owner conseguir registrar/remover explicitamente o canal pelo Telegram, e consultar/remover pelo agente; mensagem recebida isoladamente nunca cadastrar o canal.
 4. Um envio da thread privada do owner para Maria ou grupo não associar o destinatário à thread privada.
-5. **Proposta P5:** envio originado na UI/CLI não anexar sua thread ao Telegram; a primeira resposta do Telegram inicia/retoma thread própria daquele canal, com contexto inicial limitado ao conteúdo efetivamente enviado. Requer confirmação antes de se tornar critério definitivo.
+5. **Proposta P5:** ao enviar de outro contexto, registrar conteúdo/proveniência no histórico do destino. Próxima resposta deve usar thread Telegram existente ou criar uma se ausente, com contexto externo relevante, sem interferir na thread da origem; exige confirmação antes de virar critério definitivo.
 6. Usuários não-owner não conseguirem usar a skill para enviar documentos ou iniciar outra conversa fora da vigente.
 7. Ausência de destino registrado, ambiguidade ou bloqueio do bot resultar em erro explícito, sem envio inesperado.
 8. Nenhuma implementação de eventos/agendamentos ser exigida para a skill funcionar.
 
 ---
 
-**Próxima discussão:** P5, confirmar a proposta de **não compartilhar threads** entre Codex UI/CLI externo e gateway, mantendo envios assíncronos e continuidade exclusivamente pela thread própria de cada conversa Telegram. Depois, passar à P6. Atualizar este briefing a cada decisão antes de iniciar a implementação.
+**Próxima discussão:** confirmar P5 refinada: “inserção” significa **persistir no histórico do gateway e incorporar ao próximo turno do Codex do destino**, sem criar turno para um envio e sem compartilhar threads de diferentes aplicações. Depois, passar à P6.
