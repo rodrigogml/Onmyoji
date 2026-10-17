@@ -93,6 +93,10 @@ class TelegramChannels:
             self.api.send(chat_id, "Esta operação é permitida apenas ao proprietário.", **topic_values)
             return
         registered = self._channel_registered(conversation_id)
+        with self.database_lock:
+            self.database.execute("DELETE FROM telegram_channel_menus WHERE expires_at<?", (time.time(),))
+            self.database.execute("DELETE FROM telegram_channel_requests WHERE expires_at<?", (time.time(),))
+            self.database.commit()
         if not owner and registered:
             self.api.send(chat_id, "Este canal já está cadastrado. O proprietário gerencia sua remoção.", **topic_values)
             return
@@ -181,6 +185,14 @@ class TelegramChannels:
             self._channels_remove(str(row[0]))
             self.api.send(chat_id, "Canal removido do catálogo.", **origin_topic)
         else:
+            with self.database_lock:
+                existing = self.database.execute(
+                    "SELECT token FROM telegram_channel_requests WHERE conversation_id=? AND sender_id=? "
+                    "AND status='pending' AND expires_at>?",
+                    (row[0], sender_id, time.time())).fetchone()
+            if existing:
+                self.api.send(chat_id, "Já existe uma solicitação pendente para este canal.", **origin_topic)
+                return True
             request_id = secrets.token_urlsafe(12)
             with self.database_lock:
                 self.database.execute(
