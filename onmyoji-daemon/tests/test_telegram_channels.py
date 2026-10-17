@@ -11,7 +11,7 @@ from onmyoji_daemon.telegram import Gateway, Settings
 
 def gateway_for(tmp_path: Path) -> Gateway:
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"
-    data.mkdir(parents=True)
+    data.mkdir(parents=True, exist_ok=True)
     root_config = tmp_path / "configs" / "onmyoji-system.toml"
     root_config.write_text('[codex]\nproject_directory = "' + tmp_path.as_posix() + '"\n', encoding="utf-8")
     cfg = tmp_path / "shikigami" / "daemon" / "telegram.toml"
