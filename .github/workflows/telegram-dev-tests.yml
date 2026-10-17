@@ -30,4 +30,4 @@ jobs:
       - name: Run Telegram tests without Bot API
         env:
           PYTHONPATH: onmyoji-daemon/src
-        run: python -m pytest -q onmyoji-daemon/tests/test_telegram.py onmyoji-daemon/tests/test_telegram_channels.py
+        run: python -m pytest -q onmyoji-daemon/tests/test_telegram.py onmyoji-daemon/tests/test_telegram_channels.py available-skills/telegram/scripts/test_telegram.py
