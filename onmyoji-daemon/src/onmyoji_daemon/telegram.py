@@ -21,6 +21,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from .rpc import RpcServer
+from .telegram_channels import TelegramChannels
 from .instructions import InstructionComposer
 from .instance import identity
 
@@ -271,7 +272,7 @@ class TelegramApi:
         if not payload.get("ok"): raise RuntimeError("Telegram API rejected media upload")
         return payload.get("result") if isinstance(payload.get("result"), dict) else {}
     def set_owner_commands(self, owner_id: int, totp_enabled: bool) -> bool:
-        commands = [{"command": "new", "description": "Iniciar uma nova conversa"}, {"command": "config", "description": "Configurar esta conversa"}]
+        commands = [{"command": "new", "description": "Iniciar uma nova conversa"}, {"command": "config", "description": "Configurar esta conversa"}, {"command": "channel", "description": "Gerenciar canal de envio"}]
         if totp_enabled: commands.append({"command": "totp", "description": "Obter código de autenticação"})
         scope = {"type": "chat", "chat_id": owner_id}
         self.call("setMyCommands", {"commands": commands, "scope": scope})
@@ -301,7 +302,7 @@ def under(path: Path, root: Path) -> bool:
     except ValueError: return False
 
 
-class Gateway:
+class Gateway(TelegramChannels):
     def __init__(self, settings: Settings):
         self.settings, self.stop_event = settings, threading.Event(); self.contacts = Contacts(settings.data_dir / "contacts.json")
         (settings.data_dir / "state").mkdir(parents=True, exist_ok=True); self.database = sqlite3.connect(settings.data_dir / "state" / "gateway.sqlite3", check_same_thread=False); self.database_lock = threading.RLock()
@@ -319,6 +320,7 @@ class Gateway:
         self.database.execute("CREATE TABLE IF NOT EXISTS bot_messages(chat_id TEXT NOT NULL, generation INTEGER NOT NULL, telegram_message_id INTEGER NOT NULL, created_at REAL NOT NULL, PRIMARY KEY(chat_id, generation, telegram_message_id))")
         self.database.execute("UPDATE inbox_items SET state='pending' WHERE state='running'")
         self.database.commit()
+        self._init_channel_tables(); self._init_external_table()
         self.identity = identity(settings.root); self.instructions = InstructionComposer(settings.root, settings.data_dir, settings.instructions_file, settings.instructions_enabled)
         self.activity_root = settings.project / ".onmyoji" / "telegram"; self.archive_root = self.activity_root / "attachments"; self.staging_root = self.activity_root / "staging"
         self.archive_root.mkdir(parents=True, exist_ok=True); self.staging_root.mkdir(parents=True, exist_ok=True)
@@ -375,7 +377,7 @@ class Gateway:
                 if self.api.set_owner_commands(owner, self._totp_enabled()): verified += 1
                 else: failed += 1; self._record_error("Telegram não confirmou os comandos privados do owner.")
             except Exception as error: failed += 1; self._record_error(error)
-        summary = {"updated_at": time.time(), "owners": len(owners), "verified": verified, "failed": failed, "expected": ["new", "config", *( ["totp"] if self._totp_enabled() else [])]}
+        summary = {"updated_at": time.time(), "owners": len(owners), "verified": verified, "failed": failed, "expected": ["new", "config", "channel", *( ["totp"] if self._totp_enabled() else [])]}
         state = json_file(self.settings.data_dir / "state" / "gateway-status.json", {}); state["commands"] = summary; write_json(self.settings.data_dir / "state" / "gateway-status.json", state)
         return summary
     def start(self) -> None:
@@ -717,7 +719,8 @@ class Gateway:
         telegram_chat_id, telegram_topic_values = self._telegram_address(str(chat_id)); client = self._app_client(); thread_id = self._app_thread(chat_id, client); state = self._channel_state(chat_id); active = AppServerTurn(telegram_chat_id, thread_id, threading.Event(), reply_mode=state["reply_mode"], telegram_topic_values=telegram_topic_values, conversation_id=str(chat_id))
         with self.app_server_lock: self.app_turns[thread_id] = active
         try:
-            inputs: list[dict[str, Any]] = [{"type": "text", "text": text or "O owner enviou anexos sem mensagem textual."}]
+            external_context, external_ids = self._pending_external(str(chat_id))
+            inputs: list[dict[str, Any]] = [{"type": "text", "text": (external_context + "\n\n" if external_context else "") + (text or "O owner enviou anexos sem mensagem textual.")}]
             for attachment in attachments or []:
                 staged = self._stage_attachment(chat_id, attachment, active)
                 if attachment["kind"] == "photo": inputs.append({"type": "localImage", "path": str(staged)})
@@ -734,6 +737,8 @@ class Gateway:
             if not active.completed.wait(self.settings.turn_timeout):
                 if active.turn_id: client.request("turn/interrupt", {"threadId": thread_id, "turnId": active.turn_id})
                 raise CodexProtocolError("O turno do Codex excedeu o tempo configurado")
+            if active.status == "completed":
+                self._mark_external(str(chat_id), external_ids)
             if active.final_text: return active.final_text, active.reply_mode
             if active.status == "completed": return "O agente concluiu o turno sem uma resposta textual.", active.reply_mode
             detail = active.failure_detail or client.last_error
@@ -764,6 +769,11 @@ class Gateway:
         if not private:
             self._group_message(conversation_id, chat, sender, message, text)
             return
+        command = text.split(maxsplit=1)[0].split("@", 1)[0].casefold() if text else ""
+        if command == "/channel":
+            self._delete_received_command(int(chat["id"]), message)
+            self._channel_menu(conversation_id, chat, sender)
+            return
         if text.startswith("/"): self._delete_received_command(int(chat.get("id") or sender["id"]), message)
         if text.startswith("/pair ") and self.pair and time.time() < self.pair[1] and secrets.compare_digest(text[6:].strip(), self.pair[0]):
             self.contacts.add_owner(sender); self.pair = None; synced = self._configure_owner_commands()
@@ -785,7 +795,7 @@ class Gateway:
             else: self._ephemeral(conversation_id, "TOTP não está habilitado para este Shikigami. Configure-o no setup do Gateway Telegram.")
             return
         if command == "/config": self._open_config(conversation_id); return
-        if text.startswith("/"): self._ephemeral(conversation_id, "Comando inválido. Use /new, /config ou /totp quando habilitado."); return
+        if text.startswith("/"): self._ephemeral(conversation_id, "Comando inválido. Use /new, /config, /channel ou /totp quando habilitado."); return
         contains_attachment = any(isinstance(message.get(name), (dict, list)) and message.get(name) for name in ("photo", "document", "voice"))
         if not text and not contains_attachment and SERVICE_MESSAGE_FIELDS.intersection(message): return
         if not text and not contains_attachment: self._ephemeral(conversation_id, "Mensagem sem texto ou anexo reconhecido."); return
@@ -802,6 +812,9 @@ class Gateway:
         assert self.api
         if text.startswith("/"):
             self._delete_received_command(int(chat["id"]), message)
+            if text.split(maxsplit=1)[0].split("@", 1)[0].casefold() == "/channel":
+                self._channel_menu(conversation_id, chat, sender)
+                return
             if sender.get("id") in self.contacts.owners() and text.split(maxsplit=1)[0].split("@", 1)[0].casefold() == "/new":
                 self._new_conversation(conversation_id)
                 values = {"message_thread_id": message["message_thread_id"]} if isinstance(message.get("message_thread_id"), int) else {}
@@ -1103,6 +1116,7 @@ class Gateway:
     def _callback(self, callback: dict[str, Any]) -> None:
         assert self.api
         sender = callback.get("from") or {}; message = callback.get("message") or {}; chat = message.get("chat") or {}; chat_id = sender.get("id")
+        if self._channel_callback(callback): return
         if chat.get("type") != "private" or not isinstance(chat_id, int) or chat_id not in self.contacts.owners(): return
         if not isinstance(chat.get("id"), int): chat = {**chat, "id": chat_id}
         conversation_id = self._conversation_id(chat, message)
@@ -1140,6 +1154,12 @@ class Gateway:
             self.pair = (f"{secrets.randbelow(1_000_000):06d}", time.time() + min(600, max(60, int(params.get("ttl_seconds", 300)))))
             return {"pin": self.pair[0], "expires_at": self.pair[1]}
         if method == "telegram.owners": return sorted(self.contacts.owners())
+        if method == "telegram.channels.list": return self._channels_list()
+        if method == "telegram.channels.remove":
+            channel = str(params.get("channel") or "")
+            if not channel: raise ValueError("Informe o identificador do canal.")
+            return self._channels_remove(channel)
+        if method == "telegram.outbound.send": return self._outbound_send(params)
         if method == "telegram.send":
             if not self.api: raise RuntimeError("listener unavailable")
             self.api.send(int(params["chat_id"]), str(params["text"])); return {"sent": True}
