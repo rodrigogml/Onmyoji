@@ -187,15 +187,21 @@ class TelegramChannels:
                     "INSERT INTO telegram_channel_requests VALUES (?, ?, ?, ?, 'pending', ?)",
                     (request_id, row[0], sender_id, row[4], time.time() + 86400))
                 self.database.commit()
+            notified = 0
             for owner_id in sorted(self.contacts.owners()):
                 keyboard = {"inline_keyboard": [[
                     {"text": "Aprovar", "callback_data": f"cha:{request_id}:approve"},
                     {"text": "Rejeitar", "callback_data": f"cha:{request_id}:reject"}]]}
                 try:
                     self.api.send(owner_id, f"Solicitação /channel: {row[4]} (ID do solicitante: {sender_id}).", reply_markup=keyboard)
+                    notified += 1
                 except Exception as error:
                     self._record_error(error)
-            self.api.send(chat_id, "Solicitação encaminhada ao proprietário.", **origin_topic)
+            if not notified:
+                with self.database_lock:
+                    self.database.execute("UPDATE telegram_channel_requests SET status='undelivered' WHERE token=?", (request_id,))
+                    self.database.commit()
+            self.api.send(chat_id, "Solicitação encaminhada ao proprietário." if notified else "Não foi possível encaminhar a solicitação ao proprietário. Tente novamente mais tarde.", **origin_topic)
         return True
 
     def _outbound_send(self, params: dict[str, Any]) -> dict[str, Any]:
