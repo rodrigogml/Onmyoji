@@ -48,7 +48,16 @@ O menu deve identificar claramente o canal que será registrado ou removido e ex
 
 O canal cadastrado fica elegível para ser exibido nas listagens da skill. A capacidade de enviar ou criar tópico precisa respeitar as condições reais do Telegram (permissões, bot bloqueado, modo de tópicos etc.).
 
-**Pendência P1 (bloqueante para o fluxo de DMs de terceiros):** o owner não consegue executar /channel dentro da DM privada entre Maria e o bot. É necessário decidir como uma pessoa ou administrador solicita registro pelo próprio Telegram e como o owner aprova ou rejeita **também pelo Telegram**, sem cadastro pela skill. Nenhuma solicitação de terceiros deve registrar automaticamente um canal.
+**Decisão P1 — Aprovada em 2026-10-17: cadastro de DMs de terceiros mediante solicitação e aprovação no Telegram.** O owner não precisa acessar a DM privada entre o terceiro e o bot. O fluxo acordado é:
+
+1. Um usuário terceiro (ex.: Maria) abre sua própria DM com o bot e executa `/channel`.
+2. O gateway apresenta um menu com **Solicitar cadastro deste canal**.
+3. Ao selecionar essa ação, o gateway encaminha ao **owner, pela DM dele com o bot**, uma solicitação identificando o usuário e o canal de origem.
+4. O owner recebe um menu com **Aprovar** e **Rejeitar**.
+5. Somente **após aprovação explícita pelo owner** o gateway registra a DM de Maria no catálogo de destinos utilizáveis pela skill.
+6. Solicitação pendente ou rejeitada **não** torna o canal elegível para envios proativos pela skill. O usuário solicitante deve receber retorno compreensível sobre o resultado.
+
+O cadastro é uma ação administrativa realizada pelo Telegram, **nunca pela skill**. Mensagens ou `/channel` isoladamente não registram a DM; o registro depende da aprovação do owner. Este fluxo define o cadastro do canal, **não** concede automaticamente ao terceiro permissão de acionar a skill ou de iniciar comunicações para outros canais. Detalhes de expiração, cancelamento, deduplicação e revogação de solicitações serão especificados na etapa de desenho do comportamento do comando.
 
 ### 3.2. Granularidade do canal
 
@@ -188,7 +197,7 @@ O reconhecimento passivo de chats/tópicos **não** deverá alimentá-los automa
 | --- | --- | --- |
 | R01 | Skill denominada **telegram**, pertencente ao Onmyoji | Decidido |
 | R02 | Listar/buscar apenas canais explicitamente registrados | Decidido |
-| R03 | Registro novo somente via interação Telegram (/channel ou comando equivalente) | Decidido |
+| R03 | Registro novo somente via interação Telegram (/channel ou comando equivalente), com aprovação do owner para DM de terceiros | Decidido — P1 resolvida |
 | R04 | Não cadastrar canais automaticamente ao receber conteúdo | Decidido |
 | R05 | Remoção de registro via Telegram e via skill pelo owner | Decidido |
 | R06 | Owner pode enviar para qualquer canal registrado | Decidido |
@@ -216,7 +225,7 @@ O reconhecimento passivo de chats/tópicos **não** deverá alimentá-los automa
 
 ## 10. Pendências para decisão — uma por vez
 
-1. **P1 — Aprovação de cadastro de DM de terceiros:** quem solicita /channel e como o owner aprova, já que não pode entrar na DM entre Maria e bot? **Primeira decisão a discutir.**
+1. **P1 — RESOLVIDA (2026-10-17):** terceiro solicita pelo `/channel` em sua própria DM; gateway encaminha pedido ao owner via Telegram; owner aprova/rejeita no menu; somente a aprovação cadastra a DM. Não confere novas permissões ao terceiro.
 2. **P2 — Escopo do /channel:** cadastro do chat-base versus tópico específico; evitar cadastro implícito de todos os tópicos.
 3. **P3 — Tópicos criados pela skill:** se ficam apenas associados à conversa ou entram no catálogo como destinos independentes.
 4. **P4 — Remoção:** o que acontece com associações, respostas subsequentes e canais anteriormente cadastrados.
@@ -241,4 +250,4 @@ A skill estará aderente ao objetivo quando, em testes controlados:
 
 ---
 
-**Próxima discussão:** P1, cadastro seguro de DMs de terceiros por /channel e aprovação do owner. Atualizar este briefing a cada decisão antes de iniciar a implementação.
+**Próxima discussão:** P2, escopo do `/channel` quando o comando é executado dentro de um tópico: cadastrar somente o tópico ou também o chat-base? Atualizar este briefing a cada decisão antes de iniciar a implementação.
