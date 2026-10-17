@@ -202,11 +202,20 @@ Quando a audiência não for a mesma da thread privada de origem:
 - Se solicitada conversa em mão dupla, criar um contexto separado com a mensagem, anexos e demais informações **explicitamente destinadas ao novo público**.
 - Respostas serão processadas somente se o gateway permitir atendimento àquele usuário/grupo. O atendimento atual a não-owner ainda é limitado; a ampliação das permissões de terceiros **não** faz parte desta skill.
 
-### 5.3. Chats sem tópicos e respostas ambíguas
+### 5.3. P6 — Decisão final: uma thread por chat sem tópicos
 
-Em uma DM ou grupo sem tópicos, várias comunicações podem compartilhar a mesma linha temporal. Uma resposta à mensagem específica do bot pode ajudar na correlação, mas uma mensagem espontânea não deve ser atribuída arbitrariamente a outra thread.
+**Decisão aprovada pelo owner em 2026-10-17.**
 
-**Pendência P6:** definir a regra final de associação de respostas em chats sem tópicos e a política para mensagens espontâneas quando houver mais de uma interação potencial.
+- Cada **DM ou grupo sem tópicos** tem uma **única conversa Telegram e uma única thread Codex associada** no gateway (criada sob demanda na primeira interação autorizada que exigir processamento).
+- Todos os envios feitos pela skill àquele chat, independentemente de qual execução ou thread Codex os originou, são registrados no **mesmo contexto do destino**, de acordo com a P5.
+- Respostas diretas a mensagens específicas do bot e mensagens espontâneas **seguem a mesma thread do chat**, sem tentar rotear a execução a uma thread externa que tenha originado algum envio.
+- A identificação de uma mensagem respondida pode ajudar o agente a entender o assunto, mas **não muda a thread de processamento**.
+- A chegada de um envio externo **não dispara** por si só uma nova execução do Codex. O processamento de mensagens recebidas depende das autorizações vigentes no gateway.
+- Quando vários envios externos tratarem de assuntos distintos, a conversa compartilha o mesmo contexto: eventual ambiguidade temática é uma característica aceita dos chats sem tópicos, não motivo para multiplicar threads ocultas.
+- Chats com tópicos continuam isolados pelo **identificador de cada tópico**, mantendo cada tópico sua própria conversa/thread, conforme P2, P3 e P5.
+- O comando `/new` e eventuais reinícios explícitos do contexto continuam seguindo as regras existentes do gateway; "uma thread por chat" significa **uma associação vigente por vez**, não uma thread imutável para sempre.
+
+**Resultado:** sem mecanismos de correlação por thread de origem, sem roteamento de respostas entre aplicações e sem concorrência de várias threads associadas ao mesmo chat sem tópicos.
 
 ## 6. Autorizações
 
@@ -269,6 +278,7 @@ O reconhecimento passivo de chats/tópicos **não** deverá alimentá-los automa
 | R18 | `/channel` cadastra só o chat/tópico onde foi executado, nunca canais irmãos | Decidido — P2 resolvida |
 | R19 | Em grupos e tópicos só o owner pode executar `/channel`; não-owner recebe negativa explícita usando “proprietário” | Decidido — P2 resolvida |
 | R20 | Tópico criado pela skill pode receber e continuar a conversa própria do destino, sem compartilhar thread externa; não entra no catálogo até `/channel` explícito pelo owner naquele tópico | Decidido — P3/P5 resolvidas |
+| R21 | DM/grupo sem tópicos mantém uma única thread Codex vigente por chat; envios externos entram nesse contexto, e respostas não são roteadas para threads externas | Decidido — P6 resolvida |
 
 ## 9. Fora de escopo agora
 
@@ -287,7 +297,7 @@ O reconhecimento passivo de chats/tópicos **não** deverá alimentá-los automa
 3. **P3 — RESOLVIDA (2026-10-17):** criar tópico pela skill não o registra como destino permanente. Ele pode ser utilizado pela conversa Telegram de destino, com thread própria conforme P5; só entra no catálogo de destinos após `/channel` executado pelo owner naquele tópico.
 4. **P4 — RESOLVIDA (2026-10-17):** remover um registro retira o destino do catálogo e impede novos envios proativos a ele via skill, sem apagar chat/tópico, histórico, thread Codex ou vínculo; gateway continua atendendo normalmente a conversa existente.
 5. **P5 — RESOLVIDA (2026-10-17):** a skill envia e registra conteúdo externo no contexto da conversa Telegram de destino, sem compartilhar threads entre clientes. A thread de destino é preservada ou criada no primeiro processamento autorizado; mensagens externas são oferecidas ao próximo turno, sem executar Codex só para registrar o envio. O retorno Telegram permanece no gateway.
-6. **P6 — Chats sem tópicos:** roteamento de respostas a mensagens e concorrência de conversas distintas.
+6. **P6 — RESOLVIDA (2026-10-17):** cada DM/grupo sem tópicos mantém uma thread Codex vigente para todo o chat, criada sob demanda. Todos os envios externos entram nesse contexto; respostas, inclusive replies, seguem a thread do chat e nunca uma thread externa originadora. Tópicos permanecem separados.
 7. **P7 — Perguntas e menus fora do turno Telegram:** comportamento assíncrono, validade e tratamento de respostas.
 8. **P8 — Política do canal registrado como “mão dupla”:** delimitar a autorização de envio proativo da autorização de interagir/responder no gateway, especialmente para não-owner.
 
@@ -307,4 +317,4 @@ A skill estará aderente ao objetivo quando, em testes controlados:
 
 ---
 
-**Próxima discussão:** P6, comportamento de respostas em DMs e grupos sem tópicos quando diferentes envios externos compartilham uma única conversa Telegram. Preferência inicial: uma única thread por chat, sem roteamento para threads externas por mensagem respondida.
+**Próxima discussão:** P7, escopo de perguntas e menus interativos enviados pela skill a partir de UI/CLI externa. Definir se o envio é sempre assíncrono e a seleção/resposta permanece exclusivamente no contexto Telegram do destino, sem tentar devolver resultado ao cliente de origem.
