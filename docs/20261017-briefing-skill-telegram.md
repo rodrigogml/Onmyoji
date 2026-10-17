@@ -1,7 +1,7 @@
 # Briefing — Skill de integração Telegram
 
 **Data:** 2026-10-17  
-**Status:** Em elaboração — decisões registradas; pendências abertas para discussão incremental.  
+**Status:** Briefing funcional consolidado — P1 a P8 resolvidas; arquitetura e implementação ainda não iniciadas.  
 **Repositório responsável:** Onmyoji (upstream).  
 **Escopo deste documento:** requisitos e regras de comportamento; não é ainda um plano de arquitetura nem autorização para iniciar a implementação.
 
@@ -226,6 +226,7 @@ Quando a audiência não for a mesma da thread privada de origem:
 3. **Cadastro:** não é permitido pela skill. `/channel` é a porta de entrada obrigatória de registro no próprio Telegram. Nas DMs tradicionais de terceiros, solicita-se aprovação do owner (P1); nos grupos e tópicos, só o owner pode executar o comando, sem fluxo de solicitação por terceiros (P2).
 4. **Plataforma:** o bot só pode enviar quando a Bot API e as permissões efetivas do chat permitirem.
 5. **Isolamento:** o direito do owner de **enviar** material a qualquer canal registrado não concede a terceiros acesso à thread/contexto privado do owner.
+6. **Decisão P8 — Aprovada em 2026-10-17:** registrar um canal via `/channel` habilita **somente seu uso como destino de envio pela skill**. O cadastro **não modifica as permissões de recepção, atendimento ou execução** do gateway, não promove usuários não-owner e não autoriza terceiros a operarem a skill. Respostas recebidas são tratadas exclusivamente pelas regras de atendimento já vigentes (ou futuramente configuradas) no gateway. A remoção do cadastro também não desativa automaticamente o atendimento normal (P4).
 
 ## 7. Reaproveitamento atual e lacunas constatadas no código
 
@@ -282,6 +283,7 @@ O reconhecimento passivo de chats/tópicos **não** deverá alimentá-los automa
 | R20 | Tópico criado pela skill pode receber e continuar a conversa própria do destino, sem compartilhar thread externa; não entra no catálogo até `/channel` explícito pelo owner naquele tópico | Decidido — P3/P5 resolvidas |
 | R21 | DM/grupo sem tópicos mantém uma única thread Codex vigente por chat; envios externos entram nesse contexto, e respostas não são roteadas para threads externas | Decidido — P6 resolvida |
 | R22 | Menus e interação do gateway existente continuam disponíveis **apenas pelo próprio gateway**; não são expostos pela skill | Decidido — P7 resolvida |
+| R23 | Registrar um canal via `/channel` autoriza apenas novos envios pela skill, **sem alterar permissões de atendimento/interação do gateway nem conceder acesso a não-owner** | Decidido — P8 resolvida |
 
 ## 9. Fora de escopo agora
 
@@ -304,9 +306,9 @@ O reconhecimento passivo de chats/tópicos **não** deverá alimentá-los automa
 5. **P5 — RESOLVIDA (2026-10-17):** a skill envia e registra conteúdo externo no contexto da conversa Telegram de destino, sem compartilhar threads entre clientes. A thread de destino é preservada ou criada no primeiro processamento autorizado; mensagens externas são oferecidas ao próximo turno, sem executar Codex só para registrar o envio. O retorno Telegram permanece no gateway.
 6. **P6 — RESOLVIDA (2026-10-17):** cada DM/grupo sem tópicos mantém uma thread Codex vigente para todo o chat, criada sob demanda. Todos os envios externos entram nesse contexto; respostas, inclusive replies, seguem a thread do chat e nunca uma thread externa originadora. Tópicos permanecem separados.
 7. **P7 — RESOLVIDA (2026-10-17):** a skill é unidirecional: envia mensagens e anexos e retorna apenas confirmação/metadados ou erro. Não cria/aguarda menus interativos nem retorna respostas. O gateway conserva seus próprios recursos de diálogo; futuras execuções Codex disparadas pelo gateway podem utilizá-los no contexto nativo.
-8. **P8 — Escopo do cadastro e permissões inbound:** ratificar que registrar canal habilita **envios pela skill**, mas **não** altera quem pode conversar/receber atendimento do gateway; permanece a política de não-owner vigente ou futura, independente da skill.
+8. **P8 — RESOLVIDA (2026-10-17):** cadastro via `/channel` habilita somente o canal como destino de envios da skill; não altera permissões de recepção, atendimento ou execução do gateway, nem concede novas capacidades a não-owner. Remover registro não encerra o atendimento existente (P4).
 
-Pendências **não** impedem que o briefing seja versionado agora. Elas impedem apenas considerar os respectivos comportamentos como especificação fechada.
+**Todas as decisões funcionais P1–P8 estão encerradas.** O briefing está consolidado para apoiar o planejamento de arquitetura e testes; detalhes técnicos de implementação, limites da Bot API e validação de integração permanecem para a próxima fase, sem reabrir decisões funcionais automaticamente.
 
 ## 11. Critérios de aceitação de alto nível
 
@@ -324,4 +326,4 @@ A skill estará aderente ao objetivo quando, em testes controlados:
 
 ---
 
-**Próxima discussão:** P8, confirmar a separação entre **registro de canal para envios da skill** e **permissões de receber/processar mensagens pelo gateway**. Em seguida, avaliar se restam requisitos pendentes antes de iniciar a arquitetura/implementação.
+**Próxima etapa:** planejar a arquitetura e a implementação da skill `telegram` e das extensões mínimas necessárias no Gateway Telegram, respeitando P1–P8. Nenhuma implementação foi iniciada por este briefing.
