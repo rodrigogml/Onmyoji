@@ -93,11 +93,17 @@ def test_third_party_private_request_requires_owner_approval(tmp_path):
     owner_menu = [m for m in api.sent if m[0] == 9][-1]
     approve = owner_menu[2]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
     assert approve.startswith("cha:")
+    approval_message = {"chat": {"id": 9, "type": "private"}, "message_id": owner_menu[3]["message_id"]}
     assert gw._channel_callback({"id": "approval", "data": approve, "from": {"id": 42}, "message": {"chat": chat}})
     assert not gw._channels_list()
-    gw._channel_callback({"id": "approval2", "data": approve, "from": {"id": 9}, "message": {"chat": {"id": 9, "type": "private"}}})
+    assert gw._channel_callback({"id": "forged", "data": approve, "from": {"id": 9},
+                                 "message": {"chat": {"id": 9, "type": "private"}, "message_id": 123}})
+    assert not gw._channels_list()
+    gw._channel_callback({"id": "approval2", "data": approve, "from": {"id": 9},
+                          "message": approval_message})
     assert gw._channels_list()[0]["id"] == "42"
-    assert gw._channel_callback({"id": "replay", "data": approve, "from": {"id": 9}, "message": {"chat": {"id": 9, "type": "private"}}})
+    assert gw._channel_callback({"id": "replay", "data": approve, "from": {"id": 9},
+                                 "message": approval_message})
     assert len(gw._channels_list()) == 1
 
 
