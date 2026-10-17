@@ -205,39 +205,50 @@ class TelegramChannels:
             raise ValueError("Canal não cadastrado; utilize /channel no Telegram.")
         chat_id, topic_values = self._telegram_address(channel)
         title = str(params.get("new_topic") or "").strip()
-        effective = channel
-        if title:
-            if self._channel_kind(channel) not in {"group", "group_topic"}:
-                raise ValueError("Criação de tópico disponível apenas para grupos.")
-            if not 1 <= len(title) <= 128: raise ValueError("Nome do tópico inválido.")
-            created = self.api.call("createForumTopic", {"chat_id": chat_id, "name": title})
-            topic_id = created.get("message_thread_id") if isinstance(created, dict) else None
-            if not isinstance(topic_id, int): raise RuntimeError("Telegram não retornou o tópico criado.")
-            topic_values = {"message_thread_id": topic_id}
-            effective = f"group:{chat_id}:{topic_id}"
         text = str(params.get("text") or "")
         path_string = str(params.get("path") or "")
         if not text and not path_string: raise ValueError("Informe texto ou arquivo.")
-        if text and len(text) > 4000 and not path_string: raise ValueError("Mensagem excede 4000 caracteres.")
+        if title and (self._channel_kind(channel) not in {"group", "group_topic"} or len(title) > 128):
+            raise ValueError("Criação de tópico exige grupo cadastrado e nome de até 128 caracteres.")
+        if len(text) > (1024 if path_string else 4000):
+            raise ValueError("Mensagem ou legenda excede o limite do Telegram.")
+        path = None
+        kind = str(params.get("kind") or "document")
+        routes = {"document": ("sendDocument", "document"), "photo": ("sendPhoto", "photo"),
+                  "audio": ("sendAudio", "audio"), "voice": ("sendVoice", "voice")}
         if path_string:
             path = Path(path_string).resolve(strict=True)
             root = self.settings.project.resolve(strict=True)
             if not path.is_relative_to(root) or not path.is_file():
                 raise ValueError("Arquivo fora do workspace autorizado.")
-            if path.stat().st_size > self.settings.max_outbound_media_bytes:
+            size = path.stat().st_size
+            if size > self.settings.max_outbound_media_bytes:
                 raise ValueError("Arquivo excede o limite de envio do gateway.")
-            kind = str(params.get("kind") or "document")
-            routes = {"document": ("sendDocument", "document"), "photo": ("sendPhoto", "photo"), "audio": ("sendAudio", "audio"), "voice": ("sendVoice", "voice")}
             if kind not in routes: raise ValueError("Tipo de anexo inválido.")
-            if len(text) > 1024: raise ValueError("Legenda excede 1024 caracteres.")
+            self._ensure_conversation(channel)
+            with self.database_lock:
+                total = self.database.execute(
+                    "SELECT COALESCE(SUM(size), 0) FROM conversation_attachments "
+                    "WHERE chat_id=? AND generation=?",
+                    (channel, self._generation(channel))).fetchone()[0]
+            if int(total) + size > self.settings.max_retained_attachment_bytes:
+                raise ValueError("Retenção de anexos da conversa atingiu o limite.")
+        effective = channel
+        if title:
+            created = self.api.call("createForumTopic", {"chat_id": chat_id, "name": title})
+            topic_id = created.get("message_thread_id") if isinstance(created, dict) else None
+            if not isinstance(topic_id, int): raise RuntimeError("Telegram não retornou o tópico criado.")
+            topic_values = {"message_thread_id": topic_id}
+            effective = f"group:{chat_id}:{topic_id}"
+        if path is not None:
             method, field = routes[kind]
             sent = self.api.send_file(method, chat_id, path, field, caption=text, **topic_values)
-            attachment = self._archive_external_file(effective, path, kind)
         else:
             sent = self.api.send(chat_id, text, **topic_values)
-            attachment = None
         message_id = sent.get("message_id") if isinstance(sent, dict) else None
         if not isinstance(message_id, int): raise RuntimeError("Telegram não confirmou o ID da mensagem enviada.")
+        # A entrega foi confirmada; persistir os dados e somente depois expor sucesso.
+        attachment = self._archive_external_file(effective, path, kind) if path is not None else None
         self._external_outbound_record(effective, message_id, text, attachment)
         return {"sent": True, "channel": effective, "message_id": message_id, "topic_created": bool(title)}
 
