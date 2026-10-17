@@ -721,9 +721,11 @@ class Gateway(TelegramChannels):
         try:
             external_context, external_ids = self._pending_external(str(chat_id))
             inputs: list[dict[str, Any]] = [{"type": "text", "text": (external_context + "\n\n" if external_context else "") + (text or "O owner enviou anexos sem mensagem textual.")}]
-            for attachment in attachments or []:
+            for attachment in [*(attachments or []), *self._external_attachment_rows(str(chat_id), external_ids)]:
                 staged = self._stage_attachment(chat_id, attachment, active)
                 if attachment["kind"] == "photo": inputs.append({"type": "localImage", "path": str(staged)})
+                elif attachment["kind"] == "audio":
+                    inputs.append({"type": "text", "text": f"Áudio compartilhado anteriormente neste canal: {attachment['name']}\\nArquivo retido do destino: {staged}"})
                 elif attachment["kind"] == "voice":
                     transcript = self._transcribe_voice(staged); detail = f"\nTranscrição local: {transcript}" if transcript else "\nTranscrição local indisponível; trate o arquivo de voz diretamente."
                     inputs.append({"type": "text", "text": f"Mensagem de voz recebida: {attachment['name']}\nArquivo local temporário: {staged}{detail}"})
@@ -860,7 +862,9 @@ class Gateway(TelegramChannels):
         row = self.database.execute("SELECT codex_thread_id, generation FROM conversations WHERE chat_id=?", (str(chat_id),)).fetchone(); old = str(row[0]) if row and row[0] else ""; generation = int(row[1]) if row else 0
         self._remove_attachments(chat_id, generation)
         with self.database_lock:
-            self.database.execute("DELETE FROM inbox_items WHERE chat_id=?", (str(chat_id),)); self.database.commit()
+            self.database.execute("DELETE FROM inbox_items WHERE chat_id=?", (str(chat_id),))
+            self.database.execute("DELETE FROM telegram_external_messages WHERE conversation_id=?", (str(chat_id),))
+            self.database.commit()
         self.database.execute("INSERT OR IGNORE INTO conversations(chat_id, updated_at) VALUES (?, ?)", (str(chat_id), time.time()))
         self.database.execute("UPDATE conversations SET generation=generation+1, codex_thread_id=NULL, owner_model=NULL, owner_effort=NULL, updated_at=? WHERE chat_id=?", (time.time(), str(chat_id))); self.database.commit()
         if old and self.app_server and self.app_server.running():
