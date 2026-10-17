@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import secrets
+import shutil
 import time
 from typing import Any
 
@@ -231,7 +232,7 @@ class TelegramChannels:
             if len(text) > 1024: raise ValueError("Legenda excede 1024 caracteres.")
             method, field = routes[kind]
             sent = self.api.send_file(method, chat_id, path, field, caption=text, **topic_values)
-            attachment = {"name": path.name, "kind": kind, "size": path.stat().st_size}
+            attachment = self._archive_external_file(effective, path, kind)
         else:
             sent = self.api.send(chat_id, text, **topic_values)
             attachment = None
@@ -239,6 +240,43 @@ class TelegramChannels:
         if not isinstance(message_id, int): raise RuntimeError("Telegram não confirmou o ID da mensagem enviada.")
         self._external_outbound_record(effective, message_id, text, attachment)
         return {"sent": True, "channel": effective, "message_id": message_id, "topic_created": bool(title)}
+
+    def _archive_external_file(self, channel: str, path: Path, kind: str) -> dict[str, Any]:
+        """Retém somente arquivo explicitamente enviado, no escopo do destino."""
+        conversation_uuid = self._ensure_conversation(channel)
+        generation = self._generation(channel)
+        with self.database_lock:
+            total = self.database.execute(
+                "SELECT COALESCE(SUM(size), 0) FROM conversation_attachments WHERE chat_id=? AND generation=?",
+                (channel, generation)).fetchone()[0]
+        if int(total) + path.stat().st_size > self.settings.max_retained_attachment_bytes:
+            raise ValueError("Retenção de anexos da conversa atingiu o limite.")
+        attachment_id = secrets.token_urlsafe(12)
+        archive = (self.archive_root / conversation_uuid / str(generation) / attachment_id / path.name)
+        archive.parent.mkdir(parents=True, exist_ok=False)
+        try:
+            shutil.copy2(path, archive)
+            with self.database_lock:
+                self.database.execute(
+                    "INSERT INTO conversation_attachments (id, chat_id, generation, kind, name, mime_type, size, archive_path, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (attachment_id, channel, generation, kind, path.name, "", archive.stat().st_size, str(archive), time.time()))
+                self.database.commit()
+        except Exception:
+            shutil.rmtree(archive.parent, ignore_errors=True)
+            raise
+        return {"id": attachment_id, "name": path.name, "kind": kind, "size": archive.stat().st_size}
+
+    def _external_attachment_rows(self, channel: str, message_ids: list[int]) -> list[dict[str, Any]]:
+        if not message_ids:
+            return []
+        with self.database_lock:
+            rows = self.database.execute(
+                "SELECT attachment FROM telegram_external_messages WHERE conversation_id=? AND generation=? "
+                "AND message_id IN (" + ",".join("?" for _ in message_ids) + ")",
+                (channel, self._generation(channel), *message_ids)).fetchall()
+        wanted = {value.get("id") for (raw,) in rows if isinstance((value := json.loads(raw or "null")), dict)}
+        return [row for row in self._attachment_rows(channel, 50) if row["id"] in wanted]
 
     def _external_outbound_record(self, channel: str, message_id: int, text: str, attachment: dict[str, Any] | None) -> None:
         self._ensure_conversation(channel)
