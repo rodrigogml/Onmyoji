@@ -87,7 +87,15 @@ Exemplo de resposta de acesso negado nos grupos/tópicos: **"Esta operação é 
 
 Esse controle se aplica ao menu de consulta, registro e remoção administrado por `/channel` no contexto correspondente. Não confundir a possibilidade de receber mensagens no grupo com autorização para cadastrá-lo.
 
-**Pendência P3:** decidir se um tópico criado a pedido do owner pela skill, dentro de um chat previamente registrado, aparece automaticamente como *destino independente* no catálogo. Recomendação inicial: **não**; sua criação estabelece a conversa e sua associação, mas cadastro de catálogo continua exigindo /channel. Isso não é cadastro passivo por receber mensagens.
+**Decisão P3 — Aprovada em 2026-10-17: criação de tópico não é cadastro no catálogo.**
+
+- O owner pode solicitar à skill a criação de um tópico em um chat previamente registrado, desde que o bot possua suporte e permissões efetivas.
+- O tópico criado pode ser utilizado imediatamente **pela conversa que o originou**, inclusive para receber respostas e continuar sua thread Codex quando essa associação for compatível.
+- A criação **não** inclui o tópico automaticamente no catálogo permanente de destinos da skill, nem registra outros tópicos.
+- Para que o tópico apareça como destino independente nas listagens e possa ser selecionado em envios futuros não associados à conversa original, o **owner precisa executar `/channel` dentro desse tópico**.
+- Enquanto não cadastrado, o tópico pode continuar como conversa operacional já associada, mas **não** deve aparecer como canal registrado na busca/listagem geral.
+
+Esta decisão reforça a distinção entre **criar uma conversa** e **autorizar um canal no catálogo**.
 
 ### 3.3. Listagem e remoção pela skill
 
@@ -224,7 +232,7 @@ O reconhecimento passivo de chats/tópicos **não** deverá alimentá-los automa
 | R08 | Enviar texto, arquivos, imagem, áudio e perguntas usando recursos do gateway | Decidido |
 | R09 | Enviar de UI/CLI sem depender de conversa Telegram ativa | Decidido |
 | R10 | Enviar a outro canal sem mesclar/alterar a conversa de origem | Decidido |
-| R11 | Criar/reutilizar tópicos quando habilitados e permitidos | Decidido (ver P3) |
+| R11 | Criar/reutilizar tópicos quando habilitados e permitidos | Decidido — P3 resolvida |
 | R12 | Associar tópico do owner à thread da origem quando compatível | Objetivo aceito; viabilidade P5 |
 | R13 | Em destinatário terceiro/grupo, isolar thread e contexto da origem | Decidido |
 | R14 | Respostas de não-owner obedecem às permissões do gateway | Decidido; políticas futuras |
@@ -233,6 +241,7 @@ O reconhecimento passivo de chats/tópicos **não** deverá alimentá-los automa
 | R17 | Suportar perguntas/menus; espera síncrona somente quando houver suporte à execução | Decidido; viabilidade a testar |
 | R18 | `/channel` cadastra só o chat/tópico onde foi executado, nunca canais irmãos | Decidido — P2 resolvida |
 | R19 | Em grupos e tópicos só o owner pode executar `/channel`; não-owner recebe negativa explícita usando “proprietário” | Decidido — P2 resolvida |
+| R20 | Tópico criado pela skill pode continuar a conversa de origem, mas não entra no catálogo até `/channel` explícito pelo owner naquele tópico | Decidido — P3 resolvida |
 
 ## 9. Fora de escopo agora
 
@@ -248,7 +257,7 @@ O reconhecimento passivo de chats/tópicos **não** deverá alimentá-los automa
 
 1. **P1 — RESOLVIDA (2026-10-17):** terceiro solicita pelo `/channel` em sua própria DM; gateway encaminha pedido ao owner via Telegram; owner aprova/rejeita no menu; somente a aprovação cadastra a DM. Não confere novas permissões ao terceiro.
 2. **P2 — RESOLVIDA (2026-10-17):** `/channel` gerencia apenas o chat/tópico exato em que foi executado, sem cadastrar irmãos. Em grupos e tópicos, somente owner; não-owner recebe negativa explícita (“proprietário”), sem fluxo de aprovação. Mantida a exceção P1 para solicitação em DM tradicional de terceiros.
-3. **P3 — Tópicos criados pela skill:** se ficam apenas associados à conversa ou entram no catálogo como destinos independentes.
+3. **P3 — RESOLVIDA (2026-10-17):** criação de tópico pela skill não o registra como destino permanente. O tópico pode servir à conversa/associação que o criou; só passa ao catálogo de destinos após `/channel` executado pelo owner naquele tópico.
 4. **P4 — Remoção:** o que acontece com associações, respostas subsequentes e canais anteriormente cadastrados.
 5. **P5 — Thread compartilhada:** identificação da thread atual e retomada segura entre Codex UI/CLI e App Server; ordenação de turnos.
 6. **P6 — Chats sem tópicos:** roteamento de respostas a mensagens e concorrência de conversas distintas.
@@ -271,4 +280,4 @@ A skill estará aderente ao objetivo quando, em testes controlados:
 
 ---
 
-**Próxima discussão:** P3, se um tópico criado pela skill por solicitação do owner, dentro de um canal previamente registrado, deve automaticamente integrar o catálogo permanente de destinos ou permanecer apenas como conversa criada/associada, até cadastro explícito via `/channel`. Atualizar este briefing a cada decisão antes de iniciar a implementação.
+**Próxima discussão:** P4, efeitos da remoção de um registro do catálogo sobre envios futuros, conversas/associações existentes e tratamento de respostas recebidas pelo gateway. Atualizar este briefing a cada decisão antes de iniciar a implementação.
