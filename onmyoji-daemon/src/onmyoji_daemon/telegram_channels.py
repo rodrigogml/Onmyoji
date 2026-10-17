@@ -298,6 +298,9 @@ class TelegramChannels:
                   (conversation_id, generation, message_id, text, attachment, created_at, delivered)
                 VALUES (?, ?, ?, ?, ?, ?, 0)
             """, (channel, generation, message_id, text, json.dumps(attachment, ensure_ascii=False), time.time()))
+            self.database.execute(
+                "INSERT OR IGNORE INTO bot_messages (chat_id, generation, telegram_message_id, created_at) "
+                "VALUES (?, ?, ?, ?)", (channel, generation, message_id, time.time()))
             self.database.commit()
 
     def _init_external_table(self) -> None:
