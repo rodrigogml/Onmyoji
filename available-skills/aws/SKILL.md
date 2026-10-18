@@ -11,6 +11,8 @@ Use `scripts/aws.py --config <CODEX_HOME>/configs/aws.toml --profile <perfil>` a
 
 Use a real profile stored outside version control in `<CODEX_HOME>/configs/aws.toml`. Generate it from `configs/aws.toml.model`; do not put credentials in it.
 
+The profile `region` is an optional default. Set `region` in the JSON request to override it for that operation, including batch downloads. When the profile has no default region, every request must specify a non-empty `region`; otherwise the wrapper returns `region_required` before reading credentials or calling AWS. An explicitly supplied empty or non-string request region returns `invalid_request`.
+
 The Vault entry stores `AWS_ACCESS_KEY_ID` in `username` and `AWS_SECRET_ACCESS_KEY` in `password`. Read the identity with `identity.get` before a meaningful operation and configure `expected_account_id` to prevent a wrong-account action.
 
 The wrapper runs the installed AWS CLI with isolated process environment variables, empty temporary AWS config and credentials files, and EC2 instance metadata disabled. Do not call `aws.exe` directly for authenticated operations.
@@ -18,4 +20,3 @@ The wrapper runs the installed AWS CLI with isolated process environment variabl
 Supported operations and their parameters are in [references/api-contracts.md](references/api-contracts.md). Configuration and credential-provider contracts are in [references/configuration.md](references/configuration.md) and [references/keepass-provider.md](references/keepass-provider.md).
 
 Every upload, download, copy, and deletion requires `confirm: true`. A download that would replace an existing local file also requires `overwrite: true`.
-

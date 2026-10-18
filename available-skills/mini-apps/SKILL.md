@@ -47,22 +47,23 @@ oferece `receive()`, `send()` e `close()`; a conexão já chega autenticada.
 HttpOnly e SameSite=Strict. Trate `claim_url` como segredo e não a registre.
 `basic` exige HTTPS e recebe `username` e `password` somente no create.
 
-Callbacks externos podem ser liberados explicitamente, sem expor todas as
-rotas:
+Callbacks servidor a servidor podem ser liberados explicitamente, sem expor
+todas as rotas:
 
 ```json
 {
   "auth": {
     "type": "claim",
-    "public_callbacks": [{"path": "/oauth/callback", "method": "GET"}]
+    "public_callbacks": [{"path": "/webhooks/provider", "method": "POST"}]
   }
 }
 ```
 
 O retorno da criação contém `callback_secret` uma única vez. Configure-o no
 provedor externo como `X-Onmyoji-Callback-Secret`; o Gateway limita callbacks
-a 30 por minuto por origem. OAuth, SSO e RBAC não são implementados pelo
-Gateway: a exceção de callback permite que a Mini App trate seu próprio fluxo.
+a 30 por minuto por origem. Esses callbacks exigem o cabeçalho secreto. O
+retorno OAuth do navegador usa a extensão de sessões descrita abaixo; SSO e
+RBAC continuam a cargo da aplicação.
 
 ## Ciclo de vida
 
@@ -87,3 +88,34 @@ Se o executável não estiver disponível, use
 `tunnel --tunnel-action install-cloudflared --confirm`. O download confirmado
 vem da distribuição oficial e fica no estado local da instância, fora do
 repositório e dos arquivos da Mini App.
+
+## Assistente e diagnóstico do setup
+
+No menu `M. MiniApp` do daemon, comece por `1. Assistente de início`. Escolha
+`L` para uso somente local ou `P` quando a mesma instalação também precisar de
+um hostname público. O uso local não requer domínio, Cloudflare nem
+`cloudflared`.
+
+Use `2. Diagnóstico de disponibilidade` para ver, sem expor segredos, o estado
+do Gateway HTTPS, dos certificados locais, do workspace, das publicações e do
+Tunnel. O diagnóstico trata a configuração pública como opcional até que ela
+seja escolhida; depois informa a próxima ação necessária para configurar,
+provisionar ou iniciar o Tunnel.
+
+Para configurar a exposição pública, reúna antes um domínio adicionado à
+Cloudflare, o Account ID, o Zone ID, um hostname livre e um token Cloudflare
+guardado no KeePass. O token precisa permitir `Account > Cloudflare Tunnel >
+Edit` e `Zone > DNS > Edit`. O setup solicita somente os IDs e a referência
+do token de API no KeePass; nunca solicita nem persiste o valor do token. O
+token de execução específico do Tunnel é obtido da Cloudflare somente em
+memória quando o `cloudflared` é iniciado.
+
+## OAuth remoto das skills
+
+Use `scripts/mini_apps.py oauth --oauth-action info --skill <skill> --profile <perfil>` para consultar a URL de callback estável e conferir sua correspondência com o perfil. O Gateway e o Tunnel precisam estar configurados e ativos.
+
+Leia [OAuth compartilhado das skills](../../docs/integrations/skill-oauth.md) antes de iniciar um consentimento ou implementar um adaptador. `oauth --oauth-action start --skill <skill> --profile <perfil> --confirm` exige autorização explícita e retorna sessionId e authorizationUrl. Apresente o link no chat ou Telegram atual; deixe o usuário abrir o navegador. Não compartilhe códigos, verifier, tokens ou URL de callback recebida com query string.
+
+Use `--oauth-action status --session-id <id> --skill <skill> --profile <perfil>` para acompanhar e `--oauth-action cancel` com os mesmos dados e `--confirm` para encerrar a sessão autorizada. A página de resultado é hospedada pelo Gateway; não crie uma nova publicação por consentimento. Cada skill mantém seu adaptador de troca de tokens e seu provedor de segredos.
+
+O retorno OAuth usa `/oauth/skills/<skill>/callback`, com sessão de uso único, e não a exceção `public_callbacks` com cabeçalho secreto. Preserve a autenticação das outras rotas de Mini Apps. A infraestrutura não envia mensagens externas nem notificações automaticamente.

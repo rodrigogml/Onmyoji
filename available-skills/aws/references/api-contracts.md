@@ -2,6 +2,8 @@
 
 Every request includes `version: 1` and `operation`. Successful responses contain `version`, `ok: true`, `operation`, and `data`; errors contain `ok: false` and a stable error code.
 
+Every operation accepts `region` in its JSON request. When provided, it must be a non-empty string and overrides the profile default for that request only. If omitted, the wrapper uses the profile region. With no region in either place, the wrapper returns `region_required`: a region must be specified because the selected profile has no default region. An empty, whitespace-only, or non-string request region returns `invalid_request`. Resolution happens before credential access or AWS execution and also applies to every download in a batch. The effective region is passed to AWS CLI through `--region`, `AWS_REGION`, and `AWS_DEFAULT_REGION`.
+
 | Operation | Required fields | Effect |
 | --- | --- | --- |
 | `identity.get` | none | Returns STS caller identity and validates `expected_account_id` when configured. |
@@ -28,3 +30,9 @@ Example write request:
 {"version":1,"operation":"s3.object.upload","bucket":"example-bucket","key":"exports/report.csv","source":"C:\\exports\\report.csv","confirm":true}
 ```
 
+
+Example region override (also works with an empty profile default):
+
+```json
+{"version":1,"operation":"s3.bucket.list","region":"us-east-1"}
+```
