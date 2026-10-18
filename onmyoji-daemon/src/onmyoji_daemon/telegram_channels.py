@@ -52,6 +52,10 @@ class TelegramChannels:
                     "ALTER TABLE telegram_channel_labels ADD COLUMN alias TEXT NOT NULL DEFAULT ''")
             except Exception as error:
                 if "duplicate column" not in str(error).casefold(): raise
+            self.database.execute(
+                "UPDATE telegram_channel_labels SET alias='', updated_at=? "
+                "WHERE alias GLOB '[0-9]*.[0-9]*' AND CAST(alias AS REAL)>1000000000",
+                (time.time(),))
             self.database.commit()
 
     @staticmethod
@@ -72,7 +76,8 @@ class TelegramChannels:
         old_chat, old_topic, alias = self._channel_label(conversation_id)
         with self.database_lock:
             self.database.execute(
-                "INSERT OR REPLACE INTO telegram_channel_labels VALUES (?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO telegram_channel_labels "
+                "(conversation_id, chat_name, topic_name, alias, updated_at) VALUES (?, ?, ?, ?, ?)",
                 (conversation_id, chat_name.strip() or old_chat, topic_name.strip() or old_topic, alias, time.time()))
             self.database.commit()
             self.database.execute(
@@ -86,7 +91,8 @@ class TelegramChannels:
         chat_name, topic_name, _old_alias = self._channel_label(conversation_id)
         with self.database_lock:
             self.database.execute(
-                "INSERT OR REPLACE INTO telegram_channel_labels VALUES (?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO telegram_channel_labels "
+                "(conversation_id, chat_name, topic_name, alias, updated_at) VALUES (?, ?, ?, ?, ?)",
                 (conversation_id, chat_name, topic_name, value, time.time()))
             self.database.execute("UPDATE telegram_channels SET display_name=? WHERE conversation_id=?", (value, conversation_id))
             self.database.commit()
