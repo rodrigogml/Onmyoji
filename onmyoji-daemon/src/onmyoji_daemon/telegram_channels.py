@@ -39,12 +39,17 @@ class TelegramChannels:
             self.database.execute("""
                 CREATE TABLE IF NOT EXISTS telegram_channel_labels (
                   conversation_id TEXT PRIMARY KEY, chat_name TEXT NOT NULL DEFAULT '',
-                  topic_name TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL)
+                  topic_name TEXT NOT NULL DEFAULT '', alias TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL)
             """)
             # Tolerar bancos criados antes da coluna sem perder solicitações.
             try:
                 self.database.execute(
                     "ALTER TABLE telegram_channel_requests ADD COLUMN approval_message_ids TEXT NOT NULL DEFAULT '{}'")
+            except Exception as error:
+                if "duplicate column" not in str(error).casefold(): raise
+            try:
+                self.database.execute(
+                    "ALTER TABLE telegram_channel_labels ADD COLUMN alias TEXT NOT NULL DEFAULT ''")
             except Exception as error:
                 if "duplicate column" not in str(error).casefold(): raise
             self.database.commit()
@@ -57,23 +62,35 @@ class TelegramChannels:
             return "group_topic" if conversation_id.rsplit(":", 1)[-1] != "0" else "group"
         return "dm"
 
-    def _channel_label(self, conversation_id: str) -> tuple[str, str]:
+    def _channel_label(self, conversation_id: str) -> tuple[str, str, str]:
         row = self.database.execute(
-            "SELECT chat_name, topic_name FROM telegram_channel_labels WHERE conversation_id=?",
+            "SELECT chat_name, topic_name, alias FROM telegram_channel_labels WHERE conversation_id=?",
             (conversation_id,)).fetchone()
-        return (str(row[0] or ""), str(row[1] or "")) if row else ("", "")
+        return (str(row[0] or ""), str(row[1] or ""), str(row[2] or "")) if row else ("", "", "")
 
     def _remember_channel_label(self, conversation_id: str, chat_name: str = "", topic_name: str = "") -> None:
-        old_chat, old_topic = self._channel_label(conversation_id)
+        old_chat, old_topic, alias = self._channel_label(conversation_id)
         with self.database_lock:
             self.database.execute(
-                "INSERT OR REPLACE INTO telegram_channel_labels VALUES (?, ?, ?, ?)",
-                (conversation_id, chat_name.strip() or old_chat, topic_name.strip() or old_topic, time.time()))
+                "INSERT OR REPLACE INTO telegram_channel_labels VALUES (?, ?, ?, ?, ?)",
+                (conversation_id, chat_name.strip() or old_chat, topic_name.strip() or old_topic, alias, time.time()))
             self.database.commit()
             self.database.execute(
                 "UPDATE telegram_channels SET display_name=? WHERE conversation_id=?",
-                (self._channel_display_from_names(chat_name.strip() or old_chat, topic_name.strip() or old_topic, conversation_id), conversation_id))
+                (alias or self._channel_display_from_names(chat_name.strip() or old_chat, topic_name.strip() or old_topic, conversation_id), conversation_id))
             self.database.commit()
+
+    def _channel_set_alias(self, conversation_id: str, alias: str) -> None:
+        value = alias.strip()[:160]
+        if not value: raise ValueError("Informe um nome visual para o canal.")
+        chat_name, topic_name, _old_alias = self._channel_label(conversation_id)
+        with self.database_lock:
+            self.database.execute(
+                "INSERT OR REPLACE INTO telegram_channel_labels VALUES (?, ?, ?, ?, ?)",
+                (conversation_id, chat_name, topic_name, value, time.time()))
+            self.database.execute("UPDATE telegram_channels SET display_name=? WHERE conversation_id=?", (value, conversation_id))
+            self.database.commit()
+        return value
 
     @staticmethod
     def _channel_display_from_names(chat_name: str, topic_name: str, conversation_id: str) -> str:
@@ -85,7 +102,9 @@ class TelegramChannels:
         return title[:160]
 
     def _channel_display(self, chat: dict[str, Any], sender: dict[str, Any], conversation_id: str) -> str:
-        chat_name, topic_name = self._channel_label(conversation_id)
+        chat_name, topic_name, alias = self._channel_label(conversation_id)
+        if alias:
+            return alias
         return self._channel_display_from_names(
             str(chat.get("title") or chat_name or sender.get("first_name") or sender.get("username") or "Canal Telegram").strip(),
             topic_name, conversation_id)
@@ -113,8 +132,10 @@ class TelegramChannels:
 
     def _channel_register(self, conversation_id: str, display_name: str, sender_id: int) -> None:
         kind = self._channel_kind(conversation_id)
-        chat_name, topic_name = self._channel_label(conversation_id)
-        if chat_name or topic_name:
+        chat_name, topic_name, alias = self._channel_label(conversation_id)
+        if alias:
+            display_name = alias
+        elif chat_name or topic_name:
             display_name = self._channel_display_from_names(chat_name, topic_name, conversation_id)
         with self.database_lock:
             self.database.execute(
@@ -143,10 +164,10 @@ class TelegramChannels:
         token = secrets.token_urlsafe(12)
         mode = "owner" if owner else "request"
         actions = (
-            [[{"text": "Remover este canal", "callback_data": f"ch:{token}:remove"}]] if registered
+            [[{"text": "Identificar canal", "callback_data": f"ch:{token}:identify"}, {"text": "Remover este canal", "callback_data": f"ch:{token}:remove"}]] if registered
             else [[{"text": "Registrar este canal", "callback_data": f"ch:{token}:add"}]]
         ) if owner else [[{"text": "Solicitar cadastro deste canal", "callback_data": f"ch:{token}:request"}]]
-        keyboard = {"inline_keyboard": actions + [[{"text": "Cancelar", "callback_data": f"ch:{token}:cancel"}]]}
+        keyboard = {"inline_keyboard": actions + [[{"text": "Fechar", "callback_data": f"ch:{token}:cancel"}]]}
         sent = self.api.send(chat_id, f"Canal: {display}\nEstado: {'registrado' if registered else 'não registrado'}", reply_markup=keyboard, **topic_values)
         message_id = sent.get("message_id")
         if not isinstance(message_id, int): raise RuntimeError("Telegram não retornou ID do menu /channel.")
@@ -213,21 +234,25 @@ class TelegramChannels:
         if origin_chat != chat_id: return True
         if row[3] == "owner" and sender_id not in self.contacts.owners(): return True
         if row[3] == "request" and (chat.get("type") != "private" or self._channel_kind(str(row[0])) != "dm"): return True
-        if action not in {"add", "remove", "request", "cancel"}: return True
-        if row[3] == "owner" and action not in {"add", "remove", "cancel"}: return True
+        if action not in {"add", "remove", "request", "identify", "cancel"}: return True
+        if row[3] == "owner" and action not in {"add", "remove", "identify", "cancel"}: return True
         if row[3] == "request" and action not in {"request", "cancel"}: return True
         with self.database_lock:
             taken = self.database.execute("DELETE FROM telegram_channel_menus WHERE token=?", (token,)).rowcount
             self.database.commit()
         if not taken: return True
         if action == "cancel":
-            self.api.send(chat_id, "Operação cancelada.", **origin_topic)
+            self.api.send(chat_id, "Menu fechado.", **origin_topic)
         elif action == "add":
             self._channel_register(str(row[0]), str(row[4]), sender_id)
             self.api.send(chat_id, "Canal cadastrado.", **origin_topic)
         elif action == "remove":
             self._channels_remove(str(row[0]))
             self.api.send(chat_id, "Canal removido do catálogo.", **origin_topic)
+        elif action == "identify":
+            current = str(row[4])
+            self.channel_identify_sessions[str(row[0])] = {"owner_id": sender_id, "expires_at": time.time() + 300}
+            self.api.send(chat_id, f"Nome atual do canal: {current}\nEnvie agora o nome visual que deseja usar ou pressione /channel para sair.", **origin_topic)
         else:
             with self.database_lock:
                 existing = self.database.execute(

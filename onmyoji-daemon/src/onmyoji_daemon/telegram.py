@@ -324,7 +324,7 @@ class Gateway(TelegramChannels):
         self.identity = identity(settings.root); self.instructions = InstructionComposer(settings.root, settings.data_dir, settings.instructions_file, settings.instructions_enabled)
         self.activity_root = settings.project / ".onmyoji" / "telegram"; self.archive_root = self.activity_root / "attachments"; self.staging_root = self.activity_root / "staging"
         self.archive_root.mkdir(parents=True, exist_ok=True); self.staging_root.mkdir(parents=True, exist_ok=True)
-        self.api: TelegramApi | None = None; self.bot_id: int | None = None; self.pair: tuple[str, float] | None = None; self.offset = 0; self.work = threading.BoundedSemaphore(settings.parallel); self.totp_sessions: dict[int, dict[str, Any]] = {}; self.config_sessions: dict[str, dict[str, Any]] = {}; self.menu_sessions: dict[str, MenuSession] = {}; self.menu_lock = threading.RLock(); self.last_error: str | None = None; self.cleanup_path = settings.data_dir / "state" / "totp-cleanup.json"; self.pending_deletions = json_file(self.cleanup_path, {}); self.app_server: CodexAppServer | None = None; self.app_server_lock = threading.RLock(); self.app_turns: dict[str, AppServerTurn] = {}; self.last_app_activity = time.monotonic(); self.turn_locks: dict[str, threading.Lock] = {}; self.turn_locks_lock = threading.Lock(); self.workers: set[str] = set(); self.workers_lock = threading.Lock()
+        self.api: TelegramApi | None = None; self.bot_id: int | None = None; self.pair: tuple[str, float] | None = None; self.offset = 0; self.work = threading.BoundedSemaphore(settings.parallel); self.totp_sessions: dict[int, dict[str, Any]] = {}; self.config_sessions: dict[str, dict[str, Any]] = {}; self.menu_sessions: dict[str, MenuSession] = {}; self.channel_identify_sessions: dict[str, dict[str, Any]] = {}; self.menu_lock = threading.RLock(); self.last_error: str | None = None; self.cleanup_path = settings.data_dir / "state" / "totp-cleanup.json"; self.pending_deletions = json_file(self.cleanup_path, {}); self.app_server: CodexAppServer | None = None; self.app_server_lock = threading.RLock(); self.app_turns: dict[str, AppServerTurn] = {}; self.last_app_activity = time.monotonic(); self.turn_locks: dict[str, threading.Lock] = {}; self.turn_locks_lock = threading.Lock(); self.workers: set[str] = set(); self.workers_lock = threading.Lock()
 
     @staticmethod
     def _conversation_id(chat: dict[str, Any], message: dict[str, Any]) -> str:
@@ -773,6 +773,16 @@ class Gateway(TelegramChannels):
         if chat_name or topic_name:
             self._remember_channel_label(conversation_id, chat_name, str(topic_name or ""))
         text = str(message.get("text") or message.get("caption") or "").strip(); assert self.api
+        identify = self.channel_identify_sessions.get(conversation_id)
+        if identify:
+            if time.time() > float(identify["expires_at"]):
+                self.channel_identify_sessions.pop(conversation_id, None)
+            elif sender.get("id") == identify["owner_id"] and text and not text.startswith("/"):
+                self._channel_set_alias(conversation_id, text)
+                self.channel_identify_sessions.pop(conversation_id, None)
+                target_chat, target_topic = self._telegram_address(conversation_id)
+                self.api.send(target_chat, "Nome visual atualizado.", **target_topic)
+                return
         if not private:
             self._group_message(conversation_id, chat, sender, message, text)
             return
@@ -1108,7 +1118,7 @@ class Gateway(TelegramChannels):
         if page: navigation.append({"text": "‹", "callback_data": f"totp:{token}:p:{page - 1}"})
         if start + size < len(entries): navigation.append({"text": "›", "callback_data": f"totp:{token}:p:{page + 1}"})
         if navigation: keyboard.append(navigation)
-        keyboard.append([{"text": "Cancelar", "callback_data": f"totp:{token}:x"}])
+        keyboard.append([{"text": "Fechar", "callback_data": f"totp:{token}:x"}])
         sent = self._ephemeral(chat_id, "Escolha a entrada TOTP:", 180, reply_markup={"inline_keyboard": keyboard})
         if isinstance(sent.get("message_id"), int): session.setdefault("message_ids", []).append(sent["message_id"])
 

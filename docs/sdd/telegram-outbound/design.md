@@ -24,4 +24,5 @@
 - Per-client App Server e disponibilidade/identidade do requester: autorização rigorosa deve preservar a separação entre owner e não-owner sem depender apenas do prompt.
 - Particularidades do `direct_messages_topic_id` vs `message_thread_id`; criação de tópicos Bot API.
 - O catálogo mantém `conversation_id` como referência técnica estável, mas persiste rótulos visuais de chat e tópico recebidos dos eventos Telegram. Listagens e menus exibem esses rótulos; o identificador técnico continua reservado para resolução interna e envio.
+- Após o cadastro, o menu do owner oferece `Identificar canal`: informa o nome atual e permite gravar um alias visual que prevalece sobre os nomes recuperados do Telegram. O último botão dos menus usa `Fechar`, sem sugerir desfazer a operação.
 - Persistência e apresentação de anexos como dados (e não instruções) e retenção/limites.

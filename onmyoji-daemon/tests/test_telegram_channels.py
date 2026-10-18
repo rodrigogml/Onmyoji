@@ -85,6 +85,20 @@ def test_topic_event_label_is_available_before_registration(tmp_path):
     assert gw._channel_display({"id": -1000, "type": "supergroup", "title": "Equipe Financeira"}, {"id": 9}, "group:-1000:24") == "Equipe Financeira / Fechamento mensal"
 
 
+def test_registered_channel_menu_allows_visual_identification_and_closes(tmp_path):
+    gw = gateway_for(tmp_path)
+    gw.api = FakeApi()
+    gw._channel_register("group:-1000:24", "Equipe / tópico 24", 9)
+    gw._channel_menu("group:-1000:24", {"id": -1000, "type": "supergroup", "title": "Equipe"}, {"id": 9})
+    menu = gw.api.sent[-1]
+    identify = menu[2]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
+    close = menu[2]["reply_markup"]["inline_keyboard"][1][0]
+    assert menu[1].startswith("Canal: Equipe")
+    assert close["text"] == "Fechar"
+    assert gw._channel_callback({"id": "identify", "data": identify, "from": {"id": 9}, "message": {"message_id": menu[3]["message_id"], "chat": {"id": -1000, "type": "supergroup"}}})
+    assert "Nome atual do canal:" in gw.api.sent[-1][1]
+
+
 def test_group_outsider_is_denied_without_approval_menu(tmp_path):
     gw = gateway_for(tmp_path)
     api = gw.api = FakeApi()
