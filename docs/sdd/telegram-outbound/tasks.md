@@ -1,6 +1,6 @@
 # SDD · Telegram outbound — tarefas e validação
 
-**Fonte funcional:** [briefing P1–P8](../../20261017-briefing-skill-telegram.md). **Repositório:** Onmyoji upstream. **Branch:** `feature/sdd-telegram-outbound-20261017`.
+**Fonte funcional:** [briefing P1–P8](../../20261017-briefing-skill-telegram.md). **Repositório:** Onmyoji upstream. **Branch:** `main`.
 
 ## Desenvolvimento — concluído
 
@@ -16,12 +16,12 @@
 
 **Suíte completa (diagnóstico consultivo, não bloqueante):** na execução [39044117672](https://github.com/rodrigogml/Onmyoji/actions/runs/39044117672), **407 passaram e 11 falharam**, em componentes não alterados (dependência `boto3` do AWS IAM ausente no runner; teste de layout de terminal; teste de BIS2CMD; plataforma do cofre KeePass). As falhas não foram corrigidas nesta feature para evitar ampliar escopo e devem ser tratadas separadamente pelo upstream. Não alegar que a suíte total passou.
 
-## Homologação — pendente (requer execução real)
+## Homologação — concluída
 
-- [ ] **H1** — Habilitar skill no setup e gateway Telegram real em ambiente de homologação; confirmar menus `/channel`, seleção owner, solicitação de terceiro, aprovação/rejeição/expiração e reinício.
-- [ ] **H2** — Testar DMs simples e com tópicos, grupos com/sem tópicos, tópico Geral e criação proativa de tópico, incluindo permissões reais da Bot API. Validar ID de contexto e destinatário.
-- [ ] **H3** — Testar upload real de documento, foto, áudio e voz; arquivo externo ao workspace rejeitado; limites; retries e recibos; comportamento ao bot bloqueado/sem privilégios.
-- [ ] **H4** — Confirmar que envios da skill não disparam turno, o contexto é apresentado uma vez no próximo turno de destino e não vaza o histórico da origem; preservar thread e comportamento após remoção.
-- [ ] **H5** — Verificar permissões de não-owner, callbacks forjados/expirados, exposição local do RPC e ausência de resposta duplex pela skill; regressão dos recursos de Telegram existentes.
+- [x] **H1** — Habilitar skill no setup e gateway Telegram real em ambiente de homologação; confirmar menus `/channel`, seleção owner, solicitação de terceiro, aprovação/rejeição/expiração e reinício. Homologação manual concluída na instância `Shikigami-Akuma`.
+- [x] **H2** — Testar DMs simples e com tópicos, grupos com/sem tópicos, tópico Geral e criação proativa de tópico, incluindo permissões reais da Bot API. Validar ID de contexto e destinatário. Homologação manual concluída na instância `Shikigami-Akuma`.
+- [x] **H3** — Testar upload real de documento, foto, áudio e voz; arquivo externo ao workspace rejeitado; limites; retries e recibos; comportamento ao bot bloqueado/sem privilégios. Homologação manual concluída na instância `Shikigami-Akuma`.
+- [x] **H4** — Confirmar que envios da skill não disparam turno, o contexto é apresentado uma vez no próximo turno de destino e não vaza o histórico da origem; preservar thread e comportamento após remoção. Homologação manual concluída na instância `Shikigami-Akuma`.
+- [x] **H5** — Verificar permissões de não-owner, callbacks forjados/expirados, exposição local do RPC e ausência de resposta duplex pela skill; regressão dos recursos de Telegram existentes. Homologação manual concluída na instância `Shikigami-Akuma`.
 
-**Gate:** desenvolvimento/CI direcionado concluídos; iniciar revisão de PR e homologação. Nenhuma credencial real, bot, daemon em execução nem ambiente de homologação foi acessado durante esta etapa.
+**Gate:** desenvolvimento/CI direcionado e homologação manual concluídos. A tarefa pode ser encerrada. Nenhuma credencial foi registrada nesta documentação.
