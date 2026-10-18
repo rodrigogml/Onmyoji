@@ -70,6 +70,21 @@ def test_only_channel_command_registers_a_chat_and_catalog_persists(tmp_path):
     assert restarted._channels_list() == []
 
 
+def test_channel_list_uses_visual_topic_name_and_keeps_technical_id(tmp_path):
+    gw = gateway_for(tmp_path)
+    gw._remember_channel_label("group:-1000:24", "Equipe Financeira", "Fechamento mensal")
+    gw._channel_register("group:-1000:24", "Equipe Financeira / tópico 24", 9)
+    entry = gw._channels_list()[0]
+    assert entry["id"] == "group:-1000:24"
+    assert entry["name"] == "Equipe Financeira / Fechamento mensal"
+
+
+def test_topic_event_label_is_available_before_registration(tmp_path):
+    gw = gateway_for(tmp_path)
+    gw._remember_channel_label("group:-1000:24", "Equipe Financeira", "Fechamento mensal")
+    assert gw._channel_display({"id": -1000, "type": "supergroup", "title": "Equipe Financeira"}, {"id": 9}, "group:-1000:24") == "Equipe Financeira / Fechamento mensal"
+
+
 def test_group_outsider_is_denied_without_approval_menu(tmp_path):
     gw = gateway_for(tmp_path)
     api = gw.api = FakeApi()

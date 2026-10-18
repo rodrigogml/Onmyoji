@@ -767,6 +767,11 @@ class Gateway(TelegramChannels):
             if not private: return
             chat = {**chat, "id": sender["id"]}; message = {**message, "chat": chat}
         conversation_id = self._conversation_id(chat, message)
+        topic_event = message.get("forum_topic_created") or message.get("forum_topic_edited")
+        topic_name = topic_event.get("name") if isinstance(topic_event, dict) else ""
+        chat_name = str(chat.get("title") or sender.get("first_name") or sender.get("username") or "").strip()
+        if chat_name or topic_name:
+            self._remember_channel_label(conversation_id, chat_name, str(topic_name or ""))
         text = str(message.get("text") or message.get("caption") or "").strip(); assert self.api
         if not private:
             self._group_message(conversation_id, chat, sender, message, text)

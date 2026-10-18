@@ -36,6 +36,11 @@ class TelegramChannels:
                   status TEXT NOT NULL, expires_at REAL NOT NULL,
                   approval_message_ids TEXT NOT NULL DEFAULT '{}')
             """)
+            self.database.execute("""
+                CREATE TABLE IF NOT EXISTS telegram_channel_labels (
+                  conversation_id TEXT PRIMARY KEY, chat_name TEXT NOT NULL DEFAULT '',
+                  topic_name TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL)
+            """)
             # Tolerar bancos criados antes da coluna sem perder solicitações.
             try:
                 self.database.execute(
@@ -52,14 +57,38 @@ class TelegramChannels:
             return "group_topic" if conversation_id.rsplit(":", 1)[-1] != "0" else "group"
         return "dm"
 
+    def _channel_label(self, conversation_id: str) -> tuple[str, str]:
+        row = self.database.execute(
+            "SELECT chat_name, topic_name FROM telegram_channel_labels WHERE conversation_id=?",
+            (conversation_id,)).fetchone()
+        return (str(row[0] or ""), str(row[1] or "")) if row else ("", "")
+
+    def _remember_channel_label(self, conversation_id: str, chat_name: str = "", topic_name: str = "") -> None:
+        old_chat, old_topic = self._channel_label(conversation_id)
+        with self.database_lock:
+            self.database.execute(
+                "INSERT OR REPLACE INTO telegram_channel_labels VALUES (?, ?, ?, ?)",
+                (conversation_id, chat_name.strip() or old_chat, topic_name.strip() or old_topic, time.time()))
+            self.database.commit()
+            self.database.execute(
+                "UPDATE telegram_channels SET display_name=? WHERE conversation_id=?",
+                (self._channel_display_from_names(chat_name.strip() or old_chat, topic_name.strip() or old_topic, conversation_id), conversation_id))
+            self.database.commit()
+
     @staticmethod
-    def _channel_display(chat: dict[str, Any], sender: dict[str, Any], conversation_id: str) -> str:
-        title = str(chat.get("title") or sender.get("first_name") or sender.get("username") or "Canal Telegram").strip()
-        if conversation_id.startswith(("private:", "direct:")):
-            title += f" / tópico {conversation_id.rsplit(':', 1)[-1]}"
-        if conversation_id.startswith("group:") and conversation_id.rsplit(":", 1)[-1] != "0":
+    def _channel_display_from_names(chat_name: str, topic_name: str, conversation_id: str) -> str:
+        title = chat_name or "Canal Telegram"
+        if topic_name:
+            title += f" / {topic_name}"
+        elif conversation_id.startswith(("private:", "direct:")) or (conversation_id.startswith("group:") and conversation_id.rsplit(":", 1)[-1] != "0"):
             title += f" / tópico {conversation_id.rsplit(':', 1)[-1]}"
         return title[:160]
+
+    def _channel_display(self, chat: dict[str, Any], sender: dict[str, Any], conversation_id: str) -> str:
+        chat_name, topic_name = self._channel_label(conversation_id)
+        return self._channel_display_from_names(
+            str(chat.get("title") or chat_name or sender.get("first_name") or sender.get("username") or "Canal Telegram").strip(),
+            topic_name, conversation_id)
 
     def _channels_list(self) -> list[dict[str, Any]]:
         with self.database_lock:
@@ -84,6 +113,9 @@ class TelegramChannels:
 
     def _channel_register(self, conversation_id: str, display_name: str, sender_id: int) -> None:
         kind = self._channel_kind(conversation_id)
+        chat_name, topic_name = self._channel_label(conversation_id)
+        if chat_name or topic_name:
+            display_name = self._channel_display_from_names(chat_name, topic_name, conversation_id)
         with self.database_lock:
             self.database.execute(
                 "INSERT OR REPLACE INTO telegram_channels (conversation_id, display_name, kind, registered_by, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -286,6 +318,7 @@ class TelegramChannels:
             if not isinstance(topic_id, int): raise RuntimeError("Telegram não retornou o tópico criado.")
             topic_values = {"message_thread_id": topic_id}
             effective = f"group:{chat_id}:{topic_id}"
+            self._remember_channel_label(effective, self._channel_label(channel)[0], title)
         if path is not None:
             method, field = routes[kind]
             sent = self.api.send_file(method, chat_id, path, field, caption=text, **topic_values)
