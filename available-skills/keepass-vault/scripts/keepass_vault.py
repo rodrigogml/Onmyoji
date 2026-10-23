@@ -174,9 +174,29 @@ class KeePass:
         args = ["show", "-q"] + (["--show-protected"] if field == "password" else []) + ["-a", attrs[field], "__DATABASE__", path]
         return self.run(args)
 
+    def ensure_parent_groups(self, path: str) -> None:
+        """Create missing KeePassXC groups needed by an entry path.
+
+        ``keepassxc-cli add`` does not create parent groups.  Its recursive
+        listing represents groups with a trailing slash, which lets us create
+        only missing groups and preserve failures from the actual write.
+        """
+        parents = [part for part in path.strip("/").split("/")[:-1] if part]
+        if not parents: return
+        listed = self.run(["ls", "-q", "-R", "-f", "__DATABASE__"])
+        groups = {line.rstrip("/") for line in listed.splitlines() if line.endswith("/")}
+        current: list[str] = []
+        for parent in parents:
+            current.append(parent)
+            group = "/".join(current)
+            if group not in groups:
+                self.run(["mkdir", "-q", "__DATABASE__", group])
+                groups.add(group)
+
     def add(self, path: str, data: dict[str, Any]) -> None:
         args = ["add", "-q", "__DATABASE__", path]
         if "title" in data: fail("unsupported_operation", "add usa o último componente de entry.path como título.")
+        self.ensure_parent_groups(path)
         for key, flag in (("username", "--username"), ("url", "--url"), ("notes", "--notes")):
             if key in data: args += [flag, str(data[key])]
         if "password" in data: args.append("--password-prompt"); self.run(args, str(data["password"]) + "\n")

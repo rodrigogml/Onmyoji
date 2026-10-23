@@ -27,5 +27,23 @@ class TotpTests(unittest.TestCase):
         self.assertEqual(calls, [["export", "-q", "--format", "xml", "__DATABASE__"]])
 
 
+class EntryCreationTests(unittest.TestCase):
+    def test_add_creates_only_missing_parent_groups(self) -> None:
+        backend = vault.KeePass({"database": {"windows": "vault.kdbx"}}, "irrelevant", None, 1)
+        calls: list[tuple[list[str], str]] = []
+
+        def run(args: list[str], extra_input: str = "") -> str:
+            calls.append((args, extra_input))
+            return "APIs/\n" if args[:4] == ["ls", "-q", "-R", "-f"] else ""
+
+        backend.run = run  # type: ignore[method-assign]
+        backend.add("APIs/Telegram/Turing", {"password": "token"})
+        self.assertEqual(calls, [
+            (["ls", "-q", "-R", "-f", "__DATABASE__"], ""),
+            (["mkdir", "-q", "__DATABASE__", "APIs/Telegram"], ""),
+            (["add", "-q", "__DATABASE__", "APIs/Telegram/Turing", "--password-prompt"], "token\n"),
+        ])
+
+
 if __name__ == "__main__":
     unittest.main()
