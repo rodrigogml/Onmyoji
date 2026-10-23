@@ -6,6 +6,7 @@ import argparse
 import getpass
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -493,14 +494,14 @@ def manage_writable_directories(root: Path, data: dict[str, object]) -> dict[str
         else: result(False, "Opção inválida.")
 
 
-def launch_codex(root: Path, data: dict[str, object], login: bool = False) -> None:
+def launch_codex(root: Path, data: dict[str, object], login: bool = False, device_auth: bool = False) -> None:
     """Abre o Codex CLI nativo; config.toml e --add-dir são seu contrato público."""
     ready, message = validate_system(data, require_ready=not login)
     if not ready: result(False, f"Não iniciado: {message}"); return
     if not login:
         synced, sync_message = sync_active_skill_links(root, enabled_ids(root), discover(root))
         if not synced: result(False, f"Não iniciado: {sync_message}"); return
-    command = [str(data["executable"]), "login"] if login else [str(data["executable"])]
+    command = [str(data["executable"]), "login", *( ["--device-auth"] if device_auth else [] )] if login else [str(data["executable"])]
     if not login:
         for directory in data["additional_writable_directories"]: command.extend(["--add-dir", str(directory)])
     environment = dict(os.environ); environment["CODEX_HOME"] = str(root)
@@ -561,7 +562,9 @@ def codex_menu(root: Path) -> None:
         elif choice == "7": data = manage_writable_directories(root, data)
         elif choice == "8": launch_codex(root, data)
         elif choice == "9": launch_onmyoji_interactive(root, data)
-        elif choice == "10": launch_codex(root, data, login=True)
+        elif choice == "10":
+            method = choose("Login no Codex-CLI", ["Autenticação por dispositivo (recomendado para SSH/headless)", "Navegador local (callback em localhost)"], "Autenticação por dispositivo (recomendado para SSH/headless)")
+            if method: launch_codex(root, data, login=True, device_auth=method.startswith("Autenticação por dispositivo"))
         else: result(False, "Opção inválida.")
 
 
@@ -604,15 +607,21 @@ def daemon_menu(root: Path) -> None:
 
     def validation() -> list[dict[str, str]]:
         completed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "validation-json"], quiet=True)
-        try: return json.loads(completed.stdout or "[]")
-        except (json.JSONDecodeError, TypeError): return []
+        detail = (completed.stderr or completed.stdout or "").strip()
+        detail = re.sub(r"(?i)(token|password|secret|access[_-]?token)\s*[=:]\s*\S+", r"\1=[redacted]", detail)[-500:]
+        if completed.returncode != 0:
+            return [{"state": "error", "label": "Diagnóstico do daemon", "detail": detail or f"O comando de diagnóstico terminou com código {completed.returncode}."}]
+        try: values = json.loads(completed.stdout or "[]")
+        except (json.JSONDecodeError, TypeError):
+            return [{"state": "error", "label": "Diagnóstico do daemon", "detail": detail or "O daemon retornou um diagnóstico inválido."}]
+        return values if isinstance(values, list) else [{"state": "error", "label": "Diagnóstico do daemon", "detail": "O daemon retornou um diagnóstico em formato inválido."}]
 
     def show_validation() -> bool:
         checks = validation(); print()
         for check in checks:
             state = check.get("state", "error"); symbol, color = ({"ok": ("✓", Ui.green), "pending": ("○", Ui.amber), "error": ("✗", Ui.red)}).get(state, ("!", Ui.red))
             print("    " + Ui.text(symbol, Ui.bold, color) + "  " + check.get("label", "Validação") + (Ui.text(" — " + check.get("detail", ""), color) if check.get("detail") else ""))
-        required = {"Daemon da instância", "Estrutura da configuração Telegram", "Perfil KeePass", "Referência do token", "Workspace do Shikigami", "Execução do agente Codex", "Conexão Telegram"}
+        required = {"Daemon da instância", "Estrutura da configuração Telegram", "Perfil KeePass", "Referência do token", "Executável Codex para serviço", "Workspace do Shikigami", "Execução do agente Codex", "Conexão Telegram"}
         return bool(checks) and all(check.get("state") == "ok" for check in checks if check.get("label") in required)
 
     def installed() -> bool: return (root / "configs" / "daemon" / "daemon.toml").is_file()
