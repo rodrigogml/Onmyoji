@@ -110,6 +110,20 @@ class SetupTests(unittest.TestCase):
             self.assertEqual(data["vaults"]["example"]["database"]["windows" if os.name == "nt" else "linux"], str(database))
             stored.assert_called_once()
 
+    @unittest.skipIf(os.name == "nt", "backend exclusivo para Linux")
+    def test_systemd_credential_stores_password_only_through_stdin(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            command = SETUP.systemd_credential_command(root, "turing")
+            profile = {"auth": {"linux": {"mode": "command", "command": command}}}
+            completed = SimpleNamespace(returncode=0, stdout="", stderr="")
+            with patch.object(SETUP.subprocess, "run", return_value=completed) as run:
+                ok, _message = SETUP.write_system_password("turing", profile, "senha-secreta")
+            self.assertTrue(ok)
+            self.assertEqual(run.call_args.kwargs["input"], "senha-secreta")
+            self.assertEqual(run.call_args.args[0][:6], ["systemd-creds", "--user", "--name=onmyoji-keepass-turing", "--with-key=host", "encrypt", "-"])
+            self.assertEqual(command[-1], "-")
+
     def test_edit_menu_lists_profiles_and_shows_current_fields(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             self.write_profiles(temporary)

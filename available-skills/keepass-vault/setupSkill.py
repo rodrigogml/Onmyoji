@@ -62,6 +62,10 @@ class WizardCancelled(Exception): pass
 def root_for(value: str | None) -> Path: return Path(value).resolve() if value else SKILL_DIR.parents[1]
 def config_for(root: Path) -> Path: return root / "configs" / "keepass.toml"
 def local_vault_for(root: Path, vault_name: str) -> Path: return root / "configs" / "vaults" / f"{vault_name}.kdbx"
+def local_credential_for(root: Path, vault_name: str) -> Path: return root / "configs" / "credentials" / f"onmyoji-keepass-{vault_name}.cred"
+def systemd_credential_command(root: Path, vault_name: str) -> list[str]:
+    name = f"onmyoji-keepass-{vault_name}"
+    return ["systemd-creds", "--user", f"--name={name}", "decrypt", str(local_credential_for(root, vault_name)), "-"]
 def describe() -> dict[str, object]: return {"id": "keepass-vault", "title": "KeePass Vault", "description": "Cofres KeePassXC, TOTPs e anexos", "actions": ["configure"]}
 def quote(value: str) -> str: return json.dumps(value, ensure_ascii=False)
 def list_toml(values: list[str]) -> str: return "[" + ", ".join(quote(value) for value in values) + "]"
@@ -178,6 +182,12 @@ def authentication_for(vault_name: str) -> tuple[dict[str, Any], dict[str, Any]]
     )
 
 
+def linux_authentication_for(root: Path, vault_name: str, selection: str) -> dict[str, Any]:
+    if selection == "1": return {"mode": "command", "command": ["secret-tool", "lookup", "service", "onmyoji", "vault", vault_name]}
+    if selection == "2": return {"mode": "command", "command": systemd_credential_command(root, vault_name)}
+    return {"mode": {"3": "stdin", "4": "prompt"}[selection], "command": []}
+
+
 def create_local_vault(executable: str, database: Path, password: str) -> tuple[bool, str]:
     if not (Path(executable).is_file() or shutil.which(executable)): return False, f"Executável KeePassXC não encontrado: {executable}."
     if database.exists(): return False, f"Já existe um arquivo no destino: {database}."
@@ -230,15 +240,17 @@ def create_profile(data: dict[str, Any], path: Path, root: Path, profile_name: s
     windows = existing_auth.get("windows", default_windows)
     linux = existing_auth.get("linux", default_linux)
     if creating_local:
-        windows, linux = default_windows, default_linux
+        windows, linux = default_windows, linux_authentication_for(root, vault_name, "2")
         print(f"Vault local: {current_path}")
         print(f"A senha será salva no provedor seguro do {platform_name}.")
     elif platform == "windows":
         selection = ask_choice("Autenticação no Windows", {"1": "Windows Credential Manager", "2": "Senha via stdin", "3": "Prompt interativo"}, {"windows_credential_manager": "1", "stdin": "2", "prompt": "3"}.get(windows.get("mode"), "1"))
         windows = {"mode": {"1": "windows_credential_manager", "2": "stdin", "3": "prompt"}[selection], "target": ask("Target da credencial Windows", windows.get("target", f"Onmyoji/KeePass/{vault_name}"), True) if selection == "1" else ""}
     else:
-        selection = ask_choice("Autenticação no Linux", {"1": "secret-tool", "2": "Senha via stdin", "3": "Prompt interativo"}, "1" if linux.get("mode") == "command" else {"stdin": "2", "prompt": "3"}.get(linux.get("mode"), "1"))
-        linux = {"mode": "command" if selection == "1" else {"2": "stdin", "3": "prompt"}[selection], "command": ["secret-tool", "lookup", "service", "onmyoji", "vault", vault_name] if selection == "1" else []}
+        command = linux.get("command", [])
+        default = "2" if isinstance(command, list) and command[:2] == ["systemd-creds", "--user"] else "1" if linux.get("mode") == "command" else {"stdin": "3", "prompt": "4"}.get(linux.get("mode"), "1")
+        selection = ask_choice("Autenticação no Linux", {"1": "secret-tool", "2": "Credencial criptografada do systemd (vinculada ao host)", "3": "Senha via stdin", "4": "Prompt interativo"}, default)
+        linux = linux_authentication_for(root, vault_name, selection)
     entry_roots = ask("Raízes de entradas permitidas (separe por ;, vazio = todas)", ";".join(profile.get("allowed_entry_roots", [])))
     attachment_roots = ask("Diretórios permitidos para anexos (separe por ;, vazio = todos)", ";".join(profile.get("allowed_attachment_roots", [])))
     candidate["vaults"][vault_name] = {"cli_command": [executable], "database": {"windows": windows_path, "linux": linux_path}}
@@ -294,11 +306,21 @@ def write_system_password(profile_name: str, profile: dict[str, Any], password: 
         else:
             auth = profile["auth"]["linux"]
             command = auth.get("command", [])
-            if auth.get("mode") != "command" or not isinstance(command, list) or len(command) < 2 or command[1] != "lookup":
-                return False, "Configure a autenticação Linux como secret-tool antes de armazenar a senha"
-            store_command = [str(command[0]), "store", f"--label=Onmyoji KeePass {profile_name}", *[str(value) for value in command[2:]]]
-            subprocess.run(store_command, input=password + "\n", text=True, capture_output=True, check=True, timeout=20)
-            return True, "Senha salva no keyring Linux"
+            if auth.get("mode") != "command" or not isinstance(command, list):
+                return False, "Configure a autenticação Linux antes de armazenar a senha"
+            if len(command) >= 2 and command[1] == "lookup":
+                store_command = [str(command[0]), "store", f"--label=Onmyoji KeePass {profile_name}", *[str(value) for value in command[2:]]]
+                subprocess.run(store_command, input=password + "\n", text=True, capture_output=True, check=True, timeout=20)
+                return True, "Senha salva no keyring Linux"
+            if len(command) == 6 and command[0] == "systemd-creds" and command[1] == "--user" and str(command[2]).startswith("--name=") and command[3:] and command[3] == "decrypt" and command[5] == "-":
+                destination = Path(str(command[4]))
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                encrypted = ["systemd-creds", "--user", str(command[2]), "--with-key=host", "encrypt", "-", str(destination)]
+                subprocess.run(encrypted, input=password, text=True, capture_output=True, check=True, timeout=20)
+                try: destination.chmod(0o600)
+                except OSError: pass
+                return True, "Senha salva em credencial criptografada do systemd"
+            return False, "Configure a autenticação Linux como secret-tool ou credencial systemd antes de armazenar a senha"
     except (OSError, subprocess.SubprocessError): return False, "Não foi possível salvar a senha no provedor do sistema operacional"
 
 
@@ -332,6 +354,7 @@ def test_vault_access(profile_name: str, profile: dict[str, Any], vault: dict[st
 
 
 def edit_profile(data: dict[str, Any], path: Path, profile_name: str) -> None:
+    root = path.parent.parent
     platform = "windows" if os.name == "nt" else "linux"
     platform_name = "Windows" if platform == "windows" else "Linux"
     while True:
@@ -386,8 +409,10 @@ def edit_profile(data: dict[str, Any], path: Path, profile_name: str) -> None:
                     selected = ask_choice("Autenticação no Windows", {"1": "Windows Credential Manager", "2": "Senha via stdin", "3": "Prompt interativo"}, {"windows_credential_manager": "1", "stdin": "2", "prompt": "3"}.get(auth["mode"], "1"))
                     candidate_profile["auth"]["windows"] = {"mode": {"1": "windows_credential_manager", "2": "stdin", "3": "prompt"}[selected], "target": ask("Target da credencial Windows", auth.get("target", f"Onmyoji/KeePass/{candidate_profile['vault']}"), True) if selected == "1" else ""}
                 else:
-                    selected = ask_choice("Autenticação no Linux", {"1": "secret-tool", "2": "Senha via stdin", "3": "Prompt interativo"}, "1" if auth["mode"] == "command" else {"stdin": "2", "prompt": "3"}.get(auth["mode"], "1"))
-                    candidate_profile["auth"]["linux"] = {"mode": "command" if selected == "1" else {"2": "stdin", "3": "prompt"}[selected], "command": ["secret-tool", "lookup", "service", "onmyoji", "vault", candidate_profile["vault"]] if selected == "1" else []}
+                    command = auth.get("command", [])
+                    default = "2" if isinstance(command, list) and command[:2] == ["systemd-creds", "--user"] else "1" if auth["mode"] == "command" else {"stdin": "3", "prompt": "4"}.get(auth["mode"], "1")
+                    selected = ask_choice("Autenticação no Linux", {"1": "secret-tool", "2": "Credencial criptografada do systemd (vinculada ao host)", "3": "Senha via stdin", "4": "Prompt interativo"}, default)
+                    candidate_profile["auth"]["linux"] = linux_authentication_for(root, candidate_profile["vault"], selected)
                 commit_profile_change(data, path, candidate)
             elif choice == "7":
                 value = ask("Raízes de entradas (separe por ;, vazio = todas)", ";".join(candidate_profile["allowed_entry_roots"]))
