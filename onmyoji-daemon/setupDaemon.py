@@ -319,6 +319,11 @@ def validation(root: Path) -> list[dict[str, str]]:
     known = profiles(root)
     add("ok" if profile and profile in known else "error", "Perfil KeePass", f"{profile!r} disponível." if profile in known else ("Selecione um perfil KeePass existente." if not profile else f"Perfil {profile!r} não encontrado."))
     add("ok" if entry and not entry.endswith(":Shikigami") else "pending", "Referência do token", entry if entry and not entry.endswith(":Shikigami") else "Defina a entrada KeePass do token do bot.")
+    try:
+        system = tomllib.loads((root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8")).get("codex", {})
+        executable = Path(str(system.get("executable") or ""))
+        add("ok" if executable.is_file() else "error", "Executável Codex para serviço", str(executable) if executable.is_file() else "Informe no setup um caminho absoluto para o executável Codex; serviços systemd não herdam o PATH do terminal.")
+    except (OSError, tomllib.TOMLDecodeError, AttributeError): add("error", "Executável Codex para serviço", "Não foi possível ler a configuração do Codex-CLI.")
     app_server = data.get("app_server", {})
     enabled, idle = bool(app_server.get("enabled", False)), int(app_server.get("idle_timeout_seconds") or 1800)
     add("ok" if enabled and idle >= 60 else "error", "Codex App Server", (f"Habilitado; encerra após {idle} segundos sem turnos ativos." if enabled else "O gateway exige App Server para aplicar developer instructions."))

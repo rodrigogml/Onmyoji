@@ -29,3 +29,15 @@ def test_voice_setup_authorizes_only_telegram_staging(tmp_path):
     system = tomllib.loads((configs / "onmyoji-system.toml").read_text(encoding="utf-8"))["codex"]
     assert system["additional_writable_directories"] == [str(staging)]
     assert tomllib.loads(target.read_text(encoding="utf-8"))["voice_reply"]["enabled"]
+
+
+def test_validation_requires_an_absolute_codex_executable_for_services(tmp_path):
+    module = setup_module(); workspace = tmp_path / "workspace"; workspace.mkdir()
+    configs = tmp_path / "configs"; configs.mkdir()
+    (configs / "onmyoji-system.toml").write_text('[codex]\nexecutable = "codex"\nproject_directory = "' + workspace.as_posix() + '"\n', encoding="utf-8")
+    module.bootstrap(tmp_path)
+
+    checks = module.validation(tmp_path)
+
+    executable = next(item for item in checks if item["label"] == "Executável Codex para serviço")
+    assert executable["state"] == "error"

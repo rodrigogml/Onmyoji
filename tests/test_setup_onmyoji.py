@@ -67,6 +67,14 @@ class SystemSetupTests(unittest.TestCase):
             environment = run.call_args.kwargs["env"]
             self.assertEqual(environment["CODEX_HOME"], str(root))
 
+    def test_launches_device_login_without_a_local_callback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data = MODULE.default_system() | {"executable": sys.executable}
+            with patch.object(MODULE.subprocess, "run") as run:
+                MODULE.launch_codex(root, data, login=True, device_auth=True)
+            self.assertEqual(run.call_args.args[0], [sys.executable, "login", "--device-auth"])
+
     def test_launches_onmyoji_console_separately_from_native_codex(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); project = root / "project"; project.mkdir()
