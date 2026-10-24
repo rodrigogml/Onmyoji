@@ -43,8 +43,29 @@ class SystemSetupTests(unittest.TestCase):
             self.assertIn("installed = false", rendered)
             self.assertFalse((root / "shikigami" / "instance.toml").exists())
 
+    def test_default_system_requires_a_discovered_or_configured_codex_executable(self) -> None:
+        data = MODULE.default_system()
+        self.assertEqual(data["executable"], "")
+        self.assertEqual(data["model"], "gpt-6.1-sol")
+        self.assertFalse(MODULE.validate_system(data)[0])
+
+    def test_discovers_codex_executables_visible_in_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            binary_directory = Path(temporary)
+            executable = binary_directory / "codex.cmd"; executable.write_text("", encoding="utf-8")
+            with patch.dict(MODULE.os.environ, {"PATH": str(binary_directory)}, clear=False), patch.object(MODULE.shutil, "which", return_value=None):
+                self.assertEqual(MODULE.discover_codex_executables(), [str(executable.resolve())])
+
+    def test_codex_model_list_uses_the_current_catalog(self) -> None:
+        self.assertEqual(MODULE.CODEX_MODELS, ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"])
+
+    def test_reasoning_effort_is_selected_from_the_model_compatible_options(self) -> None:
+        self.assertEqual(MODULE.reasoning_efforts_for_model("gpt-6-luna"), ["low", "medium", "high", "xhigh", "max"])
+        self.assertEqual(MODULE.reasoning_efforts_for_model("gpt-6.1-sol"), ["low", "medium", "high", "xhigh", "max", "ultra"])
+        self.assertEqual(MODULE.preferred_reasoning_effort("gpt-6-luna"), "high")
+
     def test_wizard_normalizes_name_and_creates_shikigami_resources(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary, patch("builtins.input", return_value="  Exemplo   da   Silva "):
+        with tempfile.TemporaryDirectory() as temporary, patch("builtins.input", return_value="  Exemplo   da   Silva "), patch.object(MODULE, "configure_initial_codex", side_effect=lambda _root, data: data | {"executable": sys.executable}):
             root = Path(temporary)
             data, _message = MODULE.ensure_shikigami_configuration(root)
             installed = MODULE.initial_installation_wizard(root, data)
@@ -54,6 +75,34 @@ class SystemSetupTests(unittest.TestCase):
             MODULE.ensure_shikigami_resources(root)
             self.assertTrue((root / "shikigami" / "README.md").is_file())
             self.assertFalse((root / "shikigami" / "instance.toml").exists())
+
+    def test_codex_executable_validation_calls_version(self) -> None:
+        completed = subprocess.CompletedProcess(["codex", "--version"], 0, "codex 1.0", "")
+        with patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+            self.assertEqual(MODULE.validate_codex_executable("codex"), (True, "codex 1.0"))
+        self.assertEqual(run.call_args.args[0], ["codex", "--version"])
+
+    def test_codex_model_validation_runs_an_ephemeral_read_only_call(self) -> None:
+        version = subprocess.CompletedProcess(["codex", "--version"], 0, "codex 1.0", "")
+        model = subprocess.CompletedProcess(["codex", "exec"], 0, "OK", "")
+        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE.subprocess, "run", side_effect=[version, model]) as run:
+            data = MODULE.default_system() | {"executable": "codex"}
+            self.assertTrue(MODULE.validate_codex_model(Path(temporary), data)[0])
+        self.assertEqual(run.call_args_list[1].args[0], ["codex", "exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "--model", "gpt-6.1-sol", "--config", 'model_reasoning_effort="medium"', "Responda exatamente: OK"])
+
+    def test_model_validation_rejects_an_incompatible_reasoning_effort_before_execution(self) -> None:
+        data = MODULE.default_system() | {"executable": "codex", "model": "gpt-6-luna", "model_reasoning_effort": "ultra"}
+        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "validate_codex_executable", return_value=(True, "codex 1.0")), patch.object(MODULE.subprocess, "run") as run:
+            self.assertFalse(MODULE.validate_codex_model(Path(temporary), data)[0])
+        run.assert_not_called()
+
+    def test_diagnostics_check_name_executable_and_model(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "validate_codex_executable", return_value=(True, "codex 1.0")), patch.object(MODULE, "validate_codex_model", return_value=(True, "modelo respondeu")):
+            data = MODULE.default_system() | {"shikigami_identity": "Exemplo", "shikigami_installed": True, "executable": "codex"}
+            MODULE.system_path(Path(temporary)).parent.mkdir()
+            MODULE.system_path(Path(temporary)).write_text(MODULE.render_system(data), encoding="utf-8")
+            diagnostics = MODULE.shikigami_diagnostics(Path(temporary))
+        self.assertEqual([(item["state"], item["label"]) for item in diagnostics], [("ok", "Nome do Shikigami"), ("ok", "Executável do Codex-CLI"), ("ok", "Modelo do Codex-CLI")])
 
     def test_legacy_instance_identity_is_migrated_before_file_removal(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

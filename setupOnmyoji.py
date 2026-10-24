@@ -30,7 +30,10 @@ INSTANCE_SKILLS_DIRECTORY = "shikigami/skills"
 ACTIVE_SKILLS_DIRECTORY = "skills"
 DESKTOP_SKILLS_DIRECTORY = ".agents/skills"
 SKILL_STATE_FILE = "onmyoji-skills.toml"
-REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"]
+REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"]
+CODEX_MODELS = ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+LUNA_MODELS = {"gpt-6-luna", "gpt-5.6-luna"}
+MODEL_REASONING_DEFAULTS = {"gpt-6-astra": "low", "gpt-6.1-sol": "medium", "gpt-6-sol": "medium", "gpt-6-luna": "high", "gpt-5.6-sol": "medium", "gpt-5.6-terra": "medium", "gpt-5.6-luna": "high"}
 SANDBOXES = ["read-only", "workspace-write", "danger-full-access"]
 APPROVALS = ["untrusted", "on-request", "never"]
 
@@ -136,14 +139,136 @@ def default_system() -> dict[str, object]:
     return {
         "shikigami_identity": "",
         "shikigami_installed": False,
-        "executable": "codex",
-        "model": "gpt-5.6-terra",
+        "executable": "",
+        "model": "gpt-6.1-sol",
         "model_reasoning_effort": "medium",
         "project_directory": "",
         "sandbox_mode": "workspace-write",
         "approval_policy": "on-request",
         "additional_writable_directories": [],
     }
+
+
+def discover_codex_executables() -> list[str]:
+    """Encontra todas as instalações locais do Codex visíveis pelo PATH atual."""
+    candidates: list[str] = []
+
+    def add(path: str | Path | None) -> None:
+        if not path:
+            return
+        candidate = Path(path).expanduser()
+        if candidate.is_file():
+            resolved = str(candidate.resolve())
+            if resolved.casefold() not in {value.casefold() for value in candidates}:
+                candidates.append(resolved)
+
+    names = ("codex", "codex.exe", "codex.cmd", "codex.bat")
+    for name in names:
+        add(shutil.which(name))
+    for raw_directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not raw_directory:
+            continue
+        directory = Path(raw_directory.strip('"'))
+        for name in names:
+            add(directory / name)
+    return candidates
+
+
+def choose_codex_executable(current: str) -> str | None:
+    """Oferece executáveis encontrados e permite informar somente um caminho completo."""
+    found = discover_codex_executables()
+    manual = "Informar caminho completo"
+    if not found:
+        note("Nenhum executável Codex foi encontrado no PATH atual.")
+    selected = choose("Executável Codex", [*found, manual], current or "(não configurado)")
+    if selected is None:
+        return None
+    if selected != manual:
+        return selected
+    while True:
+        value = prompt("Caminho completo do executável [X cancela]: ").strip()
+        if value.casefold() in {"x", "\x1b"}:
+            return None
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            result(False, "Informe o caminho completo do executável.")
+            continue
+        if not path.is_file():
+            result(False, f"Executável não encontrado: {path}")
+            continue
+        return str(path.resolve())
+
+
+def choose_codex_model(current: str) -> str | None:
+    """Permite selecionar um modelo conhecido ou informar outro identificador."""
+    value = choose("Modelo", [*CODEX_MODELS, "Outro (informar manualmente)"], current)
+    if value != "Outro (informar manualmente)":
+        return value
+    value = prompt("Modelo [X cancela]: ").strip()
+    return None if value.casefold() in {"x", "\x1b"} else value or None
+
+
+def reasoning_efforts_for_model(model: str) -> list[str]:
+    """Retorna os esforços conhecidos para o modelo, sem presumir Ultra para Luna."""
+    return REASONING_EFFORTS[:-1] if model in LUNA_MODELS else REASONING_EFFORTS
+
+
+def preferred_reasoning_effort(model: str) -> str:
+    """Escolhe a sugestão inicial documentada para cada família de modelo."""
+    return MODEL_REASONING_DEFAULTS.get(model, "medium")
+
+
+def choose_reasoning_effort(model: str, current: str, reset_to_model_default: bool = False) -> str | None:
+    """Seleciona somente esforços compatíveis com o modelo informado."""
+    values = reasoning_efforts_for_model(model)
+    selected = preferred_reasoning_effort(model) if reset_to_model_default or current not in values else current
+    return choose("Esforço de raciocínio", values, selected)
+
+
+def diagnostic_detail(completed: subprocess.CompletedProcess[str]) -> str:
+    """Resume a saída de um comando sem expor valores sensíveis em telas de diagnóstico."""
+    detail = (completed.stdout or completed.stderr or "").strip()
+    return re.sub(r"(?i)(token|password|secret|access[_-]?token)\s*[=:]\s*\S+", r"\1=[redacted]", detail)[-500:]
+
+
+def validate_codex_executable(executable: str) -> tuple[bool, str]:
+    """Confirma que o executável configurado inicia e responde à consulta de versão."""
+    if not executable:
+        return False, "Executável do Codex-CLI não configurado."
+    try:
+        completed = subprocess.run([executable, "--version"], text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=20)
+    except OSError as error:
+        return False, f"Não foi possível iniciar o executável: {error}"
+    except subprocess.TimeoutExpired:
+        return False, "A consulta de versão do Codex-CLI excedeu 20 segundos."
+    if completed.returncode != 0:
+        return False, diagnostic_detail(completed) or f"O Codex-CLI terminou com código {completed.returncode}."
+    return True, diagnostic_detail(completed) or "Codex-CLI respondeu à consulta de versão."
+
+
+def validate_codex_model(root: Path, data: dict[str, object]) -> tuple[bool, str]:
+    """Executa uma solicitação efêmera e somente leitura com o modelo selecionado."""
+    executable = str(data["executable"])
+    executable_ok, executable_detail = validate_codex_executable(executable)
+    if not executable_ok:
+        return False, executable_detail
+    model = str(data["model"]).strip()
+    if not model:
+        return False, "Modelo do Codex-CLI não configurado."
+    effort = str(data["model_reasoning_effort"])
+    if effort not in reasoning_efforts_for_model(model):
+        return False, f"O esforço {effort} não é compatível com o modelo {model}."
+    environment = dict(os.environ); environment["CODEX_HOME"] = str(root)
+    command = [executable, "exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "--model", model, "--config", f"model_reasoning_effort={json.dumps(effort)}", "Responda exatamente: OK"]
+    try:
+        completed = subprocess.run(command, cwd=str(root), env=environment, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=120)
+    except OSError as error:
+        return False, f"Não foi possível iniciar a validação do modelo: {error}"
+    except subprocess.TimeoutExpired:
+        return False, "A validação do modelo excedeu 120 segundos."
+    if completed.returncode != 0:
+        return False, diagnostic_detail(completed) or f"O Codex-CLI recusou o modelo com código {completed.returncode}."
+    return True, f"Modelo {model} respondeu à execução de validação."
 
 
 def load_system(root: Path) -> dict[str, object]:
@@ -187,11 +312,12 @@ def validate_system(data: dict[str, object], require_ready: bool = False) -> tup
     if not isinstance(data.get("shikigami_installed"), bool): return False, "Estado de instalação do Shikigami inválido."
     if data["shikigami_installed"] and not str(data["shikigami_identity"]).strip(): return False, "Informe o nome do Shikigami antes de concluir a instalação."
     if not data["model"].strip(): return False, "Informe um modelo do Codex."
-    if data["model_reasoning_effort"] not in REASONING_EFFORTS: return False, "Esforço de raciocínio inválido."
+    if data["model_reasoning_effort"] not in reasoning_efforts_for_model(str(data["model"])): return False, "Esforço de raciocínio incompatível com o modelo selecionado."
     if data["sandbox_mode"] not in SANDBOXES: return False, "Modo de sandbox inválido."
     if data["approval_policy"] not in APPROVALS: return False, "Política de aprovação inválida."
     executable = str(data["executable"])
-    if executable and not (Path(executable).is_file() or shutil.which(executable)): return False, f"Executável Codex não encontrado: {executable}."
+    if not executable: return False, "Configure o executável do Codex-CLI."
+    if not (Path(executable).is_file() or shutil.which(executable)): return False, f"Executável Codex não encontrado: {executable}."
     project = str(data["project_directory"])
     if project and not Path(project).is_dir(): return False, f"Pasta de projeto não encontrada: {project}."
     directories = data["additional_writable_directories"]
@@ -256,8 +382,40 @@ def ensure_shikigami_configuration(root: Path) -> tuple[dict[str, object] | None
     return data, "Configuração inicial pronta."
 
 
+def configure_initial_codex(root: Path, data: dict[str, object]) -> dict[str, object] | None:
+    """Exige um executável e um modelo do Codex funcionais antes de concluir a instalação."""
+    while True:
+        screen("Instalação inicial", "Codex-CLI")
+        note("Selecione o executável e valide o modelo com uma chamada efêmera e somente leitura.")
+        executable = choose_codex_executable(str(data["executable"]))
+        if executable is None:
+            return None
+        executable_ok, executable_detail = validate_codex_executable(executable)
+        result(executable_ok, executable_detail)
+        if not executable_ok:
+            continue
+        candidate = dict(data); candidate["executable"] = executable
+        model = choose_codex_model(str(candidate["model"]))
+        if model is None:
+            return None
+        candidate["model"] = model
+        effort = choose_reasoning_effort(model, str(candidate["model_reasoning_effort"]), reset_to_model_default=True)
+        if effort is None:
+            return None
+        candidate["model_reasoning_effort"] = effort
+        model_ok, model_detail = validate_codex_model(root, candidate)
+        result(model_ok, model_detail)
+        if model_ok:
+            return candidate
+        next_step = choose("Validação do modelo", ["Tentar novamente", "Fazer login por dispositivo", "Fazer login no navegador"], "Tentar novamente")
+        if next_step is None:
+            return None
+        if next_step.startswith("Fazer login"):
+            launch_codex(root, candidate, login=True, device_auth=next_step.endswith("dispositivo"))
+
+
 def initial_installation_wizard(root: Path, data: dict[str, object]) -> dict[str, object] | None:
-    """Coleta o primeiro e único requisito da instalação inicial do Shikigami."""
+    """Coleta a identidade e confirma um Codex-CLI funcional antes de instalar o Shikigami."""
     while True:
         screen("Instalação inicial", "Identidade do Shikigami")
         note("Informe o nome exibido pelo Shikigami. Digite X para cancelar.")
@@ -267,8 +425,12 @@ def initial_installation_wizard(root: Path, data: dict[str, object]) -> dict[str
         if not identity:
             result(False, "Informe um nome não vazio.")
             continue
-        candidate = dict(data); candidate["shikigami_identity"], candidate["shikigami_installed"] = identity, True
-        ok, message = save_system(root, candidate, validate=False)
+        candidate = dict(data); candidate["shikigami_identity"] = identity
+        candidate = configure_initial_codex(root, candidate)
+        if candidate is None:
+            return None
+        candidate["shikigami_installed"] = True
+        ok, message = save_system(root, candidate)
         if ok:
             remove_legacy_instance_file(root)
             return candidate
@@ -578,12 +740,39 @@ def launch_onmyoji_interactive(root: Path, data: dict[str, object]) -> None:
     except OSError as error: result(False, f"Não foi possível iniciar o console Onmyōji: {error}")
 
 
+def shikigami_diagnostics(root: Path) -> list[dict[str, str]]:
+    """Retorna apenas os diagnósticos básicos explicitamente definidos para a instância."""
+    data = load_system(root); diagnostics: list[dict[str, str]] = []
+    identity = str(data["shikigami_identity"])
+    if not identity.strip():
+        diagnostics.append({"state": "pending", "label": "Nome do Shikigami", "detail": "A instalação inicial ainda não definiu um nome."})
+    elif identity != " ".join(identity.split()):
+        diagnostics.append({"state": "error", "label": "Nome do Shikigami", "detail": "O nome contém espaços adicionais e precisa ser normalizado."})
+    else:
+        diagnostics.append({"state": "ok", "label": "Nome do Shikigami", "detail": identity})
+    executable_ok, executable_detail = validate_codex_executable(str(data["executable"]))
+    diagnostics.append({"state": "ok" if executable_ok else "error", "label": "Executável do Codex-CLI", "detail": executable_detail})
+    model_ok, model_detail = validate_codex_model(root, data)
+    diagnostics.append({"state": "ok" if model_ok else "error", "label": "Modelo do Codex-CLI", "detail": model_detail})
+    return diagnostics
+
+
+def diagnostics_menu(root: Path) -> None:
+    """Exibe os resultados detalhados do diagnóstico básico da instância."""
+    screen("Diagnóstico", "Estado da instalação e do Codex-CLI")
+    for diagnostic in shikigami_diagnostics(root):
+        state = diagnostic["state"]
+        symbol, color = {"ok": ("✓", Ui.green), "pending": ("○", Ui.amber), "error": ("✗", Ui.red)}[state]
+        print("  " + Ui.text(symbol, Ui.bold, color) + "  " + diagnostic["label"] + " — " + Ui.text(diagnostic["detail"], color))
+    prompt("Pressione Enter para voltar: ")
+
+
 def codex_menu(root: Path) -> None:
     data = load_system(root)
     while True:
         ready, message = validate_system(data, require_ready=True)
         screen("Codex-CLI", "Configuração da instância do Shikigami")
-        item("1.", "Executável", str(data["executable"]))
+        item("1.", "Executável", str(data["executable"] or "(não configurado)"))
         item("2.", "Modelo", str(data["model"]))
         item("3.", "Esforço de raciocínio", str(data["model_reasoning_effort"]))
         item("4.", "Pasta do projeto", str(data["project_directory"] or "(não definida)"))
@@ -598,15 +787,30 @@ def codex_menu(root: Path) -> None:
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
         if choice == "1":
-            value = prompt(f"Executável Codex [{data['executable']}]: ").strip()
-            if value: data = update_system(root, data, "executable", value)
+            value = choose_codex_executable(str(data["executable"]))
+            if value:
+                valid, message = validate_codex_executable(value)
+                result(valid, message)
+                if valid: data = update_system(root, data, "executable", value)
         elif choice == "2":
-            value = choose("Modelo", ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "Outro (informar manualmente)"], data["model"])
-            if value == "Outro (informar manualmente)": value = prompt("Modelo: ").strip()
-            if value: data = update_system(root, data, "model", value)
+            value = choose_codex_model(str(data["model"]))
+            if value:
+                effort = choose_reasoning_effort(value, str(data["model_reasoning_effort"]), reset_to_model_default=True)
+                if effort is None:
+                    continue
+                candidate = dict(data); candidate["model"], candidate["model_reasoning_effort"] = value, effort
+                valid, message = validate_codex_model(root, candidate)
+                result(valid, message)
+                if valid:
+                    data = update_system(root, data, "model", value)
+                    data = update_system(root, data, "model_reasoning_effort", effort)
         elif choice == "3":
-            value = choose("Esforço de raciocínio", REASONING_EFFORTS, data["model_reasoning_effort"])
-            if value: data = update_system(root, data, "model_reasoning_effort", value)
+            value = choose_reasoning_effort(str(data["model"]), str(data["model_reasoning_effort"]))
+            if value:
+                candidate = dict(data); candidate["model_reasoning_effort"] = value
+                valid, message = validate_codex_model(root, candidate)
+                result(valid, message)
+                if valid: data = update_system(root, data, "model_reasoning_effort", value)
         elif choice == "4":
             value = prompt(f"Pasta do projeto [{data['project_directory']}]: ").strip()
             if value: data = update_system(root, data, "project_directory", value)
@@ -1178,6 +1382,7 @@ def skill_menu(skill: Skill, root: Path, skills: list[Skill]) -> None:
 def menu(skills: list[Skill], root: Path) -> int:
     while True:
         screen("Central de configuração", "Onmyōji · integrações do Shikigami")
+        item("!.", "Diagnóstico", "Valida nome, executável e modelo do Codex-CLI")
         item("A.", "Codex-CLI", "Modelo, projeto, sandbox e permissões")
         item("B.", "Codex Desktop", "Habilitar ou desabilitar skills do projeto")
         item("D.", "Daemon", "Supervisor local e serviços da instância")
@@ -1207,6 +1412,7 @@ def menu(skills: list[Skill], root: Path) -> int:
         item("X.", "Sair")
         choice = prompt("Selecione uma opção: ").strip().casefold()
         if choice == "x": return 0
+        if choice == "!": diagnostics_menu(root); continue
         if choice == "a": codex_menu(root); continue
         if choice == "b": desktop_skills_menu(root); continue
         if choice == "d": daemon_menu(root); continue
