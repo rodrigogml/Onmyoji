@@ -56,6 +56,8 @@ O Codex Desktop lê as skills em `.agents/skills/` no diretório da instância d
 
 ## Criar e configurar um Shikigami
 
+Antes de criar uma instância, leia o [guia de instalação](docs/installation.md). Ele reúne os primeiros passos para criar o clone com `upstream`, separar o workspace e conectar o repositório remoto da identidade.
+
 ### 1. Fazer checkout de um Shikigami existente
 
 ```powershell
@@ -86,7 +88,7 @@ git push -u origin main
 Execute o setup uma vez para concluir o wizard inicial e definir a identidade local do Shikigami em `configs/onmyoji-system.toml`. Em seguida, preencha `shikigami/instructions.md` com tom, objetivos e limites sem segredos; mantenha `shikigami/README.md` e `shikigami/AGENTS.md` para a documentação e as regras versionadas da instância.
 
 ```powershell
-py -3 setupOnmyoji.py --action status
+py -3 setupOnmyoji.py
 ```
 
 Crie ou escolha um workspace externo, por exemplo `C:\opt\Shikigami-<Nome>-Work`, e configure-o no menu do setup. Nunca use o `CODEX_HOME` para artefatos do trabalho do agente.
