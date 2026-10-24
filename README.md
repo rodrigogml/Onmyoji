@@ -81,9 +81,9 @@ git remote add origin git@github.com:<organização>/Shikigami-<Nome>.git
 git push -u origin main
 ```
 
-### 3. Definir a identidade e o workspace
+### 3. Instalação inicial e workspace
 
-Execute o setup uma vez para materializar a definição mínima da instância. Em seguida, preencha `shikigami/instructions.md` com identidade, tom, objetivos e limites sem segredos; mantenha `shikigami/README.md`, `shikigami/AGENTS.md` e `shikigami/instance.toml` como documentação e declaração portáveis.
+Execute o setup uma vez para concluir o wizard inicial e definir a identidade local do Shikigami em `configs/onmyoji-system.toml`. Em seguida, preencha `shikigami/instructions.md` com tom, objetivos e limites sem segredos; mantenha `shikigami/README.md` e `shikigami/AGENTS.md` para a documentação e as regras versionadas da instância.
 
 ```powershell
 py -3 setupOnmyoji.py --action status
