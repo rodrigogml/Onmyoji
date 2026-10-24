@@ -186,7 +186,11 @@ def save_system(root: Path, data: dict) -> None:
     system_path, codex_path = root / "configs" / "onmyoji-system.toml", root / "config.toml"
     codex = data.get("codex", {})
     if not isinstance(codex, dict): raise ValueError("A configuração Codex-CLI está inválida.")
-    system_text = "\n".join(["schema_version = 1", "", "[codex]", *[f"{key} = {json.dumps(value, ensure_ascii=False)}" for key, value in codex.items()]]) + "\n"
+    shikigami = data.get("shikigami", {})
+    if not isinstance(shikigami, dict): shikigami = {}
+    identity = str(shikigami.get("identity") or "").strip()
+    installed = bool(shikigami.get("installed", False))
+    system_text = "\n".join(["schema_version = 1", "", "[shikigami]", f"identity = {json.dumps(identity, ensure_ascii=False)}", f"installed = {str(installed).lower()}", "", "[codex]", *[f"{key} = {json.dumps(value, ensure_ascii=False)}" for key, value in codex.items()]]) + "\n"
     old_system = system_path.read_text(encoding="utf-8") if system_path.exists() else None
     old_codex = codex_path.read_text(encoding="utf-8") if codex_path.exists() else ""
     begin, end = "# BEGIN ONMYOJI MANAGED CODEX SETTINGS", "# END ONMYOJI MANAGED CODEX SETTINGS"

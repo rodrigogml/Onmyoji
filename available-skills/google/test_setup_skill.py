@@ -20,9 +20,7 @@ class GoogleSetupTests(unittest.TestCase):
         configs = self.root / "configs"
         configs.mkdir()
         (configs / "keepass.toml").write_text("[profiles.local]\nvault = \"main\"\n", encoding="utf-8")
-        definition = self.root / "shikigami"
-        definition.mkdir()
-        (definition / "instance.toml").write_text('[shikigami]\nidentity = "Exemplo"\n', encoding="utf-8")
+        (configs / "onmyoji-system.toml").write_text('[shikigami]\nidentity = "Exemplo"\ninstalled = true\n', encoding="utf-8")
 
     def tearDown(self) -> None:
         self.temporary.cleanup()

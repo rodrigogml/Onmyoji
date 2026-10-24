@@ -107,7 +107,7 @@ def desktop_skills_path(root: Path, data: dict[str, object]) -> Path:
 
 def instance_identity(root: Path) -> str:
     try:
-        data = tomllib.loads((root / "shikigami" / "instance.toml").read_text(encoding="utf-8"))
+        data = tomllib.loads(system_path(root).read_text(encoding="utf-8"))
         value = data.get("shikigami", {}).get("identity", "")
         if isinstance(value, str) and value.strip(): return value.strip()
     except (OSError, tomllib.TOMLDecodeError, AttributeError):
@@ -118,16 +118,12 @@ def instance_identity(root: Path) -> str:
     return name.strip() or "Shikigami"
 
 
-def ensure_shikigami_definition(root: Path) -> None:
-    """Cria apenas a definição portável; nunca copia estado ou segredos locais."""
+def ensure_shikigami_resources(root: Path) -> None:
+    """Cria recursos versionáveis do Shikigami após a instalação inicial."""
     directory = root / "shikigami"; identity = instance_identity(root)
     directory.mkdir(parents=True, exist_ok=True)
-    instance = directory / "instance.toml"
-    if not instance.exists():
-        workspace_name = "Shikigami-" + "".join(part[:1].upper() + part[1:] for part in identity.split()) + "-Work"
-        instance.write_text("schema_version = 1\n\n[shikigami]\nidentity = " + json.dumps(identity, ensure_ascii=False) + "\nworkspace_directory_name = " + json.dumps(workspace_name, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
     readme = directory / "README.md"
-    if not readme.exists(): readme.write_text(f"# {identity}\n\nDefinição versionada deste Shikigami. Arquivos da base Onmyōji não são personalizados aqui; particularidades da identidade ficam nesta pasta. Segredos e estado de execução permanecem fora do Git, em `../configs/`. O workspace externo é a única área para arquivos de trabalho do agente.\n", encoding="utf-8", newline="\n")
+    if not readme.exists(): readme.write_text(f"# {identity}\n\nDefinição versionada deste Shikigami. Arquivos da base Onmyōji não são personalizados aqui; particularidades versionadas ficam nesta pasta. A identidade e o estado de execução são locais, em `../configs/`. O workspace externo é a única área para arquivos de trabalho do agente.\n", encoding="utf-8", newline="\n")
     agents = directory / "AGENTS.md"
     if not agents.exists(): agents.write_text(f"# {identity}\n\nLeia este arquivo e `README.md` antes de trabalhar nesta instância. Não altere arquivos da base Onmyōji (`available-skills/`, `onmyoji-daemon/`, `setupOnmyoji.py` e `docs/`) para personalizar {identity}; registre personalizações em `shikigami/` ou proponha melhorias genéricas ao upstream.\n\nNão armazene segredos, tokens, chaves, bancos de conversa, logs, staging ou arquivos de trabalho nesta pasta. O workspace externo é a única área de escrita para a atividade do agente.\n", encoding="utf-8", newline="\n")
     instructions = directory / "instructions.md"
@@ -138,6 +134,8 @@ def ensure_shikigami_definition(root: Path) -> None:
 
 def default_system() -> dict[str, object]:
     return {
+        "shikigami_identity": "",
+        "shikigami_installed": False,
         "executable": "codex",
         "model": "gpt-5.6-terra",
         "model_reasoning_effort": "medium",
@@ -154,6 +152,10 @@ def load_system(root: Path) -> dict[str, object]:
     try: raw = tomllib.loads(path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError: return default_system()
     values = default_system()
+    shikigami = raw.get("shikigami", {})
+    if isinstance(shikigami, dict):
+        if isinstance(shikigami.get("identity"), str): values["shikigami_identity"] = shikigami["identity"].strip()
+        if isinstance(shikigami.get("installed"), bool): values["shikigami_installed"] = shikigami["installed"]
     for key, value in raw.get("codex", {}).items():
         if key in values and isinstance(value, str): values[key] = value
         if key == "additional_writable_directories" and isinstance(value, list) and all(isinstance(item, str) for item in value): values[key] = value
@@ -161,7 +163,8 @@ def load_system(root: Path) -> dict[str, object]:
 
 
 def render_system(data: dict[str, object]) -> str:
-    return "\n".join(["schema_version = 1", "", "[codex]", *[f"{key} = {json.dumps(data[key], ensure_ascii=False)}" for key in default_system()]]) + "\n"
+    codex_keys = tuple(key for key in default_system() if not key.startswith("shikigami_"))
+    return "\n".join(["schema_version = 1", "", "[shikigami]", f"identity = {json.dumps(data['shikigami_identity'], ensure_ascii=False)}", f"installed = {str(bool(data['shikigami_installed'])).lower()}", "", "[codex]", *[f"{key} = {json.dumps(data[key], ensure_ascii=False)}" for key in codex_keys]]) + "\n"
 
 
 def replace_block(text: str, begin: str, end: str, block: str) -> str:
@@ -180,6 +183,9 @@ def render_codex_system(data: dict[str, object]) -> str:
 
 
 def validate_system(data: dict[str, object], require_ready: bool = False) -> tuple[bool, str]:
+    if not isinstance(data.get("shikigami_identity"), str): return False, "Nome do Shikigami inválido."
+    if not isinstance(data.get("shikigami_installed"), bool): return False, "Estado de instalação do Shikigami inválido."
+    if data["shikigami_installed"] and not str(data["shikigami_identity"]).strip(): return False, "Informe o nome do Shikigami antes de concluir a instalação."
     if not data["model"].strip(): return False, "Informe um modelo do Codex."
     if data["model_reasoning_effort"] not in REASONING_EFFORTS: return False, "Esforço de raciocínio inválido."
     if data["sandbox_mode"] not in SANDBOXES: return False, "Modo de sandbox inválido."
@@ -198,9 +204,9 @@ def validate_system(data: dict[str, object], require_ready: bool = False) -> tup
     return True, "Configuração do Codex-CLI válida." if project else "Configuração salva; defina a pasta do projeto antes de executar o Codex."
 
 
-def save_system(root: Path, data: dict[str, object]) -> tuple[bool, str]:
+def save_system(root: Path, data: dict[str, object], validate: bool = True) -> tuple[bool, str]:
     valid, message = validate_system(data)
-    if not valid: return False, message
+    if validate and not valid: return False, message
     system, codex = system_path(root), config_path(root)
     old_system = system.read_text(encoding="utf-8") if system.exists() else None
     old_codex = codex.read_text(encoding="utf-8") if codex.exists() else None
@@ -215,7 +221,58 @@ def save_system(root: Path, data: dict[str, object]) -> tuple[bool, str]:
         if old_codex is None: codex.unlink(missing_ok=True)
         else: codex.write_text(old_codex, encoding="utf-8", newline="\n")
         return False, f"Falha ao salvar; alteração desfeita: {error}"
-    return True, message
+    return True, message if valid else "Configuração inicial salva."
+
+
+def legacy_instance_identity(root: Path) -> str:
+    try:
+        data = tomllib.loads((root / "shikigami" / "instance.toml").read_text(encoding="utf-8"))
+        value = data.get("shikigami", {}).get("identity", "")
+        return " ".join(value.split()) if isinstance(value, str) else ""
+    except (OSError, tomllib.TOMLDecodeError, AttributeError):
+        return ""
+
+
+def remove_legacy_instance_file(root: Path) -> None:
+    """Remove a definição legada somente depois de persistir a configuração local."""
+    legacy = root / "shikigami" / "instance.toml"
+    if legacy.is_file() and not legacy.is_symlink(): legacy.unlink()
+
+
+def ensure_shikigami_configuration(root: Path) -> tuple[dict[str, object] | None, str]:
+    """Inicializa ou migra a seção local do Shikigami sem perder a configuração Codex."""
+    data, legacy = load_system(root), legacy_instance_identity(root)
+    path = system_path(root)
+    try: raw = tomllib.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except tomllib.TOMLDecodeError: raw = {}
+    section = raw.get("shikigami", {}) if isinstance(raw, dict) else {}
+    needs_save = not isinstance(section, dict) or not isinstance(section.get("identity"), str) or not isinstance(section.get("installed"), bool)
+    if legacy and not str(data["shikigami_identity"]):
+        data["shikigami_identity"], data["shikigami_installed"], needs_save = legacy, True, True
+    if needs_save:
+        ok, message = save_system(root, data, validate=False)
+        if not ok: return None, message
+    if bool(data["shikigami_installed"]) and str(data["shikigami_identity"]): remove_legacy_instance_file(root)
+    return data, "Configuração inicial pronta."
+
+
+def initial_installation_wizard(root: Path, data: dict[str, object]) -> dict[str, object] | None:
+    """Coleta o primeiro e único requisito da instalação inicial do Shikigami."""
+    while True:
+        screen("Instalação inicial", "Identidade do Shikigami")
+        note("Informe o nome exibido pelo Shikigami. Digite X para cancelar.")
+        raw = prompt("Nome do Shikigami: ").strip()
+        if raw.casefold() in {"x", "\x1b"}: return None
+        identity = " ".join(raw.split())
+        if not identity:
+            result(False, "Informe um nome não vazio.")
+            continue
+        candidate = dict(data); candidate["shikigami_identity"], candidate["shikigami_installed"] = identity, True
+        ok, message = save_system(root, candidate, validate=False)
+        if ok:
+            remove_legacy_instance_file(root)
+            return candidate
+        result(False, message)
 
 
 def legacy_enabled_ids(root: Path) -> set[str]:
@@ -1159,7 +1216,20 @@ def menu(skills: list[Skill], root: Path) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(); parser.add_argument("--action", choices=["menu", "list", "enable", "disable", "configure", "status"], default="menu"); parser.add_argument("--skill"); parser.add_argument("--json", action="store_true"); args = parser.parse_args()
-    ensure_shikigami_definition(ROOT)
+    system, message = ensure_shikigami_configuration(ROOT)
+    if system is None:
+        if args.json: print(json.dumps({"ok": False, "error": {"code": "system_configuration_failed", "message": message}}, ensure_ascii=False))
+        else: result(False, message)
+        return 2
+    if not bool(system["shikigami_installed"]):
+        if args.action != "menu":
+            message = "A instalação inicial do Shikigami está pendente; execute o setup sem --action para concluí-la."
+            if args.json: print(json.dumps({"ok": False, "error": {"code": "initial_installation_pending", "message": message}}, ensure_ascii=False))
+            else: print(message)
+            return 2
+        system = initial_installation_wizard(ROOT, system)
+        if system is None: return 0
+    ensure_shikigami_resources(ROOT)
     skills = discover(); by_id = {skill.identifier: skill for skill in skills if skill.identifier not in conflicting_skill_ids(skills)}
     initialized, initialization_message = ensure_skill_state(ROOT, skills)
     if not initialized:

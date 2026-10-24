@@ -43,7 +43,7 @@ def config_path(root: Path) -> Path:
 
 def shikigami_identity(root: Path) -> str:
     try:
-        data = tomllib.loads((root / "shikigami" / "instance.toml").read_text(encoding="utf-8"))
+        data = tomllib.loads((root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8"))
         identity = data.get("shikigami", {}).get("identity", "")
         if isinstance(identity, str) and identity.strip():
             return identity.strip()

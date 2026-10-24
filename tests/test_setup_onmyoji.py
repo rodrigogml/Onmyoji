@@ -31,6 +31,46 @@ class SystemSetupTests(unittest.TestCase):
             self.assertEqual(MODULE.prompt("Opção: "), "x")
         input_mock.assert_called_once_with("› Opção: ")
 
+    def test_initial_configuration_starts_uninstalled_without_instance_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data, message = MODULE.ensure_shikigami_configuration(root)
+            self.assertIsNotNone(data, message)
+            self.assertEqual(data["shikigami_identity"], "")
+            self.assertFalse(data["shikigami_installed"])
+            rendered = MODULE.system_path(root).read_text(encoding="utf-8")
+            self.assertIn("[shikigami]", rendered)
+            self.assertIn("installed = false", rendered)
+            self.assertFalse((root / "shikigami" / "instance.toml").exists())
+
+    def test_wizard_normalizes_name_and_creates_shikigami_resources(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch("builtins.input", return_value="  Exemplo   da   Silva "):
+            root = Path(temporary)
+            data, _message = MODULE.ensure_shikigami_configuration(root)
+            installed = MODULE.initial_installation_wizard(root, data)
+            self.assertIsNotNone(installed)
+            self.assertEqual(installed["shikigami_identity"], "Exemplo da Silva")
+            self.assertTrue(installed["shikigami_installed"])
+            MODULE.ensure_shikigami_resources(root)
+            self.assertTrue((root / "shikigami" / "README.md").is_file())
+            self.assertFalse((root / "shikigami" / "instance.toml").exists())
+
+    def test_legacy_instance_identity_is_migrated_before_file_removal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); legacy = root / "shikigami" / "instance.toml"; legacy.parent.mkdir()
+            legacy.write_text('[shikigami]\nidentity = "  Legado   Nome "\nworkspace_directory_name = "unused"\n', encoding="utf-8")
+            data, message = MODULE.ensure_shikigami_configuration(root)
+            self.assertIsNotNone(data, message)
+            self.assertEqual(data["shikigami_identity"], "Legado Nome")
+            self.assertTrue(data["shikigami_installed"])
+            self.assertFalse(legacy.exists())
+
+    def test_noninteractive_actions_report_pending_initial_installation_without_prompting(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "ROOT", Path(temporary)), patch.object(sys, "argv", [str(SCRIPT), "--action", "status", "--json"]), patch.object(MODULE.sys, "stdout", io.StringIO()) as output:
+            self.assertEqual(MODULE.main(), 2)
+            response = json.loads(output.getvalue())
+            self.assertEqual(response["error"]["code"], "initial_installation_pending")
+
     def test_system_settings_are_local_and_applied_to_codex_config(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -64,6 +64,13 @@ def test_instance_installation_and_service_identity_are_local(tmp_path, monkeypa
     assert Supervisor(root).services["mini-apps"].enabled
 
 
+def test_instance_identity_comes_from_local_system_configuration(tmp_path):
+    configs = tmp_path / "configs"; configs.mkdir()
+    (configs / "onmyoji-system.toml").write_text('[shikigami]\nidentity = "Nome Local"\ninstalled = true\n', encoding="utf-8")
+    assert default_service_name(tmp_path) == "Shikigami-NomeLocal"
+    assert default_service_description(tmp_path) == "Shikigami Nome Local Daemon"
+
+
 def test_runtime_install_creates_private_environment(tmp_path, monkeypatch):
     executable = tmp_path / "configs" / "daemon" / "venv" / "Scripts" / "python.exe"
     monkeypatch.setattr(management, "daemon_python", lambda _root: executable)
