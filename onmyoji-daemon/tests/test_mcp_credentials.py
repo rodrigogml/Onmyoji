@@ -84,7 +84,7 @@ def test_linux_uses_configured_secret_provider_then_keepass(tmp_path, monkeypatc
     assert calls[1][1]["input"] == "master-password\n"
 
 
-@pytest.mark.parametrize("entry,field,code", [("APIs/Outro/token", "password", "entry_denied"), ("APIs/Todoist/example", "username", "invalid_field")])
+@pytest.mark.parametrize("entry,field,code", [("APIs/Outro/token", "password", "entry_denied"), ("APIs/Todoist/example", "invalid", "invalid_field")])
 def test_resolver_rejects_unpermitted_requests_before_starting_process(tmp_path, monkeypatch, entry, field, code):
     write_config(tmp_path)
     resolver = KeePassCredentialResolver(tmp_path)
@@ -179,3 +179,22 @@ def test_save_password_substitutes_existing_entry(tmp_path, monkeypatch):
     assert resolver.save_password("example", "APIs/Todoist/example", "replacement-token") is False
     assert [command[1] for command, _ in calls] == ["ls", "edit"]
     assert calls[-1][1]["input"] == "master-password\nreplacement-token\n"
+
+
+def test_resolver_reads_and_writes_username_field(tmp_path, monkeypatch):
+    write_config(tmp_path)
+    resolver = KeePassCredentialResolver(tmp_path)
+    monkeypatch.setattr("onmyoji_daemon.mcp.credentials.keepass._platform_name", lambda: "windows")
+    monkeypatch.setattr(resolver, "_windows_credential", lambda target: "master-password")
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout="APIs/Todoist/example\n" if command[1] == "ls" else "app-key\n" if command[1] == "show" else "")
+
+    monkeypatch.setattr("onmyoji_daemon.mcp.credentials.keepass.subprocess.run", run)
+
+    assert resolver.resolve("example", "APIs/Todoist/example", "username") == "app-key"
+    assert resolver.field_exists("example", "APIs/Todoist/example", "username") is True
+    assert resolver.save_field("example", "APIs/Todoist/example", "username", "new-app-key") is False
+    assert any("--username" in command for command, _ in calls)

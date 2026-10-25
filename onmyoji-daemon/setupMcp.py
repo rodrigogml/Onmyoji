@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 from onmyoji_daemon.mcp.configuration import McpConfiguration, McpConfigurationError
 from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialResolver
 from onmyoji_daemon.mcp.todoist import TodoistError, TodoistService
+from onmyoji_daemon.mcp.omie import OmieError, OmieService
 
 
 def ask(label: str, current: str = "", required: bool = False) -> str | None:
@@ -303,6 +304,62 @@ def configure_vault_password_entry(config: McpConfiguration, vault_profile: str,
         return entry, "password"
 
 
+def configure_vault_entry_fields(config: McpConfiguration, vault_profile: str, entry_path: str, integration_name: str, fields: list[tuple[str, str, str]]) -> tuple[str, dict[str, str]] | None:
+    """Configura campos de uma entrada KeePass sem revelar valores existentes."""
+    resolver = KeePassCredentialResolver(config.root)
+    entry = entry_path
+    while True:
+        try:
+            exists = resolver.entry_exists(vault_profile, entry)
+        except CredentialError as error:
+            result(False, str(error))
+            return None
+        configured: dict[str, str] = {}
+        restart = False
+        for profile_key, label, field in fields:
+            try:
+                has_value = exists and resolver.field_exists(vault_profile, entry, field)
+            except CredentialError as error:
+                result(False, str(error))
+                return None
+            if has_value:
+                options = [f"Usar {label} já salvo", f"Informar novo {label} e substituir o salvo", "Reinformar entrada KeePass"]
+                decision = choose(f"Credencial · {integration_name}", options, options[0])
+                if decision is None:
+                    return None
+                if decision.startswith("Reinformar"):
+                    restart = True
+                    break
+                if decision.startswith("Usar"):
+                    configured[profile_key] = field
+                    continue
+            else:
+                options = [f"Informar {label} e salvar nesta entrada", "Reinformar entrada KeePass"]
+                decision = choose(f"Credencial · {integration_name}", options, options[0])
+                if decision is None:
+                    return None
+                if decision.startswith("Reinformar"):
+                    restart = True
+                    break
+            secret = ask_integration_secret(f"{integration_name} · {label}")
+            if not secret:
+                result(False, f"{label} é obrigatório para atualizar a entrada.")
+                restart = True
+                break
+            try:
+                resolver.save_field(vault_profile, entry, field, secret)
+            except CredentialError as error:
+                result(False, str(error))
+                return None
+            exists = True
+            configured[profile_key] = field
+        if not restart:
+            return entry, configured
+        entry = ask("Entrada KeePass da chave", entry, True)
+        if not entry:
+            return None
+
+
 def manage_todoist_profile(config: McpConfiguration, name: str) -> None:
     """Mantém o operador no perfil Todoist até voltar ou removê-lo."""
     while True:
@@ -403,18 +460,131 @@ def todoist_menu(config: McpConfiguration) -> None:
             except McpConfigurationError as error: result(False, str(error))
 
 
+def manage_omie_profile(config: McpConfiguration, name: str) -> None:
+    """Mantém o operador no perfil Omie até voltar ou removê-lo."""
+    while True:
+        data = config.omie()
+        profile = data["profiles"].get(name)
+        if not isinstance(profile, dict):
+            return
+        screen("MCP · Perfil Omie", name)
+        item("1.", "Alterar perfil de vault")
+        item("2.", "Alterar entrada e credenciais")
+        item("3.", "Alterar descrição")
+        item("4.", "Habilitar")
+        item("5.", "Desabilitar")
+        item("6.", "Testar conexão")
+        item("7.", "Remover perfil")
+        item("X.", "Voltar")
+        action = prompt("Opção: ").strip().casefold()
+        if action in {"x", "\x1b"}:
+            return
+        if action == "1":
+            vault = select("Escolha o perfil de vault", config.vault_profile_names())
+            if not vault:
+                continue
+            credential = configure_vault_entry_fields(config, vault, profile["credential_entry_path"], "Omie", [("app_key_field", "app_key", profile["app_key_field"]), ("app_secret_field", "app_secret", profile["app_secret_field"])])
+            if credential is None:
+                continue
+            profile["credential_profile"] = vault
+            profile["credential_entry_path"], fields = credential
+            profile.update(fields)
+        elif action == "2":
+            entry = ask("Entrada KeePass das credenciais", profile["credential_entry_path"], True)
+            if not entry:
+                continue
+            credential = configure_vault_entry_fields(config, profile["credential_profile"], entry, "Omie", [("app_key_field", "app_key", profile["app_key_field"]), ("app_secret_field", "app_secret", profile["app_secret_field"])])
+            if credential is None:
+                continue
+            profile["credential_entry_path"], fields = credential
+            profile.update(fields)
+        elif action == "3":
+            description = ask("Descrição", profile["description"], True)
+            if not description:
+                continue
+            profile["description"] = description
+        elif action == "4": profile["enabled"] = True
+        elif action == "5": profile["enabled"] = False
+        elif action == "6":
+            try: result(OmieService(config.root).test_connection(name)["authenticated"], "Conexão confirmada.")
+            except OmieError as error: result(False, str(error))
+            continue
+        elif action == "7":
+            confirmation = ask("Digite REMOVER para confirmar", required=True)
+            if confirmation is None or confirmation.casefold() != "remover":
+                result(False, "Perfil Omie não removido.")
+                continue
+            del data["profiles"][name]
+            try:
+                config.save_omie(data)
+                result(True, "Perfil Omie removido.")
+            except McpConfigurationError as error:
+                result(False, f"Perfil Omie não removido: {error}")
+                continue
+            return
+        else:
+            result(False, "Opção inválida.")
+            continue
+        try:
+            config.save_omie(data)
+            result(True, "Perfil Omie atualizado.")
+        except McpConfigurationError as error:
+            result(False, str(error))
+
+
+def omie_menu(config: McpConfiguration) -> None:
+    """Configura perfis Omie que compartilham o cofre MCP."""
+    while True:
+        data = config.omie(); names = sorted(data["profiles"]); status = "ATIVA" if config.omie_tool_available() else "inativa"
+        screen("MCP · Omie", f"Integração MCP · {status}")
+        item("1.", "Criar perfil")
+        item("2.", "Gerenciar perfil", f"{len(names)} configurado(s)")
+        item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
+        if choice in {"x", "\x1b"}:
+            return
+        if choice == "1":
+            name = ask("Nome do perfil Omie", required=True); vault = select("Escolha o perfil de vault", config.vault_profile_names())
+            if not name or not vault or name in data["profiles"]:
+                result(False, "Nome inválido, repetido ou retorno solicitado.")
+                continue
+            entry = ask("Entrada KeePass das credenciais", f"APIs/Omie/{name}", True)
+            if not entry:
+                result(False, "Perfil Omie inválido.")
+                continue
+            credential = configure_vault_entry_fields(config, vault, entry, "Omie", [("app_key_field", "app_key", "username"), ("app_secret_field", "app_secret", "password")])
+            if credential is None:
+                continue
+            entry, fields = credential
+            description = ask("Descrição de quando utilizar este perfil", required=True)
+            if not description:
+                result(False, "Perfil Omie inválido.")
+                continue
+            data["profiles"][name] = {"enabled": True, "description": description, "credential_profile": vault, "credential_entry_path": entry, **fields}
+            try: config.save_omie(data); result(True, "Perfil Omie atualizado.")
+            except McpConfigurationError as error: result(False, str(error))
+        elif choice == "2" and (name := select("MCP · Gerenciar perfil Omie", names)):
+            manage_omie_profile(config, name)
+        else:
+            result(False, "Opção inválida.")
+
+
 def integrations_menu(config: McpConfiguration) -> None:
     """Lista integrações MCP e mantém cada configurador em seu próprio menu."""
     while True:
         todoist_profiles = config.todoist()["profiles"]
+        omie_profiles = config.omie()["profiles"]
         screen("MCP · Integrações", "Selecione uma integração para configurar")
         integration_item("1.", "Todoist", todoist_profiles)
+        integration_item("2.", "Omie", omie_profiles)
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}:
             return
         if choice == "1":
             todoist_menu(config)
+        elif choice == "2":
+            omie_menu(config)
         else:
             result(False, "Opção inválida.")
 

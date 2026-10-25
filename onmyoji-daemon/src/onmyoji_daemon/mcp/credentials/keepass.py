@@ -71,7 +71,7 @@ class KeePassCredentialResolver:
         """
         profile_id = _require_string(profile_name, "invalid_profile", "Perfil de credencial inválido.")
         requested_entry = _require_string(entry_path, "invalid_entry", "Entrada de credencial inválida.")
-        if field not in {"password", "notes", "totp"}:
+        if field not in {"username", "password", "url", "notes", "totp"}:
             raise CredentialError("invalid_field", "Campo de credencial não permitido.")
 
         defaults, profile, vault = self._settings(profile_id)
@@ -135,14 +135,20 @@ class KeePassCredentialResolver:
         de retornar. Assim o configurador pode oferecer reutilização somente
         quando há de fato uma chave salva.
         """
+        return self.field_exists(profile_name, entry_path, "password")
+
+    def field_exists(self, profile_name: str, entry_path: str, field: str) -> bool:
+        """Informa se uma entrada possui um campo secreto não vazio."""
         profile_id = _require_string(profile_name, "invalid_profile", "Perfil de credencial inválido.")
         requested_entry = _require_string(entry_path, "invalid_entry", "Entrada de credencial inválida.")
+        if field not in {"username", "password", "url", "notes"}:
+            raise CredentialError("invalid_field", "Campo de credencial não permitido para gravação.")
         defaults, profile, vault = self._settings(profile_id)
         self._require_allowed_entry(profile, requested_entry)
         password = self._master_password(profile)
         try:
             try:
-                value = self._read_secret(vault, defaults, requested_entry, "password", password)
+                value = self._read_secret(vault, defaults, requested_entry, field, password)
             except CredentialError as error:
                 if error.code == "secret_not_found":
                     return False
@@ -162,19 +168,25 @@ class KeePassCredentialResolver:
         Raises:
             CredentialError: Quando não for possível ler ou gravar o cofre.
         """
+        return self.save_field(profile_name, entry_path, "password", password_value)
+
+    def save_field(self, profile_name: str, entry_path: str, field: str, value: str) -> bool:
+        """Cria ou substitui um campo padrão de uma entrada permitida."""
         profile_id = _require_string(profile_name, "invalid_profile", "Perfil de credencial inválido.")
         requested_entry = _require_string(entry_path, "invalid_entry", "Entrada de credencial inválida.")
-        secret = _require_string(password_value, "invalid_secret", "A chave de autenticação é obrigatória.")
+        if field not in {"username", "password", "url", "notes"}:
+            raise CredentialError("invalid_field", "Campo de credencial não permitido para gravação.")
+        secret = _require_string(value, "invalid_secret", "A chave de autenticação é obrigatória.")
         defaults, profile, vault = self._settings(profile_id)
         self._require_allowed_entry(profile, requested_entry)
         password = self._master_password(profile)
         try:
             exists = self._entry_exists(vault, defaults, requested_entry, password)
             if exists:
-                self._edit_password(vault, defaults, requested_entry, password, secret)
+                self._edit_field(vault, defaults, requested_entry, password, field, secret)
             else:
                 self._ensure_parent_groups(vault, defaults, requested_entry, password)
-                self._add_password(vault, defaults, requested_entry, password, secret)
+                self._add_field(vault, defaults, requested_entry, password, field, secret)
             return not exists
         finally:
             del password
@@ -268,7 +280,7 @@ class KeePassCredentialResolver:
         if field == "totp":
             arguments += ["--totp", database_path, entry_path]
         else:
-            attribute = "Password" if field == "password" else "Notes"
+            attribute = {"username": "UserName", "password": "Password", "url": "URL", "notes": "Notes"}[field]
             arguments += ["--show-protected", "-a", attribute, database_path, entry_path]
         try:
             result = subprocess.run(arguments, input=password + "\n", text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=timeout)
@@ -359,12 +371,22 @@ class KeePassCredentialResolver:
                 groups.add(group)
 
     @classmethod
-    def _add_password(cls, vault: dict[str, Any], defaults: dict[str, Any], entry_path: str, password: str, secret: str) -> None:
-        cls._run_write_command(vault, defaults, ["add", "-q", "__DATABASE__", entry_path, "--password-prompt"], password, secret + "\n")
+    def _add_field(cls, vault: dict[str, Any], defaults: dict[str, Any], entry_path: str, password: str, field: str, secret: str) -> None:
+        if field == "password":
+            arguments, extra = ["add", "-q", "__DATABASE__", entry_path, "--password-prompt"], secret + "\n"
+        else:
+            flag = {"username": "--username", "url": "--url", "notes": "--notes"}[field]
+            arguments, extra = ["add", "-q", "__DATABASE__", entry_path, flag, secret], ""
+        cls._run_write_command(vault, defaults, arguments, password, extra)
 
     @classmethod
-    def _edit_password(cls, vault: dict[str, Any], defaults: dict[str, Any], entry_path: str, password: str, secret: str) -> None:
-        cls._run_write_command(vault, defaults, ["edit", "-q", "__DATABASE__", entry_path, "--password-prompt"], password, secret + "\n")
+    def _edit_field(cls, vault: dict[str, Any], defaults: dict[str, Any], entry_path: str, password: str, field: str, secret: str) -> None:
+        if field == "password":
+            arguments, extra = ["edit", "-q", "__DATABASE__", entry_path, "--password-prompt"], secret + "\n"
+        else:
+            flag = {"username": "--username", "url": "--url", "notes": "--notes"}[field]
+            arguments, extra = ["edit", "-q", "__DATABASE__", entry_path, flag, secret], ""
+        cls._run_write_command(vault, defaults, arguments, password, extra)
 
     @staticmethod
     def _check_access(vault: dict[str, Any], defaults: dict[str, Any], password: str) -> None:

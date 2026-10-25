@@ -14,6 +14,11 @@ from .reconciliation import McpReconciliation
 from .todoist import todoist_config_path
 
 
+def omie_config_path(onmyoji_root: Path) -> Path:
+    """Retorna a configuração privada da integração Omie para o MCP."""
+    return onmyoji_root.resolve() / "configs" / "mcp" / "omie.toml"
+
+
 class McpConfigurationError(ValueError):
     """Informa um erro seguro de configuração que pode ser exibido ao operador."""
 
@@ -24,6 +29,10 @@ def empty_credentials() -> dict[str, Any]:
 
 def empty_todoist() -> dict[str, Any]:
     return {"schema_version": 1, "defaults": {"api_base": "https://api.todoist.com/api/v1", "timeout_seconds": 30, "max_retries": 2}, "profiles": {}}
+
+
+def empty_omie() -> dict[str, Any]:
+    return {"schema_version": 1, "defaults": {"timeout_seconds": 30, "max_retries": 2}, "profiles": {}}
 
 
 def _quote(value: str) -> str:
@@ -59,11 +68,18 @@ class McpConfiguration:
     def todoist_path(self) -> Path:
         return todoist_config_path(self.root)
 
+    @property
+    def omie_path(self) -> Path:
+        return omie_config_path(self.root)
+
     def credentials(self) -> dict[str, Any]:
         return self._load(self.credentials_path, empty_credentials())
 
     def todoist(self) -> dict[str, Any]:
         return self._load(self.todoist_path, empty_todoist())
+
+    def omie(self) -> dict[str, Any]:
+        return self._load(self.omie_path, empty_omie())
 
     def save_credentials(self, data: dict[str, Any]) -> None:
         self._validate_credentials(data)
@@ -73,6 +89,11 @@ class McpConfiguration:
     def save_todoist(self, data: dict[str, Any]) -> None:
         self._validate_todoist(data)
         self._save(self.todoist_path, self._render_todoist(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def save_omie(self, data: dict[str, Any]) -> None:
+        self._validate_omie(data)
+        self._save(self.omie_path, self._render_omie(data))
         McpReconciliation(self.root).mark_pending()
 
     def vault_profile_names(self) -> list[str]:
@@ -89,9 +110,20 @@ class McpConfiguration:
             return False
         return False
 
+    def omie_tool_available(self) -> bool:
+        try:
+            vault_profiles = self.credentials()["profiles"]
+            return any(profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles for profile in self.omie()["profiles"].values())
+        except (KeyError, McpConfigurationError):
+            return False
+
     def enabled_todoist_profiles(self) -> list[dict[str, str]]:
         vault_profiles = self.credentials()["profiles"]
         return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.todoist()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
+
+    def enabled_omie_profiles(self) -> list[dict[str, str]]:
+        vault_profiles = self.credentials()["profiles"]
+        return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.omie()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
 
     @staticmethod
     def _load(path: Path, empty: dict[str, Any]) -> dict[str, Any]:
@@ -167,6 +199,23 @@ class McpConfiguration:
             if allowed is not None and (not isinstance(allowed, list) or not all(isinstance(item, str) for item in allowed)):
                 raise McpConfigurationError("Operações Todoist legadas inválidas.")
 
+    def _validate_omie(self, data: dict[str, Any]) -> None:
+        if data.get("schema_version") != 1 or not isinstance(data.get("defaults"), dict) or not isinstance(data.get("profiles"), dict):
+            raise McpConfigurationError("Estrutura de perfis Omie inválida.")
+        defaults = data["defaults"]
+        if not isinstance(defaults.get("timeout_seconds"), int) or defaults["timeout_seconds"] <= 0 or not isinstance(defaults.get("max_retries"), int) or defaults["max_retries"] < 0:
+            raise McpConfigurationError("Timeout ou tentativas Omie inválidos.")
+        for name, profile in data["profiles"].items():
+            _profile_name(name)
+            if not isinstance(profile, dict) or type(profile.get("enabled")) is not bool:
+                raise McpConfigurationError("Estado do perfil Omie inválido.")
+            if not isinstance(profile.get("description"), str) or not 1 <= len(profile["description"].strip()) <= 240:
+                raise McpConfigurationError("Descrição do perfil Omie é obrigatória e deve ter até 240 caracteres.")
+            if not all(isinstance(profile.get(key), str) and profile[key] for key in ("credential_profile", "credential_entry_path", "app_key_field", "app_secret_field")):
+                raise McpConfigurationError("Referência de vault do perfil Omie incompleta.")
+            if profile["app_key_field"] not in {"username", "password", "url", "notes"} or profile["app_secret_field"] not in {"username", "password", "url", "notes"}:
+                raise McpConfigurationError("Campos KeePass do perfil Omie inválidos.")
+
     @staticmethod
     def _render_credentials(data: dict[str, Any]) -> str:
         lines = ["schema_version = 1", "", "[defaults]", f"timeout_seconds = {data['defaults']['timeout_seconds']}"]
@@ -183,4 +232,12 @@ class McpConfiguration:
         lines = ["schema_version = 1", "", "[defaults]", f"api_base = {_quote(defaults['api_base'])}", f"timeout_seconds = {defaults['timeout_seconds']}", f"max_retries = {defaults['max_retries']}"]
         for name, profile in sorted(data["profiles"].items()):
             lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"credential_profile = {_quote(profile['credential_profile'])}", f"credential_entry_path = {_quote(profile['credential_entry_path'])}", f"credential_field = {_quote(profile['credential_field'])}"]
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _render_omie(data: dict[str, Any]) -> str:
+        defaults = data["defaults"]
+        lines = ["schema_version = 1", "", "[defaults]", f"timeout_seconds = {defaults['timeout_seconds']}", f"max_retries = {defaults['max_retries']}"]
+        for name, profile in sorted(data["profiles"].items()):
+            lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"credential_profile = {_quote(profile['credential_profile'])}", f"credential_entry_path = {_quote(profile['credential_entry_path'])}", f"app_key_field = {_quote(profile['app_key_field'])}", f"app_secret_field = {_quote(profile['app_secret_field'])}"]
         return "\n".join(lines) + "\n"

@@ -38,3 +38,20 @@ def test_empty_profile_tables_remain_available_after_saving_and_reloading(tmp_pa
     assert reloaded.credentials()["profiles"] == {}
     assert reloaded.vault_profile_names() == []
     assert reloaded.todoist_tool_available() is False
+
+
+def test_omie_tool_depends_on_enabled_profile_and_existing_vault_profile(tmp_path):
+    config = McpConfiguration(tmp_path)
+    credentials = config.credentials()
+    credentials["vaults"]["vault-a"] = {"cli_command": ["keepassxc-cli"], "database": {"windows": "C:/vault.kdbx", "linux": "/vault.kdbx"}}
+    credentials["profiles"]["vault-a"] = {"vault": "vault-a", "allowed_entry_roots": [], "auth": {"windows": {"mode": "windows_credential_manager", "target": "test"}, "linux": {"mode": "command", "command": ["secret-tool"]}}}
+    config.save_credentials(credentials)
+    omie = config.omie()
+    omie["profiles"]["account-a"] = {"enabled": False, "description": "ERP de teste.", "credential_profile": "vault-a", "credential_entry_path": "APIs/Omie/account-a", "app_key_field": "username", "app_secret_field": "password"}
+    config.save_omie(omie)
+
+    assert config.omie_tool_available() is False
+    omie["profiles"]["account-a"]["enabled"] = True
+    config.save_omie(omie)
+    assert config.omie_tool_available() is True
+    assert config.enabled_omie_profiles() == [{"name": "account-a", "description": "ERP de teste."}]
