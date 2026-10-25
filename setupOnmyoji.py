@@ -1267,6 +1267,7 @@ def daemon_menu(root: Path) -> None:
         return
     environment = dict(os.environ); source = str(project / "src")
     environment["PYTHONPATH"] = source + (os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else "")
+    telegram_token_changed = False
 
     def command(arguments: list[str], quiet: bool = False, input_value: str | None = None) -> subprocess.CompletedProcess[str]:
         return subprocess.run(arguments, cwd=str(project), env=environment, text=True, encoding="utf-8", errors="replace", capture_output=quiet, input=input_value)
@@ -1436,10 +1437,11 @@ def daemon_menu(root: Path) -> None:
         except (json.JSONDecodeError, TypeError, AttributeError):
             return {}
 
-    def offer_restart() -> None:
+    def offer_restart(reason: str = "A alteração") -> None:
         if not daemon_running(): return
+        note(f"{reason} só entra em vigor no gateway após reiniciar o daemon.")
         answer = prompt("O daemon está em execução; reiniciar agora para efetivar a alteração? [S/n]: ").strip().casefold()
-        if answer not in {"", "s", "sim"}: result(False, "Alteração salva; reinicie o daemon depois para aplicá-la."); return
+        if answer not in {"", "s", "sim"}: result(False, f"{reason} foi salva, mas o gateway continua com a configuração anterior até o próximo reinício."); return
         if service_installed(): lifecycle("service-restart")
         elif lifecycle("process-stop"): lifecycle("process-start")
 
@@ -1736,6 +1738,10 @@ def daemon_menu(root: Path) -> None:
                 profile = values[int(selected)-1]
                 while True:
                     entry = prompt(f"Entrada KeePass [{default_entry}]: ").strip() or default_entry
+                    try:
+                        current = tomllib.loads(telegram_path.read_text(encoding="utf-8")).get("telegram", {})
+                        reference_changed = (str(current.get("keepass_profile") or ""), str(current.get("token_entry") or "")) != (profile, entry)
+                    except (OSError, tomllib.TOMLDecodeError, AttributeError): reference_changed = True
                     saved = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-credential", "--profile", profile, "--entry", entry], quiet=True)
                     if saved.returncode != 0: result(False, (saved.stdout or saved.stderr).strip()); break
                     checked = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "check-entry", "--profile", profile, "--entry", entry], quiet=True)
@@ -1744,7 +1750,10 @@ def daemon_menu(root: Path) -> None:
                     if exists:
                         result(True, detail)
                         action = prompt("Utilizar a entrada existente [U], substituir seu token [S] ou corrigir a chave [C]? [U]: ").strip().casefold() or "u"
-                        if action == "u": result(True, "Credencial configurada com a entrada existente."); break
+                        if action == "u":
+                            result(True, "Credencial configurada com a entrada existente.")
+                            if reference_changed: offer_restart("A referência da credencial do bot")
+                            break
                         if action == "c": continue
                         if action != "s": result(False, "Escolha U, S ou C."); continue
                     else:
@@ -1756,7 +1765,9 @@ def daemon_menu(root: Path) -> None:
                     token = getpass.getpass(Ui.text("› Token do bot (não será exibido): ", Ui.violet, Ui.bold))
                     written = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "write-token", "--profile", profile, "--entry", entry], quiet=True, input_value=token)
                     result(written.returncode == 0, (written.stdout or written.stderr).strip())
-                    if written.returncode == 0: break
+                    if written.returncode == 0:
+                        offer_restart("A nova credencial do bot")
+                        break
             elif choice == "3":
                 tested = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-telegram"], quiet=True)
                 result(tested.returncode == 0, (tested.stdout or tested.stderr).strip())
@@ -1856,6 +1867,7 @@ def daemon_menu(root: Path) -> None:
 
     def configure_wizard_telegram_credential() -> bool:
         """Configura a credencial com os valores existentes, sem desviar ao menu manual."""
+        nonlocal telegram_token_changed
         path = root / "shikigami" / "daemon" / "telegram.toml"
         try:
             settings = tomllib.loads(path.read_text(encoding="utf-8")); telegram = settings.get("telegram", {})
@@ -1883,6 +1895,7 @@ def daemon_menu(root: Path) -> None:
             token = getpass.getpass(Ui.text("› Token do bot (não será exibido): ", Ui.violet, Ui.bold))
             written = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "write-token", "--profile", profile, "--entry", entry], quiet=True, input_value=token)
             if written.returncode != 0: result(False, (written.stdout or written.stderr).strip()); return False
+            telegram_token_changed = True
         else: result(True, detail)
         tested = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-telegram"], quiet=True)
         result(tested.returncode == 0, (tested.stdout or tested.stderr).strip())
@@ -1890,6 +1903,8 @@ def daemon_menu(root: Path) -> None:
 
     def telegram_wizard() -> None:
         """Conduz a configuração mínima do gateway, preservando cada etapa válida."""
+        nonlocal telegram_token_changed
+        telegram_token_changed = False
         screen("Wizard do Telegram", "Configuração guiada do gateway e do primeiro owner")
         note("Cada etapa válida é mantida. O pareamento exige uma ação externa no Telegram e pode ser retomado depois.")
         print("\n  1. Pré-requisitos do Shikigami e daemon")
@@ -1913,6 +1928,8 @@ def daemon_menu(root: Path) -> None:
         if not configure_wizard_telegram_credential(): return
 
         print("\n  5. Codex App Server")
+        if telegram_token_changed:
+            note("A nova credencial do bot foi salva. Ela será aplicada quando o wizard reiniciar o daemon no passo 7.")
         try:
             platform = tomllib.loads((root / "configs" / "daemon" / "daemon.toml").read_text(encoding="utf-8"))
             current_idle = max(1, int(platform.get("app_server", {}).get("idle_timeout_seconds") or 1800) // 60)
