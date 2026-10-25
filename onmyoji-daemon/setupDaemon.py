@@ -121,6 +121,36 @@ def profiles(root: Path) -> list[str]:
     return sorted(name for name, value in values.items() if name != "example" and isinstance(value, dict)) if isinstance(values, dict) else []
 
 
+def keepass_validation(root: Path) -> list[dict[str, str]]:
+    """Verifica a dependência KeePass antes de qualquer uso de credenciais."""
+    checks: list[dict[str, str]] = []
+    def add(state: str, label: str, detail: str) -> None: checks.append({"state": state, "label": label, "detail": detail})
+    source = root / "available-skills" / "keepass-vault"
+    active = root / "skills" / "keepass-vault"
+    state_path = root / "configs" / "onmyoji-skills.toml"
+    try:
+        state = tomllib.loads(state_path.read_text(encoding="utf-8"))
+        enabled_ids = state.get("skills", {}).get("enabled", [])
+        enabled = isinstance(enabled_ids, list) and "keepass-vault" in enabled_ids
+    except (OSError, tomllib.TOMLDecodeError, AttributeError):
+        enabled = False
+    linked = (active.exists() or active.is_symlink()) and active.resolve() == source.resolve()
+    ready = source.is_dir() and enabled and linked
+    add("ok" if ready else "error", "Skill KeePass Vault", "Instalada e habilitada." if ready else "Instale e habilite a skill KeePass Vault antes de configurar o Telegram.")
+    path = root / "configs" / "keepass.toml"
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        valid = isinstance(data.get("vaults", {}), dict) and isinstance(data.get("profiles", {}), dict)
+        add("ok" if valid else "error", "Configuração KeePass Vault", "Configuração local válida." if valid else "A configuração KeePass não possui cofres ou perfis válidos.")
+    except FileNotFoundError:
+        data = {}; add("error", "Configuração KeePass Vault", "Configure ao menos um cofre e perfil na skill KeePass Vault.")
+    except tomllib.TOMLDecodeError as error:
+        data = {}; add("error", "Configuração KeePass Vault", f"TOML inválido: {error}")
+    available = sorted(name for name, value in data.get("profiles", {}).items() if name != "example" and isinstance(value, dict)) if isinstance(data.get("profiles", {}), dict) else []
+    add("ok" if available else "error", "Perfis KeePass Vault", f"{len(available)} perfil(is) disponível(is)." if available else "Crie um perfil KeePass utilizável antes de configurar o token do bot.")
+    return checks
+
+
 def telegram_data(root: Path) -> dict:
     return tomllib.loads(target(root).read_text(encoding="utf-8"))
 
@@ -406,6 +436,7 @@ def validation(root: Path) -> list[dict[str, str]]:
     checks: list[dict[str, str]] = []
     def add(state: str, label: str, detail: str = "") -> None: checks.append({"state": state, "label": label, "detail": detail})
     add("ok" if is_installed(root) else "pending", "Daemon da instância", "Instalado." if is_installed(root) else "Use Instalar daemon da instância.")
+    checks.extend(keepass_validation(root))
     path = target(root)
     try: data = tomllib.loads(path.read_text(encoding="utf-8")); add("ok", "Estrutura da configuração Telegram", "TOML válido.")
     except FileNotFoundError: add("pending", "Estrutura da configuração Telegram", "Abra Gateway Telegram para criar a configuração."); return checks
@@ -437,9 +468,13 @@ def validation(root: Path) -> list[dict[str, str]]:
         per_file, batch, retained = int(limits.get("max_attachment_bytes", 20 * 1024 * 1024)), int(limits.get("max_batch_attachment_bytes", 50 * 1024 * 1024)), int(limits.get("max_retained_attachment_bytes", 250 * 1024 * 1024))
         add("ok" if 1 <= per_file <= batch <= retained else "error", "Limites de anexos", f"Arquivo: {per_file // 1024 // 1024} MiB; mensagem: {batch // 1024 // 1024} MiB; retenção: {retained // 1024 // 1024} MiB." if 1 <= per_file <= batch <= retained else "Os limites devem obedecer arquivo ≤ mensagem ≤ retenção.")
     except (TypeError, ValueError): add("error", "Limites de anexos", "Os limites precisam ser números inteiros válidos.")
-    workspace = Path(str(tomllib.loads((root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8")).get("codex", {}).get("project_directory") or ""))
-    activity = workspace / ".onmyoji" / "telegram"
-    add("ok" if workspace.is_dir() else "error", "Área de anexos no workspace", str(activity) if workspace.is_dir() else "Configure primeiro o workspace do Shikigami; anexos nunca ficam no CODEX_HOME.")
+    try:
+        workspace = Path(str(tomllib.loads((root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8")).get("codex", {}).get("project_directory") or ""))
+        activity = workspace / ".onmyoji" / "telegram"
+        add("ok" if workspace.is_dir() else "error", "Área de anexos no workspace", str(activity) if workspace.is_dir() else "Configure primeiro o workspace do Shikigami; anexos nunca ficam no CODEX_HOME.")
+    except (OSError, tomllib.TOMLDecodeError, AttributeError):
+        workspace = Path(); activity = workspace / ".onmyoji" / "telegram"
+        add("error", "Área de anexos no workspace", "Configure primeiro o workspace do Shikigami; anexos nunca ficam no CODEX_HOME.")
     voice = data.get("voice_reply", {})
     if bool(voice.get("enabled", False)):
         profile_name, config = str(voice.get("eccovox_profile") or ""), root / "configs" / "eccovox.toml"
@@ -554,12 +589,13 @@ def test_telegram(root: Path) -> tuple[bool, str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--onmyoji-root", default=str(ROOT)); parser.add_argument("--action", choices=["bootstrap", "daemon-bootstrap", "validate", "validation-json", "daemon-validation-json", "instructions-status", "profiles", "set-runtime", "set-credential", "set-totp", "set-app-server", "set-owner-execution-preferences", "set-voice-reply", "check-entry", "write-token", "test-telegram", "test-agent"], default="bootstrap"); parser.add_argument("--profile"); parser.add_argument("--entry"); parser.add_argument("--real-entry"); parser.add_argument("--fake-entry"); parser.add_argument("--runtime-mode"); parser.add_argument("--python"); parser.add_argument("--base-python"); parser.add_argument("--enabled", action="store_true"); parser.add_argument("--disabled", action="store_true"); parser.add_argument("--idle-timeout", type=int); parser.add_argument("--auto-off-minutes", type=int); parser.add_argument("--agent-outbound-media", action="store_true"); parser.add_argument("--models", default=""); parser.add_argument("--efforts", default=""); args = parser.parse_args()
+    parser = argparse.ArgumentParser(); parser.add_argument("--onmyoji-root", default=str(ROOT)); parser.add_argument("--action", choices=["bootstrap", "daemon-bootstrap", "validate", "validation-json", "keepass-validation-json", "daemon-validation-json", "instructions-status", "profiles", "set-runtime", "set-credential", "set-totp", "set-app-server", "set-owner-execution-preferences", "set-voice-reply", "check-entry", "write-token", "test-telegram", "test-agent"], default="bootstrap"); parser.add_argument("--profile"); parser.add_argument("--entry"); parser.add_argument("--real-entry"); parser.add_argument("--fake-entry"); parser.add_argument("--runtime-mode"); parser.add_argument("--python"); parser.add_argument("--base-python"); parser.add_argument("--enabled", action="store_true"); parser.add_argument("--disabled", action="store_true"); parser.add_argument("--idle-timeout", type=int); parser.add_argument("--auto-off-minutes", type=int); parser.add_argument("--agent-outbound-media", action="store_true"); parser.add_argument("--models", default=""); parser.add_argument("--efforts", default=""); args = parser.parse_args()
     root = Path(args.onmyoji_root).resolve()
     if args.action == "bootstrap": print(bootstrap(root)); return 0
     if args.action == "daemon-bootstrap": print(bootstrap_daemon(root)); return 0
     if args.action == "instructions-status": print(json.dumps(instruction_status(root), ensure_ascii=False)); return 0
     if args.action == "profiles": print(json.dumps(profiles(root), ensure_ascii=False)); return 0
+    if args.action == "keepass-validation-json": print(json.dumps(keepass_validation(root), ensure_ascii=False)); return 0
     if args.action == "set-runtime":
         if not args.runtime_mode or not args.python: parser.error("--runtime-mode e --python são obrigatórios")
         save_runtime(root, args.runtime_mode, args.python, args.base_python or args.python); print("Runtime do daemon salvo."); return 0

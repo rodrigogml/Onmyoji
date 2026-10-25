@@ -46,6 +46,19 @@ def test_validation_requires_an_absolute_codex_executable_for_services(tmp_path)
     assert executable["state"] == "error"
 
 
+def test_telegram_validation_reports_missing_keepass_skill_before_credentials(tmp_path):
+    module = setup_module(); module.bootstrap(tmp_path)
+
+    checks = module.validation(tmp_path)
+
+    skill = next(item for item in checks if item["label"] == "Skill KeePass Vault")
+    configuration = next(item for item in checks if item["label"] == "Configuração KeePass Vault")
+    profiles = next(item for item in checks if item["label"] == "Perfis KeePass Vault")
+    assert skill["state"] == "error"
+    assert configuration["state"] == "error"
+    assert profiles["state"] == "error"
+
+
 def test_daemon_bootstrap_prepares_only_the_platform(tmp_path):
     module = setup_module()
     manifest = tmp_path / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True)

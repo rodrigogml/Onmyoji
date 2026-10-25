@@ -1420,6 +1420,18 @@ def daemon_menu(root: Path) -> None:
         daemon_checks = validation("daemon-validation-json"); print_checks(daemon_checks)
         return all(check.get("state") == "ok" for check in [*main_checks, *daemon_checks])
 
+    def show_telegram_diagnosis() -> bool:
+        """Exibe dependências da plataforma antes das verificações do gateway."""
+        screen("Diagnóstico do Telegram", "Plataforma, KeePass Vault e estado do gateway")
+        print("\n  Diagnóstico principal do Shikigami")
+        main_checks = shikigami_diagnostics(root, lambda message: print("    → " + message)); print_checks(main_checks)
+        print("\n  Diagnóstico da plataforma do daemon")
+        daemon_checks = validation("daemon-validation-json"); print_checks(daemon_checks)
+        print("\n  Diagnóstico específico do Telegram")
+        telegram_checks = validation(); print_checks(telegram_checks)
+        required = {"Skill KeePass Vault", "Configuração KeePass Vault", "Perfis KeePass Vault", "Perfil KeePass", "Referência do token", "Codex App Server", "Execução do agente Codex", "Conexão Telegram"}
+        return all(check.get("state") == "ok" for check in telegram_checks if check.get("label") in required)
+
     def installed() -> bool: return (root / "configs" / "daemon" / "daemon.toml").is_file()
     def runtime_validated() -> bool:
         checks = validation("daemon-validation-json")
@@ -1626,9 +1638,9 @@ def daemon_menu(root: Path) -> None:
             elif choice == "2": service_menu()
             else: result(False, "Opção inválida.")
 
-    def telegram_menu() -> None:
+    def telegram_section_menu(section: str) -> None:
         while True:
-            telegram_path = root / "configs" / "daemon" / "services" / "telegram" / "telegram.toml"
+            telegram_path = root / "shikigami" / "daemon" / "telegram.toml"
             command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "bootstrap"], quiet=True)
             try:
                 enabled = bool(json.loads((root / "configs" / "daemon" / "services.json").read_text(encoding="utf-8")).get("telegram", {}).get("enabled", False))
@@ -1636,24 +1648,42 @@ def daemon_menu(root: Path) -> None:
             try:
                 telegram_settings = tomllib.loads(telegram_path.read_text(encoding="utf-8")); totp_enabled = bool(telegram_settings.get("totp", {}).get("enabled", False)); app_server_enabled = bool(telegram_settings.get("app_server", {}).get("enabled", False)); app_server_idle = int(telegram_settings.get("app_server", {}).get("idle_timeout_seconds") or 1800); voice_enabled = bool(telegram_settings.get("voice_reply", {}).get("enabled", False)); voice_profile = str(telegram_settings.get("voice_reply", {}).get("eccovox_profile") or ""); voice_auto_off = int(telegram_settings.get("voice_reply", {}).get("auto_off_minutes") or 15); outbound_media = bool(telegram_settings.get("voice_reply", {}).get("agent_outbound_media", False))
             except (OSError, tomllib.TOMLDecodeError): telegram_settings = {}; totp_enabled, app_server_enabled, app_server_idle, voice_enabled, voice_profile, voice_auto_off, outbound_media = False, False, 1800, False, "", 15, False
+            try:
+                daemon_settings = tomllib.loads((root / "configs" / "daemon" / "daemon.toml").read_text(encoding="utf-8"))
+                daemon_app_server = daemon_settings.get("app_server", {})
+                app_server_enabled = bool(daemon_app_server.get("enabled", False))
+                app_server_idle = int(daemon_app_server.get("idle_timeout_seconds") or 1800)
+            except (OSError, tomllib.TOMLDecodeError, AttributeError, TypeError, ValueError): pass
             agent_preferences = telegram_settings.get("agent", {}) if "telegram_settings" in locals() and isinstance(telegram_settings.get("agent", {}), dict) else {}
             owner_preferences = bool(agent_preferences.get("owner_execution_preferences", True)); owner_models = ";".join(str(value) for value in agent_preferences.get("owner_allowed_models", []) if isinstance(value, str)); owner_efforts = ";".join(str(value) for value in agent_preferences.get("owner_allowed_reasoning_efforts", []) if isinstance(value, str))
             instruction_settings = telegram_settings.get("instructions", {}) if isinstance(telegram_settings.get("instructions", {}), dict) else {}
             instruction_file = str(instruction_settings.get("shikigami_file") or "instructions.md")
-            screen("Gateway Telegram", "Credenciais permanecem exclusivamente no KeePass")
-            item("1.", "Desabilitar Telegram" if enabled else "Habilitar Telegram")
-            item("2.", "Configurar credencial do bot", "Perfil KeePass e referência da entrada")
-            item("3.", "Testar conexão com Telegram")
-            item("4.", "Parear owner", "Exige gateway em execução")
-            item("5.", "Diagnóstico detalhado")
-            item("6.", "Desabilitar TOTP" if totp_enabled else "Configurar e habilitar TOTP")
-            item("7.", "Testar agente Codex", "Execução controlada, sem mensagem ao bot")
-            item("8.", "Atualizar comandos privados", "Regrava e confirma comandos de cada owner")
-            item("9.", "Desabilitar App Server" if app_server_enabled else "Habilitar App Server", "Conversa persistente por Shikigami" if app_server_enabled else "Obrigatório para o Gateway Telegram")
-            item("10.", "Tempo de inatividade do App Server", f"{app_server_idle // 60} min · encerra somente sem turnos ativos")
-            item("11.", "Configurar respostas em áudio", (f"EccoVox: {voice_profile} · auto-off: {voice_auto_off} min" if voice_enabled else "Desabilitadas"))
-            item("12.", "Preferências de execução do owner", "Habilitadas" if owner_preferences else "Desabilitadas")
-            item("13.", "Instruções do Shikigami", instruction_file)
+            title, subtitle = {
+                "gateway": ("Gateway Telegram", "Ativação e teste da conexão com o bot"),
+                "credential": ("Credencial do bot", "KeePass Vault e autenticação protegida"),
+                "app-server": ("Codex App Server", "Conversa persistente e teste controlado do agente"),
+                "owners": ("Owners e comandos", "Pareamento, comandos privados e preferências"),
+                "optional": ("Recursos opcionais", "TOTP, áudio e instruções particulares"),
+            }[section]
+            screen(title, subtitle)
+            if section == "gateway":
+                item("1.", "Desabilitar Telegram" if enabled else "Habilitar Telegram")
+                item("3.", "Testar conexão com Telegram")
+            elif section == "credential":
+                item("2.", "Configurar credencial do bot", "Perfil KeePass e referência da entrada")
+                item("3.", "Testar conexão com Telegram")
+            elif section == "app-server":
+                item("7.", "Testar agente Codex", "Execução controlada, sem mensagem ao bot")
+                item("9.", "Desabilitar App Server" if app_server_enabled else "Habilitar App Server", "Conversa persistente por Shikigami" if app_server_enabled else "Obrigatório para o Gateway Telegram")
+                item("10.", "Tempo de inatividade do App Server", f"{app_server_idle // 60} min · encerra somente sem turnos ativos")
+            elif section == "owners":
+                item("4.", "Parear owner", "Exige gateway em execução")
+                item("8.", "Atualizar comandos privados", "Regrava e confirma comandos de cada owner")
+                item("12.", "Preferências de execução do owner", "Habilitadas" if owner_preferences else "Desabilitadas")
+            else:
+                item("6.", "Desabilitar TOTP" if totp_enabled else "Configurar e habilitar TOTP")
+                item("11.", "Configurar respostas em áudio", (f"EccoVox: {voice_profile} · auto-off: {voice_auto_off} min" if voice_enabled else "Desabilitadas"))
+                item("13.", "Instruções do Shikigami", instruction_file)
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
@@ -1662,7 +1692,7 @@ def daemon_menu(root: Path) -> None:
                     if lifecycle("disable", ["telegram"]):
                         result(True, "Telegram desabilitado; a configuração foi preservada."); offer_restart()
                 else:
-                    if not show_validation(): result(False, "Corrija os itens marcados antes de habilitar o gateway."); continue
+                    if not show_telegram_diagnosis(): result(False, "Corrija os itens marcados antes de habilitar o gateway."); continue
                     if lifecycle("enable", ["telegram"]):
                         result(True, "Telegram habilitado; ele iniciará junto com o daemon."); offer_restart()
             elif choice == "2":
@@ -1711,7 +1741,6 @@ def daemon_menu(root: Path) -> None:
                 try: pin = json.loads(request.stdout)["pin"]
                 except (json.JSONDecodeError, KeyError): result(False, "Não foi possível gerar o código de pareamento."); continue
                 result(True, f"Envie /pair {pin} em uma DM para o bot. O código expira em 5 minutos e só pode ser usado uma vez.")
-            elif choice == "5": show_validation()
             elif choice == "6":
                 if totp_enabled:
                     changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-totp"], quiet=True)
@@ -1798,6 +1827,106 @@ def daemon_menu(root: Path) -> None:
                         result(checked.returncode == 0, "Instruções salvas e validadas." if checked.returncode == 0 else (checked.stdout or checked.stderr).strip())
                         if checked.returncode == 0: note("A alteração cria uma nova conversa Codex na próxima mensagem do Telegram.")
                     except (OSError, ValueError) as error: result(False, f"Não foi possível abrir o editor: {error}")
+            else: result(False, "Opção inválida.")
+
+    def telegram_wizard() -> None:
+        """Conduz a configuração mínima do gateway, preservando cada etapa válida."""
+        screen("Wizard do Telegram", "Configuração guiada do gateway e do primeiro owner")
+        note("Cada etapa válida é mantida. O pareamento exige uma ação externa no Telegram e pode ser retomado depois.")
+        print("\n  1. Pré-requisitos do Shikigami e daemon")
+        main_checks = shikigami_diagnostics(root, lambda message: print("    → " + message)); print_checks(main_checks)
+        daemon_checks = validation("daemon-validation-json"); print_checks(daemon_checks)
+        if any(check.get("state") == "error" for check in [*main_checks, *daemon_checks]) or not daemon_running():
+            result(False, "Corrija os pré-requisitos e inicie o daemon antes de configurar o Telegram."); return
+
+        print("\n  2. Skill KeePass Vault")
+        keepass_checks = validation("keepass-validation-json"); print_checks(keepass_checks)
+        if any(check.get("state") != "ok" for check in keepass_checks):
+            result(False, "Instale, habilite e configure a skill KeePass Vault antes de continuar."); return
+
+        print("\n  3. Preparar a configuração do Telegram")
+        prepared = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "bootstrap"], quiet=True)
+        if prepared.returncode != 0:
+            result(False, (prepared.stdout or prepared.stderr).strip() or "Não foi possível preparar a configuração do Telegram."); return
+        result(True, "Configuração-base do Telegram preparada.")
+
+        print("\n  4. Credencial e autenticação do bot")
+        telegram_section_menu("credential")
+        checks = validation(); required_credential = {"Perfil KeePass", "Referência do token", "Conexão Telegram"}
+        if any(check.get("state") != "ok" for check in checks if check.get("label") in required_credential):
+            result(False, "Configure a credencial e execute o teste de conexão antes de continuar."); return
+
+        print("\n  5. Codex App Server")
+        try:
+            platform = tomllib.loads((root / "configs" / "daemon" / "daemon.toml").read_text(encoding="utf-8"))
+            current_idle = max(1, int(platform.get("app_server", {}).get("idle_timeout_seconds") or 1800) // 60)
+            app_enabled = bool(platform.get("app_server", {}).get("enabled", False))
+        except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
+            current_idle, app_enabled = 30, False
+        if not app_enabled:
+            raw = prompt(f"Habilitar App Server com {current_idle} minutos de inatividade? [S/n]: ").strip().casefold()
+            if raw not in {"", "s", "sim"}: result(False, "O Telegram exige o Codex App Server habilitado."); return
+            changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-app-server", "--enabled", "--idle-timeout", str(current_idle * 60)], quiet=True)
+            if changed.returncode != 0: result(False, (changed.stdout or changed.stderr).strip()); return
+            result(True, "Codex App Server habilitado.")
+
+        print("\n  6. Teste controlado do agente Codex")
+        agent = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-agent"], quiet=True)
+        if agent.returncode != 0: result(False, (agent.stdout or agent.stderr).strip()); return
+        result(True, (agent.stdout or "Agente Codex validado.").strip())
+
+        print("\n  7. Habilitar o gateway")
+        if not show_telegram_diagnosis(): result(False, "O diagnóstico ainda possui pendências obrigatórias."); return
+        if lifecycle("enable", ["telegram"]):
+            result(True, "Gateway Telegram habilitado."); offer_restart()
+        else: return
+
+        print("\n  8. Parear o primeiro owner")
+        request = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "telegram", "pair-request"], quiet=True)
+        if request.returncode != 0:
+            result(False, "Inicie ou reinicie o daemon com o Telegram habilitado antes de parear um owner."); return
+        try: pin = json.loads(request.stdout)["pin"]
+        except (json.JSONDecodeError, KeyError): result(False, "Não foi possível gerar o código de pareamento."); return
+        note(f"Envie /pair {pin} em uma DM para o bot. O código expira em cinco minutos.")
+        prompt("Depois de enviar o comando, pressione Enter para verificar o pareamento: ")
+        checks = validation()
+        owner = next((check for check in checks if check.get("label") == "Owners pareados"), {})
+        if owner.get("state") != "ok": result(False, "O owner ainda não foi confirmado. Execute o wizard novamente após concluir o /pair."); return
+        result(True, str(owner.get("detail") or "Owner pareado."))
+
+        print("\n  9. Sincronizar comandos privados")
+        synced = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "telegram", "sync-commands"], quiet=True)
+        if synced.returncode != 0: result(False, (synced.stdout or synced.stderr).strip()); return
+        result(True, "Comandos privados sincronizados.")
+
+        print("\n  10. Diagnóstico final")
+        ready = show_telegram_diagnosis()
+        result(ready, "Telegram configurado e pronto." if ready else "O Telegram foi configurado, mas ainda há pendências no diagnóstico.")
+
+    def telegram_menu() -> None:
+        """Central do gateway sem criar arquivos até o usuário iniciar uma configuração."""
+        while True:
+            screen("Gateway Telegram", "Integração, autenticação e owners do Shikigami")
+            item("!.", "Diagnóstico do Telegram", "Plataforma, KeePass Vault e gateway")
+            item("W.", "Wizard de configuração do Telegram", "Configura o gateway e o primeiro owner")
+            print()
+            item("1.", "Gateway Telegram", "Ativação e teste da conexão")
+            item("2.", "Credencial do bot", "Perfil KeePass e referência do token")
+            item("3.", "Codex App Server", "Conversa persistente e teste do agente")
+            item("4.", "Owners e comandos", "Pareamento e preferências de execução")
+            print()
+            item("5.", "Recursos opcionais", "TOTP, áudio e instruções particulares")
+            print()
+            item("X.", "Voltar")
+            choice = prompt("Opção: ").strip().casefold()
+            if choice in {"x", "\x1b"}: return
+            if choice == "!": show_telegram_diagnosis()
+            elif choice == "w": telegram_wizard()
+            elif choice == "1": telegram_section_menu("gateway")
+            elif choice == "2": telegram_section_menu("credential")
+            elif choice == "3": telegram_section_menu("app-server")
+            elif choice == "4": telegram_section_menu("owners")
+            elif choice == "5": telegram_section_menu("optional")
             else: result(False, "Opção inválida.")
 
     def miniapps_command(*arguments: str) -> subprocess.CompletedProcess[str]:
