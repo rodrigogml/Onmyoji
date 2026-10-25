@@ -65,7 +65,7 @@ class SystemSetupTests(unittest.TestCase):
         self.assertEqual(MODULE.preferred_reasoning_effort("gpt-6-luna"), "high")
 
     def test_wizard_normalizes_name_and_creates_shikigami_resources(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary, patch("builtins.input", return_value="  Exemplo   da   Silva "), patch.object(MODULE, "configure_initial_codex", side_effect=lambda _root, data: data | {"executable": sys.executable}), patch.object(MODULE, "choose_project_directory", side_effect=lambda root, _current: str(root)):
+        with tempfile.TemporaryDirectory() as temporary, patch("builtins.input", return_value="  Exemplo   da   Silva "), patch.object(MODULE, "configure_initial_codex", side_effect=lambda _root, data: data | {"executable": sys.executable}), patch.object(MODULE, "choose_project_directory", side_effect=lambda root, _current: str(root)), patch.object(MODULE, "choose_sandbox", return_value="workspace-write"), patch.object(MODULE, "choose_approval_policy", return_value="on-request"):
             root = Path(temporary)
             data, _message = MODULE.ensure_shikigami_configuration(root)
             installed = MODULE.initial_installation_wizard(root, data)
@@ -95,6 +95,25 @@ class SystemSetupTests(unittest.TestCase):
             self.assertIsNone(MODULE.choose_project_directory(root, ""))
             self.assertFalse((root.parent / "MeuShikigami-Work").exists())
 
+    def test_sandbox_selection_explains_the_instance_and_workspace_boundaries(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch("builtins.input", return_value="x"), patch.object(MODULE.sys, "stdout", io.StringIO()) as output:
+            root = Path(temporary) / "MeuShikigami"; workspace = Path(temporary) / "MeuShikigami-Work"; root.mkdir(); workspace.mkdir()
+            self.assertIsNone(MODULE.choose_sandbox(root, workspace, "workspace-write"))
+            text = output.getvalue()
+            self.assertIn(str(root.resolve()), text)
+            self.assertIn(str(workspace.resolve()), text)
+            self.assertIn("Não libera", text)
+
+    def test_approval_policy_selection_explains_the_local_decision_flow(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch("builtins.input", return_value="x"), patch.object(MODULE.sys, "stdout", io.StringIO()) as output:
+            root = Path(temporary) / "MeuShikigami"; workspace = Path(temporary) / "MeuShikigami-Work"; root.mkdir(); workspace.mkdir()
+            self.assertIsNone(MODULE.choose_approval_policy(root, workspace, "workspace-write", "on-request"))
+            text = output.getvalue()
+            self.assertIn(str(root.resolve()), text)
+            self.assertIn(str(workspace.resolve()), text)
+            self.assertIn("Nunca mostra pedidos", text)
+            self.assertNotIn("untrusted", text)
+
     def test_codex_executable_validation_calls_version(self) -> None:
         completed = subprocess.CompletedProcess(["codex", "--version"], 0, "codex 1.0", "")
         with patch.object(MODULE.subprocess, "run", return_value=completed) as run:
@@ -115,13 +134,24 @@ class SystemSetupTests(unittest.TestCase):
             self.assertFalse(MODULE.validate_codex_model(Path(temporary), data)[0])
         run.assert_not_called()
 
-    def test_diagnostics_check_name_executable_and_model(self) -> None:
+    def test_diagnostics_check_all_reviewed_initial_setup_items(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "validate_codex_executable", return_value=(True, "codex 1.0")), patch.object(MODULE, "validate_codex_model", return_value=(True, "modelo respondeu")):
-            data = MODULE.default_system() | {"shikigami_identity": "Exemplo", "shikigami_installed": True, "executable": "codex"}
+            data = MODULE.default_system() | {"shikigami_identity": "Exemplo", "shikigami_installed": True, "executable": "codex", "project_directory": temporary}
             MODULE.system_path(Path(temporary)).parent.mkdir()
             MODULE.system_path(Path(temporary)).write_text(MODULE.render_system(data), encoding="utf-8")
             diagnostics = MODULE.shikigami_diagnostics(Path(temporary))
-        self.assertEqual([(item["state"], item["label"]) for item in diagnostics], [("ok", "Nome do Shikigami"), ("ok", "Executável do Codex-CLI"), ("ok", "Modelo do Codex-CLI")])
+        self.assertEqual([(item["state"], item["label"]) for item in diagnostics], [("ok", "Nome do Shikigami"), ("ok", "Executável do Codex-CLI"), ("ok", "Modelo do Codex-CLI"), ("ok", "Pasta de trabalho"), ("ok", "Sandbox"), ("ok", "Política de aprovação")])
+
+    def test_legacy_untrusted_approval_policy_is_migrated_to_on_request(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data = MODULE.default_system() | {"executable": sys.executable, "project_directory": temporary, "approval_policy": "untrusted"}
+            MODULE.system_path(root).parent.mkdir()
+            MODULE.system_path(root).write_text(MODULE.render_system(data), encoding="utf-8")
+            configured, message = MODULE.ensure_shikigami_configuration(root)
+            self.assertIsNotNone(configured, message)
+            self.assertEqual(configured["approval_policy"], "on-request")
+            self.assertIn('approval_policy = "on-request"', MODULE.system_path(root).read_text(encoding="utf-8"))
 
     def test_legacy_instance_identity_is_migrated_before_file_removal(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

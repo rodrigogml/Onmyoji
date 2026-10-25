@@ -35,7 +35,8 @@ CODEX_MODELS = ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.
 LUNA_MODELS = {"gpt-6-luna", "gpt-5.6-luna"}
 MODEL_REASONING_DEFAULTS = {"gpt-6-astra": "low", "gpt-6.1-sol": "medium", "gpt-6-sol": "medium", "gpt-6-luna": "high", "gpt-5.6-sol": "medium", "gpt-5.6-terra": "medium", "gpt-5.6-luna": "high"}
 SANDBOXES = ["read-only", "workspace-write", "danger-full-access"]
-APPROVALS = ["untrusted", "on-request", "never"]
+APPROVALS = ["on-request", "never"]
+LEGACY_APPROVAL_POLICY = "untrusted"
 
 
 class Ui:
@@ -284,6 +285,8 @@ def load_system(root: Path) -> dict[str, object]:
     for key, value in raw.get("codex", {}).items():
         if key in values and isinstance(value, str): values[key] = value
         if key == "additional_writable_directories" and isinstance(value, list) and all(isinstance(item, str) for item in value): values[key] = value
+    if values["approval_policy"] == LEGACY_APPROVAL_POLICY:
+        values["approval_policy"] = "on-request"
     return values
 
 
@@ -373,6 +376,9 @@ def ensure_shikigami_configuration(root: Path) -> tuple[dict[str, object] | None
     except tomllib.TOMLDecodeError: raw = {}
     section = raw.get("shikigami", {}) if isinstance(raw, dict) else {}
     needs_save = not isinstance(section, dict) or not isinstance(section.get("identity"), str) or not isinstance(section.get("installed"), bool)
+    codex = raw.get("codex", {}) if isinstance(raw, dict) else {}
+    if isinstance(codex, dict) and codex.get("approval_policy") == LEGACY_APPROVAL_POLICY:
+        needs_save = True
     if legacy and not str(data["shikigami_identity"]):
         data["shikigami_identity"], data["shikigami_installed"], needs_save = legacy, True, True
     if needs_save:
@@ -414,6 +420,58 @@ def choose_project_directory(root: Path, current: str) -> str | None:
         return None
     result(True, f"Pasta de trabalho criada: {directory}")
     return str(directory.resolve())
+
+
+def choose_sandbox(root: Path, workspace: Path, current: str) -> str | None:
+    """Explica os limites de cada sandbox antes de permitir sua seleção."""
+    root, workspace = root.resolve(), workspace.resolve()
+    screen("Sandbox", "Limites técnicos dos comandos gerados pelo Codex")
+    note("O sistema operacional continua sendo a autoridade final sobre permissões.")
+    print(f"\n  Instância / CODEX_HOME: {root}")
+    print(f"  Workspace de trabalho:  {workspace}\n")
+    print("  read-only")
+    print(f"    Pode inspecionar arquivos, mas não editar nem executar comandos sem aprovação. Use")
+    print(f"    para revisão e planejamento; nem {workspace} nem {root} recebem alterações automáticas.")
+    print("\n  workspace-write  (recomendado)")
+    print(f"    Pode editar {workspace} e os diretórios adicionais explicitamente liberados. Não libera")
+    print(f"    escrita em {root}; caminhos protegidos, rede e ações fora dessas áreas podem exigir aprovação.")
+    print("\n  danger-full-access")
+    print(f"    Remove as restrições locais do sandbox. O agente pode acessar {workspace}, {root} e outros")
+    print("    recursos permitidos ao usuário do sistema, inclusive rede. Use somente em ambiente controlado.\n")
+    for index, value in enumerate(SANDBOXES, 1): item(f"{index}.", value)
+    item("X.", "Voltar")
+    while True:
+        choice = prompt(f"Opção [{current}]: ").strip().casefold()
+        if choice in {"x", "\x1b"}: return None
+        if not choice: return current
+        if choice.isdigit() and 1 <= int(choice) <= len(SANDBOXES): return SANDBOXES[int(choice) - 1]
+        result(False, "Opção inválida.")
+
+
+def choose_approval_policy(root: Path, workspace: Path, sandbox: str, current: str) -> str | None:
+    """Explica quando o Codex interrompe a execução para pedir autorização local."""
+    root, workspace = root.resolve(), workspace.resolve()
+    screen("Política de aprovação", "Quando o Codex-CLI deve interromper a execução para pedir confirmação")
+    note("A política não amplia o sandbox; ela apenas define como tratar ações que exigem aprovação.")
+    print(f"\n  Instância / CODEX_HOME: {root}")
+    print(f"  Workspace de trabalho:  {workspace}")
+    print(f"  Sandbox selecionado:    {sandbox}\n")
+    print("  on-request  (recomendado)")
+    print(f"    Permite automaticamente apenas o que o sandbox {sandbox} já permite. Quando uma ação")
+    print(f"    precisar sair desse limite — por exemplo, escrever fora de {workspace}, alterar {root}")
+    print("    ou acessar recursos protegidos — o Codex-CLI pausa e mostra o pedido para decisão local.")
+    print("\n  never")
+    print("    Nunca mostra pedidos de aprovação. Não concede mais acesso: o Codex executa somente")
+    print("    o que o sandbox já permite e ações que precisariam de autorização são recusadas ou bloqueadas.")
+    print("    Use em automações sem operador acompanhando a execução.\n")
+    for index, value in enumerate(APPROVALS, 1): item(f"{index}.", value)
+    item("X.", "Voltar")
+    while True:
+        choice = prompt(f"Opção [{current}]: ").strip().casefold()
+        if choice in {"x", "\x1b"}: return None
+        if not choice: return current
+        if choice.isdigit() and 1 <= int(choice) <= len(APPROVALS): return APPROVALS[int(choice) - 1]
+        result(False, "Opção inválida.")
 
 
 def configure_initial_codex(root: Path, data: dict[str, object]) -> dict[str, object] | None:
@@ -467,6 +525,14 @@ def initial_installation_wizard(root: Path, data: dict[str, object]) -> dict[str
         if project_directory is None:
             return None
         candidate["project_directory"] = project_directory
+        sandbox = choose_sandbox(root, Path(project_directory), str(candidate["sandbox_mode"]))
+        if sandbox is None:
+            return None
+        candidate["sandbox_mode"] = sandbox
+        approval = choose_approval_policy(root, Path(project_directory), sandbox, str(candidate["approval_policy"]))
+        if approval is None:
+            return None
+        candidate["approval_policy"] = approval
         candidate["shikigami_installed"] = True
         ok, message = save_system(root, candidate)
         if ok:
@@ -792,6 +858,29 @@ def shikigami_diagnostics(root: Path) -> list[dict[str, str]]:
     diagnostics.append({"state": "ok" if executable_ok else "error", "label": "Executável do Codex-CLI", "detail": executable_detail})
     model_ok, model_detail = validate_codex_model(root, data)
     diagnostics.append({"state": "ok" if model_ok else "error", "label": "Modelo do Codex-CLI", "detail": model_detail})
+    project_directory = str(data["project_directory"]).strip()
+    if not project_directory:
+        diagnostics.append({"state": "pending", "label": "Pasta de trabalho", "detail": "Nenhuma pasta de trabalho foi configurada."})
+    else:
+        project = Path(project_directory).expanduser()
+        if project.is_dir():
+            diagnostics.append({"state": "ok", "label": "Pasta de trabalho", "detail": str(project.resolve())})
+        elif project.exists():
+            diagnostics.append({"state": "error", "label": "Pasta de trabalho", "detail": f"O caminho existe, mas não é uma pasta: {project}"})
+        else:
+            diagnostics.append({"state": "error", "label": "Pasta de trabalho", "detail": f"Pasta não encontrada: {project}"})
+    sandbox = str(data["sandbox_mode"])
+    diagnostics.append({
+        "state": "ok" if sandbox in SANDBOXES else "error",
+        "label": "Sandbox",
+        "detail": sandbox if sandbox in SANDBOXES else f"Modo inválido: {sandbox or '(não configurado)'}",
+    })
+    approval = str(data["approval_policy"])
+    diagnostics.append({
+        "state": "ok" if approval in APPROVALS else "error",
+        "label": "Política de aprovação",
+        "detail": approval if approval in APPROVALS else f"Política inválida: {approval or '(não configurada)'}",
+    })
     return diagnostics
 
 
@@ -853,10 +942,12 @@ def codex_menu(root: Path) -> None:
             value = choose_project_directory(root, str(data["project_directory"]))
             if value: data = update_system(root, data, "project_directory", value)
         elif choice == "5":
-            value = choose("Sandbox", SANDBOXES, data["sandbox_mode"])
+            workspace = Path(str(data["project_directory"])).expanduser() if data["project_directory"] else suggested_project_directory(root)
+            value = choose_sandbox(root, workspace, str(data["sandbox_mode"]))
             if value: data = update_system(root, data, "sandbox_mode", value)
         elif choice == "6":
-            value = choose("Política de aprovação", APPROVALS, data["approval_policy"])
+            workspace = Path(str(data["project_directory"])).expanduser() if data["project_directory"] else suggested_project_directory(root)
+            value = choose_approval_policy(root, workspace, str(data["sandbox_mode"]), str(data["approval_policy"]))
             if value: data = update_system(root, data, "approval_policy", value)
         elif choice == "7": data = manage_writable_directories(root, data)
         elif choice == "8": launch_codex(root, data)
