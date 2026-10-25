@@ -382,6 +382,40 @@ def ensure_shikigami_configuration(root: Path) -> tuple[dict[str, object] | None
     return data, "Configuração inicial pronta."
 
 
+def suggested_project_directory(root: Path) -> Path:
+    """Sugere um workspace irmão da instância, preservando seu nome base."""
+    root = root.resolve()
+    return root.parent / f"{root.name}-Work"
+
+
+def choose_project_directory(root: Path, current: str) -> str | None:
+    """Seleciona um workspace existente ou cria explicitamente a sugestão ausente."""
+    default = Path(current).expanduser() if current else suggested_project_directory(root)
+    value = prompt(f"Pasta do projeto [{default}]: ").strip()
+    if value.casefold() in {"x", "\x1b"}:
+        return None
+    directory = Path(value).expanduser() if value else default
+    if directory.is_dir():
+        return str(directory.resolve())
+    if directory.exists():
+        result(False, f"O caminho existe, mas não é uma pasta: {directory}")
+        return None
+    create = prompt(f"A pasta {directory} não existe. Deseja criá-la? [S/n]: ").strip().casefold() or "s"
+    if create != "s":
+        result(False, "A pasta de trabalho não foi criada; configuração não alterada.")
+        return None
+    try:
+        directory.mkdir()
+    except OSError as error:
+        result(False, f"Não foi possível criar a pasta de trabalho: {error}")
+        return None
+    if not directory.is_dir():
+        result(False, "A pasta de trabalho não foi criada; configuração não alterada.")
+        return None
+    result(True, f"Pasta de trabalho criada: {directory}")
+    return str(directory.resolve())
+
+
 def configure_initial_codex(root: Path, data: dict[str, object]) -> dict[str, object] | None:
     """Exige um executável e um modelo do Codex funcionais antes de concluir a instalação."""
     while True:
@@ -429,6 +463,10 @@ def initial_installation_wizard(root: Path, data: dict[str, object]) -> dict[str
         candidate = configure_initial_codex(root, candidate)
         if candidate is None:
             return None
+        project_directory = choose_project_directory(root, str(candidate["project_directory"]))
+        if project_directory is None:
+            return None
+        candidate["project_directory"] = project_directory
         candidate["shikigami_installed"] = True
         ok, message = save_system(root, candidate)
         if ok:
@@ -812,7 +850,7 @@ def codex_menu(root: Path) -> None:
                 result(valid, message)
                 if valid: data = update_system(root, data, "model_reasoning_effort", value)
         elif choice == "4":
-            value = prompt(f"Pasta do projeto [{data['project_directory']}]: ").strip()
+            value = choose_project_directory(root, str(data["project_directory"]))
             if value: data = update_system(root, data, "project_directory", value)
         elif choice == "5":
             value = choose("Sandbox", SANDBOXES, data["sandbox_mode"])

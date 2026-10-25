@@ -65,7 +65,7 @@ class SystemSetupTests(unittest.TestCase):
         self.assertEqual(MODULE.preferred_reasoning_effort("gpt-6-luna"), "high")
 
     def test_wizard_normalizes_name_and_creates_shikigami_resources(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary, patch("builtins.input", return_value="  Exemplo   da   Silva "), patch.object(MODULE, "configure_initial_codex", side_effect=lambda _root, data: data | {"executable": sys.executable}):
+        with tempfile.TemporaryDirectory() as temporary, patch("builtins.input", return_value="  Exemplo   da   Silva "), patch.object(MODULE, "configure_initial_codex", side_effect=lambda _root, data: data | {"executable": sys.executable}), patch.object(MODULE, "choose_project_directory", side_effect=lambda root, _current: str(root)):
             root = Path(temporary)
             data, _message = MODULE.ensure_shikigami_configuration(root)
             installed = MODULE.initial_installation_wizard(root, data)
@@ -75,6 +75,25 @@ class SystemSetupTests(unittest.TestCase):
             MODULE.ensure_shikigami_resources(root)
             self.assertTrue((root / "shikigami" / "README.md").is_file())
             self.assertFalse((root / "shikigami" / "instance.toml").exists())
+
+    def test_workspace_suggestion_is_a_sibling_with_work_suffix(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "MeuShikigami"; root.mkdir()
+            self.assertEqual(MODULE.suggested_project_directory(root), root.parent / "MeuShikigami-Work")
+
+    def test_workspace_selection_creates_the_suggested_missing_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch("builtins.input", side_effect=["", "s"]):
+            root = Path(temporary) / "MeuShikigami"; root.mkdir()
+            selected = MODULE.choose_project_directory(root, "")
+            expected = root.parent / "MeuShikigami-Work"
+            self.assertEqual(selected, str(expected.resolve()))
+            self.assertTrue(expected.is_dir())
+
+    def test_workspace_selection_does_not_change_configuration_when_creation_is_declined(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch("builtins.input", side_effect=["", "n"]):
+            root = Path(temporary) / "MeuShikigami"; root.mkdir()
+            self.assertIsNone(MODULE.choose_project_directory(root, ""))
+            self.assertFalse((root.parent / "MeuShikigami-Work").exists())
 
     def test_codex_executable_validation_calls_version(self) -> None:
         completed = subprocess.CompletedProcess(["codex", "--version"], 0, "codex 1.0", "")
