@@ -9,7 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "setupOnmyoji.py"
 SPEC = importlib.util.spec_from_file_location("onmyoji_setup", SCRIPT)
@@ -56,13 +56,22 @@ class SystemSetupTests(unittest.TestCase):
             with patch.dict(MODULE.os.environ, {"PATH": str(binary_directory)}, clear=False), patch.object(MODULE.shutil, "which", return_value=None):
                 self.assertEqual(MODULE.discover_codex_executables(), [str(executable.resolve())])
 
-    def test_codex_model_list_uses_the_current_catalog(self) -> None:
-        self.assertEqual(MODULE.CODEX_MODELS, ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"])
+    def test_codex_model_catalog_uses_the_app_server_response(self) -> None:
+        model = {"id": "gpt-current", "displayName": "Modelo atual", "defaultReasoningEffort": "high", "supportedReasoningEfforts": [{"reasoningEffort": "medium"}, {"reasoningEffort": "high"}]}
+        process = MagicMock()
+        process.stdout = iter([json.dumps({"id": 0, "result": {}}) + "\n", json.dumps({"id": 1, "result": {"data": [model]}}) + "\n"])
+        process.poll.return_value = 0
+        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE.subprocess, "Popen", return_value=process) as popen:
+            catalog, detail = MODULE.fetch_codex_model_catalog(Path(temporary), "codex")
+        self.assertEqual(catalog, [model])
+        self.assertIn("1 modelo", detail)
+        self.assertEqual(popen.call_args.args[0], ["codex", "app-server"])
+        self.assertEqual(process.stdin.write.call_count, 3)
 
-    def test_reasoning_effort_is_selected_from_the_model_compatible_options(self) -> None:
-        self.assertEqual(MODULE.reasoning_efforts_for_model("gpt-6-luna"), ["low", "medium", "high", "xhigh", "max"])
-        self.assertEqual(MODULE.reasoning_efforts_for_model("gpt-6.1-sol"), ["low", "medium", "high", "xhigh", "max", "ultra"])
-        self.assertEqual(MODULE.preferred_reasoning_effort("gpt-6-luna"), "high")
+    def test_reasoning_effort_is_selected_from_the_catalog_compatible_options(self) -> None:
+        model = {"id": "gpt-current", "defaultReasoningEffort": "high", "supportedReasoningEfforts": [{"reasoningEffort": "low"}, {"reasoningEffort": "high"}]}
+        self.assertEqual(MODULE.reasoning_efforts_for_model(model), ["low", "high"])
+        self.assertEqual(MODULE.preferred_reasoning_effort(model), "high")
 
     def test_wizard_normalizes_name_and_creates_shikigami_resources(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, patch("builtins.input", return_value="  Exemplo   da   Silva "), patch.object(MODULE, "configure_initial_codex", side_effect=lambda _root, data: data | {"executable": sys.executable}), patch.object(MODULE, "choose_project_directory", side_effect=lambda root, _current: str(root)), patch.object(MODULE, "choose_sandbox", return_value="workspace-write"), patch.object(MODULE, "choose_approval_policy", return_value="on-request"):
@@ -120,27 +129,58 @@ class SystemSetupTests(unittest.TestCase):
             self.assertEqual(MODULE.validate_codex_executable("codex"), (True, "codex 1.0"))
         self.assertEqual(run.call_args.args[0], ["codex", "--version"])
 
-    def test_codex_model_validation_runs_an_ephemeral_read_only_call(self) -> None:
+    def test_codex_login_validation_uses_the_instance_codex_home(self) -> None:
         version = subprocess.CompletedProcess(["codex", "--version"], 0, "codex 1.0", "")
+        status = subprocess.CompletedProcess(["codex", "login", "status"], 0, "Logged in", "")
+        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE.subprocess, "run", side_effect=[version, status]) as run:
+            self.assertTrue(MODULE.validate_codex_login(Path(temporary), MODULE.default_system() | {"executable": "codex"})[0])
+        self.assertEqual(run.call_args.args[0], ["codex", "login", "status"])
+        self.assertEqual(run.call_args.kwargs["env"]["CODEX_HOME"], temporary)
+
+    def test_initial_codex_configuration_requires_login_before_catalog(self) -> None:
+        model = {"id": "gpt-current", "defaultReasoningEffort": "medium", "supportedReasoningEfforts": [{"reasoningEffort": "medium"}]}
+        events: list[str] = []
+        def login(_root: Path, _data: dict[str, object]) -> tuple[bool, str]:
+            events.append("login")
+            return (len(events) > 1, "login")
+        def catalog(_root: Path, _data: dict[str, object]) -> tuple[list[dict[str, object]], str]:
+            events.append("catalog")
+            return [model], "catálogo"
+        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "choose_codex_executable", return_value="codex"), patch.object(MODULE, "validate_codex_executable", return_value=(True, "versão")), patch.object(MODULE, "validate_codex_login", side_effect=login), patch.object(MODULE, "configure_codex_login", return_value=True), patch.object(MODULE, "codex_model_catalog", side_effect=catalog), patch.object(MODULE, "choose_codex_model", return_value=model), patch.object(MODULE, "choose_reasoning_effort", return_value="medium"), patch.object(MODULE, "validate_codex_model", return_value=(True, "validado")):
+            configured = MODULE.configure_initial_codex(Path(temporary), MODULE.default_system())
+        self.assertIsNotNone(configured)
+        self.assertEqual(events, ["login", "login", "catalog"])
+
+    def test_codex_model_validation_runs_an_ephemeral_read_only_call(self) -> None:
         model = subprocess.CompletedProcess(["codex", "exec"], 0, "OK", "")
-        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE.subprocess, "run", side_effect=[version, model]) as run:
+        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "validate_codex_selection", return_value=(True, "seleção atual")), patch.object(MODULE.subprocess, "run", return_value=model) as run:
             data = MODULE.default_system() | {"executable": "codex"}
             self.assertTrue(MODULE.validate_codex_model(Path(temporary), data)[0])
-        self.assertEqual(run.call_args_list[1].args[0], ["codex", "exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "--model", "gpt-6.1-sol", "--config", 'model_reasoning_effort="medium"', "Responda exatamente: OK"])
+        self.assertEqual(run.call_args.args[0], ["codex", "exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "--model", "gpt-6.1-sol", "--config", 'model_reasoning_effort="medium"', "Responda exatamente: OK"])
 
     def test_model_validation_rejects_an_incompatible_reasoning_effort_before_execution(self) -> None:
         data = MODULE.default_system() | {"executable": "codex", "model": "gpt-6-luna", "model_reasoning_effort": "ultra"}
-        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "validate_codex_executable", return_value=(True, "codex 1.0")), patch.object(MODULE.subprocess, "run") as run:
+        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "validate_codex_selection", return_value=(False, "incompatível")), patch.object(MODULE.subprocess, "run") as run:
             self.assertFalse(MODULE.validate_codex_model(Path(temporary), data)[0])
         run.assert_not_called()
 
     def test_diagnostics_check_all_reviewed_initial_setup_items(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "validate_codex_executable", return_value=(True, "codex 1.0")), patch.object(MODULE, "validate_codex_model", return_value=(True, "modelo respondeu")):
+        catalog = [{"id": "gpt-6.1-sol", "defaultReasoningEffort": "medium", "supportedReasoningEfforts": [{"reasoningEffort": "medium"}]}]
+        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "validate_codex_executable", return_value=(True, "codex 1.0")), patch.object(MODULE, "validate_codex_login", return_value=(True, "login confirmado")), patch.object(MODULE, "fetch_codex_model_catalog", return_value=(catalog, "catálogo atual")), patch.object(MODULE, "validate_codex_model", return_value=(True, "modelo respondeu")):
             data = MODULE.default_system() | {"shikigami_identity": "Exemplo", "shikigami_installed": True, "executable": "codex", "project_directory": temporary}
             MODULE.system_path(Path(temporary)).parent.mkdir()
             MODULE.system_path(Path(temporary)).write_text(MODULE.render_system(data), encoding="utf-8")
             diagnostics = MODULE.shikigami_diagnostics(Path(temporary))
-        self.assertEqual([(item["state"], item["label"]) for item in diagnostics], [("ok", "Nome do Shikigami"), ("ok", "Executável do Codex-CLI"), ("ok", "Modelo do Codex-CLI"), ("ok", "Pasta de trabalho"), ("ok", "Sandbox"), ("ok", "Política de aprovação"), ("ok", "Diretórios adicionais de escrita")])
+        self.assertEqual([(item["state"], item["label"]) for item in diagnostics], [("ok", "Nome do Shikigami"), ("ok", "Executável do Codex-CLI"), ("ok", "Login do Codex-CLI"), ("ok", "Catálogo de modelos"), ("ok", "Modelo do Codex-CLI"), ("ok", "Esforço de raciocínio"), ("ok", "Validação do modelo"), ("ok", "Pasta de trabalho"), ("ok", "Sandbox"), ("ok", "Política de aprovação"), ("ok", "Diretórios adicionais de escrita")])
+
+    def test_diagnostics_do_not_query_models_without_login(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "validate_codex_executable", return_value=(True, "versão")), patch.object(MODULE, "validate_codex_login", return_value=(False, "sem login")), patch.object(MODULE, "fetch_codex_model_catalog") as catalog:
+            data = MODULE.default_system() | {"shikigami_identity": "Exemplo", "executable": "codex", "project_directory": temporary}
+            MODULE.system_path(Path(temporary)).parent.mkdir()
+            MODULE.system_path(Path(temporary)).write_text(MODULE.render_system(data), encoding="utf-8")
+            diagnostics = MODULE.shikigami_diagnostics(Path(temporary))
+        catalog.assert_not_called()
+        self.assertEqual([(item["state"], item["label"]) for item in diagnostics[2:7]], [("error", "Login do Codex-CLI"), ("pending", "Catálogo de modelos"), ("pending", "Modelo do Codex-CLI"), ("pending", "Esforço de raciocínio"), ("pending", "Validação do modelo")])
 
     def test_diagnostics_validate_each_additional_writable_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -280,7 +320,7 @@ class SystemSetupTests(unittest.TestCase):
             project = root / "project"; project.mkdir()
             extra = root / "extra"; extra.mkdir()
             data = MODULE.default_system() | {"executable": sys.executable, "project_directory": str(project), "model": "gpt-5.6-sol", "model_reasoning_effort": "xhigh", "additional_writable_directories": [str(extra)]}
-            with patch.object(MODULE.subprocess, "run") as run:
+            with patch.object(MODULE, "validate_system", return_value=(True, "pronto")), patch.object(MODULE.subprocess, "run") as run:
                 MODULE.launch_codex(root, data)
             command = run.call_args.args[0]
             self.assertEqual(command, [sys.executable, "--add-dir", str(extra)])
@@ -292,15 +332,16 @@ class SystemSetupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             data = MODULE.default_system() | {"executable": sys.executable}
-            with patch.object(MODULE.subprocess, "run") as run:
-                MODULE.launch_codex(root, data, login=True, device_auth=True)
+            completed = subprocess.CompletedProcess([sys.executable, "login", "--device-auth"], 0, "", "")
+            with patch.object(MODULE, "validate_codex_executable", return_value=(True, "versão")), patch.object(MODULE, "validate_codex_login", return_value=(True, "login")), patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+                self.assertTrue(MODULE.configure_codex_login(root, data, device_auth=True))
             self.assertEqual(run.call_args.args[0], [sys.executable, "login", "--device-auth"])
 
     def test_launches_onmyoji_console_separately_from_native_codex(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); project = root / "project"; project.mkdir()
             data = MODULE.default_system() | {"executable": sys.executable, "project_directory": str(project)}
-            with patch.object(MODULE.subprocess, "run") as run:
+            with patch.object(MODULE, "validate_system", return_value=(True, "pronto")), patch.object(MODULE.subprocess, "run") as run:
                 MODULE.launch_onmyoji_interactive(root, data)
             command = run.call_args.args[0]
             self.assertEqual(command[:5], [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root)])

@@ -7,9 +7,11 @@ import getpass
 import json
 import os
 import re
+import queue
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import tomllib
 from dataclasses import dataclass
@@ -30,10 +32,6 @@ INSTANCE_SKILLS_DIRECTORY = "shikigami/skills"
 ACTIVE_SKILLS_DIRECTORY = "skills"
 DESKTOP_SKILLS_DIRECTORY = ".agents/skills"
 SKILL_STATE_FILE = "onmyoji-skills.toml"
-REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"]
-CODEX_MODELS = ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
-LUNA_MODELS = {"gpt-6-luna", "gpt-5.6-luna"}
-MODEL_REASONING_DEFAULTS = {"gpt-6-astra": "low", "gpt-6.1-sol": "medium", "gpt-6-sol": "medium", "gpt-6-luna": "high", "gpt-5.6-sol": "medium", "gpt-5.6-terra": "medium", "gpt-5.6-luna": "high"}
 SANDBOXES = ["read-only", "workspace-write", "danger-full-access"]
 APPROVALS = ["on-request", "never"]
 LEGACY_APPROVAL_POLICY = "untrusted"
@@ -200,30 +198,44 @@ def choose_codex_executable(current: str) -> str | None:
         return str(path.resolve())
 
 
-def choose_codex_model(current: str) -> str | None:
-    """Permite selecionar um modelo conhecido ou informar outro identificador."""
-    value = choose("Modelo", [*CODEX_MODELS, "Outro (informar manualmente)"], current)
-    if value != "Outro (informar manualmente)":
-        return value
-    value = prompt("Modelo [X cancela]: ").strip()
-    return None if value.casefold() in {"x", "\x1b"} else value or None
+def model_identifier(model: dict[str, object]) -> str:
+    """Retorna o identificador configurável de uma entrada recebida do App Server."""
+    value = model.get("model", model.get("id", ""))
+    return value.strip() if isinstance(value, str) else ""
 
 
-def reasoning_efforts_for_model(model: str) -> list[str]:
-    """Retorna os esforços conhecidos para o modelo, sem presumir Ultra para Luna."""
-    return REASONING_EFFORTS[:-1] if model in LUNA_MODELS else REASONING_EFFORTS
+def reasoning_efforts_for_model(model: dict[str, object]) -> list[str]:
+    """Extrai somente os esforços que o catálogo atual declara como compatíveis."""
+    values = model.get("supportedReasoningEfforts", [])
+    if not isinstance(values, list):
+        return []
+    return [entry["reasoningEffort"] for entry in values if isinstance(entry, dict) and isinstance(entry.get("reasoningEffort"), str)]
 
 
-def preferred_reasoning_effort(model: str) -> str:
-    """Escolhe a sugestão inicial documentada para cada família de modelo."""
-    return MODEL_REASONING_DEFAULTS.get(model, "medium")
+def preferred_reasoning_effort(model: dict[str, object]) -> str:
+    """Retorna a sugestão do catálogo, quando ela também é uma opção compatível."""
+    effort = model.get("defaultReasoningEffort")
+    values = reasoning_efforts_for_model(model)
+    return effort if isinstance(effort, str) and effort in values else (values[0] if values else "")
 
 
-def choose_reasoning_effort(model: str, current: str, reset_to_model_default: bool = False) -> str | None:
-    """Seleciona somente esforços compatíveis com o modelo informado."""
+def catalog_model(catalog: list[dict[str, object]], identifier: str) -> dict[str, object] | None:
+    """Localiza um modelo pelo identificador persistido na configuração."""
+    return next((model for model in catalog if model_identifier(model) == identifier), None)
+
+
+def choose_codex_model(catalog: list[dict[str, object]], current: str) -> dict[str, object] | None:
+    """Permite selecionar exclusivamente modelos disponíveis para a conta atual."""
+    options = [model_identifier(model) for model in catalog]
+    selected = choose("Modelo", options, current if current in options else "")
+    return catalog_model(catalog, selected) if selected else None
+
+
+def choose_reasoning_effort(model: dict[str, object], current: str, reset_to_model_default: bool = False) -> str | None:
+    """Seleciona somente esforços declarados pelo catálogo para o modelo escolhido."""
     values = reasoning_efforts_for_model(model)
     selected = preferred_reasoning_effort(model) if reset_to_model_default or current not in values else current
-    return choose("Esforço de raciocínio", values, selected)
+    return choose("Esforço de raciocínio", values, selected) if values else None
 
 
 def diagnostic_detail(completed: subprocess.CompletedProcess[str]) -> str:
@@ -247,18 +259,119 @@ def validate_codex_executable(executable: str) -> tuple[bool, str]:
     return True, diagnostic_detail(completed) or "Codex-CLI respondeu à consulta de versão."
 
 
-def validate_codex_model(root: Path, data: dict[str, object]) -> tuple[bool, str]:
-    """Executa uma solicitação efêmera e somente leitura com o modelo selecionado."""
-    executable = str(data["executable"])
-    executable_ok, executable_detail = validate_codex_executable(executable)
+def validate_codex_login(root: Path, data: dict[str, object]) -> tuple[bool, str]:
+    """Confirma a autenticação do CODEX_HOME da instância sem revelar credenciais."""
+    executable_ok, executable_detail = validate_codex_executable(str(data["executable"]))
     if not executable_ok:
         return False, executable_detail
-    model = str(data["model"]).strip()
-    if not model:
-        return False, "Modelo do Codex-CLI não configurado."
+    environment = dict(os.environ); environment["CODEX_HOME"] = str(root)
+    try:
+        completed = subprocess.run([str(data["executable"]), "login", "status"], cwd=str(root), env=environment, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=20)
+    except OSError as error:
+        return False, f"Não foi possível consultar o login do Codex-CLI: {error}"
+    except subprocess.TimeoutExpired:
+        return False, "A consulta de login do Codex-CLI excedeu 20 segundos."
+    if completed.returncode != 0:
+        return False, diagnostic_detail(completed) or "Nenhum login ativo foi encontrado para esta instância."
+    return True, diagnostic_detail(completed) or "Login do Codex-CLI confirmado."
+
+
+def fetch_codex_model_catalog(root: Path, executable: str) -> tuple[list[dict[str, object]] | None, str]:
+    """Consulta o catálogo visível da conta pelo protocolo JSON-RPC do App Server."""
+    environment = dict(os.environ); environment["CODEX_HOME"] = str(root)
+    try:
+        process = subprocess.Popen([executable, "app-server"], cwd=str(root), env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+    except OSError as error:
+        return None, f"Não foi possível iniciar o App Server do Codex: {error}"
+    assert process.stdin and process.stdout
+    messages: queue.Queue[str] = queue.Queue()
+
+    def read_output() -> None:
+        for line in process.stdout:
+            messages.put(line)
+
+    reader = threading.Thread(target=read_output, daemon=True)
+    reader.start()
+
+    def send(message: dict[str, object]) -> None:
+        process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
+        process.stdin.flush()
+
+    def receive(identifier: int) -> dict[str, object] | None:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            try:
+                line = messages.get(timeout=max(0.1, deadline - time.monotonic()))
+                message = json.loads(line)
+            except (queue.Empty, json.JSONDecodeError):
+                continue
+            if isinstance(message, dict) and message.get("id") == identifier:
+                return message
+        return None
+
+    response: dict[str, object] | None = None
+    try:
+        send({"method": "initialize", "id": 0, "params": {"clientInfo": {"name": "onmyoji_setup", "title": "Onmyōji Setup", "version": "1"}}})
+        if receive(0) is None:
+            return None, "O App Server não confirmou a inicialização em 30 segundos."
+        send({"method": "initialized", "params": {}})
+        send({"method": "model/list", "id": 1, "params": {"limit": 100, "includeHidden": False}})
+        response = receive(1)
+    finally:
+        process.stdin.close()
+        if process.poll() is None:
+            process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+    if not response or not isinstance(response.get("result"), dict):
+        return None, "O App Server não retornou o catálogo de modelos. Atualize o Codex-CLI e tente novamente."
+    data = response["result"].get("data")
+    if not isinstance(data, list):
+        return None, "O App Server retornou um catálogo de modelos inválido."
+    catalog: list[dict[str, object]] = []
+    for entry in data:
+        if not isinstance(entry, dict) or entry.get("hidden") is True:
+            continue
+        model = dict(entry)
+        if model_identifier(model) and reasoning_efforts_for_model(model):
+            catalog.append(model)
+    if not catalog:
+        return None, "A conta não possui modelos configuráveis visíveis no catálogo do Codex."
+    return catalog, f"{len(catalog)} modelo(s) disponível(is) para a conta atual."
+
+
+def codex_model_catalog(root: Path, data: dict[str, object]) -> tuple[list[dict[str, object]] | None, str]:
+    """Retorna o catálogo atual somente depois de validar executável e autenticação."""
+    logged_in, login_detail = validate_codex_login(root, data)
+    if not logged_in:
+        return None, login_detail
+    return fetch_codex_model_catalog(root, str(data["executable"]))
+
+
+def validate_codex_selection(root: Path, data: dict[str, object]) -> tuple[bool, str]:
+    """Garante que modelo e raciocínio ainda pertencem ao catálogo autenticado atual."""
+    catalog, detail = codex_model_catalog(root, data)
+    if catalog is None:
+        return False, detail
+    model = catalog_model(catalog, str(data["model"]).strip())
+    if model is None:
+        return False, f"O modelo configurado ({data['model']}) não está disponível para a conta atual."
     effort = str(data["model_reasoning_effort"])
     if effort not in reasoning_efforts_for_model(model):
-        return False, f"O esforço {effort} não é compatível com o modelo {model}."
+        return False, f"O esforço {effort} não é compatível com o modelo {model_identifier(model)} na conta atual."
+    return True, f"Modelo {model_identifier(model)} e esforço {effort} confirmados pelo catálogo atual."
+
+
+def validate_codex_model(root: Path, data: dict[str, object]) -> tuple[bool, str]:
+    """Executa uma solicitação efêmera e somente leitura com o modelo selecionado."""
+    selected, selection_detail = validate_codex_selection(root, data)
+    if not selected:
+        return False, selection_detail
+    executable = str(data["executable"])
+    model = str(data["model"]).strip()
+    effort = str(data["model_reasoning_effort"])
     environment = dict(os.environ); environment["CODEX_HOME"] = str(root)
     command = [executable, "exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "--model", model, "--config", f"model_reasoning_effort={json.dumps(effort)}", "Responda exatamente: OK"]
     try:
@@ -358,8 +471,8 @@ def validate_system(data: dict[str, object], require_ready: bool = False, root: 
     if not isinstance(data.get("shikigami_identity"), str): return False, "Nome do Shikigami inválido."
     if not isinstance(data.get("shikigami_installed"), bool): return False, "Estado de instalação do Shikigami inválido."
     if data["shikigami_installed"] and not str(data["shikigami_identity"]).strip(): return False, "Informe o nome do Shikigami antes de concluir a instalação."
-    if not data["model"].strip(): return False, "Informe um modelo do Codex."
-    if data["model_reasoning_effort"] not in reasoning_efforts_for_model(str(data["model"])): return False, "Esforço de raciocínio incompatível com o modelo selecionado."
+    if not isinstance(data.get("model"), str) or not data["model"].strip(): return False, "Informe um modelo do Codex."
+    if not isinstance(data.get("model_reasoning_effort"), str) or not data["model_reasoning_effort"].strip(): return False, "Informe o esforço de raciocínio do Codex."
     if data["sandbox_mode"] not in SANDBOXES: return False, "Modo de sandbox inválido."
     if data["approval_policy"] not in APPROVALS: return False, "Política de aprovação inválida."
     executable = str(data["executable"])
@@ -380,6 +493,9 @@ def validate_system(data: dict[str, object], require_ready: bool = False, root: 
             if not allowed: return False, message
     if len(normalized) != len(set(normalized)): return False, "A lista de diretórios adicionais contém caminhos repetidos."
     if require_ready and not project: return False, "Defina a pasta do projeto antes de executar o Codex."
+    if require_ready and root:
+        selected, selection_message = validate_codex_selection(root, data)
+        if not selected: return False, selection_message
     return True, "Configuração do Codex-CLI válida." if project else "Configuração salva; defina a pasta do projeto antes de executar o Codex."
 
 
@@ -525,10 +641,10 @@ def choose_approval_policy(root: Path, workspace: Path, sandbox: str, current: s
 
 
 def configure_initial_codex(root: Path, data: dict[str, object]) -> dict[str, object] | None:
-    """Exige um executável e um modelo do Codex funcionais antes de concluir a instalação."""
+    """Configura executável, login e seleção dinâmica de modelo antes da instalação."""
     while True:
         screen("Instalação inicial", "Codex-CLI")
-        note("Selecione o executável e valide o modelo com uma chamada efêmera e somente leitura.")
+        note("Primeiro confirme o executável e o login; depois escolha um modelo da conta autenticada.")
         executable = choose_codex_executable(str(data["executable"]))
         if executable is None:
             return None
@@ -537,23 +653,32 @@ def configure_initial_codex(root: Path, data: dict[str, object]) -> dict[str, ob
         if not executable_ok:
             continue
         candidate = dict(data); candidate["executable"] = executable
-        model = choose_codex_model(str(candidate["model"]))
+        logged_in, login_detail = validate_codex_login(root, candidate)
+        result(logged_in, login_detail)
+        if not logged_in:
+            if not configure_codex_login(root, candidate):
+                return None
+            logged_in, login_detail = validate_codex_login(root, candidate)
+            result(logged_in, login_detail)
+            if not logged_in:
+                continue
+        catalog, catalog_detail = codex_model_catalog(root, candidate)
+        result(catalog is not None, catalog_detail)
+        if catalog is None:
+            continue
+        model = choose_codex_model(catalog, str(candidate["model"]))
         if model is None:
             return None
-        candidate["model"] = model
+        candidate["model"] = model_identifier(model)
         effort = choose_reasoning_effort(model, str(candidate["model_reasoning_effort"]), reset_to_model_default=True)
         if effort is None:
-            return None
+            result(False, "O catálogo não informou esforços compatíveis para o modelo selecionado.")
+            continue
         candidate["model_reasoning_effort"] = effort
         model_ok, model_detail = validate_codex_model(root, candidate)
         result(model_ok, model_detail)
         if model_ok:
             return candidate
-        next_step = choose("Validação do modelo", ["Tentar novamente", "Fazer login por dispositivo", "Fazer login no navegador"], "Tentar novamente")
-        if next_step is None:
-            return None
-        if next_step.startswith("Fazer login"):
-            launch_codex(root, candidate, login=True, device_auth=next_step.endswith("dispositivo"))
 
 
 def initial_installation_wizard(root: Path, data: dict[str, object]) -> dict[str, object] | None:
@@ -893,18 +1018,47 @@ def manage_writable_directories(root: Path, data: dict[str, object]) -> dict[str
         else: result(False, "Opção inválida.")
 
 
+def configure_codex_login(root: Path, data: dict[str, object], device_auth: bool | None = None) -> bool:
+    """Abre o fluxo local de login e confirma seu resultado antes de prosseguir."""
+    if device_auth is None:
+        method = choose("Login no Codex-CLI", ["Autenticação por dispositivo (recomendado para SSH/headless)", "Navegador local (callback em localhost)"], "Autenticação por dispositivo (recomendado para SSH/headless)")
+        if method is None:
+            return False
+        device_auth = method.startswith("Autenticação por dispositivo")
+    executable_ok, executable_detail = validate_codex_executable(str(data["executable"]))
+    if not executable_ok:
+        result(False, executable_detail)
+        return False
+    command = [str(data["executable"]), "login", *(["--device-auth"] if device_auth else [])]
+    environment = dict(os.environ); environment["CODEX_HOME"] = str(root)
+    try:
+        completed = subprocess.run(command, cwd=str(root), env=environment, check=False)
+    except OSError as error:
+        result(False, f"Não foi possível iniciar o login do Codex-CLI: {error}")
+        return False
+    if completed.returncode != 0:
+        result(False, f"O login do Codex-CLI terminou com código {completed.returncode}.")
+        return False
+    logged_in, detail = validate_codex_login(root, data)
+    result(logged_in, detail)
+    return logged_in
+
+
 def launch_codex(root: Path, data: dict[str, object], login: bool = False, device_auth: bool = False) -> None:
     """Abre o Codex CLI nativo; config.toml e --add-dir são seu contrato público."""
     ready, message = validate_system(data, require_ready=not login, root=root)
     if not ready: result(False, f"Não iniciado: {message}"); return
+    if login:
+        configure_codex_login(root, data, device_auth)
+        return
     if not login:
         synced, sync_message = sync_active_skill_links(root, enabled_ids(root), discover(root))
         if not synced: result(False, f"Não iniciado: {sync_message}"); return
-    command = [str(data["executable"]), "login", *( ["--device-auth"] if device_auth else [] )] if login else [str(data["executable"])]
+    command = [str(data["executable"])]
     if not login:
         for directory in data["additional_writable_directories"]: command.extend(["--add-dir", str(directory)])
     environment = dict(os.environ); environment["CODEX_HOME"] = str(root)
-    try: subprocess.run(command, cwd=str(data["project_directory"]) if not login else root, env=environment, check=False)
+    try: subprocess.run(command, cwd=str(data["project_directory"]), env=environment, check=False)
     except OSError as error: result(False, f"Não foi possível iniciar o Codex-CLI: {error}")
 
 
@@ -970,8 +1124,34 @@ def shikigami_diagnostics(root: Path) -> list[dict[str, str]]:
         diagnostics.append({"state": "ok", "label": "Nome do Shikigami", "detail": identity})
     executable_ok, executable_detail = validate_codex_executable(str(data["executable"]))
     diagnostics.append({"state": "ok" if executable_ok else "error", "label": "Executável do Codex-CLI", "detail": executable_detail})
-    model_ok, model_detail = validate_codex_model(root, data)
-    diagnostics.append({"state": "ok" if model_ok else "error", "label": "Modelo do Codex-CLI", "detail": model_detail})
+    if not executable_ok:
+        for label in ("Login do Codex-CLI", "Catálogo de modelos", "Modelo do Codex-CLI", "Esforço de raciocínio", "Validação do modelo"):
+            diagnostics.append({"state": "pending", "label": label, "detail": "Não verificado porque o executável do Codex-CLI não está disponível."})
+    else:
+        logged_in, login_detail = validate_codex_login(root, data)
+        diagnostics.append({"state": "ok" if logged_in else "error", "label": "Login do Codex-CLI", "detail": login_detail})
+        if not logged_in:
+            for label in ("Catálogo de modelos", "Modelo do Codex-CLI", "Esforço de raciocínio", "Validação do modelo"):
+                diagnostics.append({"state": "pending", "label": label, "detail": "Não verificado porque não há login ativo no Codex-CLI."})
+        else:
+            catalog, catalog_detail = fetch_codex_model_catalog(root, str(data["executable"]))
+            diagnostics.append({"state": "ok" if catalog else "error", "label": "Catálogo de modelos", "detail": catalog_detail})
+            model = catalog_model(catalog, str(data["model"])) if catalog else None
+            if model is None:
+                detail = "Não verificado porque o catálogo não está disponível." if catalog is None else f"O modelo configurado ({data['model']}) não está disponível para a conta atual."
+                diagnostics.append({"state": "pending" if catalog is None else "error", "label": "Modelo do Codex-CLI", "detail": detail})
+                diagnostics.append({"state": "pending", "label": "Esforço de raciocínio", "detail": "Não verificado porque o modelo configurado não está disponível."})
+                diagnostics.append({"state": "pending", "label": "Validação do modelo", "detail": "Não executada porque a seleção de modelo não foi confirmada."})
+            else:
+                diagnostics.append({"state": "ok", "label": "Modelo do Codex-CLI", "detail": model_identifier(model)})
+                effort = str(data["model_reasoning_effort"])
+                effort_ok = effort in reasoning_efforts_for_model(model)
+                diagnostics.append({"state": "ok" if effort_ok else "error", "label": "Esforço de raciocínio", "detail": effort if effort_ok else f"{effort} não é compatível com {model_identifier(model)}."})
+                if effort_ok:
+                    model_ok, model_detail = validate_codex_model(root, data)
+                    diagnostics.append({"state": "ok" if model_ok else "error", "label": "Validação do modelo", "detail": model_detail})
+                else:
+                    diagnostics.append({"state": "pending", "label": "Validação do modelo", "detail": "Não executada porque o esforço de raciocínio é incompatível."})
     project_directory = str(data["project_directory"]).strip()
     if not project_directory:
         diagnostics.append({"state": "pending", "label": "Pasta de trabalho", "detail": "Nenhuma pasta de trabalho foi configurada."})
@@ -1015,15 +1195,15 @@ def codex_menu(root: Path) -> None:
         ready, message = validate_system(data, require_ready=True, root=root)
         screen("Codex-CLI", "Configuração da instância do Shikigami")
         item("1.", "Executável", str(data["executable"] or "(não configurado)"))
-        item("2.", "Modelo", str(data["model"]))
-        item("3.", "Esforço de raciocínio", str(data["model_reasoning_effort"]))
-        item("4.", "Pasta do projeto", str(data["project_directory"] or "(não definida)"))
-        item("5.", "Sandbox", str(data["sandbox_mode"]))
-        item("6.", "Política de aprovação", str(data["approval_policy"]))
-        item("7.", "Diretórios adicionais de escrita", f"{len(data['additional_writable_directories'])} configurado(s)")
-        item("8.", "Executar Codex-CLI", "CLI nativo com modelo, sandbox e diretórios configurados")
-        item("9.", "Console interativo Onmyōji", "App Server com developer instructions compostas")
-        item("10.", "Login no Codex-CLI")
+        item("2.", "Login no Codex-CLI")
+        item("3.", "Modelo", str(data["model"]))
+        item("4.", "Esforço de raciocínio", str(data["model_reasoning_effort"]))
+        item("5.", "Pasta do projeto", str(data["project_directory"] or "(não definida)"))
+        item("6.", "Sandbox", str(data["sandbox_mode"]))
+        item("7.", "Política de aprovação", str(data["approval_policy"]))
+        item("8.", "Diretórios adicionais de escrita", f"{len(data['additional_writable_directories'])} configurado(s)")
+        item("9.", "Executar Codex-CLI", "CLI nativo com modelo, sandbox e diretórios configurados")
+        item("10.", "Console interativo Onmyōji", "App Server com developer instructions compostas")
         print(f"\n  Estado: {'✓ PRONTO' if ready else '○ ' + message}")
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
@@ -1035,41 +1215,49 @@ def codex_menu(root: Path) -> None:
                 result(valid, message)
                 if valid: data = update_system(root, data, "executable", value)
         elif choice == "2":
-            value = choose_codex_model(str(data["model"]))
+            configure_codex_login(root, data)
+        elif choice == "3":
+            catalog, catalog_detail = codex_model_catalog(root, data)
+            if catalog is None:
+                result(False, catalog_detail)
+                continue
+            value = choose_codex_model(catalog, str(data["model"]))
             if value:
                 effort = choose_reasoning_effort(value, str(data["model_reasoning_effort"]), reset_to_model_default=True)
                 if effort is None:
                     continue
-                candidate = dict(data); candidate["model"], candidate["model_reasoning_effort"] = value, effort
+                candidate = dict(data); candidate["model"], candidate["model_reasoning_effort"] = model_identifier(value), effort
                 valid, message = validate_codex_model(root, candidate)
                 result(valid, message)
                 if valid:
-                    data = update_system(root, data, "model", value)
+                    data = update_system(root, data, "model", model_identifier(value))
                     data = update_system(root, data, "model_reasoning_effort", effort)
-        elif choice == "3":
-            value = choose_reasoning_effort(str(data["model"]), str(data["model_reasoning_effort"]))
+        elif choice == "4":
+            catalog, catalog_detail = codex_model_catalog(root, data)
+            model = catalog_model(catalog, str(data["model"])) if catalog else None
+            if model is None:
+                result(False, catalog_detail if catalog is None else "O modelo configurado não está disponível para a conta atual.")
+                continue
+            value = choose_reasoning_effort(model, str(data["model_reasoning_effort"]))
             if value:
                 candidate = dict(data); candidate["model_reasoning_effort"] = value
                 valid, message = validate_codex_model(root, candidate)
                 result(valid, message)
                 if valid: data = update_system(root, data, "model_reasoning_effort", value)
-        elif choice == "4":
+        elif choice == "5":
             value = choose_project_directory(root, str(data["project_directory"]))
             if value: data = update_system(root, data, "project_directory", value)
-        elif choice == "5":
+        elif choice == "6":
             workspace = Path(str(data["project_directory"])).expanduser() if data["project_directory"] else suggested_project_directory(root)
             value = choose_sandbox(root, workspace, str(data["sandbox_mode"]))
             if value: data = update_system(root, data, "sandbox_mode", value)
-        elif choice == "6":
+        elif choice == "7":
             workspace = Path(str(data["project_directory"])).expanduser() if data["project_directory"] else suggested_project_directory(root)
             value = choose_approval_policy(root, workspace, str(data["sandbox_mode"]), str(data["approval_policy"]))
             if value: data = update_system(root, data, "approval_policy", value)
-        elif choice == "7": data = manage_writable_directories(root, data)
-        elif choice == "8": launch_codex(root, data)
-        elif choice == "9": launch_onmyoji_interactive(root, data)
-        elif choice == "10":
-            method = choose("Login no Codex-CLI", ["Autenticação por dispositivo (recomendado para SSH/headless)", "Navegador local (callback em localhost)"], "Autenticação por dispositivo (recomendado para SSH/headless)")
-            if method: launch_codex(root, data, login=True, device_auth=method.startswith("Autenticação por dispositivo"))
+        elif choice == "8": data = manage_writable_directories(root, data)
+        elif choice == "9": launch_codex(root, data)
+        elif choice == "10": launch_onmyoji_interactive(root, data)
         else: result(False, "Opção inválida.")
 
 
