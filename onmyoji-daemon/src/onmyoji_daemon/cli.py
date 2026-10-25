@@ -23,7 +23,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("prepare-instance"); sub.add_parser("install-instance"); sub.add_parser("install-runtime"); sub.add_parser("remove-instance")
     sub.add_parser("process-status"); sub.add_parser("process-start")
     for action in ("process-stop", "process-force-stop"): sub.add_parser(action)
-    install_service = sub.add_parser("install-service"); install_service.add_argument("--name", required=True); install_service.add_argument("--description", required=True); install_service.add_argument("--scope", choices=["user", "system"], default="system"); install_service.add_argument("--run-as-user", default=""); install_service.add_argument("--run-as-group", default=""); install_service.add_argument("--use-sudo", action="store_true")
+    install_service = sub.add_parser("install-service"); install_service.add_argument("--name", required=True); install_service.add_argument("--description", required=True); install_service.add_argument("--scope", choices=["user", "system"], default="system"); install_service.add_argument("--run-as-user", default=""); install_service.add_argument("--run-as-group", default=""); install_service.add_argument("--use-sudo", action="store_true"); install_service.add_argument("--windows-account", default=""); install_service.add_argument("--password-stdin", action="store_true")
+    service_account = sub.add_parser("configure-windows-service-account"); service_account.add_argument("--account", required=True); service_account.add_argument("--password-stdin", action="store_true")
     remove_service = sub.add_parser("remove-service"); remove_service.add_argument("--use-sudo", action="store_true"); sub.add_parser("service-status")
     for action in ("service-start", "service-stop", "service-restart", "service-force-stop"): sub.add_parser(action).add_argument("--use-sudo", action="store_true")
     for action in ("start", "stop", "restart", "enable", "disable", "status"):
@@ -66,7 +67,8 @@ def main(argv: list[str] | None = None) -> int:
         "process-start": lambda: management.start_background(root),
         "process-stop": lambda: management.stop_background(root),
         "process-force-stop": lambda: management.stop_background(root, True),
-        "install-service": lambda: management.install_service(root, args.name, args.description, args.scope, args.run_as_user, args.run_as_group, args.use_sudo),
+        "install-service": lambda: management.install_service(root, args.name, args.description, args.scope, args.run_as_user, args.run_as_group, args.use_sudo, args.windows_account, sys.stdin.read().rstrip("\r\n") if args.password_stdin else ""),
+        "configure-windows-service-account": lambda: management.configure_windows_service_account(root, args.account, sys.stdin.read().rstrip("\r\n") if args.password_stdin else ""),
         "remove-service": lambda: management.remove_service(root, args.use_sudo),
         "service-status": lambda: management.service_status(root),
         "service-start": lambda: management.service_action(root, "start", args.use_sudo),

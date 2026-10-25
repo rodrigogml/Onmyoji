@@ -1271,8 +1271,8 @@ def daemon_menu(root: Path) -> None:
     def command(arguments: list[str], quiet: bool = False, input_value: str | None = None) -> subprocess.CompletedProcess[str]:
         return subprocess.run(arguments, cwd=str(project), env=environment, text=True, encoding="utf-8", errors="replace", capture_output=quiet, input=input_value)
 
-    def lifecycle(action: str, extra: list[str] | None = None) -> bool:
-        completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), action, *(extra or [])], quiet=True)
+    def lifecycle(action: str, extra: list[str] | None = None, input_value: str | None = None) -> bool:
+        completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), action, *(extra or [])], quiet=True, input_value=input_value)
         result(completed.returncode == 0, (completed.stdout or completed.stderr or "Operação concluída.").strip())
         return completed.returncode == 0
 
@@ -1399,7 +1399,7 @@ def daemon_menu(root: Path) -> None:
         daemon_checks = validation("daemon-validation-json"); print_checks(daemon_checks)
         print("\n  Diagnóstico específico do Telegram")
         telegram_checks = validation(); print_checks(telegram_checks)
-        required = {"Skill KeePass Vault", "Configuração KeePass Vault", "Perfis KeePass Vault", "Perfil KeePass", "Referência do token", "Codex App Server", "Execução do agente Codex", "Conexão Telegram"}
+        required = {"Skill KeePass Vault", "Configuração KeePass Vault", "Perfis KeePass Vault", "Perfil KeePass", "Referência do token", "Conta do serviço e KeePass", "Codex App Server", "Execução do agente Codex", "Conexão Telegram"}
         return all(check.get("state") == "ok" for check in telegram_checks if check.get("label") in required)
 
     def installed() -> bool: return (root / "configs" / "daemon" / "daemon.toml").is_file()
@@ -1543,6 +1543,29 @@ def daemon_menu(root: Path) -> None:
             else: lifecycle(action)
 
     def service_menu() -> None:
+        def windows_service_account() -> tuple[str, str] | None:
+            """Escolhe uma conta compatível com credenciais privadas do Windows."""
+            try:
+                current = subprocess.run(["whoami"], text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=5).stdout.strip()
+            except (OSError, subprocess.TimeoutExpired): current = ""
+            screen("Conta do Serviço Windows", "Define qual perfil do Windows executará o daemon")
+            note("LocalSystem é isolado e não enxerga credenciais guardadas no perfil Windows atual. Para Telegram com KeePass, prefira a conta que configurou o cofre.")
+            item("1.", "Conta Windows atual", current or "não identificada")
+            item("2.", "LocalSystem", "Somente para configurações sem credenciais do perfil do usuário")
+            item("3.", "Outra conta Windows", "Domínio\\usuário ou .\\usuário")
+            item("X.", "Cancelar")
+            while True:
+                selected = prompt("Conta [1]: ").strip().casefold() or "1"
+                if selected in {"x", "\x1b"}: return None
+                if selected == "2": return "LocalSystem", ""
+                account = current if selected == "1" else (prompt("Conta Windows: ").strip() if selected == "3" else "")
+                if not account:
+                    result(False, "Informe uma conta Windows válida."); continue
+                password = getpass.getpass("Senha da conta Windows (não será armazenada): ")
+                if not password:
+                    result(False, "A conta Windows exige senha para executar um serviço."); continue
+                return account, password
+
         def privileged_service_action(action: str) -> bool:
             extras: list[str] = []
             if os.name != "nt":
@@ -1558,7 +1581,7 @@ def daemon_menu(root: Path) -> None:
             screen("Serviço do sistema operacional", "O daemon será iniciado e controlado pelo sistema operacional")
             if not service_installed():
                 if os.name == "nt":
-                    note("O Windows Service será instalado como LocalSystem. Ele usa o CODEX_HOME e a autenticação persistida desta instância; confirme que a pasta da instância pode ser lida pelo serviço.")
+                    note("Escolha a conta do Windows que executará o serviço. LocalSystem é isolado e não acessa credenciais do KeePass guardadas no perfil atual.")
                 else:
                     note("Escolha serviço do usuário para usar o login atual do Codex; serviço do sistema exige privilégios e uma conta Linux explícita.")
                 item("1.", "Instalar serviço")
@@ -1571,8 +1594,13 @@ def daemon_menu(root: Path) -> None:
                 name = prompt(f"Nome do serviço [{default_name}]: ").strip() or default_name
                 description = prompt(f"Descrição [{f'Shikigami {visible} Daemon'}]: ").strip() or f"Shikigami {visible} Daemon"
                 if os.name == "nt":
-                    if prompt("Confirmar a instalação do serviço Windows como LocalSystem? [s/N]: ").strip().casefold() not in {"s", "sim"}: result(False, "Instalação do serviço cancelada."); continue
-                    if lifecycle("install-service", ["--name", name, "--description", description, "--scope", "system"]) and prompt("Iniciar agora e validar o registro? [S/n]: ").strip().casefold() in {"", "s", "sim"}:
+                    selected_account = windows_service_account()
+                    if selected_account is None: result(False, "Instalação do serviço cancelada."); continue
+                    account, password = selected_account
+                    if prompt(f"Confirmar a instalação do serviço Windows como {account}? [s/N]: ").strip().casefold() not in {"s", "sim"}: result(False, "Instalação do serviço cancelada."); continue
+                    extras = ["--name", name, "--description", description, "--scope", "system", "--windows-account", account]
+                    if password: extras.append("--password-stdin")
+                    if lifecycle("install-service", extras, password if password else None) and prompt("Iniciar agora e validar o registro? [S/n]: ").strip().casefold() in {"", "s", "sim"}:
                         lifecycle("service-start"); lifecycle("service-status")
                     continue
                 print()
@@ -1591,6 +1619,7 @@ def daemon_menu(root: Path) -> None:
             item("3.", "Reiniciar serviço")
             item("4.", "Forçar parada do serviço")
             item("5.", "Remover serviço")
+            if os.name == "nt": item("6.", "Configurar conta do serviço", "Necessário para acessar credenciais KeePass do usuário")
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
@@ -1602,6 +1631,13 @@ def daemon_menu(root: Path) -> None:
                 confirmation = prompt("Digite remover para confirmar: ").strip()
                 if confirmation == "remover": privileged_service_action("remove-service")
                 else: result(False, "Remoção cancelada; a confirmação deve ser exatamente remover.")
+            elif choice == "6" and os.name == "nt":
+                selected_account = windows_service_account()
+                if selected_account is None: result(False, "Alteração da conta cancelada."); continue
+                account, password = selected_account
+                extras = ["--account", account]
+                if password: extras.append("--password-stdin")
+                lifecycle("configure-windows-service-account", extras, password if password else None)
             else: result(False, "Opção inválida.")
 
     def operation_menu() -> None:

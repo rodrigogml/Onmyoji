@@ -449,6 +449,20 @@ def validation(root: Path) -> list[dict[str, str]]:
     known = profiles(root)
     add("ok" if profile and profile in known else "error", "Perfil KeePass", f"{profile!r} disponível." if profile in known else ("Selecione um perfil KeePass existente." if not profile else f"Perfil {profile!r} não encontrado."))
     add("ok" if entry and not entry.endswith(":Shikigami") else "pending", "Referência do token", entry if entry and not entry.endswith(":Shikigami") else "Defina a entrada KeePass do token do bot.")
+    if os.name == "nt" and profile in known:
+        try:
+            keepass = tomllib.loads((root / "configs" / "keepass.toml").read_text(encoding="utf-8"))
+            auth = keepass.get("profiles", {}).get(profile, {}).get("auth", {}).get("windows", {})
+            credential_manager = isinstance(auth, dict) and auth.get("mode") == "windows_credential_manager"
+            service_account = str(service_info(root).get("run_as_user") or "")
+            if credential_manager and service_account.casefold() == "localsystem":
+                add("error", "Conta do serviço e KeePass", "LocalSystem não acessa a credencial do KeePass do usuário atual. Em Daemon > Processo/Serviço > Serviço do sistema operacional, escolha Configurar conta do serviço e use a conta que configurou o cofre.")
+            elif credential_manager and service_account:
+                add("ok", "Conta do serviço e KeePass", f"O serviço usa {service_account}. A inicialização do gateway validará o acesso ao KeePass dessa conta.")
+            elif credential_manager:
+                add("pending", "Conta do serviço e KeePass", "Defina a conta do Serviço Windows antes de habilitar o gateway.")
+        except (OSError, tomllib.TOMLDecodeError, AttributeError):
+            add("error", "Conta do serviço e KeePass", "Não foi possível validar a conta do Serviço Windows contra o perfil KeePass.")
     try:
         system = tomllib.loads((root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8")).get("codex", {})
         executable = Path(str(system.get("executable") or ""))

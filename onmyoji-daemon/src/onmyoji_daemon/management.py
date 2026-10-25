@@ -367,7 +367,35 @@ def prepare_windows_service_host(root: Path) -> tuple[bool, str]:
     return True, "Host do Serviço do Windows preparado no ambiente dedicado."
 
 
-def install_service(root: Path, name: str, description: str, scope: str = "system", run_as_user: str = "", run_as_group: str = "", use_sudo: bool = False) -> tuple[bool, str]:
+def configure_windows_service_account(root: Path, account: str, password: str = "") -> tuple[bool, str]:
+    """Atualiza a conta de logon sem expor a senha na linha de comando."""
+    if os.name != "nt": return False, "A conta de serviço é configurável por este comando somente no Windows."
+    info = service_info(root)
+    if not info: return False, "Serviço do sistema operacional não está instalado para esta instância."
+    selected = account.strip()
+    if not selected: return False, "Informe a conta do Windows que executará o serviço."
+    local_system = selected.casefold() == "localsystem"
+    if not local_system and not password: return False, "Informe a senha da conta do Windows; ela não será armazenada pelo Onmyōji."
+    try:
+        import win32service
+        manager = win32service.OpenSCManager(None, None, win32service.SC_MANAGER_ALL_ACCESS)
+        service = win32service.OpenService(manager, str(info["name"]), win32service.SERVICE_CHANGE_CONFIG)
+        try:
+            win32service.ChangeServiceConfig(
+                service, win32service.SERVICE_NO_CHANGE, win32service.SERVICE_NO_CHANGE,
+                win32service.SERVICE_NO_CHANGE, None, None, 0, None,
+                None if local_system else selected, None if local_system else password, None,
+            )
+        finally:
+            win32service.CloseServiceHandle(service); win32service.CloseServiceHandle(manager)
+    except Exception as error:
+        return False, f"Não foi possível alterar a conta do Serviço do Windows: {error}"
+    info["run_as_user"] = "LocalSystem" if local_system else selected
+    _write_json(service_path(root), info)
+    return True, f"Conta do serviço atualizada para {info['run_as_user']}. Reinicie o serviço para aplicar a alteração."
+
+
+def install_service(root: Path, name: str, description: str, scope: str = "system", run_as_user: str = "", run_as_group: str = "", use_sudo: bool = False, windows_account: str = "", windows_password: str = "") -> tuple[bool, str]:
     if not is_installed(root): return False, "Instale primeiro o daemon desta instância."
     if service_path(root).exists(): return False, "Já existe um serviço instalado para esta instância."
     if running_process(root): return False, "Finalize o processo local antes de instalar o serviço."
@@ -392,6 +420,13 @@ def install_service(root: Path, name: str, description: str, scope: str = "syste
             subprocess.run([executable, "-m", "onmyoji_daemon.windows_service", "--service-name", name, "--onmyoji-root", str(root.resolve()), "remove"], text=True, capture_output=True, env=environment, check=False)
             return False, f"O registro do Serviço do Windows não pôde ser validado; a instalação foi desfeita: {error}"
         subprocess.run(["sc.exe", "description", name, description], text=True, capture_output=True, check=False)
+        if windows_account and windows_account.casefold() != "localsystem":
+            _write_json(service_path(root), {"name": name, "root": str(root.resolve())})
+            configured, detail = configure_windows_service_account(root, windows_account, windows_password)
+            if not configured:
+                subprocess.run([executable, "-m", "onmyoji_daemon.windows_service", "--service-name", name, "--onmyoji-root", str(root.resolve()), "remove"], text=True, capture_output=True, env=environment, check=False)
+                service_path(root).unlink(missing_ok=True)
+                return False, f"A instalação foi desfeita porque a conta do serviço não pôde ser configurada: {detail}"
     else:
         if not shutil.which("systemctl"): return False, "systemd não está disponível neste sistema."
         if scope not in {"user", "system"}: return False, "Escopo de serviço inválido."
@@ -415,7 +450,7 @@ def install_service(root: Path, name: str, description: str, scope: str = "syste
         if reloaded.returncode != 0: return False, (reloaded.stderr or reloaded.stdout).strip()
         enabled = subprocess.run([*command_prefix, *_systemctl(scope, "enable", name)], text=True, capture_output=True, check=False)
         if enabled.returncode != 0: return False, (enabled.stderr or enabled.stdout).strip()
-    configured_user = run_as_user or ("LocalSystem" if os.name == "nt" else "")
+    configured_user = windows_account or run_as_user or ("LocalSystem" if os.name == "nt" else "")
     _write_json(service_path(root), {"schema_version": 2, "name": name, "description": description, "root": str(root.resolve()), "platform": platform.system(), "scope": scope, "run_as_user": configured_user, "run_as_group": run_as_group})
     return True, f"Serviço {name} instalado."
 
