@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import sys
 import threading
@@ -13,6 +14,7 @@ source_root = str(Path(__file__).resolve().parents[1])
 if source_root not in sys.path: sys.path.insert(0, source_root)
 
 from onmyoji_daemon.instance import identity
+from onmyoji_daemon.management import daemon_python
 from onmyoji_daemon.supervisor import Supervisor
 
 try:
@@ -47,6 +49,7 @@ if win32serviceutil:
             self._svc_name_ = values[0]; self.root = _service_root(values[0]); super().__init__(values); self.stop_event = threading.Event()
         def SvcStop(self): self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING); self.stop_event.set()
         def SvcDoRun(self):
+            os.environ["ONMYOJI_DAEMON_PYTHON"] = str(daemon_python(self.root))
             supervisor = Supervisor(self.root); supervisor.stop_event = self.stop_event; supervisor.run_forever()
 else:
     class OnmyojiManagedService: pass

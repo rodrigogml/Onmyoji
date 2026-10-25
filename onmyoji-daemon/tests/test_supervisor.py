@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from onmyoji_daemon import management
-from onmyoji_daemon.registry import miniapps_command
+from onmyoji_daemon.registry import btg_monitor_command, miniapps_command, telegram_command
 from onmyoji_daemon.rpc import call
 from onmyoji_daemon.supervisor import Supervisor, endpoint
 from onmyoji_daemon.management import default_service_description, default_service_name, install_instance, is_installed, set_enabled
@@ -121,6 +121,18 @@ def test_windows_service_host_is_prepared_inside_dedicated_environment(tmp_path,
     assert (scripts / "pythonservice.exe").read_bytes() == b"service"
     assert (scripts / "pywintypes312.dll").read_bytes() == b"dll"
     assert (scripts / "python312.dll").read_bytes() == b"python"
+
+
+def test_service_commands_use_the_runtime_selected_by_windows_service(tmp_path, monkeypatch):
+    executable = tmp_path / "venv" / "Scripts" / "python.exe"
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    monkeypatch.setenv("ONMYOJI_DAEMON_PYTHON", str(executable))
+    data_dir = tmp_path / "configs" / "daemon" / "services" / "telegram"
+
+    assert telegram_command(data_dir)[0] == str(executable)
+    assert miniapps_command(data_dir)[0] == str(executable)
+    assert btg_monitor_command(data_dir)[0] == str(executable)
 
 
 def test_windows_service_action_waits_for_the_service_to_run(tmp_path, monkeypatch):
