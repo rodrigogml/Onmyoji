@@ -13,6 +13,7 @@ from typing import Any, Mapping
 
 from .management import daemon_python, runtime_ready
 from .mcp.codex import CodexMcpRegistration
+from .mcp.reconciliation import McpReconciliation
 
 
 class CodexExecutionError(RuntimeError):
@@ -83,20 +84,21 @@ class CodexLaunch:
         return command
 
     def direct_launch(self, profile: str) -> tuple[list[str], Path, dict[str, str]]:
-        """Prepara o cliente direto e garante a mesma integração MCP do gateway."""
-        try:
-            CodexMcpRegistration(self.root, self.executable).ensure()
-        except Exception as error:
-            raise CodexExecutionError(str(error)) from error
+        """Prepara o cliente direto e reconcilia o MCP quando houver pendência."""
+        self._reconcile_mcp()
         return self.direct_command(profile), self.workspace, self.environment()
 
     def app_server_launch(self) -> tuple[list[str], Path, dict[str, str]]:
-        """Prepara o App Server e garante o MCP sem modificar conflitos existentes."""
+        """Prepara o App Server e reconcilia o MCP antes de iniciá-lo."""
+        self._reconcile_mcp()
+        return [self.executable, "app-server", "--stdio"], self.workspace, self.environment()
+
+    def _reconcile_mcp(self) -> None:
+        """Aplica uma pendência MCP sem exigir reinicialização do gateway."""
         try:
-            CodexMcpRegistration(self.root, self.executable).ensure()
+            McpReconciliation(self.root).reconcile_if_pending(CodexMcpRegistration(self.root, self.executable))
         except Exception as error:
             raise CodexExecutionError(str(error)) from error
-        return [self.executable, "app-server", "--stdio"], self.workspace, self.environment()
 
     def interactive_launcher(self) -> tuple[list[str], Path, dict[str, str]]:
         """Prepara o console Onmyōji no mesmo runtime que atende o gateway."""

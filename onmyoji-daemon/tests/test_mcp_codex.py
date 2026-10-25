@@ -62,3 +62,16 @@ def test_ensure_refuses_conflicting_registration(tmp_path: Path, monkeypatch: py
 
     with pytest.raises(codex.CodexMcpError, match="configuração diferente"):
         codex.CodexMcpRegistration(tmp_path, "codex").ensure()
+
+
+def test_reconcile_replaces_a_registration_that_no_longer_matches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = tmp_path / "runtime" / "python"
+    monkeypatch.setattr(codex, "ensure_mcp_runtime", lambda _root: "ready")
+    monkeypatch.setattr(codex, "mcp_runtime_python", lambda _root: runtime)
+    conflict = {"name": "onmyoji", "transport": {"type": "stdio", "command": "python", "args": []}}
+    calls: list[list[str]] = []
+    monkeypatch.setattr(codex.subprocess, "run", lambda command, **_kwargs: calls.append(command) or (completed(stdout=json.dumps([conflict])) if command[1:4] == ["mcp", "list", "--json"] else completed()))
+
+    assert "reconciliado" in codex.CodexMcpRegistration(tmp_path, "codex").reconcile()
+    assert calls[1] == ["codex", "mcp", "remove", "onmyoji"]
+    assert calls[2][1:4] == ["mcp", "add", "onmyoji"]

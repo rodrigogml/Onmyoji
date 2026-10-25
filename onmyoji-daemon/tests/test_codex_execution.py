@@ -21,7 +21,8 @@ def data(workspace: Path) -> dict[str, object]:
 def test_direct_cli_and_app_server_share_instance_context(tmp_path: Path, monkeypatch) -> None:
     workspace = tmp_path / "workspace"; workspace.mkdir()
     launch = codex_execution.CodexLaunch.from_data(tmp_path, data(workspace))
-    monkeypatch.setattr(codex_execution.CodexMcpRegistration, "ensure", lambda _self: "ready")
+    reconciled = []
+    monkeypatch.setattr(codex_execution.McpReconciliation, "reconcile_if_pending", lambda _self, registration: reconciled.append(registration) or True)
 
     direct, direct_cwd, direct_environment = launch.direct_launch("onmyoji-skills")
     command, cwd, environment = launch.app_server_launch()
@@ -33,6 +34,7 @@ def test_direct_cli_and_app_server_share_instance_context(tmp_path: Path, monkey
     assert environment["CODEX_HOME"] == str(tmp_path.resolve())
     assert launch.model == "gpt-test" and launch.effort == "medium"
     assert launch.sandbox == "workspace-write" and launch.approval == "never"
+    assert len(reconciled) == 2
 
 
 def test_interactive_launcher_uses_selected_daemon_runtime(tmp_path: Path, monkeypatch) -> None:

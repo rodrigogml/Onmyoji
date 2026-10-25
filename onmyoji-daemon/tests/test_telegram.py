@@ -66,6 +66,24 @@ def test_app_server_does_not_pass_profiles_to_the_codex_subcommand(tmp_path):
     configured.return_value.app_server_launch.assert_called_once()
 
 
+def test_gateway_recycles_only_the_idle_app_server_when_mcp_reconciliation_is_pending(tmp_path, monkeypatch):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data))
+
+    class Client:
+        def __init__(self): self.stops = 0; self.starts = 0
+        def running(self): return True
+        def stop(self): self.stops += 1
+        def start(self): self.starts += 1
+
+    client = Client()
+    gateway.app_server = client
+    monkeypatch.setattr("onmyoji_daemon.telegram.mcp_reconciliation_pending", lambda _root: True)
+
+    assert gateway._app_client() is client
+    assert client.stops == 1 and client.starts == 1
+
+
 def test_gateway_sandbox_includes_only_configured_activity_root(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
     staging = tmp_path / ".onmyoji" / "telegram" / "staging"

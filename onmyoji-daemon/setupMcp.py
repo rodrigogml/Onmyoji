@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 from onmyoji_daemon.mcp.configuration import McpConfiguration, McpConfigurationError
 from onmyoji_daemon.mcp.codex import CodexMcpError, CodexMcpRegistration
 from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialResolver
+from onmyoji_daemon.mcp.reconciliation import McpReconciliation, McpReconciliationError
 from onmyoji_daemon.mcp.todoist import TodoistError, TodoistService
 
 
@@ -426,11 +427,14 @@ def codex_mcp_menu(root: Path) -> None:
         if choice == "x": return
         try:
             if choice == "1": result(True, registration.prepare_runtime())
-            elif choice == "2": result(True, registration.ensure())
-            elif choice == "3": result(True, registration.replace())
-            elif choice == "4": result(True, registration.remove())
+            elif choice == "2":
+                message = registration.ensure(); McpReconciliation(root).mark_synchronized(); result(True, message)
+            elif choice == "3":
+                message = registration.replace(); McpReconciliation(root).mark_synchronized(); result(True, message)
+            elif choice == "4":
+                message = registration.remove(); McpReconciliation(root).mark_synchronized(); result(True, message)
             else: result(False, "Opção inválida.")
-        except CodexMcpError as error:
+        except (CodexMcpError, McpReconciliationError) as error:
             result(False, str(error))
 
 

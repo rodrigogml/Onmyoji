@@ -77,6 +77,26 @@ class CodexMcpRegistration:
         self._add()
         return "Registro MCP Onmyōji atualizado para o runtime MCP atual."
 
+    def reconcile(self) -> str:
+        """Corrige automaticamente apenas o registro desta instância.
+
+        A chamada ocorre sob a trava persistida do coordenador MCP, antes de
+        uma nova abertura do Codex. Como ``CODEX_HOME`` é exclusivo da
+        instância, o nome ``onmyoji`` pertence a este gerenciamento local.
+        """
+        self._validate_prerequisites()
+        current = self._current()
+        if current is None:
+            self._add()
+            return "Servidor MCP Onmyōji registrado para o Codex CLI."
+        if self._matches(current):
+            return "Registro MCP Onmyōji já está válido para o Codex CLI."
+        completed = self._run("mcp", "remove", SERVER_NAME)
+        if completed.returncode != 0:
+            raise CodexMcpError("Não foi possível corrigir o registro MCP Onmyōji anterior.")
+        self._add()
+        return "Registro MCP Onmyōji reconciliado para o runtime MCP atual."
+
     def remove(self) -> str:
         """Remove somente o registro MCP pertencente a esta instância."""
         if self._current() is None:

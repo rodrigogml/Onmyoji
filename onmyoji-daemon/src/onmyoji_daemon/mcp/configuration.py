@@ -10,6 +10,7 @@ import tomllib
 from typing import Any
 
 from .credentials import mcp_credentials_path
+from .reconciliation import McpReconciliation
 from .todoist import todoist_config_path
 
 
@@ -67,10 +68,12 @@ class McpConfiguration:
     def save_credentials(self, data: dict[str, Any]) -> None:
         self._validate_credentials(data)
         self._save(self.credentials_path, self._render_credentials(data))
+        McpReconciliation(self.root).mark_pending()
 
     def save_todoist(self, data: dict[str, Any]) -> None:
         self._validate_todoist(data)
         self._save(self.todoist_path, self._render_todoist(data))
+        McpReconciliation(self.root).mark_pending()
 
     def vault_profile_names(self) -> list[str]:
         return sorted(self.credentials()["profiles"])
