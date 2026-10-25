@@ -89,12 +89,23 @@ def runtime_requirements() -> list[str]:
     return requirements
 
 
+def pip_invocation(executable: Path, arguments: list[str]) -> list[str]:
+    """Monta a chamada do pip sem acionar a consulta WMI defeituosa do Windows."""
+    if os.name != "nt": return [str(executable), "-m", "pip", *arguments]
+    # pip importa Rich, que chama platform.system(). No Python 3.12 essa chamada
+    # consulta WMI e pode bloquear. A plataforma já é conhecida neste subprocesso.
+    wrapper = "import platform, runpy; platform.system = lambda: 'Windows'; runpy.run_module('pip', run_name='__main__')"
+    return [str(executable), "-c", wrapper, *arguments]
+
+
 def ensure_runtime(root: Path, show_progress: bool = False, allow_install: bool = True) -> tuple[bool, str]:
     """Prepara o runtime escolhido e instala as dependências do daemon."""
     runtime = runtime_configuration(root); executable = daemon_python(root)
     if _runtime_ready(executable): return True, "Ambiente Python do daemon está pronto."
     if not allow_install:
         return False, "O runtime escolhido não possui os componentes necessários. Use Instalar/validar daemon e confirme a instalação dos componentes."
+    package_python = executable
+    package_target: Path | None = None
     if runtime["mode"] == "dedicated":
         environment = executable.parent.parent
         environment.parent.mkdir(parents=True, exist_ok=True)
@@ -111,27 +122,22 @@ def ensure_runtime(root: Path, show_progress: bool = False, allow_install: bool 
                 detail = ((created.stderr or created.stdout) if not show_progress else "").strip()
                 return False, "Não foi possível criar o ambiente Python do daemon: " + (detail or "venv falhou")
             if show_progress: print("✓ Ambiente Python dedicado criado.")
+        # O pip do Python-base instala somente no site-packages deste venv. Isso
+        # evita o ensurepip, que pode travar em algumas instalações do Windows.
+        package_python = Path(creator)
+        package_target = environment / ("Lib/site-packages" if os.name == "nt" else f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages")
     elif not executable.is_file():
         return False, "O executável Python escolhido não existe. Escolha outro runtime no instalador do daemon."
     if show_progress: print("[2/3] Verificando o instalador de pacotes (pip)...")
     try:
-        pip_available = subprocess.run([str(executable), "-m", "pip", "--version"], text=True, capture_output=not show_progress, check=False, timeout=30)
+        pip_available = subprocess.run(pip_invocation(package_python, ["--version"]), text=True, capture_output=not show_progress, check=False, timeout=30)
     except subprocess.TimeoutExpired:
         return False, "A verificação do pip excedeu 30 segundos. O runtime Python não respondeu."
     except OSError as error:
         return False, "Não foi possível executar o runtime Python escolhido: " + str(error)
     if pip_available.returncode != 0:
-        if show_progress: print("Inicializando o pip no ambiente escolhido...")
-        try:
-            bootstrapped = subprocess.run([str(executable), "-m", "ensurepip", "--upgrade", "--default-pip"], text=True, capture_output=not show_progress, check=False, timeout=120)
-        except subprocess.TimeoutExpired:
-            return False, "A inicialização do pip excedeu 2 minutos. Consulte o runtime Python escolhido."
-        except OSError as error:
-            return False, "Não foi possível inicializar o pip: " + str(error)
-        if bootstrapped.returncode != 0:
-            detail = ((bootstrapped.stderr or bootstrapped.stdout) if not show_progress else "").strip().splitlines()
-            return False, "Não foi possível inicializar o pip: " + (detail[-1] if detail else "ensurepip falhou")
-        if show_progress: print("✓ Pip inicializado.")
+        detail = ((pip_available.stderr or pip_available.stdout) if not show_progress else "").strip().splitlines()
+        return False, "O Python escolhido para preparar o ambiente não possui pip funcional: " + (detail[-1] if detail else str(package_python))
     try:
         requirements = runtime_requirements()
     except (OSError, KeyError, TypeError, ValueError, tomllib.TOMLDecodeError):
@@ -142,7 +148,8 @@ def ensure_runtime(root: Path, show_progress: bool = False, allow_install: bool 
         for requirement in requirements: print("  • " + requirement)
         print("Instalando componentes; a saída do pip será exibida abaixo...")
     try:
-        installed = subprocess.run([str(executable), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", *requirements], text=True, capture_output=not show_progress, check=False, timeout=600)
+        target_option = ["--target", str(package_target)] if package_target else []
+        installed = subprocess.run(pip_invocation(package_python, ["install", "--disable-pip-version-check", "--no-input", "--upgrade", *target_option, *requirements]), text=True, capture_output=not show_progress, check=False, timeout=600)
     except subprocess.TimeoutExpired:
         return False, "A instalação dos componentes excedeu 10 minutos. Verifique a conexão e o índice de pacotes Python."
     except OSError as error:

@@ -1421,6 +1421,9 @@ def daemon_menu(root: Path) -> None:
         return all(check.get("state") == "ok" for check in [*main_checks, *daemon_checks])
 
     def installed() -> bool: return (root / "configs" / "daemon" / "daemon.toml").is_file()
+    def runtime_validated() -> bool:
+        checks = validation("daemon-validation-json")
+        return any(check.get("label") == "Runtime Python do daemon" and check.get("state") == "ok" for check in checks)
     def service_installed() -> bool: return (root / "configs" / "daemon" / "service.json").is_file()
     def daemon_running() -> bool:
         return command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "list-services"], quiet=True).returncode == 0
@@ -1467,8 +1470,11 @@ def daemon_menu(root: Path) -> None:
         print("\n  2. Instalação do daemon")
         if not installed():
             if not install_daemon(): return
+        elif not runtime_validated():
+            print("    " + Ui.text("○", Ui.bold, Ui.amber) + "  Configuração-base encontrada; o runtime ainda não foi validado.")
+            if not install_daemon(): return
         else:
-            print("    " + Ui.text("✓", Ui.bold, Ui.green) + "  Daemon da instância — já instalado.")
+            print("    " + Ui.text("✓", Ui.bold, Ui.green) + "  Runtime Python do daemon — instalado e validado.")
             if prompt("  Revisar ou alterar o runtime Python agora? [s/N]: ").strip().casefold() in {"s", "sim"}:
                 if not install_daemon(): return
         print("\n  3. Configuração compartilhada do daemon")
@@ -1964,12 +1970,12 @@ def daemon_menu(root: Path) -> None:
             else: result(False, "Opção inválida.")
 
     while True:
-        status = "INSTALADO" if installed() else "NÃO INSTALADO"
+        status = "CONFIGURAÇÃO-BASE PREPARADA" if installed() else "NÃO CONFIGURADO"
         screen("Daemon", f"Plataforma local e serviços da instância · {status}")
         item("!.", "Diagnóstico do Daemon", "Começa pelo diagnóstico principal do Shikigami")
         item("W.", "Wizard de configuração do Daemon", "Guia de configuração e validação")
         print()
-        item("1.", "Instalar daemon da instância" if not installed() else "Validar instalação do daemon", status)
+        item("1.", "Preparar e instalar daemon" if not installed() else "Validar runtime do daemon", status)
         item("2.", "Operação do daemon", "Processo local e serviço do sistema operacional")
         item("3.", "Serviços instalados", "Telegram, MiniApps e futuras integrações")
         item("4.", "Utilitários e manutenção", "Ambiente Python e remoção")
