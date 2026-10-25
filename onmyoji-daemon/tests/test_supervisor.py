@@ -123,6 +123,29 @@ def test_windows_service_host_is_prepared_inside_dedicated_environment(tmp_path,
     assert (scripts / "python312.dll").read_bytes() == b"python"
 
 
+def test_windows_service_action_waits_for_the_service_to_run(tmp_path, monkeypatch):
+    management._write_json(management.service_path(tmp_path), {"name": "Teste", "root": str(tmp_path.resolve())})
+    monkeypatch.setattr(management.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""))
+    monkeypatch.setattr(management, "service_status", lambda _root: (True, "STATE              : 4  RUNNING"))
+
+    ok, message = management.service_action(tmp_path, "start")
+
+    assert ok
+    assert "em execução" in message
+
+
+def test_windows_service_action_reports_when_start_does_not_reach_running(tmp_path, monkeypatch):
+    management._write_json(management.service_path(tmp_path), {"name": "Teste", "root": str(tmp_path.resolve())})
+    monkeypatch.setattr(management.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""))
+    monkeypatch.setattr(management, "service_status", lambda _root: (True, "STATE              : 1  STOPPED"))
+    monkeypatch.setattr(management.time, "sleep", lambda _seconds: None)
+
+    ok, message = management.service_action(tmp_path, "start")
+
+    assert not ok
+    assert "não chegou ao estado RUNNING" in message
+
+
 def test_external_runtime_is_not_changed_without_install_permission(tmp_path, monkeypatch):
     manifest = tmp_path / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True)
     executable = tmp_path / "python.exe"; executable.touch()

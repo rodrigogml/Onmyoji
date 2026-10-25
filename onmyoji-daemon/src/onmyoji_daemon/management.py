@@ -10,6 +10,7 @@ import hashlib
 import os
 from pathlib import Path
 import platform
+import re
 import subprocess
 import sys
 import time
@@ -429,6 +430,24 @@ def service_status(root: Path) -> tuple[bool, str]:
     return value.returncode in {0, 3}, (value.stdout or value.stderr).strip()
 
 
+def _windows_service_state(status: str) -> str:
+    """Extrai o estado do ``sc.exe`` nas localizações mais comuns do Windows."""
+    matched = re.search(r"(?:STATE|ESTADO)\s*:\s*\d+\s+([A-Z_]+)", status, re.IGNORECASE)
+    return matched.group(1).upper() if matched else ""
+
+
+def _wait_for_windows_service_state(root: Path, expected: str, attempts: int = 10) -> tuple[bool, str]:
+    """Aguarda o estado efetivo do serviço, além do aceite inicial do SCM."""
+    last_status = ""
+    for attempt in range(attempts):
+        _ok, last_status = service_status(root)
+        if _windows_service_state(last_status) == expected:
+            return True, last_status
+        if attempt < attempts - 1: time.sleep(0.5)
+    observed = _windows_service_state(last_status) or "desconhecido"
+    return False, f"O Windows aceitou a solicitação, mas o serviço não chegou ao estado {expected}; estado final: {observed}.\n{last_status}"
+
+
 def service_action(root: Path, action: str, use_sudo: bool = False) -> tuple[bool, str]:
     info = service_info(root)
     if not info: return False, "Serviço do sistema operacional não está instalado para esta instância."
@@ -453,7 +472,12 @@ def service_action(root: Path, action: str, use_sudo: bool = False) -> tuple[boo
         subprocess.run(["sc.exe", "stop", name], text=True, capture_output=True, check=False); time.sleep(1)
         command = "start"
     value = subprocess.run(["sc.exe", command, name], text=True, capture_output=True, check=False)
-    return value.returncode == 0, ("Serviço atualizado." if value.returncode == 0 else (value.stderr or value.stdout).strip())
+    if value.returncode != 0: return False, (value.stderr or value.stdout).strip()
+    expected = "RUNNING" if command == "start" else "STOPPED"
+    confirmed, status = _wait_for_windows_service_state(root, expected)
+    if not confirmed: return False, status
+    message = "Serviço em execução." if expected == "RUNNING" else "Serviço parado."
+    return True, f"{message}\n{status}"
 
 
 def remove_service(root: Path, use_sudo: bool = False) -> tuple[bool, str]:

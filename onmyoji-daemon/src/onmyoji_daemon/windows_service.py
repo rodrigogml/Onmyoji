@@ -3,10 +3,17 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
 import threading
 
-from .instance import identity
-from .supervisor import Supervisor
+# pythonservice.exe pode carregar este arquivo diretamente a partir do registro
+# do Windows, fora do contexto do pacote. Mantemos a raiz de ``src`` explícita
+# para que os imports absolutos funcionem nos dois modos de carregamento.
+source_root = str(Path(__file__).resolve().parents[1])
+if source_root not in sys.path: sys.path.insert(0, source_root)
+
+from onmyoji_daemon.instance import identity
+from onmyoji_daemon.supervisor import Supervisor
 
 try:
     import win32service
@@ -52,11 +59,11 @@ def main(argv: list[str] | None = None) -> int:
 
     OnmyojiManagedService._svc_name_ = name; OnmyojiManagedService._svc_display_name_ = name; OnmyojiManagedService._svc_description_ = f"Shikigami {identity(root)} Daemon"
     OnmyojiManagedService._exe_name_ = str(root / "configs" / "daemon" / "venv" / "Scripts" / "pythonservice.exe")
-    previous, __import__("sys").argv = __import__("sys").argv, [__import__("sys").argv[0], *remainder]
+    previous, sys.argv = sys.argv, [sys.argv[0], *remainder]
     try:
         win32serviceutil.HandleCommandLine(OnmyojiManagedService)
         if any(action in remainder for action in ("install", "update")): _save_service_root(name, root)
-    finally: __import__("sys").argv = previous
+    finally: sys.argv = previous
     return 0
 
 
