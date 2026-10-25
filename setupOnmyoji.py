@@ -1448,6 +1448,15 @@ def daemon_menu(root: Path) -> None:
             time.sleep(0.2)
         return False
 
+    def wait_for_telegram_ready() -> bool:
+        """Aguarda o módulo Telegram responder após iniciar ou reiniciar o daemon."""
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            status = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "telegram", "status"], quiet=True)
+            if status.returncode == 0: return True
+            time.sleep(0.3)
+        return False
+
     def miniapps_state() -> dict[str, object]:
         completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "list-services"], quiet=True)
         if completed.returncode != 0: return {}
@@ -1839,6 +1848,40 @@ def daemon_menu(root: Path) -> None:
                     except (OSError, ValueError) as error: result(False, f"Não foi possível abrir o editor: {error}")
             else: result(False, "Opção inválida.")
 
+    def configure_wizard_telegram_credential() -> bool:
+        """Configura a credencial com os valores existentes, sem desviar ao menu manual."""
+        path = root / "shikigami" / "daemon" / "telegram.toml"
+        try:
+            settings = tomllib.loads(path.read_text(encoding="utf-8")); telegram = settings.get("telegram", {})
+            current_profile, current_entry = str(telegram.get("keepass_profile") or ""), str(telegram.get("token_entry") or "")
+        except (OSError, tomllib.TOMLDecodeError, AttributeError):
+            current_profile, current_entry = "", ""
+        listed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "profiles"], quiet=True)
+        try: profiles = json.loads(listed.stdout)
+        except json.JSONDecodeError: profiles = []
+        if not profiles: result(False, "Nenhum perfil KeePass disponível."); return False
+        default_profile = current_profile if current_profile in profiles else str(profiles[0])
+        print("    Perfis KeePass disponíveis: " + ", ".join(str(profile) for profile in profiles))
+        profile = prompt(f"Perfil KeePass [{default_profile}]: ").strip() or default_profile
+        if profile not in profiles: result(False, "Perfil KeePass inválido."); return False
+        default_entry = current_entry or f"APIs/Telegram:{''.join(part[:1].upper() + part[1:] for part in instance_identity(root).split()) or 'Shikigami'}"
+        entry = prompt(f"Entrada KeePass [{default_entry}]: ").strip() or default_entry
+        saved = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-credential", "--profile", profile, "--entry", entry], quiet=True)
+        if saved.returncode != 0: result(False, (saved.stdout or saved.stderr).strip()); return False
+        checked = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "check-entry", "--profile", profile, "--entry", entry], quiet=True)
+        try: probe = json.loads(checked.stdout); exists, detail = bool(probe["exists"]), str(probe["message"])
+        except (json.JSONDecodeError, KeyError): exists, detail = False, "Não foi possível verificar a entrada no KeePass."
+        if not exists:
+            result(False, detail)
+            if prompt("Cadastrar o token do bot nesta entrada agora? [S/n]: ").strip().casefold() not in {"", "s", "sim"}: return False
+            token = getpass.getpass(Ui.text("› Token do bot (não será exibido): ", Ui.violet, Ui.bold))
+            written = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "write-token", "--profile", profile, "--entry", entry], quiet=True, input_value=token)
+            if written.returncode != 0: result(False, (written.stdout or written.stderr).strip()); return False
+        else: result(True, detail)
+        tested = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-telegram"], quiet=True)
+        result(tested.returncode == 0, (tested.stdout or tested.stderr).strip())
+        return tested.returncode == 0
+
     def telegram_wizard() -> None:
         """Conduz a configuração mínima do gateway, preservando cada etapa válida."""
         screen("Wizard do Telegram", "Configuração guiada do gateway e do primeiro owner")
@@ -1861,10 +1904,7 @@ def daemon_menu(root: Path) -> None:
         result(True, "Configuração-base do Telegram preparada.")
 
         print("\n  4. Credencial e autenticação do bot")
-        telegram_section_menu("credential")
-        checks = validation(); required_credential = {"Perfil KeePass", "Referência do token", "Conexão Telegram"}
-        if any(check.get("state") != "ok" for check in checks if check.get("label") in required_credential):
-            result(False, "Configure a credencial e execute o teste de conexão antes de continuar."); return
+        if not configure_wizard_telegram_credential(): return
 
         print("\n  5. Codex App Server")
         try:
@@ -1888,8 +1928,18 @@ def daemon_menu(root: Path) -> None:
         print("\n  7. Habilitar o gateway")
         if not show_telegram_diagnosis(): result(False, "O diagnóstico ainda possui pendências obrigatórias."); return
         if lifecycle("enable", ["telegram"]):
-            result(True, "Gateway Telegram habilitado."); offer_restart()
+            result(True, "Gateway Telegram habilitado.")
         else: return
+        if daemon_running():
+            answer = prompt("O daemon está em execução; reiniciar agora para efetivar a alteração? [S/n]: ").strip().casefold()
+            if answer not in {"", "s", "sim"}: result(False, "Gateway habilitado, mas pendente de reinício. Execute o wizard novamente após reiniciá-lo."); return
+            restarted = lifecycle("service-restart") if service_installed() else (lifecycle("process-stop") and lifecycle("process-start"))
+            if not restarted: return
+        elif not lifecycle("service-start" if service_installed() else "process-start"):
+            return
+        if not wait_for_daemon_ready() or not wait_for_telegram_ready():
+            result(False, "O daemon iniciou, mas o gateway Telegram não respondeu em até 15 segundos. Consulte o diagnóstico do Telegram."); return
+        result(True, "Gateway Telegram em execução e respondendo.")
 
         print("\n  8. Parear o primeiro owner")
         request = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "telegram", "pair-request"], quiet=True)
