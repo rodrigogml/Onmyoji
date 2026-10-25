@@ -39,23 +39,6 @@ def profile_call(skill: str, action: str, arguments: list[str]) -> dict:
     return {"skill": skill, **value}
 
 
-def todoist_arguments(values: list[str] | None) -> list[str]:
-    """Translate the original Todoist CLI flags to the common --set contract."""
-    mapping = {"vault_profile": "--vault-profile", "vault_entry_path": "--vault-entry", "vault_field": "--vault-field", "access": "--access"}
-    output: list[str] = []
-    for item in values or []:
-        key, separator, raw = item.partition("=")
-        if not separator: raise ValueError("--set deve usar campo=valor.")
-        if key in mapping: output += [mapping[key], raw]
-        elif key in {"allowed_operations", "allowed_attachment_roots"}:
-            try: parsed = json.loads(raw)
-            except json.JSONDecodeError: parsed = raw
-            if isinstance(parsed, list): parsed = ";".join(str(value) for value in parsed)
-            output += ["--operations" if key == "allowed_operations" else "--attachment-roots", str(parsed)]
-        else: raise ValueError(f"Campo Todoist inválido: {key}.")
-    return output
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("area", choices=["skills", "profiles"])
@@ -87,13 +70,7 @@ def main() -> int:
         for flag, value in (("--profile", args.profile), ("--vault-profile", args.vault_profile), ("--vault-entry", args.vault_entry), ("--vault-field", args.vault_field), ("--access", args.access), ("--operations", args.operations), ("--attachment-roots", args.attachment_roots), ("--confirm-delete", args.confirm_delete)):
             if value is not None: command += [flag, value]
         if args.set:
-            try:
-                if args.skill == "todoist": command += todoist_arguments(args.set)
-                else:
-                    for value in args.set: command += ["--set", value]
-            except ValueError as error:
-                result = {"ok": False, "error": {"code": "invalid_field", "message": str(error)}}
-                print(json.dumps(result, ensure_ascii=False)); return 2
+            for value in args.set: command += ["--set", value]
         result = profile_call(args.skill, actions[args.action], command)
     print(json.dumps(result, ensure_ascii=False)); return 0 if result.get("ok", False) else 2
 

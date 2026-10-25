@@ -50,7 +50,7 @@ Todas as skills do catálogo também aceitam estas ações:
 - `status`: faz um diagnóstico sem gravar a configuração da skill; retorna ao menos `configured` e `valid` em JSON.
 - `configure`: abre o menu interativo da própria skill. Ele cria ou altera arquivos somente após a confirmação e a validação apropriadas.
 
-As skills que mantêm perfis de integração — AWS, BISCMD, BIS10CMD, Cloudflare, EccoVox, Forward Email, Google, MySQL, Notion, Omie, SSH e Todoist — também expõem a API não interativa `profile-schema`, `profile-list`, `profile-create`, `profile-update`, `profile-delete` e `profile-test`. A entrada e a saída são JSON; mutações exigem os campos de perfil válidos e a exclusão exige confirmação explícita. Essa é a API usada por `onmyoji-control`.
+As skills que mantêm perfis de integração — AWS, BISCMD, BIS10CMD, Cloudflare, EccoVox, Forward Email, Google, MySQL, Notion, Omie e SSH — também expõem a API não interativa `profile-schema`, `profile-list`, `profile-create`, `profile-update`, `profile-delete` e `profile-test`. A entrada e a saída são JSON; mutações exigem os campos de perfil válidos e a exclusão exige confirmação explícita. Essa é a API usada por `onmyoji-control`. Todoist é configurado exclusivamente pelo menu MCP e consumido pelo servidor MCP interno.
 
 Há três variações deliberadas:
 
