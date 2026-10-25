@@ -1112,8 +1112,10 @@ def writable_directories_diagnostics(root: Path, data: dict[str, object]) -> lis
     return diagnostics
 
 
-def shikigami_diagnostics(root: Path) -> list[dict[str, str]]:
+def shikigami_diagnostics(root: Path, progress=None) -> list[dict[str, str]]:
     """Retorna apenas os diagnósticos básicos explicitamente definidos para a instância."""
+    def checking(label: str) -> None:
+        if progress: progress(label)
     data = load_system(root); diagnostics: list[dict[str, str]] = []
     identity = str(data["shikigami_identity"])
     if not identity.strip():
@@ -1122,18 +1124,21 @@ def shikigami_diagnostics(root: Path) -> list[dict[str, str]]:
         diagnostics.append({"state": "error", "label": "Nome do Shikigami", "detail": "O nome contém espaços adicionais e precisa ser normalizado."})
     else:
         diagnostics.append({"state": "ok", "label": "Nome do Shikigami", "detail": identity})
+    checking("Verificando o executável do Codex-CLI...")
     executable_ok, executable_detail = validate_codex_executable(str(data["executable"]))
     diagnostics.append({"state": "ok" if executable_ok else "error", "label": "Executável do Codex-CLI", "detail": executable_detail})
     if not executable_ok:
         for label in ("Login do Codex-CLI", "Catálogo de modelos", "Modelo do Codex-CLI", "Esforço de raciocínio", "Validação do modelo"):
             diagnostics.append({"state": "pending", "label": label, "detail": "Não verificado porque o executável do Codex-CLI não está disponível."})
     else:
+        checking("Verificando o login do Codex-CLI...")
         logged_in, login_detail = validate_codex_login(root, data)
         diagnostics.append({"state": "ok" if logged_in else "error", "label": "Login do Codex-CLI", "detail": login_detail})
         if not logged_in:
             for label in ("Catálogo de modelos", "Modelo do Codex-CLI", "Esforço de raciocínio", "Validação do modelo"):
                 diagnostics.append({"state": "pending", "label": label, "detail": "Não verificado porque não há login ativo no Codex-CLI."})
         else:
+            checking("Consultando o catálogo de modelos da conta...")
             catalog, catalog_detail = fetch_codex_model_catalog(root, str(data["executable"]))
             diagnostics.append({"state": "ok" if catalog else "error", "label": "Catálogo de modelos", "detail": catalog_detail})
             model = catalog_model(catalog, str(data["model"])) if catalog else None
@@ -1148,6 +1153,7 @@ def shikigami_diagnostics(root: Path) -> list[dict[str, str]]:
                 effort_ok = effort in reasoning_efforts_for_model(model)
                 diagnostics.append({"state": "ok" if effort_ok else "error", "label": "Esforço de raciocínio", "detail": effort if effort_ok else f"{effort} não é compatível com {model_identifier(model)}."})
                 if effort_ok:
+                    checking(f"Validando o modelo {model_identifier(model)}; esta etapa pode levar até 120 segundos...")
                     model_ok, model_detail = validate_codex_model(root, data)
                     diagnostics.append({"state": "ok" if model_ok else "error", "label": "Validação do modelo", "detail": model_detail})
                 else:
@@ -1182,7 +1188,9 @@ def shikigami_diagnostics(root: Path) -> list[dict[str, str]]:
 def diagnostics_menu(root: Path) -> None:
     """Exibe os resultados detalhados do diagnóstico básico da instância."""
     screen("Diagnóstico", "Estado da instalação e do Codex-CLI")
-    for diagnostic in shikigami_diagnostics(root):
+    diagnostics = shikigami_diagnostics(root, lambda message: print("  → " + message))
+    print()
+    for diagnostic in diagnostics:
         state = diagnostic["state"]
         symbol, color = {"ok": ("✓", Ui.green), "pending": ("○", Ui.amber), "error": ("✗", Ui.red)}[state]
         print("  " + Ui.text(symbol, Ui.bold, color) + "  " + diagnostic["label"] + " — " + Ui.text(diagnostic["detail"], color))
@@ -1298,12 +1306,87 @@ def daemon_menu(root: Path) -> None:
         result(completed.returncode == 0, (completed.stdout or completed.stderr or "Operação concluída.").strip())
         return completed.returncode == 0
 
+    def inspect_python(executable: str) -> tuple[bool, str]:
+        try:
+            checked = subprocess.run([executable, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"], text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=10)
+            version = (checked.stdout or "").strip()
+            major, minor, *_ = (int(value) for value in version.split("."))
+            return (checked.returncode == 0 and (major, minor) >= (3, 11), version)
+        except (OSError, ValueError, subprocess.TimeoutExpired): return False, "indisponível"
+
+    def discovered_pythons() -> list[tuple[str, str]]:
+        candidates = [sys.executable, shutil.which("python") or ""]
+        if os.name == "nt":
+            try:
+                listed = subprocess.run(["py", "-0p"], text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=10)
+                for line in listed.stdout.splitlines():
+                    match = re.search(r"([A-Za-z]:\\[^\r\n]+?\.exe)\s*$", line.strip(), re.IGNORECASE)
+                    if match: candidates.append(match.group(1))
+            except (OSError, subprocess.TimeoutExpired): pass
+        found: list[tuple[str, str]] = []
+        for candidate in candidates:
+            if not candidate or any(Path(candidate).resolve() == Path(item[0]).resolve() for item in found): continue
+            valid, version = inspect_python(candidate)
+            if valid: found.append((str(Path(candidate).resolve()), version))
+        return found
+
+    def choose_daemon_runtime() -> bool:
+        try:
+            stored = tomllib.loads((root / "configs" / "daemon" / "daemon.toml").read_text(encoding="utf-8")).get("runtime", {})
+        except (OSError, tomllib.TOMLDecodeError): stored = {}
+        mode = str(stored.get("mode") or "dedicated") if isinstance(stored, dict) else "dedicated"
+        default = {"dedicated": "1", "existing": "2", "global": "3"}.get(mode, "1")
+        screen("Runtime Python do daemon", "Escolha onde o daemon executará suas dependências")
+        print("  1. Ambiente dedicado — recomendado; isola os pacotes desta instância.")
+        print("  2. Ambiente virtual existente — usa um venv já preparado.")
+        print("  3. Python global da máquina — avançado; pode alterar pacotes compartilhados.\n")
+        while True:
+            selected = prompt(f"Modo [{default}]: ").strip() or default
+            if selected in {"x", "X", "\x1b"}: return False
+            if selected in {"1", "2", "3"}: break
+            result(False, "Escolha 1, 2 ou 3.")
+        selected_mode = {"1": "dedicated", "2": "existing", "3": "global"}[selected]
+        if selected_mode == "global": note("O setup poderá instalar componentes no Python global escolhido somente após sua confirmação.")
+        candidates = discovered_pythons()
+        if not candidates: result(False, "Nenhum Python 3.11 ou superior foi encontrado. Informe um caminho manual.")
+        else:
+            print("\n  Interpretadores compatíveis encontrados:")
+            for index, (executable, version) in enumerate(candidates, 1): item(f"{index}.", executable, f"Python {version}")
+        item("M.", "Informar caminho manual")
+        item("X.", "Cancelar")
+        while True:
+            answer = prompt("Python: ").strip()
+            if answer.casefold() in {"x", "\x1b"}: return False
+            if answer.casefold() == "m": candidate = prompt("Caminho completo do Python: ").strip()
+            elif answer.isdigit() and 1 <= int(answer) <= len(candidates): candidate = candidates[int(answer) - 1][0]
+            else: result(False, "Escolha um interpretador listado, M ou X."); continue
+            valid, version = inspect_python(candidate)
+            if not valid: result(False, "O executável deve ser um Python funcional na versão 3.11 ou superior."); continue
+            if prompt(f"Usar {candidate} (Python {version})? [S/n]: ").strip().casefold() not in {"", "s", "sim"}: continue
+            saved = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-runtime", "--runtime-mode", selected_mode, "--python", candidate, "--base-python", candidate], quiet=True)
+            result(saved.returncode == 0, (saved.stdout or saved.stderr).strip())
+            return saved.returncode == 0
+
     def install_daemon() -> bool:
-        """Instala a plataforma e deixa a instalação de dependências visível."""
+        """Prepara, configura e valida o runtime escolhido pelo usuário."""
         print()
-        note("O daemon receberá um ambiente Python privado. A instalação das dependências pode levar alguns minutos; o progresso será exibido abaixo.")
-        completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "install-instance"], quiet=False)
-        result(completed.returncode == 0, "Daemon instalado e ambiente Python validado." if completed.returncode == 0 else "A instalação do daemon não foi concluída.")
+        print("  [1/4] Preparando a instância do daemon...")
+        prepared = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "prepare-instance"], quiet=True)
+        result(prepared.returncode == 0, (prepared.stdout or prepared.stderr).strip())
+        if prepared.returncode != 0: return False
+        print("\n  [2/4] Escolha do runtime Python")
+        if not choose_daemon_runtime(): return False
+        print("\n  [3/4] Componentes necessários")
+        print("    • aiohttp — comunicação HTTP do daemon e seus gateways.")
+        print("    • cryptography — recursos criptográficos e certificados locais.")
+        if os.name == "nt": print("    • pywin32 — integração opcional com Serviço do Windows.")
+        if prompt("\n  Verificar e instalar/atualizar esses componentes no runtime escolhido? [S/n]: ").strip().casefold() not in {"", "s", "sim"}:
+            result(False, "Instalação cancelada antes de alterar componentes Python.")
+            return False
+        print("\n  [4/4] Preparando o runtime e os componentes")
+        note("A saída do instalador Python será exibida abaixo; downloads podem levar alguns minutos.")
+        completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "install-runtime"], quiet=False)
+        result(completed.returncode == 0, "Daemon instalado e runtime Python validado." if completed.returncode == 0 else "A instalação do daemon não foi concluída.")
         return completed.returncode == 0
 
     def validation(action: str = "validation-json") -> list[dict[str, str]]:
@@ -1332,7 +1415,7 @@ def daemon_menu(root: Path) -> None:
         """Mostra primeiro os pré-requisitos do Shikigami e depois a plataforma."""
         screen("Diagnóstico do Daemon", "Pré-requisitos do Shikigami e estado da plataforma; serviços não são avaliados aqui")
         print("\n  Diagnóstico principal do Shikigami")
-        main_checks = shikigami_diagnostics(root); print_checks(main_checks)
+        main_checks = shikigami_diagnostics(root, lambda message: print("    → " + message)); print_checks(main_checks)
         print("\n  Diagnóstico da plataforma do daemon")
         daemon_checks = validation("daemon-validation-json"); print_checks(daemon_checks)
         return all(check.get("state") == "ok" for check in [*main_checks, *daemon_checks])
@@ -1375,7 +1458,7 @@ def daemon_menu(root: Path) -> None:
         """Configura e valida exclusivamente a plataforma local do daemon."""
         screen("Wizard do Daemon", "Configuração e validação da plataforma local")
         note("Cada etapa confirmada é salva imediatamente. Valores já válidos permanecem disponíveis quando o wizard for executado novamente.")
-        main_checks = shikigami_diagnostics(root)
+        main_checks = shikigami_diagnostics(root, lambda message: print("    → " + message))
         print("\n  1. Pré-requisitos do Shikigami")
         print_checks(main_checks)
         if any(check.get("state") != "ok" for check in main_checks):
@@ -1386,6 +1469,8 @@ def daemon_menu(root: Path) -> None:
             if not install_daemon(): return
         else:
             print("    " + Ui.text("✓", Ui.bold, Ui.green) + "  Daemon da instância — já instalado.")
+            if prompt("  Revisar ou alterar o runtime Python agora? [s/N]: ").strip().casefold() in {"s", "sim"}:
+                if not install_daemon(): return
         print("\n  3. Configuração compartilhada do daemon")
         bootstrapped = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "daemon-bootstrap"], quiet=True)
         if bootstrapped.returncode != 0:

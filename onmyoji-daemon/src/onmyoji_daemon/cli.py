@@ -20,7 +20,7 @@ if hasattr(sys.stderr, "reconfigure"):
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="onmyoji-daemon"); parser.add_argument("--onmyoji-root", required=True, type=Path)
     sub = parser.add_subparsers(dest="action", required=True); sub.add_parser("run"); sub.add_parser("interactive"); sub.add_parser("list-services")
-    sub.add_parser("install-instance"); sub.add_parser("install-runtime"); sub.add_parser("remove-instance")
+    sub.add_parser("prepare-instance"); sub.add_parser("install-instance"); sub.add_parser("install-runtime"); sub.add_parser("remove-instance")
     sub.add_parser("process-status"); sub.add_parser("process-start")
     for action in ("process-stop", "process-force-stop"): sub.add_parser(action)
     install_service = sub.add_parser("install-service"); install_service.add_argument("--name", required=True); install_service.add_argument("--description", required=True)
@@ -57,6 +57,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.action == "run": Supervisor(root).run_forever(); return 0
     if args.action == "interactive": return interactive_main(["--onmyoji-root", str(root)])
     direct = {
+        "prepare-instance": lambda: management.prepare_instance(root),
         "install-instance": lambda: management.install_instance(root, show_progress=True),
         "install-runtime": lambda: management.ensure_runtime(root, show_progress=True),
         "remove-instance": lambda: management.remove_instance(root),

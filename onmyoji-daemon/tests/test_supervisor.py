@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 from onmyoji_daemon import management
@@ -99,6 +100,27 @@ def test_runtime_install_creates_private_environment(tmp_path, monkeypatch):
     assert calls[1][:4] == [str(executable), "-m", "pip", "install"]
     assert "--editable" not in calls[1]
     assert any(str(value).startswith("aiohttp>=") for value in calls[1])
+
+
+def test_external_runtime_is_not_changed_without_install_permission(tmp_path, monkeypatch):
+    manifest = tmp_path / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True)
+    executable = tmp_path / "python.exe"; executable.touch()
+    manifest.write_text('[runtime]\nmode = "global"\nexecutable = "' + str(executable).replace("\\", "\\\\") + '"\n', encoding="utf-8")
+    monkeypatch.setattr(management, "_runtime_ready", lambda _executable: False)
+    calls = []
+    monkeypatch.setattr(management.subprocess, "run", lambda command, **_kwargs: calls.append(command) or SimpleNamespace(returncode=0, stdout="", stderr=""))
+
+    ok, message = management.ensure_runtime(tmp_path, allow_install=False)
+
+    assert not ok and "Instalar/validar daemon" in message
+    assert calls == []
+
+
+def test_daemon_python_uses_selected_external_runtime(tmp_path):
+    manifest = tmp_path / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True)
+    manifest.write_text('[runtime]\nmode = "existing"\nexecutable = "C:/Python/venv/Scripts/python.exe"\n', encoding="utf-8")
+
+    assert management.daemon_python(tmp_path) == Path("C:/Python/venv/Scripts/python.exe")
 
 
 def test_miniapps_uses_private_daemon_python_when_available(tmp_path):

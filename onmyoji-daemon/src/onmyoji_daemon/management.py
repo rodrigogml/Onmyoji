@@ -28,15 +28,31 @@ def manifest_path(root: Path) -> Path: return daemon_root(root) / "daemon.toml"
 def runtime_path(root: Path) -> Path: return daemon_root(root) / "runtime"
 def process_path(root: Path) -> Path: return runtime_path(root) / "process.json"
 def service_path(root: Path) -> Path: return daemon_root(root) / "service.json"
+def runtime_configuration(root: Path) -> dict[str, str]:
+    """Lê a escolha de runtime; instalações antigas continuam dedicadas."""
+    try: data = tomllib.loads(manifest_path(root).read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError): data = {}
+    runtime = data.get("runtime", {}) if isinstance(data, dict) else {}
+    runtime = runtime if isinstance(runtime, dict) else {}
+    mode = str(runtime.get("mode") or "dedicated")
+    if mode not in {"dedicated", "existing", "global"}: mode = "dedicated"
+    return {"mode": mode, "base_python": str(runtime.get("base_python") or ""), "executable": str(runtime.get("executable") or "")}
+
+
 def daemon_python(root: Path) -> Path:
-    environment = daemon_root(root) / "venv"
-    return environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    runtime = runtime_configuration(root)
+    if runtime["mode"] == "dedicated":
+        environment = daemon_root(root) / "venv"
+        return environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    return Path(runtime["executable"]).expanduser()
 
 
 def _runtime_ready(executable: Path) -> bool:
     if not executable.is_file(): return False
-    probe = """from importlib.metadata import version
+    probe = """import sys
+from importlib.metadata import version
 def parsed(name): return tuple(int(part) for part in version(name).split('.')[:2])
+assert sys.version_info >= (3, 11)
 assert (3, 10) <= parsed('aiohttp') < (4, 0)
 assert (42, 0) <= parsed('cryptography') < (47, 0)
 """
@@ -64,27 +80,42 @@ def applied_configuration_revision(root: Path) -> str:
     return str(info.get("configuration_revision") or "") if info else ""
 
 
-def ensure_runtime(root: Path, show_progress: bool = False) -> tuple[bool, str]:
-    """Cria um Python privado para o daemon e instala suas dependências."""
-    executable = daemon_python(root)
-    if _runtime_ready(executable): return True, "Ambiente Python do daemon está pronto."
-    environment = executable.parent.parent
-    environment.parent.mkdir(parents=True, exist_ok=True)
-    if not executable.is_file():
-        if show_progress: print("Criando o ambiente Python privado do daemon...")
-        created = subprocess.run([sys.executable, "-m", "venv", str(environment)], text=True, capture_output=not show_progress, check=False)
-        if created.returncode != 0:
-            detail = ((created.stderr or created.stdout) if not show_progress else "").strip()
-            return False, "Não foi possível criar o ambiente Python do daemon: " + (detail or "venv falhou")
+def runtime_requirements() -> list[str]:
     project = Path(__file__).resolve().parents[2]
+    metadata = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))
+    requirements = list(metadata["project"]["dependencies"])
+    if os.name == "nt": requirements.extend(metadata["project"].get("optional-dependencies", {}).get("windows", []))
+    if not requirements or any(not isinstance(value, str) for value in requirements): raise ValueError
+    return requirements
+
+
+def ensure_runtime(root: Path, show_progress: bool = False, allow_install: bool = True) -> tuple[bool, str]:
+    """Prepara o runtime escolhido e instala as dependências do daemon."""
+    runtime = runtime_configuration(root); executable = daemon_python(root)
+    if _runtime_ready(executable): return True, "Ambiente Python do daemon está pronto."
+    if runtime["mode"] == "dedicated":
+        environment = executable.parent.parent
+        environment.parent.mkdir(parents=True, exist_ok=True)
+        creator = runtime["base_python"] or sys.executable
+        if not executable.is_file():
+            if show_progress: print(f"Criando ambiente dedicado com {creator}...")
+            created = subprocess.run([creator, "-m", "venv", str(environment)], text=True, capture_output=not show_progress, check=False)
+            if created.returncode != 0:
+                detail = ((created.stderr or created.stdout) if not show_progress else "").strip()
+                return False, "Não foi possível criar o ambiente Python do daemon: " + (detail or "venv falhou")
+            if show_progress: print("✓ Ambiente Python dedicado criado.")
+    elif not executable.is_file():
+        return False, "O executável Python escolhido não existe. Escolha outro runtime no instalador do daemon."
     try:
-        metadata = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))
-        requirements = list(metadata["project"]["dependencies"])
-        if os.name == "nt": requirements.extend(metadata["project"].get("optional-dependencies", {}).get("windows", []))
-        if not requirements or any(not isinstance(value, str) for value in requirements): raise ValueError
+        requirements = runtime_requirements()
     except (OSError, KeyError, TypeError, ValueError, tomllib.TOMLDecodeError):
         return False, "Não foi possível ler as dependências do daemon em pyproject.toml."
-    if show_progress: print("Instalando dependências do daemon; isso pode levar alguns minutos...")
+    if not allow_install:
+        return False, "O runtime escolhido não possui os componentes necessários. Use Instalar/validar daemon e confirme a instalação dos componentes."
+    if show_progress:
+        print("Componentes que serão verificados/instalados:")
+        for requirement in requirements: print("  • " + requirement)
+        print("Instalando componentes; a saída do pip será exibida abaixo...")
     installed = subprocess.run([str(executable), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", *requirements], text=True, capture_output=not show_progress, check=False)
     if installed.returncode != 0:
         detail = ((installed.stderr or installed.stdout) if not show_progress else "").strip().splitlines()
@@ -124,7 +155,7 @@ def is_installed(root: Path) -> bool:
     return manifest_path(root).is_file()
 
 
-def install_instance(root: Path, show_progress: bool = False) -> tuple[bool, str]:
+def prepare_instance(root: Path) -> tuple[bool, str]:
     path = manifest_path(root)
     created = not path.exists()
     if created:
@@ -143,10 +174,21 @@ def install_instance(root: Path, show_progress: bool = False) -> tuple[bool, str
             "enabled = true",
             'shikigami_file = "instructions.md"',
             "",
+            "[runtime]",
+            'mode = "dedicated"',
+            'base_python = ""',
+            'executable = ""',
+            "",
         ]) , encoding="utf-8", newline="\n")
+    return True, "Manifesto do daemon preparado." if created else "Manifesto do daemon já existe."
+
+
+def install_instance(root: Path, show_progress: bool = False) -> tuple[bool, str]:
+    created, message = prepare_instance(root)
+    if not created: return False, message
     ready, message = ensure_runtime(root, show_progress=show_progress)
     if not ready: return False, message
-    return True, ("Daemon instalado. " if created else "Daemon já estava instalado. ") + message
+    return True, "Daemon instalado. " + message
 
 
 def remove_instance(root: Path) -> tuple[bool, str]:
@@ -170,7 +212,7 @@ def set_enabled(root: Path, service: str, enabled: bool) -> tuple[bool, str]:
     if not is_installed(root): return False, "Instale primeiro o daemon desta instância."
     if service not in SERVICES: return False, "Serviço não registrado."
     if enabled and service == "mini-apps":
-        ready, message = ensure_runtime(root)
+        ready, message = ensure_runtime(root, allow_install=False)
         if not ready: return False, message
     path = daemon_root(root) / "services.json"; values = _read_json(path)
     values.setdefault(service, {})["enabled"] = enabled
@@ -211,7 +253,7 @@ def start_background(root: Path) -> tuple[bool, str]:
     if not is_installed(root): return False, "Instale primeiro o daemon desta instância."
     if service_path(root).exists(): return False, "O serviço do sistema operacional está instalado; gerencie-o no submenu Serviço."
     if daemon_reachable(root) or running_process(root): return False, "Já existe um daemon em execução nesta instância."
-    ready, message = ensure_runtime(root)
+    ready, message = ensure_runtime(root, allow_install=False)
     if not ready: return False, message
     source = Path(__file__).resolve().parents[1]
     environment = dict(os.environ)
@@ -258,7 +300,7 @@ def install_service(root: Path, name: str, description: str) -> tuple[bool, str]
     if not is_installed(root): return False, "Instale primeiro o daemon desta instância."
     if service_path(root).exists(): return False, "Já existe um serviço instalado para esta instância."
     if running_process(root): return False, "Finalize o processo local antes de instalar o serviço."
-    ready, message = ensure_runtime(root)
+    ready, message = ensure_runtime(root, allow_install=False)
     if not ready: return False, message
     executable = str(daemon_python(root))
     if os.name == "nt":

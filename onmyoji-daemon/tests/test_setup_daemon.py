@@ -73,6 +73,18 @@ def test_daemon_configuration_preserves_unknown_sections(tmp_path):
     assert complete["app_server"]["enabled"] is True
 
 
+def test_runtime_selection_is_saved_in_daemon_manifest(tmp_path):
+    module = setup_module(); executable = tmp_path / "python.exe"; executable.touch()
+    manifest = tmp_path / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True)
+    manifest.write_text('schema_version = 1\ninstance_id = "test"\ninstance_name = "Exemplo"\n', encoding="utf-8")
+    module.bootstrap_daemon(tmp_path)
+
+    module.save_runtime(tmp_path, "global", str(executable))
+
+    runtime = tomllib.loads((tmp_path / "configs" / "daemon" / "daemon.toml").read_text(encoding="utf-8"))["runtime"]
+    assert runtime == {"mode": "global", "base_python": "", "executable": str(executable)}
+
+
 def test_app_server_configuration_does_not_create_telegram_configuration(tmp_path):
     module = setup_module()
     manifest = tmp_path / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True)

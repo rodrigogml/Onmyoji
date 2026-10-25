@@ -86,12 +86,16 @@ def bootstrap_daemon(root: Path) -> Path:
     except (OSError, tomllib.TOMLDecodeError): pass
     app_server = data.setdefault("app_server", {})
     instructions = data.setdefault("instructions", {})
+    runtime = data.setdefault("runtime", {})
     legacy_app_server = legacy.get("app_server", {}) if isinstance(legacy.get("app_server", {}), dict) else {}
     legacy_instructions = legacy.get("instructions", {}) if isinstance(legacy.get("instructions", {}), dict) else {}
     app_server.setdefault("enabled", bool(legacy_app_server.get("enabled", False)))
     app_server.setdefault("idle_timeout_seconds", int(legacy_app_server.get("idle_timeout_seconds") or 1800))
     instructions.setdefault("enabled", bool(legacy_instructions.get("enabled", True)))
     instructions.setdefault("shikigami_file", str(legacy_instructions.get("shikigami_file") or "instructions.md"))
+    runtime.setdefault("mode", "dedicated")
+    runtime.setdefault("base_python", "")
+    runtime.setdefault("executable", "")
     save_daemon_data(root, data)
     instruction = root / "shikigami" / str(instructions["shikigami_file"])
     if not instruction.exists(): instruction.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(INSTRUCTION_MODEL, instruction)
@@ -210,6 +214,15 @@ def save_app_server(root: Path, enabled: bool | None, idle_timeout: int | None) 
     if idle_timeout is not None:
         if idle_timeout < 60: raise ValueError("O tempo de inatividade deve ser de ao menos 60 segundos.")
         app_server["idle_timeout_seconds"] = idle_timeout
+    save_daemon_data(root, data)
+
+
+def save_runtime(root: Path, mode: str, executable: str, base_python: str = "") -> None:
+    if mode not in {"dedicated", "existing", "global"}: raise ValueError("Modo de runtime inválido.")
+    candidate = Path(executable).expanduser()
+    if not candidate.is_file(): raise ValueError("O executável Python escolhido não existe.")
+    data = daemon_data(root); runtime = data.setdefault("runtime", {})
+    runtime.update({"mode": mode, "base_python": str(Path(base_python).expanduser()) if mode == "dedicated" else "", "executable": str(candidate) if mode != "dedicated" else ""})
     save_daemon_data(root, data)
 
 
@@ -477,7 +490,7 @@ def daemon_validation(root: Path) -> list[dict[str, str]]:
     add("ok", "Instalação do daemon", "Manifesto local encontrado.")
     python = daemon_python(root)
     ready = runtime_ready(root)
-    add("ok" if ready else "error", "Ambiente Python do daemon", str(python) if ready else "O ambiente privado ou suas dependências não estão prontos; use Reparar ambiente Python.")
+    add("ok" if ready else "error", "Runtime Python do daemon", str(python) if ready else "O runtime escolhido ou suas dependências não estão prontos; use Instalar/validar daemon ou Reparar ambiente Python.")
     try:
         platform = daemon_data(root)
         app_server = platform.get("app_server", {})
@@ -531,12 +544,15 @@ def test_telegram(root: Path) -> tuple[bool, str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--onmyoji-root", default=str(ROOT)); parser.add_argument("--action", choices=["bootstrap", "daemon-bootstrap", "validate", "validation-json", "daemon-validation-json", "instructions-status", "profiles", "set-credential", "set-totp", "set-app-server", "set-owner-execution-preferences", "set-voice-reply", "check-entry", "write-token", "test-telegram", "test-agent"], default="bootstrap"); parser.add_argument("--profile"); parser.add_argument("--entry"); parser.add_argument("--real-entry"); parser.add_argument("--fake-entry"); parser.add_argument("--enabled", action="store_true"); parser.add_argument("--disabled", action="store_true"); parser.add_argument("--idle-timeout", type=int); parser.add_argument("--auto-off-minutes", type=int); parser.add_argument("--agent-outbound-media", action="store_true"); parser.add_argument("--models", default=""); parser.add_argument("--efforts", default=""); args = parser.parse_args()
+    parser = argparse.ArgumentParser(); parser.add_argument("--onmyoji-root", default=str(ROOT)); parser.add_argument("--action", choices=["bootstrap", "daemon-bootstrap", "validate", "validation-json", "daemon-validation-json", "instructions-status", "profiles", "set-runtime", "set-credential", "set-totp", "set-app-server", "set-owner-execution-preferences", "set-voice-reply", "check-entry", "write-token", "test-telegram", "test-agent"], default="bootstrap"); parser.add_argument("--profile"); parser.add_argument("--entry"); parser.add_argument("--real-entry"); parser.add_argument("--fake-entry"); parser.add_argument("--runtime-mode"); parser.add_argument("--python"); parser.add_argument("--base-python"); parser.add_argument("--enabled", action="store_true"); parser.add_argument("--disabled", action="store_true"); parser.add_argument("--idle-timeout", type=int); parser.add_argument("--auto-off-minutes", type=int); parser.add_argument("--agent-outbound-media", action="store_true"); parser.add_argument("--models", default=""); parser.add_argument("--efforts", default=""); args = parser.parse_args()
     root = Path(args.onmyoji_root).resolve()
     if args.action == "bootstrap": print(bootstrap(root)); return 0
     if args.action == "daemon-bootstrap": print(bootstrap_daemon(root)); return 0
     if args.action == "instructions-status": print(json.dumps(instruction_status(root), ensure_ascii=False)); return 0
     if args.action == "profiles": print(json.dumps(profiles(root), ensure_ascii=False)); return 0
+    if args.action == "set-runtime":
+        if not args.runtime_mode or not args.python: parser.error("--runtime-mode e --python são obrigatórios")
+        save_runtime(root, args.runtime_mode, args.python, args.base_python or args.python); print("Runtime do daemon salvo."); return 0
     if args.action == "set-credential":
         if not args.profile or not args.entry: parser.error("--profile e --entry são obrigatórios")
         bootstrap(root); save_telegram(root, args.profile, args.entry); print("Credencial configurada."); return 0
