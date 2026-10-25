@@ -57,8 +57,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.action == "run": Supervisor(root).run_forever(); return 0
     if args.action == "interactive": return interactive_main(["--onmyoji-root", str(root)])
     direct = {
-        "install-instance": lambda: management.install_instance(root),
-        "install-runtime": lambda: management.ensure_runtime(root),
+        "install-instance": lambda: management.install_instance(root, show_progress=True),
+        "install-runtime": lambda: management.ensure_runtime(root, show_progress=True),
         "remove-instance": lambda: management.remove_instance(root),
         "enable": lambda: management.set_enabled(root, args.service, True),
         "disable": lambda: management.set_enabled(root, args.service, False),

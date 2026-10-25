@@ -64,15 +64,18 @@ def applied_configuration_revision(root: Path) -> str:
     return str(info.get("configuration_revision") or "") if info else ""
 
 
-def ensure_runtime(root: Path) -> tuple[bool, str]:
+def ensure_runtime(root: Path, show_progress: bool = False) -> tuple[bool, str]:
     """Cria um Python privado para o daemon e instala suas dependências."""
     executable = daemon_python(root)
     if _runtime_ready(executable): return True, "Ambiente Python do daemon está pronto."
     environment = executable.parent.parent
     environment.parent.mkdir(parents=True, exist_ok=True)
     if not executable.is_file():
-        created = subprocess.run([sys.executable, "-m", "venv", str(environment)], text=True, capture_output=True, check=False)
-        if created.returncode != 0: return False, "Não foi possível criar o ambiente Python do daemon: " + (created.stderr or created.stdout).strip()
+        if show_progress: print("Criando o ambiente Python privado do daemon...")
+        created = subprocess.run([sys.executable, "-m", "venv", str(environment)], text=True, capture_output=not show_progress, check=False)
+        if created.returncode != 0:
+            detail = ((created.stderr or created.stdout) if not show_progress else "").strip()
+            return False, "Não foi possível criar o ambiente Python do daemon: " + (detail or "venv falhou")
     project = Path(__file__).resolve().parents[2]
     try:
         metadata = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))
@@ -81,9 +84,10 @@ def ensure_runtime(root: Path) -> tuple[bool, str]:
         if not requirements or any(not isinstance(value, str) for value in requirements): raise ValueError
     except (OSError, KeyError, TypeError, ValueError, tomllib.TOMLDecodeError):
         return False, "Não foi possível ler as dependências do daemon em pyproject.toml."
-    installed = subprocess.run([str(executable), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", *requirements], text=True, capture_output=True, check=False)
+    if show_progress: print("Instalando dependências do daemon; isso pode levar alguns minutos...")
+    installed = subprocess.run([str(executable), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", *requirements], text=True, capture_output=not show_progress, check=False)
     if installed.returncode != 0:
-        detail = (installed.stderr or installed.stdout).strip().splitlines()
+        detail = ((installed.stderr or installed.stdout) if not show_progress else "").strip().splitlines()
         return False, "Não foi possível instalar as dependências do daemon: " + (detail[-1] if detail else "pip falhou")
     if not _runtime_ready(executable): return False, "O ambiente Python foi criado, mas as dependências do daemon não puderam ser validadas."
     return True, "Ambiente Python do daemon instalado e validado."
@@ -120,7 +124,7 @@ def is_installed(root: Path) -> bool:
     return manifest_path(root).is_file()
 
 
-def install_instance(root: Path) -> tuple[bool, str]:
+def install_instance(root: Path, show_progress: bool = False) -> tuple[bool, str]:
     path = manifest_path(root)
     created = not path.exists()
     if created:
@@ -140,7 +144,7 @@ def install_instance(root: Path) -> tuple[bool, str]:
             'shikigami_file = "instructions.md"',
             "",
         ]) , encoding="utf-8", newline="\n")
-    ready, message = ensure_runtime(root)
+    ready, message = ensure_runtime(root, show_progress=show_progress)
     if not ready: return False, message
     return True, ("Daemon instalado. " if created else "Daemon já estava instalado. ") + message
 

@@ -1298,6 +1298,14 @@ def daemon_menu(root: Path) -> None:
         result(completed.returncode == 0, (completed.stdout or completed.stderr or "Operação concluída.").strip())
         return completed.returncode == 0
 
+    def install_daemon() -> bool:
+        """Instala a plataforma e deixa a instalação de dependências visível."""
+        print()
+        note("O daemon receberá um ambiente Python privado. A instalação das dependências pode levar alguns minutos; o progresso será exibido abaixo.")
+        completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "install-instance"], quiet=False)
+        result(completed.returncode == 0, "Daemon instalado e ambiente Python validado." if completed.returncode == 0 else "A instalação do daemon não foi concluída.")
+        return completed.returncode == 0
+
     def validation(action: str = "validation-json") -> list[dict[str, str]]:
         completed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", action], quiet=True)
         detail = (completed.stderr or completed.stdout or "").strip()
@@ -1373,10 +1381,12 @@ def daemon_menu(root: Path) -> None:
         if any(check.get("state") != "ok" for check in main_checks):
             result(False, "Corrija os itens do diagnóstico principal antes de configurar o daemon.")
             return
+        print("\n  2. Instalação do daemon")
         if not installed():
-            result(False, "O daemon ainda não está instalado. Use Utilitários e manutenção para instalá-lo; depois retorne ao wizard.")
-            return
-        print("\n  2. Configuração compartilhada do daemon")
+            if not install_daemon(): return
+        else:
+            print("    " + Ui.text("✓", Ui.bold, Ui.green) + "  Daemon da instância — já instalado.")
+        print("\n  3. Configuração compartilhada do daemon")
         bootstrapped = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "daemon-bootstrap"], quiet=True)
         if bootstrapped.returncode != 0:
             result(False, (bootstrapped.stdout or bootstrapped.stderr).strip() or "Não foi possível preparar a configuração do daemon.")
@@ -1392,7 +1402,7 @@ def daemon_menu(root: Path) -> None:
         while True:
             default_choice = "s" if app_server_enabled else "n"
             hint = "S/n" if app_server_enabled else "s/N"
-            enabled = prompt(f"\n  3. Habilitar Codex App Server para o daemon? [{hint}]: ").strip().casefold() or default_choice
+            enabled = prompt(f"\n  4. Habilitar Codex App Server para o daemon? [{hint}]: ").strip().casefold() or default_choice
             if enabled in {"", "s", "sim"}:
                 raw_idle = prompt(f"Tempo de inatividade sem turnos, em minutos [{idle_default}]: ").strip() or str(idle_default)
                 try: idle = int(raw_idle)
@@ -1406,11 +1416,11 @@ def daemon_menu(root: Path) -> None:
                 result(False, "O App Server é necessário para concluir o wizard. Nenhuma alteração foi feita nesta etapa.")
                 return
             result(False, "Responda S ou N.")
-        print("\n  4. Teste controlado do agente Codex")
+        print("\n  5. Teste controlado do agente Codex")
         tested = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-agent"], quiet=True)
         result(tested.returncode == 0, (tested.stdout or tested.stderr).strip())
         if tested.returncode != 0: return
-        print("\n  5. Início da plataforma")
+        print("\n  6. Início da plataforma")
         if daemon_running():
             restart = prompt("O daemon está em execução. Reiniciar agora para aplicar a configuração? [S/n]: ").strip().casefold()
             if restart not in {"", "s", "sim"}:
@@ -1426,7 +1436,7 @@ def daemon_menu(root: Path) -> None:
         if not wait_for_daemon_ready():
             result(False, "O comando de início foi aceito, mas o daemon não respondeu dentro de 10 segundos. Consulte Operação do daemon.")
             return
-        print("\n  6. Diagnóstico final")
+        print("\n  7. Diagnóstico final")
         if show_daemon_diagnosis(): result(True, "Daemon configurado e em execução.")
         else: result(False, "A plataforma foi configurada, mas o diagnóstico ainda possui pendências.")
 
@@ -1850,19 +1860,19 @@ def daemon_menu(root: Path) -> None:
             else: result(False, "Opção inválida.")
 
     def utilities_menu() -> None:
-        """Mantém instalação, reparo e remoção fora da configuração da aplicação."""
+        """Reúne somente ferramentas auxiliares e de manutenção da plataforma."""
         while True:
             screen("Utilitários e manutenção", "Ferramentas técnicas da instância do daemon")
-            item("1.", "Instalar daemon da instância" if not installed() else "Reinstalar/validar ambiente do daemon")
             if installed():
-                item("2.", "Reparar ambiente Python", "Dependências privadas do daemon")
-                item("3.", "Desinstalar daemon da instância", "Remove configurações e estado locais")
+                item("1.", "Reparar ambiente Python", "Dependências privadas do daemon")
+                item("2.", "Desinstalar daemon da instância", "Remove configurações e estado locais")
+            else:
+                note("Instale primeiro o daemon pela opção 1 do menu anterior.")
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
-            if choice == "1": lifecycle("install-instance")
-            elif installed() and choice == "2": lifecycle("install-runtime")
-            elif installed() and choice == "3":
+            if installed() and choice == "1": lifecycle("install-runtime")
+            elif installed() and choice == "2":
                 confirmation = prompt("ATENÇÃO: isto apagará todas as configurações, credenciais referenciadas, pareamentos, conversas e estado do daemon desta instância. Uma reinstalação exigirá configurar tudo novamente. Digite desinstalar para confirmar: ").strip()
                 if confirmation == "desinstalar": lifecycle("remove-instance")
                 else: result(False, "Desinstalação cancelada; a confirmação deve ser exatamente desinstalar.")
@@ -1872,21 +1882,27 @@ def daemon_menu(root: Path) -> None:
         status = "INSTALADO" if installed() else "NÃO INSTALADO"
         screen("Daemon", f"Plataforma local e serviços da instância · {status}")
         item("!.", "Diagnóstico do Daemon", "Começa pelo diagnóstico principal do Shikigami")
-        item("W.", "Wizard de configuração do Daemon", "Prepara a plataforma; não configura serviços")
-        if installed():
-            item("1.", "Operação do daemon", "Processo local e serviço do sistema operacional")
-            item("2.", "Serviços instalados", "Telegram, MiniApps e futuras integrações")
-        item("3.", "Utilitários e manutenção", "Instalação, ambiente Python e remoção")
+        item("W.", "Wizard de configuração do Daemon", "Guia de configuração e validação")
+        print()
+        item("1.", "Instalar daemon da instância" if not installed() else "Validar instalação do daemon", status)
+        item("2.", "Operação do daemon", "Processo local e serviço do sistema operacional")
+        item("3.", "Serviços instalados", "Telegram, MiniApps e futuras integrações")
+        item("4.", "Utilitários e manutenção", "Ambiente Python e remoção")
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
         if choice == "!": show_daemon_diagnosis()
         elif choice == "w": daemon_wizard()
-        elif installed() and choice == "1":
-            if service_installed(): service_menu()
+        elif choice == "1":
+            install_daemon()
+        elif choice == "2":
+            if not installed(): result(False, "Instale o daemon pela opção 1 antes de operá-lo.")
+            elif service_installed(): service_menu()
             else: process_menu()
-        elif installed() and choice == "2": services_menu()
-        elif choice == "3": utilities_menu()
+        elif choice == "3":
+            if not installed(): result(False, "Instale o daemon pela opção 1 antes de configurar serviços.")
+            else: services_menu()
+        elif choice == "4": utilities_menu()
         else: result(False, "Opção inválida.")
 
 

@@ -49,7 +49,7 @@ def test_supervisor_starts_mini_apps_service(tmp_path):
 
 
 def test_instance_installation_and_service_identity_are_local(tmp_path, monkeypatch):
-    monkeypatch.setattr("onmyoji_daemon.management.ensure_runtime", lambda _root: (True, "ready"))
+    monkeypatch.setattr("onmyoji_daemon.management.ensure_runtime", lambda _root, **_kwargs: (True, "ready"))
     root = tmp_path / "Onmyoji-Exemplo"
     root.mkdir()
     ok, _message = install_instance(root)
