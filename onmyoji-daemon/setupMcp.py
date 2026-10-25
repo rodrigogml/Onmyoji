@@ -7,9 +7,15 @@ import getpass
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tomllib
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
@@ -20,18 +26,62 @@ from onmyoji_daemon.mcp.credentials import KeePassCredentialResolver
 from onmyoji_daemon.mcp.todoist import TodoistError, TodoistService
 
 
+class Ui:
+    """Camada visual do configurador MCP, alinhada ao setup principal."""
+
+    enabled = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+    reset = "\x1b[0m"; bold = "\x1b[1m"; dim = "\x1b[2m"
+    violet = "\x1b[38;5;141m"; cyan = "\x1b[38;5;80m"; green = "\x1b[38;5;78m"; red = "\x1b[38;5;203m"; slate = "\x1b[38;5;245m"
+
+    @classmethod
+    def text(cls, value: str, *styles: str) -> str:
+        return "".join(styles) + value + cls.reset if cls.enabled and styles else value
+
+
+def screen(title: str, subtitle: str = "") -> None:
+    """Exibe o cabeçalho padronizado de uma área de configuração."""
+    width = max(56, min(shutil.get_terminal_size((78, 24)).columns, 96))
+    print("\n" + Ui.text("╭" + "─" * (width - 2) + "╮", Ui.violet))
+    heading = f" ONMYŌJI  /  {title.upper()}"
+    print(Ui.text("│", Ui.violet) + Ui.text(heading[: width - 2].ljust(width - 2), Ui.bold, Ui.cyan) + Ui.text("│", Ui.violet))
+    if subtitle:
+        print(Ui.text("│", Ui.violet) + Ui.text((" " + subtitle)[: width - 2].ljust(width - 2), Ui.slate) + Ui.text("│", Ui.violet))
+    print(Ui.text("╰" + "─" * (width - 2) + "╯", Ui.violet))
+
+
+def item(key: str, label: str, value: str = "") -> None:
+    """Exibe uma opção com atalho no padrão do setup principal."""
+    shortcut = Ui.text(f"{key:>4}", Ui.bold, Ui.cyan)
+    print(f"  {shortcut}  {label:<30}" + (f"   {Ui.text(value, Ui.slate)}" if value else ""))
+
+
+def prompt(label: str) -> str:
+    return input(Ui.text(f"› {label}", Ui.violet, Ui.bold))
+
+
+def note(message: str) -> None:
+    print("    " + Ui.text("›", Ui.cyan, Ui.bold) + "  " + Ui.text(message, Ui.slate))
+
+
+def result(ok: bool, message: str) -> None:
+    label, color = ("+ OK", Ui.green) if ok else ("! ERRO", Ui.red)
+    print("\n    " + Ui.text(label, Ui.bold, color) + "  " + Ui.text(message, color))
+
+
 def ask(label: str, current: str = "", required: bool = False) -> str | None:
-    value = input(f"{label}" + (f" [{current}]" if current else "") + ": ").strip()
+    value = prompt(f"{label}" + (f" [{current}]" if current else "") + ": ").strip()
     if value.casefold() in {"x", "\x1b"}: return None
     if value: return value
     return current if current or not required else None
 
 
 def select(title: str, names: list[str]) -> str | None:
-    print(f"\n{title}")
-    for index, name in enumerate(names, 1): print(f"  {index}. {name}")
-    print("  X. Voltar")
-    choice = input("Opção: ").strip().casefold()
+    screen(title, "Selecione um perfil ou pressione X para voltar")
+    if not names:
+        note("Nenhum perfil está configurado.")
+    for index, name in enumerate(names, 1): item(f"{index}.", name)
+    item("X.", "Voltar")
+    choice = prompt("Selecione uma opção: ").strip().casefold()
     return names[int(choice) - 1] if choice.isdigit() and 1 <= int(choice) <= len(names) else None
 
 
@@ -57,15 +107,15 @@ def save_password(name: str, auth: dict) -> None:
     try:
         if os.name == "nt": store_windows_password(auth["windows"]["target"], password)
         else: subprocess.run(["secret-tool", "store", f"--label=Onmyoji MCP KeePass {name}", "service", "onmyoji-mcp", "profile", name], input=password + "\n", text=True, check=True, timeout=20, capture_output=True)
-        print("Senha mestra salva no provedor do sistema operacional.")
-    except (OSError, subprocess.SubprocessError): print("Não foi possível salvar a senha no provedor do sistema operacional.")
+        result(True, "Senha mestra salva no provedor do sistema operacional.")
+    except (OSError, subprocess.SubprocessError): result(False, "Não foi possível salvar a senha no provedor do sistema operacional.")
 
 
 def create_vault_profile(config: McpConfiguration) -> None:
     name = ask("Nome do perfil de vault", required=True)
     if not name: return
     data = config.credentials()
-    if name in data["profiles"]: print("Já existe um perfil com esse nome."); return
+    if name in data["profiles"]: result(False, "Já existe um perfil com esse nome."); return
     origin = ask("1 existente / 2 criar KDBX local", "1", True)
     executable = ask("Executável KeePassXC", "keepassxc-cli", True)
     platform = "windows" if os.name == "nt" else "linux"
@@ -78,63 +128,89 @@ def create_vault_profile(config: McpConfiguration) -> None:
     if origin == "2":
         password = getpass.getpass("Senha mestra do novo vault (não será exibida): ")
         confirm = getpass.getpass("Repita a senha mestra: ")
-        if not password or password != confirm: print("Senhas não conferem; nada foi salvo."); return
+        if not password or password != confirm: result(False, "Senhas não conferem; nada foi salvo."); return
         try:
             Path(database).parent.mkdir(parents=True, exist_ok=True)
             made = subprocess.run([executable, "db-create", "--set-password", database], input=password + "\n" + password + "\n", text=True, timeout=60, capture_output=True)
-            if made.returncode or not Path(database).is_file(): print("KeePassXC não criou o cofre."); return
-        except (OSError, subprocess.SubprocessError): print("Não foi possível criar o cofre."); return
+            if made.returncode or not Path(database).is_file(): result(False, "KeePassXC não criou o cofre."); return
+        except (OSError, subprocess.SubprocessError): result(False, "Não foi possível criar o cofre."); return
         config.save_credentials(data); save_password(name, auth)
     else: config.save_credentials(data)
-    print("Perfil de vault salvo.")
+    result(True, "Perfil de vault salvo.")
 
 
 def vault_profiles_menu(config: McpConfiguration) -> None:
     while True:
-        names = config.vault_profile_names(); print("\nPerfis de vault\n  1. Criar perfil\n  2. Gerenciar perfil\n  X. Voltar")
-        choice = input("Opção: ").strip().casefold()
+        names = config.vault_profile_names()
+        screen("MCP · Perfis de vault", "Cada perfil associa um único cofre KeePassXC")
+        item("1.", "Criar perfil")
+        item("2.", "Gerenciar perfil", f"{len(names)} configurado(s)")
+        item("X.", "Voltar")
+        choice = prompt("Selecione uma opção: ").strip().casefold()
         if choice == "x": return
         if choice == "1":
             try: create_vault_profile(config)
-            except McpConfigurationError as error: print(error)
-        elif choice == "2" and (name := select("Gerenciar perfil de vault", names)):
+            except McpConfigurationError as error: result(False, str(error))
+        elif choice == "2" and (name := select("MCP · Gerenciar perfil de vault", names)):
             data = config.credentials(); profile = data["profiles"][name]; vault = data["vaults"][profile["vault"]]
-            print("1. Alterar cofre associado\n2. Alterar executável KeePassXC\n3. Configurar autenticação\n4. Alterar raízes permitidas\n5. Salvar senha mestra\n6. Testar acesso\n7. Remover perfil")
-            action = input("Opção: ").strip()
+            screen("MCP · Perfil de vault", name)
+            item("1.", "Alterar cofre associado")
+            item("2.", "Alterar executável KeePassXC")
+            item("3.", "Configurar autenticação")
+            item("4.", "Alterar raízes permitidas")
+            item("5.", "Salvar senha mestra")
+            item("6.", "Testar acesso")
+            item("7.", "Remover perfil")
+            item("X.", "Cancelar")
+            action = prompt("Selecione uma opção: ").strip().casefold()
+            if action in {"x", "\x1b"}: continue
             if action == "1": vault["database"]["windows" if os.name == "nt" else "linux"] = ask("Arquivo KDBX", vault["database"]["windows" if os.name == "nt" else "linux"], True) or vault["database"]["windows" if os.name == "nt" else "linux"]
             elif action == "2": vault["cli_command"] = [ask("Executável", vault["cli_command"][0], True) or vault["cli_command"][0]]
             elif action == "3": profile["auth"] = profile_auth(name)
             elif action == "4": profile["allowed_entry_roots"] = [item.strip() for item in (ask("Raízes separadas por ;", ";".join(profile["allowed_entry_roots"])) or "").split(";") if item.strip()]
             elif action == "5": save_password(name, profile["auth"]); continue
             elif action == "6":
-                try: KeePassCredentialResolver(config.root).test_profile_access(name); print("Acesso ao cofre confirmado.")
-                except Exception: print("Não foi possível acessar o cofre com este perfil.")
+                try: KeePassCredentialResolver(config.root).test_profile_access(name); result(True, "Acesso ao cofre confirmado.")
+                except Exception: result(False, "Não foi possível acessar o cofre com este perfil.")
                 continue
             elif action == "7":
                 if ask("Digite REMOVER para confirmar", required=True) == "REMOVER": del data["profiles"][name]; data["vaults"].pop(profile["vault"], None)
                 else: continue
             else: continue
-            try: config.save_credentials(data); print("Perfil de vault atualizado.")
-            except McpConfigurationError as error: print(error)
+            try: config.save_credentials(data); result(True, "Perfil de vault atualizado.")
+            except McpConfigurationError as error: result(False, str(error))
 
 
 def todoist_menu(config: McpConfiguration) -> None:
     while True:
         data = config.todoist(); names = sorted(data["profiles"]); status = "ATIVA" if config.todoist_tool_available() else "inativa"
-        print(f"\nTodoist · tool todoist.list_tasks {status}\n  1. Criar perfil\n  2. Gerenciar perfil\n  X. Voltar")
-        choice = input("Opção: ").strip().casefold()
+        screen("MCP · Todoist", f"Ferramenta todoist.list_tasks · {status}")
+        item("1.", "Criar perfil")
+        item("2.", "Gerenciar perfil", f"{len(names)} configurado(s)")
+        item("X.", "Voltar")
+        choice = prompt("Selecione uma opção: ").strip().casefold()
         if choice == "x": return
         if choice == "1":
             name = ask("Nome do perfil Todoist", required=True); vault = select("Escolha o perfil de vault", config.vault_profile_names())
-            if not name or not vault or name in data["profiles"]: print("Nome inválido, repetido ou seleção cancelada."); continue
+            if not name or not vault or name in data["profiles"]: result(False, "Nome inválido, repetido ou seleção cancelada."); continue
             entry = ask("Entrada KeePass do token", f"APIs/Todoist/{name}", True)
             description = ask("Descrição de quando utilizar este perfil", required=True)
             field = ask("Campo KeePass (password ou notes)", "password", True)
-            if not entry or not description or field not in {"password", "notes"}: print("Perfil Todoist inválido."); continue
+            if not entry or not description or field not in {"password", "notes"}: result(False, "Perfil Todoist inválido."); continue
             data["profiles"][name] = {"enabled": True, "description": description, "credential_profile": vault, "credential_entry_path": entry, "credential_field": field, "allowed_operations": ["todoist.list_tasks", "todoist.test_connection"]}
-        elif choice == "2" and (name := select("Gerenciar perfil Todoist", names)):
-            profile = data["profiles"][name]; print("1. Alterar perfil de vault\n2. Alterar entrada/campo\n3. Alterar descrição\n4. Habilitar\n5. Desabilitar\n6. Testar conexão\n7. Remover perfil")
-            action = input("Opção: ").strip()
+        elif choice == "2" and (name := select("MCP · Gerenciar perfil Todoist", names)):
+            profile = data["profiles"][name]
+            screen("MCP · Perfil Todoist", name)
+            item("1.", "Alterar perfil de vault")
+            item("2.", "Alterar entrada e campo")
+            item("3.", "Alterar descrição")
+            item("4.", "Habilitar")
+            item("5.", "Desabilitar")
+            item("6.", "Testar conexão")
+            item("7.", "Remover perfil")
+            item("X.", "Cancelar")
+            action = prompt("Selecione uma opção: ").strip().casefold()
+            if action in {"x", "\x1b"}: continue
             if action == "1":
                 vault = select("Escolha o perfil de vault", config.vault_profile_names())
                 if vault: profile["credential_profile"] = vault
@@ -145,16 +221,16 @@ def todoist_menu(config: McpConfiguration) -> None:
             elif action == "4": profile["enabled"] = True
             elif action == "5": profile["enabled"] = False
             elif action == "6":
-                try: print("Conexão confirmada." if TodoistService(config.root).test_connection(name)["authenticated"] else "Conexão não confirmada.")
-                except TodoistError as error: print(error)
+                try: result(TodoistService(config.root).test_connection(name)["authenticated"], "Conexão confirmada.")
+                except TodoistError as error: result(False, str(error))
                 continue
             elif action == "7":
                 if ask("Digite REMOVER para confirmar", required=True) == "REMOVER": del data["profiles"][name]
                 else: continue
             else: continue
         else: continue
-        try: config.save_todoist(data); print("Perfil Todoist atualizado.")
-        except McpConfigurationError as error: print(error)
+        try: config.save_todoist(data); result(True, "Perfil Todoist atualizado.")
+        except McpConfigurationError as error: result(False, str(error))
 
 
 def codex_mcp_menu(root: Path) -> None:
@@ -167,25 +243,33 @@ def codex_mcp_menu(root: Path) -> None:
         executable = ""
     registration = CodexMcpRegistration(root, executable)
     while True:
-        print("\nCodex CLI · Servidor MCP Onmyōji")
-        print("  Estado: " + registration.status())
-        print("  1. Preparar runtime MCP\n  2. Registrar se necessário\n  3. Atualizar registro\n  4. Remover registro\n  X. Voltar")
-        choice = input("Opção: ").strip().casefold()
+        screen("MCP · Codex CLI", registration.status())
+        item("1.", "Preparar runtime MCP")
+        item("2.", "Registrar se necessário")
+        item("3.", "Atualizar registro")
+        item("4.", "Remover registro")
+        item("X.", "Voltar")
+        choice = prompt("Selecione uma opção: ").strip().casefold()
         if choice == "x": return
         try:
-            if choice == "1": print(registration.prepare_runtime())
-            elif choice == "2": print(registration.ensure())
-            elif choice == "3": print(registration.replace())
-            elif choice == "4": print(registration.remove())
+            if choice == "1": result(True, registration.prepare_runtime())
+            elif choice == "2": result(True, registration.ensure())
+            elif choice == "3": result(True, registration.replace())
+            elif choice == "4": result(True, registration.remove())
+            else: result(False, "Opção inválida.")
         except CodexMcpError as error:
-            print(error)
+            result(False, str(error))
 
 
 def menu(root: Path) -> int:
     config = McpConfiguration(root)
     while True:
-        print("\nMCP — Configuração\n  1. Perfis de vault\n  2. Integrações MCP\n  3. Codex CLI\n  X. Voltar")
-        choice = input("Opção: ").strip().casefold()
+        screen("MCP", "Perfis de vault, integrações e conexão com o Codex CLI")
+        item("1.", "Perfis de vault", "KeePassXC e autenticação local")
+        item("2.", "Integrações MCP", "Todoist")
+        item("3.", "Codex CLI", "Runtime e registro do servidor stdio")
+        item("X.", "Voltar")
+        choice = prompt("Selecione uma opção: ").strip().casefold()
         if choice == "x": return 0
         if choice == "1": vault_profiles_menu(config)
         elif choice == "2": todoist_menu(config)
