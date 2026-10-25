@@ -1579,7 +1579,7 @@ def daemon_menu(root: Path) -> None:
             screen("Serviço do sistema operacional", "O daemon será iniciado e controlado pelo sistema operacional")
             if not service_installed():
                 if os.name == "nt":
-                    note("O Windows Service será instalado como LocalSystem. Essa conta pode não acessar o login atual do Codex; configure uma conta de serviço compatível no console Serviços do Windows antes de iniciá-lo.")
+                    note("O Windows Service será instalado como LocalSystem. Ele usa o CODEX_HOME e a autenticação persistida desta instância; confirme que a pasta da instância pode ser lida pelo serviço.")
                 else:
                     note("Escolha serviço do usuário para usar o login atual do Codex; serviço do sistema exige privilégios e uma conta Linux explícita.")
                 item("1.", "Instalar serviço")

@@ -534,8 +534,8 @@ def daemon_validation(root: Path) -> list[dict[str, str]]:
         scope = str(service.get("scope") or "system")
         account = str(service.get("run_as_user") or "conta padrão")
         detail = f"{service.get('name')} · escopo {scope} · conta {account}"
-        if os.name == "nt" and account == "LocalSystem": detail += ". LocalSystem pode não acessar o login atual do Codex."
-        add("pending" if os.name == "nt" and account == "LocalSystem" else "ok", "Serviço do sistema operacional", detail)
+        if os.name == "nt" and account == "LocalSystem": detail += ". Usa o CODEX_HOME e a autenticação persistida da instância."
+        add("ok", "Serviço do sistema operacional", detail)
     try:
         platform = daemon_data(root)
         app_server = platform.get("app_server", {})
