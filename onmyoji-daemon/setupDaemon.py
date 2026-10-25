@@ -126,16 +126,19 @@ def keepass_validation(root: Path) -> list[dict[str, str]]:
     checks: list[dict[str, str]] = []
     def add(state: str, label: str, detail: str) -> None: checks.append({"state": state, "label": label, "detail": detail})
     source = root / "available-skills" / "keepass-vault"
-    active = root / "skills" / "keepass-vault"
-    state_path = root / "configs" / "onmyoji-skills.toml"
+    profile_path = root / "onmyoji-skills.config.toml"
     try:
-        state = tomllib.loads(state_path.read_text(encoding="utf-8"))
-        enabled_ids = state.get("skills", {}).get("enabled", [])
-        enabled = isinstance(enabled_ids, list) and "keepass-vault" in enabled_ids
+        entries = tomllib.loads(profile_path.read_text(encoding="utf-8")).get("skills", {}).get("config", [])
+        enabled = any(
+            isinstance(entry, dict)
+            and entry.get("enabled") is True
+            and isinstance(entry.get("path"), str)
+            and Path(entry["path"]).expanduser().resolve() == source.resolve()
+            for entry in entries
+        ) if isinstance(entries, list) else False
     except (OSError, tomllib.TOMLDecodeError, AttributeError):
         enabled = False
-    linked = (active.exists() or active.is_symlink()) and active.resolve() == source.resolve()
-    ready = source.is_dir() and enabled and linked
+    ready = source.is_dir() and enabled
     add("ok" if ready else "error", "Skill KeePass Vault", "Instalada e habilitada." if ready else "Instale e habilite a skill KeePass Vault antes de configurar o Telegram.")
     path = root / "configs" / "keepass.toml"
     try:

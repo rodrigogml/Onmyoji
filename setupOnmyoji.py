@@ -29,9 +29,10 @@ SYSTEM_BEGIN = "# BEGIN ONMYOJI MANAGED CODEX SETTINGS"
 SYSTEM_END = "# END ONMYOJI MANAGED CODEX SETTINGS"
 CATALOG_DIRECTORY = "available-skills"
 INSTANCE_SKILLS_DIRECTORY = "shikigami/skills"
-ACTIVE_SKILLS_DIRECTORY = "skills"
-DESKTOP_SKILLS_DIRECTORY = ".agents/skills"
-SKILL_STATE_FILE = "onmyoji-skills.toml"
+SKILL_PROFILE_NAME = "onmyoji-skills"
+SKILL_PROFILE_FILE = f"{SKILL_PROFILE_NAME}.config.toml"
+LEGACY_ACTIVE_SKILLS_DIRECTORY = "skills"
+LEGACY_SKILL_STATE_FILE = "onmyoji-skills.toml"
 SANDBOXES = ["read-only", "workspace-write", "danger-full-access"]
 APPROVALS = ["on-request", "never"]
 LEGACY_APPROVAL_POLICY = "untrusted"
@@ -99,12 +100,9 @@ def discover(root: Path = ROOT) -> list[Skill]:
 
 def config_path(root: Path) -> Path: return root / "config.toml"
 def system_path(root: Path) -> Path: return root / "configs" / "onmyoji-system.toml"
-def skill_state_path(root: Path) -> Path: return root / "configs" / SKILL_STATE_FILE
-def active_skills_path(root: Path) -> Path: return root / ACTIVE_SKILLS_DIRECTORY
-
-
-def desktop_skills_path(root: Path, data: dict[str, object]) -> Path:
-    return root / DESKTOP_SKILLS_DIRECTORY
+def skill_profile_path(root: Path) -> Path: return root / SKILL_PROFILE_FILE
+def skill_state_path(root: Path) -> Path: return root / "configs" / LEGACY_SKILL_STATE_FILE
+def active_skills_path(root: Path) -> Path: return root / LEGACY_ACTIVE_SKILLS_DIRECTORY
 
 
 def instance_identity(root: Path) -> str:
@@ -717,25 +715,68 @@ def initial_installation_wizard(root: Path, data: dict[str, object]) -> dict[str
 
 
 def legacy_enabled_ids(root: Path) -> set[str]:
+    """Lê os dois formatos anteriores de estado sem alterar a instância."""
+    state = skill_state_path(root)
+    if state.exists():
+        try:
+            values = tomllib.loads(state.read_text(encoding="utf-8")).get("skills", {}).get("enabled", [])
+            if isinstance(values, list) and all(isinstance(value, str) for value in values): return set(values)
+        except (OSError, tomllib.TOMLDecodeError, AttributeError):
+            pass
     path = config_path(root)
     if not path.exists(): return set()
-    text = path.read_text(encoding="utf-8")
+    try: text = path.read_text(encoding="utf-8")
+    except OSError: return set()
     if MANAGED_BEGIN not in text or MANAGED_END not in text: return set()
     block = text.split(MANAGED_BEGIN, 1)[1].split(MANAGED_END, 1)[0]
     return {Path(line.split('"', 2)[1]).name for line in block.splitlines() if line.strip().startswith("path =") and '"' in line}
 
 
-def enabled_ids(root: Path) -> set[str]:
-    path = skill_state_path(root)
-    if not path.exists(): return legacy_enabled_ids(root)
-    try: data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except tomllib.TOMLDecodeError: return set()
-    values = data.get("skills", {}).get("enabled", [])
-    return set(values) if isinstance(values, list) and all(isinstance(value, str) for value in values) else set()
+def legacy_linked_ids(root: Path, skills: list[Skill]) -> set[str]:
+    """Recupera a habilitação quando uma instância antiga só conservou os links."""
+    active = active_skills_path(root)
+    if not active.is_dir() or is_managed_link(active): return set()
+    by_source = {skill.source.resolve(): skill.identifier for skill in skills}
+    identifiers: set[str] = set()
+    for item in active.iterdir():
+        if not is_managed_link(item): continue
+        try: identifier = by_source.get(item.resolve())
+        except OSError: identifier = None
+        if identifier is not None: identifiers.add(identifier)
+    return identifiers
 
 
-def render_enabled_state(identifiers: set[str]) -> str:
-    return "\n".join(["schema_version = 1", "", "[skills]", f"enabled = {json.dumps(sorted(identifiers), ensure_ascii=False)}"]) + "\n"
+def profile_skill_states(root: Path, skills: list[Skill]) -> dict[str, bool] | None:
+    """Retorna o estado nativo do Codex, ou None quando o perfil ainda não existe."""
+    path = skill_profile_path(root)
+    if not path.exists(): return None
+    try: entries = tomllib.loads(path.read_text(encoding="utf-8")).get("skills", {}).get("config", [])
+    except (OSError, tomllib.TOMLDecodeError, AttributeError): return {}
+    if not isinstance(entries, list): return {}
+    by_source = {skill.source.resolve(): skill.identifier for skill in skills}
+    states: dict[str, bool] = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str) or not isinstance(entry.get("enabled"), bool): continue
+        candidate = Path(entry["path"]).expanduser()
+        source = (path.parent / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
+        identifier = by_source.get(source)
+        if identifier is not None: states[identifier] = entry["enabled"]
+    return states
+
+
+def enabled_ids(root: Path, skills: list[Skill] | None = None) -> set[str]:
+    discovered = skills if skills is not None else discover(root)
+    states = profile_skill_states(root, discovered)
+    if states is not None: return {identifier for identifier, enabled in states.items() if enabled}
+    return legacy_enabled_ids(root)
+
+
+def render_skill_profile(identifiers: set[str], skills: list[Skill]) -> str:
+    """Gera o perfil nativo consumido igualmente pelo CLI e pelo App Server."""
+    lines = ["# Gerado pelo setup do Onmyōji. Não edite manualmente.", "# Use: codex --profile onmyoji-skills", ""]
+    for skill in sorted(skills, key=lambda item: item.identifier):
+        lines.extend(["[[skills.config]]", f"path = {json.dumps(str(skill.source.resolve()), ensure_ascii=False)}", f"enabled = {'true' if skill.identifier in identifiers else 'false'}", ""])
+    return "\n".join(lines)
 
 
 def remove_legacy_skill_block(root: Path) -> None:
@@ -771,43 +812,6 @@ def remove_skill_link(path: Path) -> None:
     else: os.rmdir(path)
 
 
-def desktop_skills_enabled(root: Path, data: dict[str, object]) -> bool:
-    destination, source = desktop_skills_path(root, data), active_skills_path(root).resolve()
-    try: return (destination.exists() or destination.is_symlink()) and is_managed_link(destination) and destination.resolve() == source
-    except OSError: return False
-
-
-def set_desktop_skills_enabled(root: Path, data: dict[str, object], enabled: bool) -> tuple[bool, str]:
-    try:
-        destination = desktop_skills_path(root, data)
-        source = active_skills_path(root).resolve()
-        agents = destination.parent
-        exists = destination.exists() or destination.is_symlink()
-        if enabled:
-            if exists:
-                if is_managed_link(destination) and destination.resolve() == source: return True, "Skills do Codex Desktop já estão habilitadas."
-                if is_managed_link(destination): return False, "Não foi possível criar a junction skills porque .agents/skills já aponta para outro destino."
-                if destination.is_dir(): return False, "Não foi possível criar a junction skills porque já existe uma pasta skills em .agents."
-                if destination.is_file(): return False, "Não foi possível criar a junction skills porque já existe um arquivo skills em .agents."
-                return False, "Não foi possível criar a junction skills porque .agents/skills já está ocupado por outro item."
-            source.mkdir(parents=True, exist_ok=True)
-            if agents.exists() and (not agents.is_dir() or is_managed_link(agents)):
-                return False, "Não foi possível criar a pasta .agents porque o caminho já existe e não é uma pasta comum."
-            agents.mkdir(parents=True, exist_ok=True)
-            create_skill_link(source, destination)
-            return True, "Skills do Codex Desktop habilitadas para esta instância do Shikigami."
-        if exists:
-            if not is_managed_link(destination) or destination.resolve() != source:
-                return False, "O destino .agents/skills não aponta para as skills desta instância e não será removido."
-            remove_skill_link(destination)
-        if agents.exists() and agents.is_dir() and not is_managed_link(agents):
-            try: agents.rmdir()
-            except OSError: return True, "Link do Codex Desktop removido; a pasta .agents foi preservada porque contém outros itens."
-        return True, "Skills do Codex Desktop desabilitadas."
-    except (OSError, ValueError) as error:
-        return False, f"Não foi possível atualizar as skills do Codex Desktop: {error}"
-
-
 def is_stale_runtime_cache(path: Path) -> bool:
     """Reconhece somente os caches .pyc que um git mv pode deixar em skills/."""
     if not path.is_dir() or is_managed_link(path): return False
@@ -824,83 +828,74 @@ def conflicting_skill_ids(skills: list[Skill]) -> set[str]:
     return {identifier for identifier in identifiers if identifiers.count(identifier) > 1}
 
 
-def sync_active_skill_links(root: Path, identifiers: set[str], skills: list[Skill]) -> tuple[bool, str]:
-    catalog = {skill.identifier: skill.source.resolve() for skill in skills if skill.catalog_managed}
-    conflicts = conflicting_skill_ids(skills)
-    enabled_conflicts = identifiers & conflicts
-    if enabled_conflicts:
-        return False, f"IDs de skills em conflito entre catálogo e Shikigami: {', '.join(sorted(enabled_conflicts))}. Renomeie uma delas antes de habilitá-la."
-    unknown = identifiers - set(catalog)
-    if unknown: return False, f"Skills não encontradas no catálogo: {', '.join(sorted(unknown))}."
+def remove_legacy_skill_artifacts(root: Path, skills: list[Skill]) -> tuple[bool, str]:
+    """Remove somente links e caches reconhecidamente criados pelo modelo antigo."""
     active = active_skills_path(root)
+    agents = root / ".agents"
+    desktop = agents / "skills"
+    known_sources = {skill.source.resolve() for skill in skills}
+    preserved: list[str] = []
     try:
-        active.mkdir(parents=True, exist_ok=True)
-        for identifier, source in catalog.items():
-            destination = active / identifier
-            should_exist = identifier in identifiers
-            if should_exist:
-                if destination.exists() or destination.is_symlink():
-                    if destination.resolve() != source:
-                        if is_stale_runtime_cache(destination): shutil.rmtree(destination)
-                        else: return False, f"O destino da skill {identifier} já está ocupado por um item não gerenciado."
-                    if not (destination.exists() or destination.is_symlink()): create_skill_link(source, destination)
-                else: create_skill_link(source, destination)
-            elif destination.exists() or destination.is_symlink():
-                if destination.resolve() == source:
-                    remove_skill_link(destination)
+        if (desktop.exists() or desktop.is_symlink()) and is_managed_link(desktop):
+            target = desktop.resolve()
+            if target == active.resolve(): remove_skill_link(desktop)
+            else: preserved.append(".agents/skills")
+        elif desktop.exists() or desktop.is_symlink():
+            preserved.append(".agents/skills")
+        if agents.exists() and agents.is_dir() and not is_managed_link(agents):
+            try: agents.rmdir()
+            except OSError: pass
+        if active.is_symlink():
+            if active.resolve() in known_sources: remove_skill_link(active)
+            else: preserved.append("skills")
+        elif active.exists() and active.is_dir():
+            for item in list(active.iterdir()):
+                if is_stale_runtime_cache(item): shutil.rmtree(item)
+                elif is_managed_link(item) and item.resolve() in known_sources: remove_skill_link(item)
+                else: preserved.append(str(item.relative_to(root)))
+            try: active.rmdir()
+            except OSError: pass
     except OSError as error:
-        return False, f"Não foi possível sincronizar as skills ativas: {error}"
-    return True, "Links das skills ativas sincronizados."
+        return False, f"Não foi possível remover os artefatos legados de skills: {error}"
+    detail = "" if not preserved else f" Itens não gerenciados foram preservados: {', '.join(sorted(set(preserved)))}."
+    return True, "Artefatos legados de skills removidos." + detail
 
 
-def is_skill_enabled(root: Path, skill: Skill) -> bool:
-    destination = active_skills_path(root) / skill.identifier
-    linked = (destination.exists() or destination.is_symlink()) and destination.resolve() == skill.source.resolve()
-    return skill.identifier in enabled_ids(root) and linked if skill.catalog_managed else linked
-
-
-def set_instance_skill_enabled(root: Path, skill: Skill, enabled: bool) -> tuple[bool, str]:
-    if skill.catalog_managed: return False, "Esta operação é exclusiva de skills próprias do Shikigami."
-    if skill.identifier in conflicting_skill_ids(discover(root)):
-        return False, f"O ID da skill {skill.identifier} conflita com uma skill do catálogo. Renomeie uma delas antes de habilitá-la."
-    destination = active_skills_path(root) / skill.identifier
-    source = skill.source.resolve()
-    try:
-        active_skills_path(root).mkdir(parents=True, exist_ok=True)
-        if enabled:
-            if destination.exists() or destination.is_symlink():
-                if destination.resolve() != source: return False, f"O destino da skill {skill.identifier} já está ocupado por um item não gerenciado."
-            else: create_skill_link(source, destination)
-        elif destination.exists() or destination.is_symlink():
-            if destination.resolve() != source: return False, f"O destino da skill {skill.identifier} não aponta para esta skill do Shikigami."
-            remove_skill_link(destination)
-    except OSError as error:
-        return False, f"Não foi possível atualizar o link da skill: {error}"
-    return True, ("Skill habilitada." if enabled else "Skill desabilitada.")
+def is_skill_enabled(root: Path, skill: Skill, skills: list[Skill] | None = None) -> bool:
+    return skill.identifier in enabled_ids(root, skills)
 
 
 def save_enabled(root: Path, identifiers: set[str], skills: list[Skill]) -> tuple[bool, str]:
-    path = skill_state_path(root)
-    previous = enabled_ids(root)
+    conflicts = identifiers & conflicting_skill_ids(skills)
+    if conflicts: return False, f"IDs de skills em conflito entre catálogo e Shikigami: {', '.join(sorted(conflicts))}. Renomeie uma delas antes de habilitá-la."
+    known = {skill.identifier for skill in skills}
+    unknown = identifiers - known
+    if unknown: return False, f"Skills não encontradas: {', '.join(sorted(unknown))}."
+    path = skill_profile_path(root)
     old = path.read_text(encoding="utf-8") if path.exists() else None
-    ok, message = sync_active_skill_links(root, identifiers, skills)
-    if not ok: return False, message
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(render_enabled_state(identifiers), encoding="utf-8", newline="\n")
+        path.write_text(render_skill_profile(identifiers, skills), encoding="utf-8", newline="\n")
         tomllib.loads(path.read_text(encoding="utf-8"))
         remove_legacy_skill_block(root)
+        skill_state_path(root).unlink(missing_ok=True)
+        cleaned, cleanup_message = remove_legacy_skill_artifacts(root, skills)
+        if not cleaned: return False, cleanup_message
     except (OSError, tomllib.TOMLDecodeError) as error:
-        sync_active_skill_links(root, previous, skills)
         if old is None: path.unlink(missing_ok=True)
         else: path.write_text(old, encoding="utf-8", newline="\n")
-        return False, f"Não foi possível salvar o estado das skills: {error}"
-    return True, "Configuração atualizada e links das skills sincronizados."
+        return False, f"Não foi possível salvar o perfil de skills: {error}"
+    return True, "Perfil de skills atualizado." + (f" {cleanup_message}" if cleanup_message else "")
 
 
 def ensure_skill_state(root: Path, skills: list[Skill]) -> tuple[bool, str]:
-    if skill_state_path(root).exists(): return sync_active_skill_links(root, enabled_ids(root), skills)
-    return save_enabled(root, legacy_enabled_ids(root), skills)
+    if skill_profile_path(root).exists():
+        try: tomllib.loads(skill_profile_path(root).read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError) as error: return False, f"O perfil de skills é inválido: {error}"
+        remove_legacy_skill_block(root)
+        skill_state_path(root).unlink(missing_ok=True)
+        cleaned, message = remove_legacy_skill_artifacts(root, skills)
+        return (cleaned, message) if cleaned else (False, message)
+    return save_enabled(root, legacy_enabled_ids(root) | legacy_linked_ids(root, skills), skills)
 
 
 def invoke(skill: Skill, root: Path) -> tuple[bool, str]:
@@ -1045,16 +1040,13 @@ def configure_codex_login(root: Path, data: dict[str, object], device_auth: bool
 
 
 def launch_codex(root: Path, data: dict[str, object], login: bool = False, device_auth: bool = False) -> None:
-    """Abre o Codex CLI nativo; config.toml e --add-dir são seu contrato público."""
+    """Abre o Codex CLI nativo com o perfil de skills da instância."""
     ready, message = validate_system(data, require_ready=not login, root=root)
     if not ready: result(False, f"Não iniciado: {message}"); return
     if login:
         configure_codex_login(root, data, device_auth)
         return
-    if not login:
-        synced, sync_message = sync_active_skill_links(root, enabled_ids(root), discover(root))
-        if not synced: result(False, f"Não iniciado: {sync_message}"); return
-    command = [str(data["executable"])]
+    command = [str(data["executable"]), "--profile", SKILL_PROFILE_NAME]
     if not login:
         for directory in data["additional_writable_directories"]: command.extend(["--add-dir", str(directory)])
     environment = dict(os.environ); environment["CODEX_HOME"] = str(root)
@@ -1066,8 +1058,6 @@ def launch_onmyoji_interactive(root: Path, data: dict[str, object]) -> None:
     """Modo opcional via App Server, para testar a composição Onmyōji de developer instructions."""
     ready, message = validate_system(data, require_ready=True, root=root)
     if not ready: result(False, f"Não iniciado: {message}"); return
-    synced, sync_message = sync_active_skill_links(root, enabled_ids(root), discover(root))
-    if not synced: result(False, f"Não iniciado: {sync_message}"); return
     environment = dict(os.environ); environment["CODEX_HOME"] = str(root); environment["PYTHONPATH"] = str(root / "onmyoji-daemon" / "src") + os.pathsep + environment.get("PYTHONPATH", "")
     command = [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "interactive"]
     try: subprocess.run(command, cwd=str(data["project_directory"]), env=environment, check=False)
@@ -1266,26 +1256,6 @@ def codex_menu(root: Path) -> None:
         elif choice == "8": data = manage_writable_directories(root, data)
         elif choice == "9": launch_codex(root, data)
         elif choice == "10": launch_onmyoji_interactive(root, data)
-        else: result(False, "Opção inválida.")
-
-
-def desktop_skills_menu(root: Path) -> None:
-    while True:
-        data = load_system(root)
-        enabled = desktop_skills_enabled(root, data)
-        destination = desktop_skills_path(root, data)
-        status = "ATIVA" if enabled else "inativa"
-        screen("Codex Desktop", "Skills do projeto")
-        item("1.", "Desabilitar" if enabled else "Habilitar")
-        item("X.", "Voltar")
-        print(f"\n  Instância: {root}")
-        print(f"  Link: {destination}")
-        print(f"  Estado: {status}")
-        choice = prompt("Opção: ").strip().casefold()
-        if choice == "x": return
-        if choice == "1":
-            ok, message = set_desktop_skills_enabled(root, data, not enabled)
-            result(ok, message)
         else: result(False, "Opção inválida.")
 
 
@@ -2252,7 +2222,10 @@ def skill_menu(skill: Skill, root: Path, skills: list[Skill]) -> None:
                 identifiers = enabled_ids(root)
                 (identifiers.discard if enabled else identifiers.add)(skill.identifier)
                 ok, message = save_enabled(root, identifiers, skills)
-            else: ok, message = set_instance_skill_enabled(root, skill, not enabled)
+            else:
+                identifiers = enabled_ids(root, skills)
+                (identifiers.discard if enabled else identifiers.add)(skill.identifier)
+                ok, message = save_enabled(root, identifiers, skills)
             result(ok, message if ok else f"{message} A alteração foi desfeita.")
         elif choice == "2" and skill.setup_script is not None:
             ok, message = invoke(skill, root)
@@ -2265,7 +2238,6 @@ def menu(skills: list[Skill], root: Path) -> int:
         screen("Central de configuração", "Onmyōji · integrações do Shikigami")
         item("!.", "Diagnóstico", "Valida nome, executável e modelo do Codex-CLI")
         item("A.", "Codex-CLI", "Modelo, projeto, sandbox e permissões")
-        item("B.", "Codex Desktop", "Habilitar ou desabilitar skills do projeto")
         item("D.", "Daemon", "Supervisor local e serviços da instância")
         integration = [skill for skill in skills if skill.catalog_managed]
         domain = [skill for skill in skills if not skill.catalog_managed]
@@ -2295,7 +2267,6 @@ def menu(skills: list[Skill], root: Path) -> int:
         if choice == "x": return 0
         if choice == "!": diagnostics_menu(root); continue
         if choice == "a": codex_menu(root); continue
-        if choice == "b": desktop_skills_menu(root); continue
         if choice == "d": daemon_menu(root); continue
         if choice.isdigit() and 1 <= int(choice) <= len(skills): skill_menu(skills[int(choice) - 1], root, skills)
         else: result(False, "Opção inválida.")
@@ -2344,11 +2315,9 @@ def main() -> int:
         if args.json: print(json.dumps({"ok": False, "error": {"code": "interactive_only", "message": "Use as ações não interativas declaradas pela própria skill."}}, ensure_ascii=False)); return 2
         ok, _message = invoke(by_id[args.skill], ROOT); return 0 if ok else 2
     skill = by_id[args.skill]
-    if skill.catalog_managed:
-        active = enabled_ids(ROOT)
-        (active.add if args.action == "enable" else active.discard)(args.skill)
-        ok, message = save_enabled(ROOT, active, skills)
-    else: ok, message = set_instance_skill_enabled(ROOT, skill, args.action == "enable")
+    active = enabled_ids(ROOT, skills)
+    (active.add if args.action == "enable" else active.discard)(args.skill)
+    ok, message = save_enabled(ROOT, active, skills)
     print(json.dumps({"ok": ok, "skill": args.skill, "enabled": args.action == "enable", "message": message}, ensure_ascii=False) if args.json else message)
     return 0 if ok else 2
 

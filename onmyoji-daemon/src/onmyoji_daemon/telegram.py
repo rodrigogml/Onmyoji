@@ -144,7 +144,7 @@ class CodexAppServer:
     def start(self) -> None:
         if self.running(): return
         environment = dict(os.environ); environment["CODEX_HOME"] = str(self.settings.root)
-        self.process = subprocess.Popen([self.settings.executable, "app-server", "--stdio"], cwd=self.settings.project, env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        self.process = subprocess.Popen([self.settings.executable, "--profile", "onmyoji-skills", "app-server", "--stdio"], cwd=self.settings.project, env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         self.reader = threading.Thread(target=self._read_stdout, daemon=True); self.stderr_reader = threading.Thread(target=self._read_stderr, daemon=True); self.reader.start(); self.stderr_reader.start()
         self.request("initialize", {"clientInfo": {"name": "onmyoji_telegram_gateway", "title": "Onmyoji Telegram Gateway", "version": "1.0"}, "capabilities": {"experimentalApi": True}}); self.notify("initialized")
     def stop(self) -> None:
