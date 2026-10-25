@@ -2019,9 +2019,11 @@ def daemon_menu(root: Path) -> None:
         item("W.", "Wizard de configuração do Daemon", "Guia de configuração e validação")
         print()
         item("1.", "Preparar e instalar daemon" if not installed() else "Validar runtime do daemon", status)
-        item("2.", "Operação do daemon", "Processo local e serviço do sistema operacional")
-        item("3.", "Serviços instalados", "Telegram, MiniApps e futuras integrações")
-        item("4.", "Utilitários e manutenção", "Ambiente Python e remoção")
+        item("2.", "Processo/Serviço do Daemon", "Processo local e serviço do sistema operacional")
+        item("3.", "Utilitários e manutenção", "Ambiente Python e remoção")
+        print()
+        item("M.", "Módulos do Daemon", "Telegram, MiniApps e futuras integrações")
+        print()
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
@@ -2032,10 +2034,10 @@ def daemon_menu(root: Path) -> None:
         elif choice == "2":
             if not installed(): result(False, "Instale o daemon pela opção 1 antes de operá-lo.")
             else: operation_menu()
-        elif choice == "3":
+        elif choice == "3": utilities_menu()
+        elif choice == "m":
             if not installed(): result(False, "Instale o daemon pela opção 1 antes de configurar serviços.")
             else: services_menu()
-        elif choice == "4": utilities_menu()
         else: result(False, "Opção inválida.")
 
 
