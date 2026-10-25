@@ -169,13 +169,14 @@ def codex_mcp_menu(root: Path) -> None:
     while True:
         print("\nCodex CLI · Servidor MCP Onmyōji")
         print("  Estado: " + registration.status())
-        print("  1. Registrar se necessário\n  2. Atualizar registro\n  3. Remover registro\n  X. Voltar")
+        print("  1. Preparar runtime MCP\n  2. Registrar se necessário\n  3. Atualizar registro\n  4. Remover registro\n  X. Voltar")
         choice = input("Opção: ").strip().casefold()
         if choice == "x": return
         try:
-            if choice == "1": print(registration.ensure())
-            elif choice == "2": print(registration.replace())
-            elif choice == "3": print(registration.remove())
+            if choice == "1": print(registration.prepare_runtime())
+            elif choice == "2": print(registration.ensure())
+            elif choice == "3": print(registration.replace())
+            elif choice == "4": print(registration.remove())
         except CodexMcpError as error:
             print(error)
 

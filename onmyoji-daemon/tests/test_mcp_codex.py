@@ -14,10 +14,10 @@ def completed(returncode: int = 0, stdout: str = "") -> SimpleNamespace:
     return SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
 
 
-def test_ensure_registers_absent_server_with_daemon_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    runtime = tmp_path / "runtime" / "python"
-    monkeypatch.setattr(codex, "runtime_ready", lambda _root: True)
-    monkeypatch.setattr(codex, "daemon_python", lambda _root: runtime)
+def test_ensure_registers_absent_server_with_private_mcp_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = tmp_path / "configs" / "mcp" / "venv" / "Scripts" / "python.exe"
+    monkeypatch.setattr(codex, "ensure_mcp_runtime", lambda _root: "ready")
+    monkeypatch.setattr(codex, "mcp_runtime_python", lambda _root: runtime)
     calls: list[tuple[list[str], dict]] = []
 
     def run(command: list[str], **kwargs):
@@ -37,8 +37,8 @@ def test_ensure_registers_absent_server_with_daemon_runtime(tmp_path: Path, monk
 
 def test_ensure_keeps_matching_registration_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     runtime = tmp_path / "runtime" / "python"
-    monkeypatch.setattr(codex, "runtime_ready", lambda _root: True)
-    monkeypatch.setattr(codex, "daemon_python", lambda _root: runtime)
+    monkeypatch.setattr(codex, "ensure_mcp_runtime", lambda _root: "ready")
+    monkeypatch.setattr(codex, "mcp_runtime_python", lambda _root: runtime)
     registration = codex.CodexMcpRegistration(tmp_path, "codex")
     existing = {
         "name": "onmyoji", "transport": {
@@ -55,8 +55,8 @@ def test_ensure_keeps_matching_registration_unchanged(tmp_path: Path, monkeypatc
 
 
 def test_ensure_refuses_conflicting_registration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(codex, "runtime_ready", lambda _root: True)
-    monkeypatch.setattr(codex, "daemon_python", lambda _root: tmp_path / "runtime" / "python")
+    monkeypatch.setattr(codex, "ensure_mcp_runtime", lambda _root: "ready")
+    monkeypatch.setattr(codex, "mcp_runtime_python", lambda _root: tmp_path / "configs" / "mcp" / "venv" / "Scripts" / "python.exe")
     conflict = {"name": "onmyoji", "transport": {"type": "stdio", "command": "python", "args": []}}
     monkeypatch.setattr(codex.subprocess, "run", lambda *_args, **_kwargs: completed(stdout=json.dumps([conflict])))
 

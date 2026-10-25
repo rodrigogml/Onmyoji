@@ -56,7 +56,6 @@ def parsed(name): return tuple(int(part) for part in version(name).split('.')[:2
 assert sys.version_info >= (3, 11)
 assert (3, 10) <= parsed('aiohttp') < (4, 0)
 assert (42, 0) <= parsed('cryptography') < (47, 0)
-assert (2, 0) <= parsed('mcp') < (3, 0)
 """
     try:
         result = subprocess.run([str(executable), "-c", probe], text=True, capture_output=True, check=False, timeout=10)

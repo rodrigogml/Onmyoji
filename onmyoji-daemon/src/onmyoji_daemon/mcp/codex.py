@@ -14,7 +14,7 @@ from pathlib import Path
 import subprocess
 from typing import Any
 
-from ..management import daemon_python, runtime_ready
+from .runtime import McpRuntimeError, ensure_mcp_runtime, mcp_runtime_python
 
 
 SERVER_NAME = "onmyoji"
@@ -28,9 +28,9 @@ class CodexMcpError(RuntimeError):
 class CodexMcpRegistration:
     """Garante a configuração stdio do MCP para uma instância Onmyōji.
 
-    O processo MCP usa o Python escolhido para o daemon e recebe apenas a raiz
-    da instância e o código-fonte do daemon por ambiente. Credenciais continuam
-    exclusivamente nos perfis em ``configs/mcp``.
+    O processo MCP usa seu runtime privado em ``configs/mcp/venv`` e recebe
+    apenas a raiz da instância e o código-fonte por ambiente. Credenciais
+    continuam exclusivamente nos perfis em ``configs/mcp``.
     """
 
     root: Path
@@ -44,7 +44,14 @@ class CodexMcpRegistration:
         return Path(__file__).resolve().parents[2]
 
     def expected_command(self) -> list[str]:
-        return [str(daemon_python(self.root)), "-m", "onmyoji_daemon.mcp.server", "--onmyoji-root", str(self.root)]
+        return [str(mcp_runtime_python(self.root)), "-m", "onmyoji_daemon.mcp.server", "--onmyoji-root", str(self.root)]
+
+    def prepare_runtime(self) -> str:
+        """Prepara o runtime MCP sem depender da instalação do daemon."""
+        try:
+            return ensure_mcp_runtime(self.root)
+        except McpRuntimeError as error:
+            raise CodexMcpError(str(error)) from error
 
     def ensure(self) -> str:
         """Cria o registro ausente ou confirma sua configuração sem sobrescrever."""
@@ -68,7 +75,7 @@ class CodexMcpRegistration:
             if completed.returncode != 0:
                 raise CodexMcpError("Não foi possível remover o registro MCP Onmyōji anterior.")
         self._add()
-        return "Registro MCP Onmyōji atualizado para o runtime atual do daemon."
+        return "Registro MCP Onmyōji atualizado para o runtime MCP atual."
 
     def remove(self) -> str:
         """Remove somente o registro MCP pertencente a esta instância."""
@@ -92,8 +99,7 @@ class CodexMcpRegistration:
     def _validate_prerequisites(self) -> None:
         if not self.codex_executable:
             raise CodexMcpError("Executável do Codex CLI não está configurado.")
-        if not runtime_ready(self.root):
-            raise CodexMcpError("Runtime do daemon não está pronto. Instale ou valide o daemon antes de registrar o MCP.")
+        self.prepare_runtime()
 
     def _current(self) -> dict[str, Any] | None:
         completed = self._run("mcp", "list", "--json")
