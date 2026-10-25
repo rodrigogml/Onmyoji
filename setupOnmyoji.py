@@ -1598,6 +1598,7 @@ def daemon_menu(root: Path) -> None:
             item("3.", "Reiniciar serviço")
             item("4.", "Forçar parada do serviço")
             item("5.", "Remover serviço")
+            if os.name == "nt": item("6.", "Reparar registro do serviço", "Atualiza o host Python sem alterar a conta do Windows")
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
@@ -1609,6 +1610,7 @@ def daemon_menu(root: Path) -> None:
                 confirmation = prompt("Digite remover para confirmar: ").strip()
                 if confirmation == "remover": privileged_service_action("remove-service")
                 else: result(False, "Remoção cancelada; a confirmação deve ser exatamente remover.")
+            elif choice == "6" and os.name == "nt": lifecycle("repair-service")
             else: result(False, "Opção inválida.")
 
     def operation_menu() -> None:

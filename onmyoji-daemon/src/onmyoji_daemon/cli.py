@@ -24,7 +24,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("process-status"); sub.add_parser("process-start")
     for action in ("process-stop", "process-force-stop"): sub.add_parser(action)
     install_service = sub.add_parser("install-service"); install_service.add_argument("--name", required=True); install_service.add_argument("--description", required=True); install_service.add_argument("--scope", choices=["user", "system"], default="system"); install_service.add_argument("--run-as-user", default=""); install_service.add_argument("--run-as-group", default=""); install_service.add_argument("--use-sudo", action="store_true")
-    remove_service = sub.add_parser("remove-service"); remove_service.add_argument("--use-sudo", action="store_true"); sub.add_parser("service-status")
+    remove_service = sub.add_parser("remove-service"); remove_service.add_argument("--use-sudo", action="store_true"); sub.add_parser("repair-service"); sub.add_parser("service-status")
     for action in ("service-start", "service-stop", "service-restart", "service-force-stop"): sub.add_parser(action).add_argument("--use-sudo", action="store_true")
     for action in ("start", "stop", "restart", "enable", "disable", "status"):
         command = sub.add_parser(action); command.add_argument("service", nargs="?", default="telegram")
@@ -68,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
         "process-force-stop": lambda: management.stop_background(root, True),
         "install-service": lambda: management.install_service(root, args.name, args.description, args.scope, args.run_as_user, args.run_as_group, args.use_sudo),
         "remove-service": lambda: management.remove_service(root, args.use_sudo),
+        "repair-service": lambda: management.repair_service(root),
         "service-status": lambda: management.service_status(root),
         "service-start": lambda: management.service_action(root, "start", args.use_sudo),
         "service-stop": lambda: management.service_action(root, "stop", args.use_sudo),

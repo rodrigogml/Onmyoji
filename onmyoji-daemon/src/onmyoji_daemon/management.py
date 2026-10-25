@@ -398,6 +398,18 @@ def service_status(root: Path) -> tuple[bool, str]:
     return value.returncode in {0, 3}, (value.stdout or value.stderr).strip()
 
 
+def repair_service(root: Path) -> tuple[bool, str]:
+    """Atualiza o registro do host de serviço sem alterar sua conta de execução."""
+    info = service_info(root)
+    if not info: return False, "Serviço do sistema operacional não está instalado para esta instância."
+    if os.name != "nt": return False, "A reparação automática está disponível somente para o host de Serviço do Windows."
+    source = str(Path(__file__).resolve().parents[1]); environment = dict(os.environ)
+    environment["PYTHONPATH"] = source + (os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else "")
+    repaired = subprocess.run([str(daemon_python(root)), "-m", "onmyoji_daemon.windows_service", "--service-name", str(info["name"]), "--onmyoji-root", str(root.resolve()), "--startup", "auto", "update"], text=True, capture_output=True, env=environment, check=False)
+    if repaired.returncode != 0: return False, (repaired.stderr or repaired.stdout).strip()
+    return True, "Registro do Serviço do Windows reparado. Inicie-o novamente para validar."
+
+
 def service_action(root: Path, action: str, use_sudo: bool = False) -> tuple[bool, str]:
     info = service_info(root)
     if not info: return False, "Serviço do sistema operacional não está instalado para esta instância."
