@@ -25,3 +25,16 @@ def test_todoist_tool_depends_on_enabled_profile_and_existing_vault_profile(tmp_
     credentials["profiles"].clear()
     config.save_credentials(credentials)
     assert config.todoist_tool_available() is False
+
+
+def test_empty_profile_tables_remain_available_after_saving_and_reloading(tmp_path):
+    config = McpConfiguration(tmp_path)
+    config.save_todoist(config.todoist())
+    config.save_credentials(config.credentials())
+
+    reloaded = McpConfiguration(tmp_path)
+
+    assert reloaded.todoist()["profiles"] == {}
+    assert reloaded.credentials()["profiles"] == {}
+    assert reloaded.vault_profile_names() == []
+    assert reloaded.todoist_tool_available() is False

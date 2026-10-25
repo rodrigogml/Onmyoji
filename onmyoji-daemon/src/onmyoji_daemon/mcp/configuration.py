@@ -1,6 +1,7 @@
 """Configuração local e transacional de perfis das integrações MCP."""
 from __future__ import annotations
 
+import copy
 import json
 import os
 from pathlib import Path
@@ -99,7 +100,12 @@ class McpConfiguration:
             raise McpConfigurationError("Não foi possível ler a configuração MCP.") from error
         if not isinstance(data, dict):
             raise McpConfigurationError("Configuração MCP inválida.")
-        return data
+        # TOML não materializa tabelas vazias. Após remover o último perfil,
+        # o arquivo salvo não possui uma seção ``profiles``; complete-a com o
+        # modelo para que o menu continue navegável.
+        merged = copy.deepcopy(empty)
+        merged.update(data)
+        return merged
 
     @staticmethod
     def _save(path: Path, content: str) -> None:

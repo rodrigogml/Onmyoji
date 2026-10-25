@@ -126,7 +126,7 @@ def vault_profiles_menu(config: McpConfiguration) -> None:
             item("5.", "Salvar senha mestra")
             item("6.", "Testar acesso")
             item("7.", "Remover perfil")
-            item("X.", "Cancelar")
+            item("X.", "Voltar")
             action = prompt("Opção: ").strip().casefold()
             if action in {"x", "\x1b"}: continue
             if action == "1": vault["database"]["windows" if os.name == "nt" else "linux"] = ask("Arquivo KDBX", vault["database"]["windows" if os.name == "nt" else "linux"], True) or vault["database"]["windows" if os.name == "nt" else "linux"]
@@ -139,8 +139,18 @@ def vault_profiles_menu(config: McpConfiguration) -> None:
                 except Exception: result(False, "Não foi possível acessar o cofre com este perfil.")
                 continue
             elif action == "7":
-                if ask("Digite REMOVER para confirmar", required=True) == "REMOVER": del data["profiles"][name]; data["vaults"].pop(profile["vault"], None)
-                else: continue
+                confirmation = ask("Digite REMOVER para confirmar", required=True)
+                if confirmation is None or confirmation.casefold() != "remover":
+                    result(False, "Perfil de vault não removido.")
+                    continue
+                del data["profiles"][name]
+                data["vaults"].pop(profile["vault"], None)
+                try:
+                    config.save_credentials(data)
+                    result(True, "Perfil de vault removido.")
+                except McpConfigurationError as error:
+                    result(False, f"Perfil de vault não removido: {error}")
+                continue
             else: continue
             try: config.save_credentials(data); result(True, "Perfil de vault atualizado.")
             except McpConfigurationError as error: result(False, str(error))
@@ -259,7 +269,7 @@ def todoist_menu(config: McpConfiguration) -> None:
         if choice == "x": return
         if choice == "1":
             name = ask("Nome do perfil Todoist", required=True); vault = select("Escolha o perfil de vault", config.vault_profile_names())
-            if not name or not vault or name in data["profiles"]: result(False, "Nome inválido, repetido ou seleção cancelada."); continue
+            if not name or not vault or name in data["profiles"]: result(False, "Nome inválido, repetido ou retorno solicitado."); continue
             entry = ask("Entrada KeePass da chave", f"APIs/Todoist/{name}", True)
             description = ask("Descrição de quando utilizar este perfil", required=True)
             if not entry or not description: result(False, "Perfil Todoist inválido."); continue
@@ -271,13 +281,13 @@ def todoist_menu(config: McpConfiguration) -> None:
             profile = data["profiles"][name]
             screen("MCP · Perfil Todoist", name)
             item("1.", "Alterar perfil de vault")
-            item("2.", "Alterar entrada e campo")
+            item("2.", "Alterar entrada e chave")
             item("3.", "Alterar descrição")
             item("4.", "Habilitar")
             item("5.", "Desabilitar")
             item("6.", "Testar conexão")
             item("7.", "Remover perfil")
-            item("X.", "Cancelar")
+            item("X.", "Voltar")
             action = prompt("Opção: ").strip().casefold()
             if action in {"x", "\x1b"}: continue
             if action == "1":
@@ -301,8 +311,17 @@ def todoist_menu(config: McpConfiguration) -> None:
                 except TodoistError as error: result(False, str(error))
                 continue
             elif action == "7":
-                if ask("Digite REMOVER para confirmar", required=True) == "REMOVER": del data["profiles"][name]
-                else: continue
+                confirmation = ask("Digite REMOVER para confirmar", required=True)
+                if confirmation is None or confirmation.casefold() != "remover":
+                    result(False, "Perfil Todoist não removido.")
+                    continue
+                del data["profiles"][name]
+                try:
+                    config.save_todoist(data)
+                    result(True, "Perfil Todoist removido.")
+                except McpConfigurationError as error:
+                    result(False, f"Perfil Todoist não removido: {error}")
+                continue
             else: continue
         else: continue
         try: config.save_todoist(data); result(True, "Perfil Todoist atualizado.")
@@ -337,18 +356,34 @@ def codex_mcp_menu(root: Path) -> None:
             result(False, str(error))
 
 
+def integrations_menu(config: McpConfiguration) -> None:
+    """Lista integrações MCP e mantém cada configurador em seu próprio menu."""
+    while True:
+        status = "ATIVA" if config.todoist_tool_available() else "inativa"
+        screen("MCP · Integrações", "Selecione uma integração para configurar")
+        item("1.", "Todoist", f"todoist.list_tasks · {status}")
+        item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
+        if choice in {"x", "\x1b"}:
+            return
+        if choice == "1":
+            todoist_menu(config)
+        else:
+            result(False, "Opção inválida.")
+
+
 def menu(root: Path) -> int:
     config = McpConfiguration(root)
     while True:
         screen("MCP", "Perfis de vault, integrações e conexão com o Codex CLI")
         item("1.", "Perfis de vault", "KeePassXC e autenticação local")
-        item("2.", "Integrações MCP", "Todoist")
+        item("2.", "Integrações MCP")
         item("3.", "Codex CLI", "Runtime e registro do servidor stdio")
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice == "x": return 0
         if choice == "1": vault_profiles_menu(config)
-        elif choice == "2": todoist_menu(config)
+        elif choice == "2": integrations_menu(config)
         elif choice == "3": codex_mcp_menu(root)
 
 
