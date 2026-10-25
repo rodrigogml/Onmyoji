@@ -807,6 +807,21 @@ def profile_uses_legacy_skill_paths(root: Path, skills: list[Skill]) -> bool:
     return False
 
 
+def profile_has_retired_skill_paths(root: Path, skills: list[Skill]) -> bool:
+    """Detecta manifests removidos do catálogo no perfil gerado pelo setup."""
+    path = skill_profile_path(root)
+    try: entries = tomllib.loads(path.read_text(encoding="utf-8")).get("skills", {}).get("config", [])
+    except (OSError, tomllib.TOMLDecodeError, AttributeError): return False
+    if not isinstance(entries, list): return False
+    known = {skill_manifest_path(skill) for skill in skills}
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str): continue
+        candidate = Path(entry["path"]).expanduser()
+        resolved = (path.parent / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
+        if resolved not in known: return True
+    return False
+
+
 def remove_legacy_skill_block(root: Path) -> None:
     path = config_path(root)
     if not path.exists(): return
@@ -919,7 +934,7 @@ def ensure_skill_state(root: Path, skills: list[Skill]) -> tuple[bool, str]:
     if skill_profile_path(root).exists():
         try: tomllib.loads(skill_profile_path(root).read_text(encoding="utf-8"))
         except (OSError, tomllib.TOMLDecodeError) as error: return False, f"O perfil de skills é inválido: {error}"
-        if profile_uses_legacy_skill_paths(root, skills):
+        if profile_uses_legacy_skill_paths(root, skills) or profile_has_retired_skill_paths(root, skills):
             return save_enabled(root, enabled_ids(root, skills), skills)
         remove_legacy_skill_block(root)
         skill_state_path(root).unlink(missing_ok=True)

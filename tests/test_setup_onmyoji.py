@@ -322,7 +322,7 @@ class SystemSetupTests(unittest.TestCase):
             project = root / "project"; project.mkdir()
             extra = root / "extra"; extra.mkdir()
             data = MODULE.default_system() | {"executable": sys.executable, "project_directory": str(project), "model": "gpt-5.6-sol", "model_reasoning_effort": "xhigh", "additional_writable_directories": [str(extra)]}
-            with patch.object(MODULE, "validate_system", return_value=(True, "pronto")), patch.object(MODULE.subprocess, "run") as run:
+            with patch.object(MODULE, "validate_system", return_value=(True, "pronto")), patch("onmyoji_daemon.codex_execution.McpReconciliation.reconcile_if_pending", return_value=False), patch.object(MODULE.subprocess, "run") as run:
                 MODULE.launch_codex(root, data)
             command = run.call_args.args[0]
             self.assertEqual(command, [sys.executable, "--profile", MODULE.SKILL_PROFILE_NAME, "--add-dir", str(extra)])
@@ -343,7 +343,7 @@ class SystemSetupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); project = root / "project"; project.mkdir()
             data = MODULE.default_system() | {"executable": sys.executable, "project_directory": str(project)}
-            with patch.object(MODULE, "validate_system", return_value=(True, "pronto")), patch.object(MODULE.subprocess, "run") as run:
+            with patch.object(MODULE, "validate_system", return_value=(True, "pronto")), patch("onmyoji_daemon.codex_execution.runtime_ready", return_value=True), patch("onmyoji_daemon.codex_execution.daemon_python", return_value=Path(sys.executable)), patch.object(MODULE.subprocess, "run") as run:
                 MODULE.launch_onmyoji_interactive(root, data)
             command = run.call_args.args[0]
             self.assertEqual(command[:5], [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root)])
@@ -443,6 +443,17 @@ class SystemSetupTests(unittest.TestCase):
             root = Path(temporary); skill = self.fake_skill(root)
             (skill.source / "SKILL.md").write_text("---\nname: omie\ndescription: Teste\n---\n", encoding="utf-8")
             MODULE.skill_profile_path(root).write_text(f'[[skills.config]]\npath = "{skill.source.as_posix()}"\nenabled = true\n', encoding="utf-8")
+            self.assertTrue(MODULE.ensure_skill_state(root, [skill])[0])
+            profile = tomllib.loads(MODULE.skill_profile_path(root).read_text(encoding="utf-8"))
+            self.assertEqual(profile["skills"]["config"], [{"path": str((skill.source / "SKILL.md").resolve()), "enabled": True}])
+
+    def test_profile_with_retired_skill_is_rebuilt_without_its_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); skill = self.fake_skill(root)
+            (skill.source / "SKILL.md").write_text("---\nname: omie\ndescription: Teste\n---\n", encoding="utf-8")
+            retired = root / "available-skills" / "todoist" / "SKILL.md"
+            manifest = (skill.source / "SKILL.md").as_posix()
+            MODULE.skill_profile_path(root).write_text(f'[[skills.config]]\npath = "{manifest}"\nenabled = true\n\n[[skills.config]]\npath = "{retired.as_posix()}"\nenabled = false\n', encoding="utf-8")
             self.assertTrue(MODULE.ensure_skill_state(root, [skill])[0])
             profile = tomllib.loads(MODULE.skill_profile_path(root).read_text(encoding="utf-8"))
             self.assertEqual(profile["skills"]["config"], [{"path": str((skill.source / "SKILL.md").resolve()), "enabled": True}])
