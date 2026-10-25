@@ -1,4 +1,4 @@
-from onmyoji_daemon.mcp.server import McpApplication
+from onmyoji_daemon.mcp.server import McpApplication, main
 
 
 class Registry:
@@ -11,3 +11,16 @@ def test_application_delegates_to_registered_modules(tmp_path):
     application.todoist = Registry()
     assert application.definitions() == [{"name": "todoist.list_tasks"}]
     assert application.call("todoist.list_tasks", {}) == {"name": "todoist.list_tasks", "arguments": {}}
+
+
+def test_main_starts_the_stdio_server_with_the_resolved_root(tmp_path, monkeypatch):
+    started = []
+
+    def run(coroutine):
+        started.append(coroutine)
+        coroutine.close()
+
+    monkeypatch.setattr("onmyoji_daemon.mcp.server.asyncio.run", run)
+
+    assert main(["--onmyoji-root", str(tmp_path)]) == 0
+    assert len(started) == 1
