@@ -359,6 +359,15 @@ def install_service(root: Path, name: str, description: str, scope: str = "syste
         environment["PYTHONPATH"] = source + (os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else "")
         created = subprocess.run([executable, "-m", "onmyoji_daemon.windows_service", "--service-name", name, "--onmyoji-root", str(root.resolve()), "--startup", "auto", "install"], text=True, capture_output=True, env=environment, check=False)
         if created.returncode != 0: return False, (created.stderr or created.stdout).strip()
+        try:
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, f"SYSTEM\\CurrentControlSet\\Services\\{name}")
+            try: registered_root, _kind = winreg.QueryValueEx(key, "OnmyojiRoot")
+            finally: winreg.CloseKey(key)
+            if Path(str(registered_root)).resolve() != root.resolve(): raise ValueError("a raiz registrada não corresponde à instância")
+        except (OSError, ValueError) as error:
+            subprocess.run([executable, "-m", "onmyoji_daemon.windows_service", "--service-name", name, "--onmyoji-root", str(root.resolve()), "remove"], text=True, capture_output=True, env=environment, check=False)
+            return False, f"O registro do Serviço do Windows não pôde ser validado; a instalação foi desfeita: {error}"
         subprocess.run(["sc.exe", "description", name, description], text=True, capture_output=True, check=False)
     else:
         if not shutil.which("systemctl"): return False, "systemd não está disponível neste sistema."
@@ -396,18 +405,6 @@ def service_status(root: Path) -> tuple[bool, str]:
         return value.returncode == 0, (value.stdout or value.stderr).strip()
     value = subprocess.run(_systemctl(str(info.get("scope") or "system"), "status", str(info["name"]), "--no-pager"), text=True, capture_output=True, check=False)
     return value.returncode in {0, 3}, (value.stdout or value.stderr).strip()
-
-
-def repair_service(root: Path) -> tuple[bool, str]:
-    """Atualiza o registro do host de serviço sem alterar sua conta de execução."""
-    info = service_info(root)
-    if not info: return False, "Serviço do sistema operacional não está instalado para esta instância."
-    if os.name != "nt": return False, "A reparação automática está disponível somente para o host de Serviço do Windows."
-    source = str(Path(__file__).resolve().parents[1]); environment = dict(os.environ)
-    environment["PYTHONPATH"] = source + (os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else "")
-    repaired = subprocess.run([str(daemon_python(root)), "-m", "onmyoji_daemon.windows_service", "--service-name", str(info["name"]), "--onmyoji-root", str(root.resolve()), "--startup", "auto", "update"], text=True, capture_output=True, env=environment, check=False)
-    if repaired.returncode != 0: return False, (repaired.stderr or repaired.stdout).strip()
-    return True, "Registro do Serviço do Windows reparado. Inicie-o novamente para validar."
 
 
 def service_action(root: Path, action: str, use_sudo: bool = False) -> tuple[bool, str]:

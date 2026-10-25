@@ -1581,7 +1581,9 @@ def daemon_menu(root: Path) -> None:
                 description = prompt(f"Descrição [{f'Shikigami {visible} Daemon'}]: ").strip() or f"Shikigami {visible} Daemon"
                 if os.name == "nt":
                     if prompt("Instalar como LocalSystem? [s/N]: ").strip().casefold() not in {"s", "sim"}: result(False, "Instalação do serviço cancelada."); continue
-                    lifecycle("install-service", ["--name", name, "--description", description, "--scope", "system"]); continue
+                    if lifecycle("install-service", ["--name", name, "--description", description, "--scope", "system"]) and prompt("Iniciar agora e validar o registro? [S/n]: ").strip().casefold() in {"", "s", "sim"}:
+                        lifecycle("service-start"); lifecycle("service-status")
+                    continue
                 print()
                 item("1.", "Serviço do usuário", "systemd --user · recomendado para o login atual do Codex")
                 item("2.", "Serviço do sistema", "systemd · exige sudo e usuário Linux explícito")
@@ -1598,7 +1600,6 @@ def daemon_menu(root: Path) -> None:
             item("3.", "Reiniciar serviço")
             item("4.", "Forçar parada do serviço")
             item("5.", "Remover serviço")
-            if os.name == "nt": item("6.", "Reparar registro do serviço", "Atualiza o host Python sem alterar a conta do Windows")
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
@@ -1610,7 +1611,6 @@ def daemon_menu(root: Path) -> None:
                 confirmation = prompt("Digite remover para confirmar: ").strip()
                 if confirmation == "remover": privileged_service_action("remove-service")
                 else: result(False, "Remoção cancelada; a confirmação deve ser exatamente remover.")
-            elif choice == "6" and os.name == "nt": lifecycle("repair-service")
             else: result(False, "Opção inválida.")
 
     def operation_menu() -> None:
