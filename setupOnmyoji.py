@@ -1393,12 +1393,12 @@ def daemon_menu(root: Path) -> None:
         completed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", action], quiet=True)
         detail = (completed.stderr or completed.stdout or "").strip()
         detail = re.sub(r"(?i)(token|password|secret|access[_-]?token)\s*[=:]\s*\S+", r"\1=[redacted]", detail)[-500:]
-        if completed.returncode != 0:
-            return [{"state": "error", "label": "Diagnóstico do daemon", "detail": detail or f"O comando de diagnóstico terminou com código {completed.returncode}."}]
         try: values = json.loads(completed.stdout or "[]")
         except (json.JSONDecodeError, TypeError):
-            return [{"state": "error", "label": "Diagnóstico do daemon", "detail": detail or "O daemon retornou um diagnóstico inválido."}]
-        return values if isinstance(values, list) else [{"state": "error", "label": "Diagnóstico do daemon", "detail": "O daemon retornou um diagnóstico em formato inválido."}]
+            return [{"state": "error", "label": "Diagnóstico do daemon", "detail": detail or f"O comando de diagnóstico terminou com código {completed.returncode}."}]
+        if not isinstance(values, list):
+            return [{"state": "error", "label": "Diagnóstico do daemon", "detail": "O daemon retornou um diagnóstico em formato inválido."}]
+        return values
 
     def print_checks(checks: list[dict[str, str]]) -> None:
         for check in checks:
