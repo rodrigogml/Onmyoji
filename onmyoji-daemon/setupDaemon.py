@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import tomllib
+from types import SimpleNamespace
 from pathlib import Path
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -19,7 +20,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 PROJECT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT / "src"))
-from onmyoji_daemon.management import is_installed
+from onmyoji_daemon.management import applied_configuration_revision, configuration_revision, daemon_python, daemon_reachable, is_installed, runtime_ready
 from onmyoji_daemon.instance import identity
 
 ROOT = PROJECT.parent
@@ -30,7 +31,78 @@ INSTRUCTION_MODEL = PROJECT / "configs" / "shikigami.md.model"
 def target(root: Path) -> Path: return root / "shikigami" / "daemon" / "telegram.toml"
 
 
+def daemon_target(root: Path) -> Path: return root / "configs" / "daemon" / "daemon.toml"
+
+
+def daemon_data(root: Path) -> dict:
+    """Lê a configuração da plataforma sem criar um serviço específico."""
+    try:
+        data = tomllib.loads(daemon_target(root).read_text(encoding="utf-8"))
+    except FileNotFoundError as error:
+        raise ValueError("Instale primeiro o daemon desta instância.") from error
+    except tomllib.TOMLDecodeError as error:
+        raise ValueError(f"A configuração do daemon é inválida: {error}") from error
+    if not isinstance(data, dict): raise ValueError("A configuração do daemon é inválida.")
+    return data
+
+
+def save_daemon_data(root: Path, data: dict) -> None:
+    """Persiste somente as configurações compartilhadas pela plataforma do daemon."""
+    app_server = data.get("app_server", {})
+    instructions = data.get("instructions", {})
+    if not isinstance(app_server, dict) or not isinstance(instructions, dict):
+        raise ValueError("A configuração da plataforma do daemon é inválida.")
+    idle = int(app_server.get("idle_timeout_seconds") or 1800)
+    if idle < 60: raise ValueError("O tempo de inatividade do App Server deve ser de ao menos 60 segundos.")
+    data["schema_version"] = int(data.get("schema_version") or 1)
+    data["instance_id"] = str(data.get("instance_id") or "")
+    data["instance_name"] = str(data.get("instance_name") or identity(root))
+    app_server.update({"enabled": bool(app_server.get("enabled", False)), "idle_timeout_seconds": idle})
+    instructions.update({"enabled": bool(instructions.get("enabled", True)), "shikigami_file": str(instructions.get("shikigami_file") or "instructions.md")})
+
+    def value(raw: object) -> str:
+        if isinstance(raw, bool): return str(raw).lower()
+        if isinstance(raw, (int, float)): return str(raw)
+        if isinstance(raw, str): return json.dumps(raw, ensure_ascii=False)
+        if isinstance(raw, list): return "[" + ", ".join(value(item) for item in raw) + "]"
+        raise ValueError(f"Valor TOML não suportado na configuração do daemon: {raw!r}")
+
+    lines: list[str] = []
+    def section(prefix: list[str], values: dict) -> None:
+        scalars = [(key, item) for key, item in values.items() if not isinstance(item, dict)]
+        if prefix: lines.extend(["", "[" + ".".join(prefix) + "]"])
+        for key, item in scalars: lines.append(f"{key} = {value(item)}")
+        for key, item in values.items():
+            if isinstance(item, dict): section([*prefix, str(key)], item)
+    section([], data)
+    daemon_target(root).write_text("\n".join(lines).lstrip("\n") + "\n", encoding="utf-8", newline="\n")
+
+
+def bootstrap_daemon(root: Path) -> Path:
+    """Completa defaults do daemon sem criar nem configurar integrações."""
+    data = daemon_data(root)
+    legacy: dict = {}
+    try: legacy = tomllib.loads(target(root).read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError): pass
+    app_server = data.setdefault("app_server", {})
+    instructions = data.setdefault("instructions", {})
+    legacy_app_server = legacy.get("app_server", {}) if isinstance(legacy.get("app_server", {}), dict) else {}
+    legacy_instructions = legacy.get("instructions", {}) if isinstance(legacy.get("instructions", {}), dict) else {}
+    app_server.setdefault("enabled", bool(legacy_app_server.get("enabled", False)))
+    app_server.setdefault("idle_timeout_seconds", int(legacy_app_server.get("idle_timeout_seconds") or 1800))
+    instructions.setdefault("enabled", bool(legacy_instructions.get("enabled", True)))
+    instructions.setdefault("shikigami_file", str(legacy_instructions.get("shikigami_file") or "instructions.md"))
+    save_daemon_data(root, data)
+    instruction = root / "shikigami" / str(instructions["shikigami_file"])
+    if not instruction.exists(): instruction.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(INSTRUCTION_MODEL, instruction)
+    return daemon_target(root)
+
+
 def bootstrap(root: Path) -> Path:
+    # Compatibilidade: a configuração de um serviço antigo pode ser preparada
+    # isoladamente. O wizard da plataforma usa daemon-bootstrap e exige a
+    # instância instalada.
+    if daemon_target(root).is_file(): bootstrap_daemon(root)
     path = target(root)
     if not path.exists(): path.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(MODEL, path)
     instruction = root / "shikigami" / "instructions.md"
@@ -133,12 +205,12 @@ def save_totp(root: Path, enabled: bool, real_entry: str = "", fake_entry: str =
 
 
 def save_app_server(root: Path, enabled: bool | None, idle_timeout: int | None) -> None:
-    data = telegram_data(root); app_server = data.setdefault("app_server", {})
+    data = daemon_data(root); app_server = data.setdefault("app_server", {})
     if enabled is not None: app_server["enabled"] = enabled
     if idle_timeout is not None:
         if idle_timeout < 60: raise ValueError("O tempo de inatividade deve ser de ao menos 60 segundos.")
         app_server["idle_timeout_seconds"] = idle_timeout
-    telegram = data.get("telegram", {}); save_telegram(root, str(telegram.get("keepass_profile") or ""), str(telegram.get("token_entry") or ""), data)
+    save_daemon_data(root, data)
 
 
 def save_owner_execution_preferences(root: Path, enabled: bool, models: str, efforts: str) -> None:
@@ -255,20 +327,28 @@ def save_voice_reply(root: Path, enabled: bool, profile: str, auto_off_minutes: 
 def test_agent(root: Path) -> tuple[bool, str]:
     import os
     import subprocess
+    marker = root / "configs" / "daemon" / "runtime" / "codex-test.json"
+    def record(ok: bool, detail: str) -> None:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        safe = __import__("re").sub(r"(?i)(token|password|secret|access[_-]?token)\s*[=:]\s*\S+", r"\1=[redacted]", detail)[-500:]
+        marker.write_text(json.dumps({"tested_at": time.time(), "ok": ok, "detail": safe}), encoding="utf-8")
+    def failed(detail: str) -> tuple[bool, str]:
+        record(False, detail); return False, detail
     try:
         system = tomllib.loads((root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8")).get("codex", {})
         executable, workspace = str(system.get("executable") or "codex"), Path(str(system.get("project_directory") or ""))
-        if not workspace.is_dir(): return False, "Workspace do Shikigami não está configurado."
+        if not workspace.is_dir(): return failed("Workspace do Shikigami não está configurado.")
         environment = dict(os.environ); environment["CODEX_HOME"] = str(root)
         login = subprocess.run([executable, "login", "status"], cwd=workspace, env=environment, text=True, capture_output=True, timeout=30)
-        if login.returncode != 0: return False, "Codex-CLI não está autenticado nesta instância. Use Login no menu Codex-CLI."
-        data = telegram_data(root)
-        app_server_enabled = bool(data.get("app_server", {}).get("enabled", False))
+        if login.returncode != 0: return failed("Codex-CLI não está autenticado nesta instância. Use Login no menu Codex-CLI.")
+        platform = daemon_data(root)
+        app_server_enabled = bool(platform.get("app_server", {}).get("enabled", False))
         if app_server_enabled:
             from onmyoji_daemon.telegram import CodexAppServer, Settings
             from onmyoji_daemon.instructions import InstructionComposer
-            settings = Settings.load(root.resolve(), target(root).parent)
-            bundle = InstructionComposer(root, target(root).parent, settings.instructions_file, settings.instructions_enabled).compose(identity=identity(root), telegram=True)
+            instructions = platform.get("instructions", {})
+            settings = SimpleNamespace(root=root.resolve(), project=workspace, executable=executable)
+            bundle = InstructionComposer(root, root / "configs" / "daemon", str(instructions.get("shikigami_file") or "instructions.md"), bool(instructions.get("enabled", True))).compose(identity=identity(root), telegram=False)
             client = CodexAppServer(settings)
             try:
                 client.start()
@@ -276,7 +356,7 @@ def test_agent(root: Path) -> tuple[bool, str]:
                 if str(system.get("model") or ""): parameters["model"] = str(system["model"])
                 thread = client.request("thread/start", parameters).get("thread", {})
                 thread_id = str(thread.get("id") or "") if isinstance(thread, dict) else ""
-                if not thread_id: return False, "O Codex App Server iniciou, mas não criou uma thread de teste."
+                if not thread_id: return failed("O Codex App Server iniciou, mas não criou uma thread de teste.")
                 completed, answer = __import__("threading").Event(), []
                 def notification(method: str, params: dict) -> None:
                     if method == "item/completed":
@@ -289,24 +369,22 @@ def test_agent(root: Path) -> tuple[bool, str]:
                 turn_parameters = {"threadId": thread_id, "input": [{"type": "text", "text": "Responda somente com OK."}], "cwd": str(workspace), "approvalPolicy": str(system.get("approval_policy") or "never"), "sandboxPolicy": policy, "effort": str(system.get("model_reasoning_effort") or "medium")}
                 if str(system.get("model") or ""): turn_parameters["model"] = str(system["model"])
                 client.request("turn/start", turn_parameters)
-                if not completed.wait(120) or not answer: return False, "O Codex App Server não retornou a resposta do turno de teste."
+                if not completed.wait(120) or not answer: return failed("O Codex App Server não retornou a resposta do turno de teste.")
                 try: client.request("thread/delete", {"threadId": thread_id})
                 except Exception: pass
-                marker = root / "configs" / "daemon" / "runtime" / "codex-test.json"; marker.parent.mkdir(parents=True, exist_ok=True)
-                marker.write_text(json.dumps({"tested_at": time.time(), "ok": True, "detail": "Codex App Server executou um turno controlado."}), encoding="utf-8")
+                record(True, "Codex App Server executou um turno controlado.")
                 return True, "Codex App Server executou um turno controlado."
             finally: client.stop()
-        return False, "Habilite o Codex App Server antes de testar o agente; o gateway e o teste usam as mesmas developer instructions."
-    except Exception as error: return False, f"Teste do Codex falhou: {error}"
+        return failed("Habilite o Codex App Server antes de testar o agente.")
+    except Exception as error: return failed(f"Teste do Codex falhou: {error}")
 
 
 def instruction_status(root: Path) -> dict[str, object]:
     """Valida a composição sem imprimir conteúdo potencialmente particular."""
-    bootstrap(root)
     from onmyoji_daemon.instructions import InstructionComposer
-    data = telegram_data(root); section = data.get("instructions", {})
-    composer = InstructionComposer(root.resolve(), target(root).parent, str(section.get("shikigami_file") or "instructions.md"), bool(section.get("enabled", True)))
-    bundle = composer.compose(identity=identity(root), telegram=True)
+    data = daemon_data(root); section = data.get("instructions", {})
+    composer = InstructionComposer(root.resolve(), root / "configs" / "daemon", str(section.get("shikigami_file") or "instructions.md"), bool(section.get("enabled", True)))
+    bundle = composer.compose(identity=identity(root), telegram=False)
     return {"ok": True, "sources": list(bundle.sources), "baseline_hash": bundle.baseline_hash[:12], "local_file": str(root / "shikigami" / "instructions.md")}
 
 
@@ -328,7 +406,11 @@ def validation(root: Path) -> list[dict[str, str]]:
         executable = Path(str(system.get("executable") or ""))
         add("ok" if executable.is_file() else "error", "Executável Codex para serviço", str(executable) if executable.is_file() else "Informe no setup um caminho absoluto para o executável Codex; serviços systemd não herdam o PATH do terminal.")
     except (OSError, tomllib.TOMLDecodeError, AttributeError): add("error", "Executável Codex para serviço", "Não foi possível ler a configuração do Codex-CLI.")
-    app_server = data.get("app_server", {})
+    try:
+        platform = daemon_data(root)
+        app_server = platform.get("app_server", {})
+    except ValueError:
+        app_server = data.get("app_server", {})
     enabled, idle = bool(app_server.get("enabled", False)), int(app_server.get("idle_timeout_seconds") or 1800)
     add("ok" if enabled and idle >= 60 else "error", "Codex App Server", (f"Habilitado; encerra após {idle} segundos sem turnos ativos." if enabled else "O gateway exige App Server para aplicar developer instructions."))
     try:
@@ -385,6 +467,54 @@ def validation(root: Path) -> list[dict[str, str]]:
     return checks
 
 
+def daemon_validation(root: Path) -> list[dict[str, str]]:
+    """Diagnóstico da plataforma, deliberadamente independente de serviços."""
+    checks: list[dict[str, str]] = []
+    def add(state: str, label: str, detail: str) -> None: checks.append({"state": state, "label": label, "detail": detail})
+    if not is_installed(root):
+        add("pending", "Instalação do daemon", "Use Utilitários e manutenção para instalar o daemon desta instância.")
+        return checks
+    add("ok", "Instalação do daemon", "Manifesto local encontrado.")
+    python = daemon_python(root)
+    ready = runtime_ready(root)
+    add("ok" if ready else "error", "Ambiente Python do daemon", str(python) if ready else "O ambiente privado ou suas dependências não estão prontos; use Reparar ambiente Python.")
+    try:
+        platform = daemon_data(root)
+        app_server = platform.get("app_server", {})
+        enabled, idle = bool(app_server.get("enabled", False)), int(app_server.get("idle_timeout_seconds") or 0)
+        add("ok" if enabled and idle >= 60 else "pending", "Codex App Server", f"Habilitado; encerra após {idle} segundos sem turnos ativos." if enabled and idle >= 60 else "Habilite o App Server no wizard do daemon.")
+    except (ValueError, TypeError) as error:
+        add("error", "Configuração do daemon", str(error))
+    try:
+        state = instruction_status(root)
+        add("ok", "Developer instructions", f"Composição válida ({', '.join(str(value) for value in state['sources'])}).")
+    except Exception as error:
+        add("error", "Developer instructions", f"Corrija as instruções do Shikigami: {error}")
+    try:
+        system = tomllib.loads((root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8")).get("codex", {})
+        executable = Path(str(system.get("executable") or ""))
+        workspace = Path(str(system.get("project_directory") or ""))
+        add("ok" if executable.is_file() else "error", "Executável Codex do daemon", str(executable) if executable.is_file() else "Configure no menu Codex-CLI um caminho absoluto para o executável.")
+        add("ok" if workspace.is_dir() else "error", "Workspace do Shikigami", str(workspace) if workspace.is_dir() else "Configure uma pasta de trabalho válida no menu Codex-CLI.")
+    except (OSError, tomllib.TOMLDecodeError, AttributeError):
+        add("error", "Configuração Codex-CLI", "Não foi possível ler a configuração central do Shikigami.")
+    current_revision, applied_revision = configuration_revision(root), applied_configuration_revision(root)
+    if not daemon_reachable(root):
+        add("pending", "Configuração aplicada", "O daemon ainda não está em execução.")
+    elif current_revision and current_revision == applied_revision:
+        add("ok", "Configuração aplicada", "O processo ativo usa a revisão atual da configuração.")
+    else:
+        add("pending", "Configuração aplicada", "A configuração foi alterada depois do início do processo; reinicie o daemon para aplicá-la.")
+    try:
+        marker = json.loads((root / "configs" / "daemon" / "runtime" / "codex-test.json").read_text(encoding="utf-8"))
+        age = time.time() - float(marker.get("tested_at", 0)); passed = bool(marker.get("ok")) and age < 86_400
+        add("ok" if passed else "pending", "Execução do agente Codex", "Teste controlado aprovado nas últimas 24 horas." if passed else str(marker.get("detail") or "Execute o teste pelo wizard do daemon."))
+    except (OSError, ValueError, TypeError):
+        add("pending", "Execução do agente Codex", "Execute o teste pelo wizard do daemon.")
+    add("ok" if daemon_reachable(root) else "pending", "Processo do daemon", "Em execução e respondendo localmente." if daemon_reachable(root) else "Ainda não iniciado; use Operação do daemon após concluir a configuração.")
+    return checks
+
+
 def test_telegram(root: Path) -> tuple[bool, str]:
     from onmyoji_daemon.telegram import Settings, TelegramApi, Vault
     marker = root / "configs" / "daemon" / "runtime" / "telegram-test.json"
@@ -401,9 +531,10 @@ def test_telegram(root: Path) -> tuple[bool, str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--onmyoji-root", default=str(ROOT)); parser.add_argument("--action", choices=["bootstrap", "validate", "validation-json", "instructions-status", "profiles", "set-credential", "set-totp", "set-app-server", "set-owner-execution-preferences", "set-voice-reply", "check-entry", "write-token", "test-telegram", "test-agent"], default="bootstrap"); parser.add_argument("--profile"); parser.add_argument("--entry"); parser.add_argument("--real-entry"); parser.add_argument("--fake-entry"); parser.add_argument("--enabled", action="store_true"); parser.add_argument("--disabled", action="store_true"); parser.add_argument("--idle-timeout", type=int); parser.add_argument("--auto-off-minutes", type=int); parser.add_argument("--agent-outbound-media", action="store_true"); parser.add_argument("--models", default=""); parser.add_argument("--efforts", default=""); args = parser.parse_args()
+    parser = argparse.ArgumentParser(); parser.add_argument("--onmyoji-root", default=str(ROOT)); parser.add_argument("--action", choices=["bootstrap", "daemon-bootstrap", "validate", "validation-json", "daemon-validation-json", "instructions-status", "profiles", "set-credential", "set-totp", "set-app-server", "set-owner-execution-preferences", "set-voice-reply", "check-entry", "write-token", "test-telegram", "test-agent"], default="bootstrap"); parser.add_argument("--profile"); parser.add_argument("--entry"); parser.add_argument("--real-entry"); parser.add_argument("--fake-entry"); parser.add_argument("--enabled", action="store_true"); parser.add_argument("--disabled", action="store_true"); parser.add_argument("--idle-timeout", type=int); parser.add_argument("--auto-off-minutes", type=int); parser.add_argument("--agent-outbound-media", action="store_true"); parser.add_argument("--models", default=""); parser.add_argument("--efforts", default=""); args = parser.parse_args()
     root = Path(args.onmyoji_root).resolve()
     if args.action == "bootstrap": print(bootstrap(root)); return 0
+    if args.action == "daemon-bootstrap": print(bootstrap_daemon(root)); return 0
     if args.action == "instructions-status": print(json.dumps(instruction_status(root), ensure_ascii=False)); return 0
     if args.action == "profiles": print(json.dumps(profiles(root), ensure_ascii=False)); return 0
     if args.action == "set-credential":
@@ -413,7 +544,7 @@ def main() -> int:
         bootstrap(root); save_totp(root, args.enabled, args.real_entry or "", args.fake_entry or ""); print("TOTP configurado."); return 0
     if args.action == "set-app-server":
         if args.enabled and args.disabled: parser.error("--enabled e --disabled não podem ser usados juntos")
-        bootstrap(root); save_app_server(root, True if args.enabled else (False if args.disabled else None), args.idle_timeout); print("Configuração do App Server salva."); return 0
+        bootstrap_daemon(root); save_app_server(root, True if args.enabled else (False if args.disabled else None), args.idle_timeout); print("Configuração do App Server salva."); return 0
     if args.action == "set-owner-execution-preferences":
         bootstrap(root); save_owner_execution_preferences(root, not args.disabled, args.models, args.efforts); print("Preferências de execução do owner salvas."); return 0
     if args.action == "set-voice-reply":
@@ -428,6 +559,7 @@ def main() -> int:
         if not token: print("Token não informado."); return 2
         exists, _message = entry_exists(root, args.profile, args.entry)
         ok, message = write_token(root, args.profile, args.entry, token, exists); print(message); return 0 if ok else 2
+    if args.action == "daemon-validation-json": print(json.dumps(daemon_validation(root), ensure_ascii=False)); return 0
     if args.action in {"validate", "validation-json"}:
         values = validation(root); ok = not any(item["state"] == "error" for item in values)
         if args.action == "validation-json": print(json.dumps(values, ensure_ascii=False));

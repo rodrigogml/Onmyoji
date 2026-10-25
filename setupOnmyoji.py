@@ -1298,8 +1298,8 @@ def daemon_menu(root: Path) -> None:
         result(completed.returncode == 0, (completed.stdout or completed.stderr or "Operação concluída.").strip())
         return completed.returncode == 0
 
-    def validation() -> list[dict[str, str]]:
-        completed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "validation-json"], quiet=True)
+    def validation(action: str = "validation-json") -> list[dict[str, str]]:
+        completed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", action], quiet=True)
         detail = (completed.stderr or completed.stdout or "").strip()
         detail = re.sub(r"(?i)(token|password|secret|access[_-]?token)\s*[=:]\s*\S+", r"\1=[redacted]", detail)[-500:]
         if completed.returncode != 0:
@@ -1309,18 +1309,38 @@ def daemon_menu(root: Path) -> None:
             return [{"state": "error", "label": "Diagnóstico do daemon", "detail": detail or "O daemon retornou um diagnóstico inválido."}]
         return values if isinstance(values, list) else [{"state": "error", "label": "Diagnóstico do daemon", "detail": "O daemon retornou um diagnóstico em formato inválido."}]
 
-    def show_validation() -> bool:
-        checks = validation(); print()
+    def print_checks(checks: list[dict[str, str]]) -> None:
         for check in checks:
             state = check.get("state", "error"); symbol, color = ({"ok": ("✓", Ui.green), "pending": ("○", Ui.amber), "error": ("✗", Ui.red)}).get(state, ("!", Ui.red))
             print("    " + Ui.text(symbol, Ui.bold, color) + "  " + check.get("label", "Validação") + (Ui.text(" — " + check.get("detail", ""), color) if check.get("detail") else ""))
+
+    def show_validation() -> bool:
+        checks = validation(); print()
+        print_checks(checks)
         required = {"Daemon da instância", "Estrutura da configuração Telegram", "Perfil KeePass", "Referência do token", "Executável Codex para serviço", "Workspace do Shikigami", "Execução do agente Codex", "Conexão Telegram"}
         return bool(checks) and all(check.get("state") == "ok" for check in checks if check.get("label") in required)
+
+    def show_daemon_diagnosis() -> bool:
+        """Mostra primeiro os pré-requisitos do Shikigami e depois a plataforma."""
+        screen("Diagnóstico do Daemon", "Pré-requisitos do Shikigami e estado da plataforma; serviços não são avaliados aqui")
+        print("\n  Diagnóstico principal do Shikigami")
+        main_checks = shikigami_diagnostics(root); print_checks(main_checks)
+        print("\n  Diagnóstico da plataforma do daemon")
+        daemon_checks = validation("daemon-validation-json"); print_checks(daemon_checks)
+        return all(check.get("state") == "ok" for check in [*main_checks, *daemon_checks])
 
     def installed() -> bool: return (root / "configs" / "daemon" / "daemon.toml").is_file()
     def service_installed() -> bool: return (root / "configs" / "daemon" / "service.json").is_file()
     def daemon_running() -> bool:
         return command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "list-services"], quiet=True).returncode == 0
+
+    def wait_for_daemon_ready() -> bool:
+        """Espera o supervisor responder após uma inicialização ou reinício."""
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if daemon_running(): return True
+            time.sleep(0.2)
+        return False
 
     def miniapps_state() -> dict[str, object]:
         completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "list-services"], quiet=True)
@@ -1342,6 +1362,73 @@ def daemon_menu(root: Path) -> None:
         status = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "service-status"], quiet=True)
         text = (status.stdout + "\n" + status.stderr).upper()
         return "RUNNING" in text or "ACTIVE: ACTIVE" in text
+
+    def daemon_wizard() -> None:
+        """Configura e valida exclusivamente a plataforma local do daemon."""
+        screen("Wizard do Daemon", "Configuração e validação da plataforma local")
+        note("Cada etapa confirmada é salva imediatamente. Valores já válidos permanecem disponíveis quando o wizard for executado novamente.")
+        main_checks = shikigami_diagnostics(root)
+        print("\n  1. Pré-requisitos do Shikigami")
+        print_checks(main_checks)
+        if any(check.get("state") != "ok" for check in main_checks):
+            result(False, "Corrija os itens do diagnóstico principal antes de configurar o daemon.")
+            return
+        if not installed():
+            result(False, "O daemon ainda não está instalado. Use Utilitários e manutenção para instalá-lo; depois retorne ao wizard.")
+            return
+        print("\n  2. Configuração compartilhada do daemon")
+        bootstrapped = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "daemon-bootstrap"], quiet=True)
+        if bootstrapped.returncode != 0:
+            result(False, (bootstrapped.stdout or bootstrapped.stderr).strip() or "Não foi possível preparar a configuração do daemon.")
+            return
+        result(True, "Configuração-base e instruções do daemon validadas e salvas.")
+        try:
+            daemon_settings = tomllib.loads((root / "configs" / "daemon" / "daemon.toml").read_text(encoding="utf-8"))
+            app_server = daemon_settings.get("app_server", {})
+            app_server_enabled = bool(app_server.get("enabled", False))
+            idle_default = max(1, int(app_server.get("idle_timeout_seconds") or 1800) // 60)
+        except (OSError, ValueError, tomllib.TOMLDecodeError, AttributeError):
+            app_server_enabled, idle_default = False, 30
+        while True:
+            default_choice = "s" if app_server_enabled else "n"
+            hint = "S/n" if app_server_enabled else "s/N"
+            enabled = prompt(f"\n  3. Habilitar Codex App Server para o daemon? [{hint}]: ").strip().casefold() or default_choice
+            if enabled in {"", "s", "sim"}:
+                raw_idle = prompt(f"Tempo de inatividade sem turnos, em minutos [{idle_default}]: ").strip() or str(idle_default)
+                try: idle = int(raw_idle)
+                except ValueError: result(False, "Informe um número inteiro de minutos."); continue
+                if idle < 1: result(False, "O tempo mínimo é 1 minuto."); continue
+                changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-app-server", "--enabled", "--idle-timeout", str(idle * 60)], quiet=True)
+                result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
+                if changed.returncode != 0: return
+                break
+            if enabled in {"n", "nao", "não"}:
+                result(False, "O App Server é necessário para concluir o wizard. Nenhuma alteração foi feita nesta etapa.")
+                return
+            result(False, "Responda S ou N.")
+        print("\n  4. Teste controlado do agente Codex")
+        tested = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-agent"], quiet=True)
+        result(tested.returncode == 0, (tested.stdout or tested.stderr).strip())
+        if tested.returncode != 0: return
+        print("\n  5. Início da plataforma")
+        if daemon_running():
+            restart = prompt("O daemon está em execução. Reiniciar agora para aplicar a configuração? [S/n]: ").strip().casefold()
+            if restart not in {"", "s", "sim"}:
+                result(False, "Configuração salva e testada, mas pendente de aplicação. Reinicie o daemon quando desejar concluir o wizard.")
+                return
+            if service_installed():
+                if not lifecycle("service-restart"): return
+            elif lifecycle("process-stop"):
+                if not lifecycle("process-start"): return
+            else: return
+        elif not lifecycle("service-start" if service_installed() else "process-start"):
+            return
+        if not wait_for_daemon_ready():
+            result(False, "O comando de início foi aceito, mas o daemon não respondeu dentro de 10 segundos. Consulte Operação do daemon.")
+            return
+        print("\n  6. Diagnóstico final")
+        if show_daemon_diagnosis(): result(True, "Daemon configurado e em execução.")
+        else: result(False, "A plataforma foi configurada, mas o diagnóstico ainda possui pendências.")
 
     def process_menu() -> None:
         while True:
@@ -1749,35 +1836,57 @@ def daemon_menu(root: Path) -> None:
                     result(True, json.dumps(diagnosis.get("tunnel", {}), ensure_ascii=False))
             else: result(False, "Opção inválida.")
 
-    while True:
-        status = "INSTALADO" if installed() else "NÃO INSTALADO"
-        screen("Daemon", f"Supervisor e serviços da instância · {status}")
-        item("1.", "Desinstalar daemon da instância" if installed() else "Instalar daemon da instância", status)
-        if installed():
-            item("2.", "Serviço do sistema operacional", "Instalado" if service_installed() else "Não instalado")
-            if not service_installed(): item("3.", "Gerenciar processo", "Execução local em segundo plano")
-            else: print("\n  " + Ui.text("O processo é gerenciado pelo serviço do sistema operacional.", Ui.slate))
-            item("4.", "Diagnóstico detalhado")
-            item("5.", "Reparar ambiente Python", "Dependências privadas do daemon")
-            print()
+    def services_menu() -> None:
+        """Agrupa integrações que dependem da plataforma, sem configurá-las no wizard."""
+        while True:
+            screen("Serviços instalados", "Integrações independentes que usam o daemon já configurado")
             item("T.", "Gateway Telegram", "Configuração, teste e pareamento")
-            item("M.", "MiniApp", "Gateway HTTPS e Cloudflare Tunnel")
-            print()
-        item("X.", "Voltar")
-        choice = prompt("Opção: ").strip().casefold()
-        if choice in {"x", "\x1b"}: return
-        if choice == "1":
-            if not installed(): lifecycle("install-instance")
-            else:
+            item("M.", "MiniApps", "Gateway HTTPS e Cloudflare Tunnel")
+            item("X.", "Voltar")
+            choice = prompt("Opção: ").strip().casefold()
+            if choice in {"x", "\x1b"}: return
+            if choice == "t": telegram_menu()
+            elif choice == "m": miniapps_menu()
+            else: result(False, "Opção inválida.")
+
+    def utilities_menu() -> None:
+        """Mantém instalação, reparo e remoção fora da configuração da aplicação."""
+        while True:
+            screen("Utilitários e manutenção", "Ferramentas técnicas da instância do daemon")
+            item("1.", "Instalar daemon da instância" if not installed() else "Reinstalar/validar ambiente do daemon")
+            if installed():
+                item("2.", "Reparar ambiente Python", "Dependências privadas do daemon")
+                item("3.", "Desinstalar daemon da instância", "Remove configurações e estado locais")
+            item("X.", "Voltar")
+            choice = prompt("Opção: ").strip().casefold()
+            if choice in {"x", "\x1b"}: return
+            if choice == "1": lifecycle("install-instance")
+            elif installed() and choice == "2": lifecycle("install-runtime")
+            elif installed() and choice == "3":
                 confirmation = prompt("ATENÇÃO: isto apagará todas as configurações, credenciais referenciadas, pareamentos, conversas e estado do daemon desta instância. Uma reinstalação exigirá configurar tudo novamente. Digite desinstalar para confirmar: ").strip()
                 if confirmation == "desinstalar": lifecycle("remove-instance")
                 else: result(False, "Desinstalação cancelada; a confirmação deve ser exatamente desinstalar.")
-        elif installed() and choice == "2": service_menu()
-        elif installed() and choice == "3" and not service_installed(): process_menu()
-        elif installed() and choice == "4": show_validation()
-        elif installed() and choice == "5": lifecycle("install-runtime")
-        elif installed() and choice == "t": telegram_menu()
-        elif installed() and choice == "m": miniapps_menu()
+            else: result(False, "Opção inválida.")
+
+    while True:
+        status = "INSTALADO" if installed() else "NÃO INSTALADO"
+        screen("Daemon", f"Plataforma local e serviços da instância · {status}")
+        item("!.", "Diagnóstico do Daemon", "Começa pelo diagnóstico principal do Shikigami")
+        item("W.", "Wizard de configuração do Daemon", "Prepara a plataforma; não configura serviços")
+        if installed():
+            item("1.", "Operação do daemon", "Processo local e serviço do sistema operacional")
+            item("2.", "Serviços instalados", "Telegram, MiniApps e futuras integrações")
+        item("3.", "Utilitários e manutenção", "Instalação, ambiente Python e remoção")
+        item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
+        if choice in {"x", "\x1b"}: return
+        if choice == "!": show_daemon_diagnosis()
+        elif choice == "w": daemon_wizard()
+        elif installed() and choice == "1":
+            if service_installed(): service_menu()
+            else: process_menu()
+        elif installed() and choice == "2": services_menu()
+        elif choice == "3": utilities_menu()
         else: result(False, "Opção inválida.")
 
 

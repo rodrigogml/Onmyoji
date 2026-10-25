@@ -6,6 +6,7 @@ conter o identificador e a raiz da instância que o criou.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import platform
@@ -39,8 +40,28 @@ def parsed(name): return tuple(int(part) for part in version(name).split('.')[:2
 assert (3, 10) <= parsed('aiohttp') < (4, 0)
 assert (42, 0) <= parsed('cryptography') < (47, 0)
 """
-    result = subprocess.run([str(executable), "-c", probe], text=True, capture_output=True, check=False)
-    return result.returncode == 0
+    try:
+        result = subprocess.run([str(executable), "-c", probe], text=True, capture_output=True, check=False, timeout=10)
+        return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
+
+
+def runtime_ready(root: Path) -> bool:
+    """Informa se o ambiente privado possui as dependências do daemon."""
+    return _runtime_ready(daemon_python(root))
+
+
+def configuration_revision(root: Path) -> str:
+    """Identifica o conteúdo efetivo da configuração da plataforma."""
+    try: return hashlib.sha256(manifest_path(root).read_bytes()).hexdigest()
+    except OSError: return ""
+
+
+def applied_configuration_revision(root: Path) -> str:
+    """Retorna a revisão registrada pelo supervisor ativo da instância."""
+    info = running_process(root)
+    return str(info.get("configuration_revision") or "") if info else ""
 
 
 def ensure_runtime(root: Path) -> tuple[bool, str]:
@@ -105,7 +126,20 @@ def install_instance(root: Path) -> tuple[bool, str]:
     if created:
         path.parent.mkdir(parents=True, exist_ok=True)
         instance_id = uuid.uuid4().hex
-        path.write_text("\n".join(["schema_version = 1", f"instance_id = {json.dumps(instance_id)}", f"instance_name = {json.dumps(instance_label(root), ensure_ascii=False)}", ""]) , encoding="utf-8", newline="\n")
+        path.write_text("\n".join([
+            "schema_version = 1",
+            f"instance_id = {json.dumps(instance_id)}",
+            f"instance_name = {json.dumps(instance_label(root), ensure_ascii=False)}",
+            "",
+            "[app_server]",
+            "enabled = false",
+            "idle_timeout_seconds = 1800",
+            "",
+            "[instructions]",
+            "enabled = true",
+            'shikigami_file = "instructions.md"',
+            "",
+        ]) , encoding="utf-8", newline="\n")
     ready, message = ensure_runtime(root)
     if not ready: return False, message
     return True, ("Daemon instalado. " if created else "Daemon já estava instalado. ") + message

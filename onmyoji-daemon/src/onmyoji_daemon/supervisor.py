@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import hashlib
 from pathlib import Path
 import secrets
 import socket
@@ -52,7 +53,9 @@ class Supervisor:
 
     def _acquire_lock(self) -> None:
         """Garante um único supervisor por CODEX_HOME, removendo somente lock órfão."""
-        payload = {"pid": os.getpid(), "root": str(self.onmyoji_root), "instance": uuid.uuid4().hex, "started_at": time.time()}
+        try: revision = hashlib.sha256((self.root / "daemon.toml").read_bytes()).hexdigest()
+        except OSError: revision = ""
+        payload = {"pid": os.getpid(), "root": str(self.onmyoji_root), "instance": uuid.uuid4().hex, "started_at": time.time(), "configuration_revision": revision}
         try:
             descriptor = os.open(self.lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:

@@ -29,6 +29,16 @@ def test_app_server_settings_default_to_disabled_and_enforce_idle_minimum(tmp_pa
     assert settings.app_server_enabled and settings.app_server_idle_seconds == 120
 
 
+def test_app_server_settings_prefer_daemon_platform_configuration(tmp_path):
+    data = tmp_path / "data"; write_settings(tmp_path, data)
+    manifest = tmp_path / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True)
+    manifest.write_text('[app_server]\nenabled = true\nidle_timeout_seconds = 120\n\n[instructions]\nenabled = true\nshikigami_file = "instructions.md"\n', encoding="utf-8")
+
+    settings = Settings.load(tmp_path, data)
+
+    assert settings.app_server_enabled and settings.app_server_idle_seconds == 120
+
+
 def test_gateway_sandbox_includes_only_configured_activity_root(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
     staging = tmp_path / ".onmyoji" / "telegram" / "staging"

@@ -96,7 +96,17 @@ class Settings:
         path = root / "shikigami" / "daemon" / "telegram.toml"
         data = tomllib.loads(path.read_text(encoding="utf-8"))
         if data.get("schema_version") != 1: raise ValueError("unsupported telegram schema")
-        telegram, agent, app_server, limits, voice, instructions = data.get("telegram", {}), data.get("agent", {}), data.get("app_server", {}), data.get("limits", {}), data.get("voice_reply", {}), data.get("instructions", {})
+        telegram, agent, legacy_app_server, limits, voice, legacy_instructions = data.get("telegram", {}), data.get("agent", {}), data.get("app_server", {}), data.get("limits", {}), data.get("voice_reply", {}), data.get("instructions", {})
+        # App Server e instruções pertencem à plataforma do daemon. As seções
+        # antigas no arquivo Telegram são lidas apenas para compatibilidade.
+        try:
+            platform = tomllib.loads((root / "configs" / "daemon" / "daemon.toml").read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError):
+            platform = {}
+        app_server = platform.get("app_server", legacy_app_server) if isinstance(platform, dict) else legacy_app_server
+        instructions = platform.get("instructions", legacy_instructions) if isinstance(platform, dict) else legacy_instructions
+        if not isinstance(app_server, dict): app_server = legacy_app_server
+        if not isinstance(instructions, dict): instructions = legacy_instructions
         system = tomllib.loads((root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8")).get("codex", {})
         project = Path(str(system.get("project_directory") or "")).resolve()
         if not project.is_dir(): raise ValueError("configured Shikigami workspace does not exist")

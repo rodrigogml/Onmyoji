@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import tomllib
 from pathlib import Path
 
@@ -43,3 +44,53 @@ def test_validation_requires_an_absolute_codex_executable_for_services(tmp_path)
 
     executable = next(item for item in checks if item["label"] == "Executável Codex para serviço")
     assert executable["state"] == "error"
+
+
+def test_daemon_bootstrap_prepares_only_the_platform(tmp_path):
+    module = setup_module()
+    manifest = tmp_path / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True)
+    manifest.write_text('schema_version = 1\ninstance_id = "test"\ninstance_name = "Exemplo"\n', encoding="utf-8")
+
+    configured = module.bootstrap_daemon(tmp_path)
+
+    data = tomllib.loads(configured.read_text(encoding="utf-8"))
+    assert data["app_server"]["enabled"] is False
+    assert data["instructions"]["shikigami_file"] == "instructions.md"
+    assert (tmp_path / "shikigami" / "instructions.md").is_file()
+    assert not (tmp_path / "shikigami" / "daemon" / "telegram.toml").exists()
+
+
+def test_daemon_configuration_preserves_unknown_sections(tmp_path):
+    module = setup_module()
+    manifest = tmp_path / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True)
+    manifest.write_text('schema_version = 1\ninstance_id = "test"\ninstance_name = "Exemplo"\n\n[future]\nvalue = "preserve"\n', encoding="utf-8")
+
+    module.bootstrap_daemon(tmp_path)
+    data = module.daemon_data(tmp_path); data["app_server"]["enabled"] = True; module.save_daemon_data(tmp_path, data)
+
+    complete = tomllib.loads(manifest.read_text(encoding="utf-8"))
+    assert complete["future"] == {"value": "preserve"}
+    assert complete["app_server"]["enabled"] is True
+
+
+def test_app_server_configuration_does_not_create_telegram_configuration(tmp_path):
+    module = setup_module()
+    manifest = tmp_path / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True)
+    manifest.write_text('schema_version = 1\ninstance_id = "test"\ninstance_name = "Exemplo"\n', encoding="utf-8")
+
+    module.bootstrap_daemon(tmp_path)
+    module.save_app_server(tmp_path, True, 120)
+
+    assert not (tmp_path / "shikigami" / "daemon" / "telegram.toml").exists()
+    assert tomllib.loads(manifest.read_text(encoding="utf-8"))["app_server"]["idle_timeout_seconds"] == 120
+
+
+def test_failed_agent_test_replaces_previous_success_marker(tmp_path):
+    module = setup_module()
+    marker = tmp_path / "configs" / "daemon" / "runtime" / "codex-test.json"; marker.parent.mkdir(parents=True)
+    marker.write_text('{"tested_at": 1, "ok": true, "detail": "old"}', encoding="utf-8")
+
+    ok, _message = module.test_agent(tmp_path)
+
+    assert not ok
+    assert json.loads(marker.read_text(encoding="utf-8"))["ok"] is False

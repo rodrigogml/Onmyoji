@@ -71,6 +71,19 @@ def test_instance_identity_comes_from_local_system_configuration(tmp_path):
     assert default_service_description(tmp_path) == "Shikigami Nome Local Daemon"
 
 
+def test_configuration_revision_requires_the_running_process_to_match(tmp_path, monkeypatch):
+    manifest = tmp_path / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True)
+    manifest.write_text('schema_version = 1\ninstance_id = "test"\n', encoding="utf-8")
+    revision = management.configuration_revision(tmp_path)
+    process = tmp_path / "configs" / "daemon" / "runtime" / "process.json"; process.parent.mkdir(parents=True)
+    process.write_text('{"pid": 123, "root": "' + str(tmp_path.resolve()).replace("\\", "\\\\") + '", "configuration_revision": "' + revision + '"}', encoding="utf-8")
+    monkeypatch.setattr(management, "_pid_alive", lambda _pid: True)
+
+    assert management.applied_configuration_revision(tmp_path) == revision
+    manifest.write_text('schema_version = 1\ninstance_id = "changed"\n', encoding="utf-8")
+    assert management.configuration_revision(tmp_path) != management.applied_configuration_revision(tmp_path)
+
+
 def test_runtime_install_creates_private_environment(tmp_path, monkeypatch):
     executable = tmp_path / "configs" / "daemon" / "venv" / "Scripts" / "python.exe"
     monkeypatch.setattr(management, "daemon_python", lambda _root: executable)
