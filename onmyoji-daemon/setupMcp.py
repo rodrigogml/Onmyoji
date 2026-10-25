@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import copy
 import getpass
-import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
-import tomllib
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -25,9 +23,7 @@ from setupOnmyoji import Ui, choose, item, note, prompt, result, screen
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from onmyoji_daemon.mcp.configuration import McpConfiguration, McpConfigurationError
-from onmyoji_daemon.mcp.codex import CodexMcpError, CodexMcpRegistration
 from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialResolver
-from onmyoji_daemon.mcp.reconciliation import McpReconciliation, McpReconciliationError, mcp_reconciliation_pending
 from onmyoji_daemon.mcp.todoist import TodoistError, TodoistService
 
 
@@ -407,36 +403,6 @@ def todoist_menu(config: McpConfiguration) -> None:
             except McpConfigurationError as error: result(False, str(error))
 
 
-def codex_mcp_menu(root: Path) -> None:
-    """Expõe somente as ações manuais restantes do registro MCP automático."""
-    try:
-        system = tomllib.loads((root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8"))
-        codex = system.get("codex", {})
-        executable = str(codex.get("executable") or "") if isinstance(codex, dict) else ""
-    except (OSError, tomllib.TOMLDecodeError):
-        executable = ""
-    registration = CodexMcpRegistration(root, executable)
-    while True:
-        status = registration.status()
-        if mcp_reconciliation_pending(root):
-            status += " · Reconexão pendente para a próxima execução"
-        screen("MCP · Codex CLI", status)
-        item("1.", "Reconectar ao Codex CLI", "Aplicar na próxima execução do Codex")
-        item("2.", "Desconectar do Codex CLI", "Remove somente o registro MCP")
-        item("X.", "Voltar")
-        choice = prompt("Opção: ").strip().casefold()
-        if choice == "x": return
-        try:
-            if choice == "1":
-                McpReconciliation(root).mark_pending()
-                result(True, "Reconexão MCP agendada para a próxima execução do Codex.")
-            elif choice == "2":
-                message = registration.remove(); McpReconciliation(root).mark_synchronized(); result(True, message)
-            else: result(False, "Opção inválida.")
-        except (CodexMcpError, McpReconciliationError) as error:
-            result(False, str(error))
-
-
 def integrations_menu(config: McpConfiguration) -> None:
     """Lista integrações MCP e mantém cada configurador em seu próprio menu."""
     while True:
@@ -456,16 +422,14 @@ def integrations_menu(config: McpConfiguration) -> None:
 def menu(root: Path) -> int:
     config = McpConfiguration(root)
     while True:
-        screen("MCP", "Perfis de vault, integrações e conexão com o Codex CLI")
+        screen("MCP", "Perfis de vault e integrações MCP locais")
         item("1.", "Perfis de vault", "KeePassXC e autenticação local")
         item("2.", "Integrações MCP")
-        item("3.", "Codex CLI", "Runtime e registro do servidor stdio")
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice == "x": return 0
         if choice == "1": vault_profiles_menu(config)
         elif choice == "2": integrations_menu(config)
-        elif choice == "3": codex_mcp_menu(root)
 
 
 if __name__ == "__main__": raise SystemExit(menu(ROOT))
