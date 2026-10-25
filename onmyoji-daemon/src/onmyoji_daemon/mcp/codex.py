@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 from typing import Any
 
@@ -18,6 +19,7 @@ from .runtime import McpRuntimeError, ensure_mcp_runtime, mcp_runtime_python
 
 
 SERVER_NAME = "onmyoji"
+DEFAULT_TOOLS_APPROVAL_MODE = "approve"
 
 
 class CodexMcpError(RuntimeError):
@@ -65,6 +67,7 @@ class CodexMcpRegistration:
                 "Já existe um servidor MCP chamado 'onmyoji' com configuração diferente. "
                 "Use a opção de atualizar registro no setup para substituí-lo conscientemente."
             )
+        self._set_default_tools_approval_mode()
         return "Registro MCP Onmyōji já está válido para o Codex CLI."
 
     def replace(self) -> str:
@@ -90,6 +93,7 @@ class CodexMcpRegistration:
             self._add()
             return "Servidor MCP Onmyōji registrado para o Codex CLI."
         if self._matches(current):
+            self._set_default_tools_approval_mode()
             return "Registro MCP Onmyōji já está válido para o Codex CLI."
         completed = self._run("mcp", "remove", SERVER_NAME)
         if completed.returncode != 0:
@@ -148,6 +152,37 @@ class CodexMcpRegistration:
         completed = self._run("mcp", "add", SERVER_NAME, "--env", f"PYTHONPATH={self.source_directory}", "--", *command)
         if completed.returncode != 0:
             raise CodexMcpError("Não foi possível registrar o servidor MCP Onmyōji no Codex CLI.")
+        self._set_default_tools_approval_mode()
+
+    def _set_default_tools_approval_mode(self) -> None:
+        """Mantém todas as tools deste servidor interno pré-aprovadas.
+
+        O Onmyōji controla as credenciais e os perfis habilitados antes de
+        publicar tools ao Codex. Portanto, a aprovação adicional por chamada
+        seria redundante e impediria o uso transparente das integrações.
+        """
+        path = self.root / "config.toml"
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as error:
+            raise CodexMcpError("Não foi possível configurar a aprovação automática do MCP Onmyōji.") from error
+        section = re.compile(rf"(?ms)(^\[mcp_servers\.{re.escape(SERVER_NAME)}\]\n)(.*?)(?=^\[|\Z)")
+        match = section.search(text)
+        if not match:
+            raise CodexMcpError("O registro MCP Onmyōji não foi encontrado no arquivo de configuração do Codex.")
+        body = match.group(2)
+        setting = f'default_tools_approval_mode = "{DEFAULT_TOOLS_APPROVAL_MODE}"'
+        if re.search(r"(?m)^default_tools_approval_mode\s*=.*$", body):
+            body = re.sub(r"(?m)^default_tools_approval_mode\s*=.*$", setting, body)
+        else:
+            body = body.rstrip() + "\n" + setting + "\n\n"
+        updated = text[:match.start()] + match.group(1) + body + text[match.end():]
+        if updated == text:
+            return
+        try:
+            path.write_text(updated, encoding="utf-8", newline="\n")
+        except OSError as error:
+            raise CodexMcpError("Não foi possível configurar a aprovação automática do MCP Onmyōji.") from error
 
     def _run(self, *arguments: str) -> subprocess.CompletedProcess[str]:
         environment = dict(os.environ)

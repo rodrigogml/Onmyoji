@@ -69,13 +69,13 @@ def test_list_tasks_uses_credential_profile_and_projects_safe_fields(tmp_path, m
 
     def open_request(request, timeout):
         requests.append((request, timeout))
-        return Response([{"id": "1", "content": "Comprar café", "project_id": "10", "due": {"date": "2026-10-26", "string": "amanhã", "unexpected": "discard"}, "unexpected": "discard"}])
+        return Response({"results": [{"id": "1", "content": "Comprar café", "project_id": "10", "due": {"date": "2026-10-26", "string": "amanhã", "unexpected": "discard"}, "unexpected": "discard"}], "next_cursor": None})
 
     monkeypatch.setattr("onmyoji_daemon.mcp.todoist.service.urlopen", open_request)
 
     assert service.list_tasks("example") == {"tasks": [{"id": "1", "content": "Comprar café", "project_id": "10", "due": {"date": "2026-10-26", "string": "amanhã"}}]}
     assert credentials.calls == [("example", "APIs/Todoist/example", "password")]
-    assert requests[0][0].full_url == "https://api.todoist.com/api/v1/tasks"
+    assert requests[0][0].full_url == "https://api.todoist.com/api/v1/tasks?limit=200"
     assert "private-token" not in requests[0][0].full_url
 
 
@@ -86,6 +86,28 @@ def test_list_tasks_requires_explicit_permission(tmp_path):
         TodoistService(tmp_path, Credentials()).list_tasks("example")
 
     assert error.value.code == "operation_denied"
+
+
+def test_list_tasks_follows_todoist_cursor_pagination(tmp_path, monkeypatch):
+    write_config(tmp_path)
+    service = TodoistService(tmp_path, Credentials())
+    requests = []
+    pages = iter([
+        {"results": [{"id": "1", "content": "Primeira"}], "next_cursor": "next+cursor"},
+        {"results": [{"id": "2", "content": "Segunda"}], "next_cursor": None},
+    ])
+
+    def open_request(request, timeout):
+        requests.append(request.full_url)
+        return Response(next(pages))
+
+    monkeypatch.setattr("onmyoji_daemon.mcp.todoist.service.urlopen", open_request)
+
+    assert service.list_tasks("example") == {"tasks": [{"id": "1", "content": "Primeira", "due": None}, {"id": "2", "content": "Segunda", "due": None}]}
+    assert requests == [
+        "https://api.todoist.com/api/v1/tasks?limit=200",
+        "https://api.todoist.com/api/v1/tasks?limit=200&cursor=next%2Bcursor",
+    ]
 
 
 def test_test_connection_confirms_identity_without_returning_user_data(tmp_path, monkeypatch):

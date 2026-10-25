@@ -12,6 +12,7 @@ import time
 import tomllib
 from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from ..credentials import CredentialError, KeePassCredentialResolver
@@ -56,10 +57,24 @@ class TodoistService:
         """
         profile, defaults = self._profile(profile_name)
         self._require_operation(profile, "todoist.list_tasks")
-        payload = self._request_json("/tasks", self._token(profile), defaults)
-        if not isinstance(payload, list):
-            raise TodoistError("invalid_response", "Todoist retornou uma lista de tarefas inválida.")
-        return {"tasks": [self._task(item) for item in payload if isinstance(item, Mapping)]}
+        token = self._token(profile)
+        tasks: list[dict[str, Any]] = []
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+        while True:
+            parameters: dict[str, str | int] = {"limit": 200}
+            if cursor:
+                parameters["cursor"] = cursor
+            payload = self._request_json("/tasks?" + urlencode(parameters), token, defaults)
+            if not isinstance(payload, Mapping) or not isinstance(payload.get("results"), list):
+                raise TodoistError("invalid_response", "Todoist retornou uma lista de tarefas inválida.")
+            tasks.extend(self._task(item) for item in payload["results"] if isinstance(item, Mapping))
+            cursor = payload.get("next_cursor")
+            if cursor is None:
+                return {"tasks": tasks}
+            if not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
+                raise TodoistError("invalid_response", "Todoist retornou uma paginação de tarefas inválida.")
+            seen_cursors.add(cursor)
 
     def test_connection(self, profile_name: str) -> dict[str, Any]:
         """Confirma a credencial do perfil sem devolver token ou dados da conta."""

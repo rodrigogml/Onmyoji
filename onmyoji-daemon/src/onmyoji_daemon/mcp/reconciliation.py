@@ -9,6 +9,9 @@ import time
 from typing import Iterator, Protocol
 
 
+REGISTRATION_SCHEMA_VERSION = 2
+
+
 class McpReconciliationError(RuntimeError):
     """Indica que o estado MCP não pôde ser reconciliado com segurança."""
 
@@ -37,7 +40,11 @@ def mcp_reconciliation_pending(root: Path) -> bool:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return True
-    return not isinstance(value, dict) or value.get("pending") is not False
+    return (
+        not isinstance(value, dict)
+        or value.get("schema_version") != REGISTRATION_SCHEMA_VERSION
+        or value.get("pending") is not False
+    )
 
 
 class McpReconciliation:
@@ -74,7 +81,7 @@ class McpReconciliation:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(".tmp")
         try:
-            temporary.write_text(json.dumps({"schema_version": 1, "pending": pending}, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
+            temporary.write_text(json.dumps({"schema_version": REGISTRATION_SCHEMA_VERSION, "pending": pending}, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
             os.replace(temporary, self.path)
         except OSError as error:
             temporary.unlink(missing_ok=True)
