@@ -6,6 +6,7 @@ from dataclasses import replace
 from unittest.mock import patch
 
 from onmyoji_daemon.telegram import AppServerTurn, Contacts, Gateway, Settings, Vault
+from onmyoji_daemon.launcher import _approval_policy, _sandbox_policy
 
 
 def write_settings(root: Path, data_dir: Path) -> None:
@@ -34,6 +35,16 @@ def test_gateway_sandbox_includes_only_configured_activity_root(tmp_path):
     (tmp_path / "configs" / "onmyoji-system.toml").write_text((tmp_path / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8") + f'additional_writable_directories = ["{staging.as_posix()}"]\n', encoding="utf-8")
     policy = Gateway(Settings.load(tmp_path, data))._app_sandbox_policy()
     assert policy["type"] == "workspaceWrite" and str(staging.resolve()) in policy["writableRoots"]
+
+
+def test_interactive_console_translates_policy_and_relative_writable_directories(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    reports = tmp_path / "reports"; reports.mkdir()
+    system = tmp_path / "configs" / "onmyoji-system.toml"
+    system.write_text(system.read_text(encoding="utf-8").replace('approval_policy = "never"', 'approval_policy = "on-request"') + 'additional_writable_directories = ["reports"]\n', encoding="utf-8")
+    settings = Settings.load(tmp_path, data); policy = _sandbox_policy(settings)
+    assert _approval_policy(settings) == "onRequest"
+    assert policy == {"type": "workspaceWrite", "writableRoots": [str(tmp_path.resolve()), str(reports.resolve())], "networkAccess": False}
 
 
 def test_tts_uses_local_eccovox_profile_only_for_wrapper_selection(tmp_path):

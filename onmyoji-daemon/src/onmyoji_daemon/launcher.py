@@ -24,13 +24,23 @@ def _bootstrap(root: Path, data_dir: Path) -> None:
         shutil.copy2(Path(__file__).resolve().parents[2] / "configs" / "shikigami.md.model", instructions)
 
 
+def _approval_policy(settings: Settings) -> str:
+    """Traduz a política salva para o valor esperado pelo App Server."""
+    return {"on-request": "onRequest", "never": "never"}.get(settings.approval, "never")
+
+
 def _sandbox_policy(settings: Settings) -> dict:
+    """Converte sandbox e raízes adicionais locais para o contrato do App Server."""
     if settings.sandbox == "danger-full-access": return {"type": "dangerFullAccess"}
     if settings.sandbox == "read-only": return {"type": "readOnly", "networkAccess": False}
-    roots = [str(settings.project)]
+    workspace = settings.project.resolve()
+    roots = [str(workspace)]
     try:
         system = tomllib.loads((settings.root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8"))
-        roots.extend(str(Path(value).resolve()) for value in system.get("codex", {}).get("additional_writable_directories", []) if isinstance(value, str))
+        for value in system.get("codex", {}).get("additional_writable_directories", []):
+            if not isinstance(value, str): continue
+            directory = Path(value).expanduser()
+            roots.append(str((workspace / directory).resolve() if not directory.is_absolute() else directory.resolve()))
     except (OSError, tomllib.TOMLDecodeError, AttributeError):
         pass
     return {"type": "workspaceWrite", "writableRoots": list(dict.fromkeys(roots)), "networkAccess": False}
@@ -51,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
         if method == "turn/completed": completed.set()
     client.notification_handler = notification
     try:
-        parameters = {"cwd": str(settings.project), "approvalPolicy": settings.approval, "sandbox": settings.sandbox, "developerInstructions": bundle.text, "serviceName": "onmyoji_interactive"}
+        parameters = {"cwd": str(settings.project), "approvalPolicy": _approval_policy(settings), "sandboxPolicy": _sandbox_policy(settings), "developerInstructions": bundle.text, "serviceName": "onmyoji_interactive"}
         if settings.model: parameters["model"] = settings.model
         started = client.request("thread/start", parameters)
         thread = started.get("thread") if isinstance(started.get("thread"), dict) else started; thread_id = str(thread.get("id") or "")
@@ -63,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
             if text in {"/exit", "/quit"}: break
             if not text: continue
             completed.clear(); final["text"] = ""
-            turn = {"threadId": thread_id, "input": [{"type": "text", "text": text}], "cwd": str(settings.project), "approvalPolicy": settings.approval, "sandboxPolicy": _sandbox_policy(settings), "effort": settings.effort}
+            turn = {"threadId": thread_id, "input": [{"type": "text", "text": text}], "cwd": str(settings.project), "approvalPolicy": _approval_policy(settings), "sandboxPolicy": _sandbox_policy(settings), "effort": settings.effort}
             if settings.model: turn["model"] = settings.model
             try: client.request("turn/start", turn)
             except CodexProtocolError as error:
