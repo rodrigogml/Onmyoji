@@ -746,6 +746,11 @@ def legacy_linked_ids(root: Path, skills: list[Skill]) -> set[str]:
     return identifiers
 
 
+def skill_manifest_path(skill: Skill) -> Path:
+    """Retorna o manifesto que o Codex usa para registrar uma skill."""
+    return (skill.source / "SKILL.md").resolve()
+
+
 def profile_skill_states(root: Path, skills: list[Skill]) -> dict[str, bool] | None:
     """Retorna o estado nativo do Codex, ou None quando o perfil ainda não existe."""
     path = skill_profile_path(root)
@@ -753,7 +758,11 @@ def profile_skill_states(root: Path, skills: list[Skill]) -> dict[str, bool] | N
     try: entries = tomllib.loads(path.read_text(encoding="utf-8")).get("skills", {}).get("config", [])
     except (OSError, tomllib.TOMLDecodeError, AttributeError): return {}
     if not isinstance(entries, list): return {}
-    by_source = {skill.source.resolve(): skill.identifier for skill in skills}
+    by_source = {
+        candidate: skill.identifier
+        for skill in skills
+        for candidate in (skill_manifest_path(skill), skill.source.resolve())
+    }
     states: dict[str, bool] = {}
     for entry in entries:
         if not isinstance(entry, dict) or not isinstance(entry.get("path"), str) or not isinstance(entry.get("enabled"), bool): continue
@@ -775,8 +784,23 @@ def render_skill_profile(identifiers: set[str], skills: list[Skill]) -> str:
     """Gera o perfil nativo consumido igualmente pelo CLI e pelo App Server."""
     lines = ["# Gerado pelo setup do Onmyōji. Não edite manualmente.", "# Use: codex --profile onmyoji-skills", ""]
     for skill in sorted(skills, key=lambda item: item.identifier):
-        lines.extend(["[[skills.config]]", f"path = {json.dumps(str(skill.source.resolve()), ensure_ascii=False)}", f"enabled = {'true' if skill.identifier in identifiers else 'false'}", ""])
+        lines.extend(["[[skills.config]]", f"path = {json.dumps(str(skill_manifest_path(skill)), ensure_ascii=False)}", f"enabled = {'true' if skill.identifier in identifiers else 'false'}", ""])
     return "\n".join(lines)
+
+
+def profile_uses_legacy_skill_paths(root: Path, skills: list[Skill]) -> bool:
+    """Reconhece o profile transitório que registrava a pasta em vez do SKILL.md."""
+    path = skill_profile_path(root)
+    try: entries = tomllib.loads(path.read_text(encoding="utf-8")).get("skills", {}).get("config", [])
+    except (OSError, tomllib.TOMLDecodeError, AttributeError): return False
+    if not isinstance(entries, list): return False
+    source_directories = {skill.source.resolve() for skill in skills}
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str): continue
+        candidate = Path(entry["path"]).expanduser()
+        resolved = (path.parent / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
+        if resolved in source_directories: return True
+    return False
 
 
 def remove_legacy_skill_block(root: Path) -> None:
@@ -891,6 +915,8 @@ def ensure_skill_state(root: Path, skills: list[Skill]) -> tuple[bool, str]:
     if skill_profile_path(root).exists():
         try: tomllib.loads(skill_profile_path(root).read_text(encoding="utf-8"))
         except (OSError, tomllib.TOMLDecodeError) as error: return False, f"O perfil de skills é inválido: {error}"
+        if profile_uses_legacy_skill_paths(root, skills):
+            return save_enabled(root, enabled_ids(root, skills), skills)
         remove_legacy_skill_block(root)
         skill_state_path(root).unlink(missing_ok=True)
         cleaned, message = remove_legacy_skill_artifacts(root, skills)

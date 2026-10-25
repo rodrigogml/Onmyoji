@@ -125,7 +125,7 @@ def keepass_validation(root: Path) -> list[dict[str, str]]:
     """Verifica a dependência KeePass antes de qualquer uso de credenciais."""
     checks: list[dict[str, str]] = []
     def add(state: str, label: str, detail: str) -> None: checks.append({"state": state, "label": label, "detail": detail})
-    source = root / "available-skills" / "keepass-vault"
+    source = root / "available-skills" / "keepass-vault" / "SKILL.md"
     profile_path = root / "onmyoji-skills.config.toml"
     try:
         entries = tomllib.loads(profile_path.read_text(encoding="utf-8")).get("skills", {}).get("config", [])

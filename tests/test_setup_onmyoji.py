@@ -25,6 +25,7 @@ class SystemSetupTests(unittest.TestCase):
         script = root / "available-skills" / identifier / "setupSkill.py"
         script.parent.mkdir(parents=True)
         script.write_text("", encoding="utf-8")
+        (script.parent / "SKILL.md").write_text(f"---\nname: {identifier}\ndescription: Teste\n---\n", encoding="utf-8")
         return MODULE.Skill(identifier, identifier.title(), script.parent, "", script)
 
     def test_prompt_uses_the_shared_visual_prefix(self) -> None:
@@ -355,7 +356,7 @@ class SystemSetupTests(unittest.TestCase):
             profile = MODULE.skill_profile_path(root)
             self.assertTrue(profile.is_file())
             state = tomllib.loads(profile.read_text(encoding="utf-8"))
-            self.assertEqual(state["skills"]["config"], [{"path": str(skill.source.resolve()), "enabled": True}])
+            self.assertEqual(state["skills"]["config"], [{"path": str((skill.source / "SKILL.md").resolve()), "enabled": True}])
             self.assertEqual(MODULE.enabled_ids(root, [skill]), {"omie"})
             self.assertTrue(MODULE.save_enabled(root, set(), [skill])[0])
             self.assertFalse(tomllib.loads(profile.read_text(encoding="utf-8"))["skills"]["config"][0]["enabled"])
@@ -436,6 +437,15 @@ class SystemSetupTests(unittest.TestCase):
             self.assertFalse(active.exists() or active.is_symlink())
             self.assertFalse(agents.exists())
             self.assertFalse(MODULE.skill_state_path(root).exists())
+
+    def test_profile_with_legacy_directory_path_is_migrated_to_skill_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); skill = self.fake_skill(root)
+            (skill.source / "SKILL.md").write_text("---\nname: omie\ndescription: Teste\n---\n", encoding="utf-8")
+            MODULE.skill_profile_path(root).write_text(f'[[skills.config]]\npath = "{skill.source.as_posix()}"\nenabled = true\n', encoding="utf-8")
+            self.assertTrue(MODULE.ensure_skill_state(root, [skill])[0])
+            profile = tomllib.loads(MODULE.skill_profile_path(root).read_text(encoding="utf-8"))
+            self.assertEqual(profile["skills"]["config"], [{"path": str((skill.source / "SKILL.md").resolve()), "enabled": True}])
 
     def test_legacy_skill_config_is_migrated_to_native_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
