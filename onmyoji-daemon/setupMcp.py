@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 from onmyoji_daemon.mcp.configuration import McpConfiguration, McpConfigurationError
 from onmyoji_daemon.mcp.codex import CodexMcpError, CodexMcpRegistration
 from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialResolver
-from onmyoji_daemon.mcp.reconciliation import McpReconciliation, McpReconciliationError
+from onmyoji_daemon.mcp.reconciliation import McpReconciliation, McpReconciliationError, mcp_reconciliation_pending
 from onmyoji_daemon.mcp.todoist import TodoistError, TodoistService
 
 
@@ -408,7 +408,7 @@ def todoist_menu(config: McpConfiguration) -> None:
 
 
 def codex_mcp_menu(root: Path) -> None:
-    """Administra somente o registro MCP desta instância no Codex CLI."""
+    """Expõe somente as ações manuais restantes do registro MCP automático."""
     try:
         system = tomllib.loads((root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8"))
         codex = system.get("codex", {})
@@ -417,21 +417,20 @@ def codex_mcp_menu(root: Path) -> None:
         executable = ""
     registration = CodexMcpRegistration(root, executable)
     while True:
-        screen("MCP · Codex CLI", registration.status())
-        item("1.", "Preparar runtime MCP")
-        item("2.", "Registrar se necessário")
-        item("3.", "Atualizar registro")
-        item("4.", "Remover registro")
+        status = registration.status()
+        if mcp_reconciliation_pending(root):
+            status += " · Reconexão pendente para a próxima execução"
+        screen("MCP · Codex CLI", status)
+        item("1.", "Reconectar ao Codex CLI", "Aplicar na próxima execução do Codex")
+        item("2.", "Desconectar do Codex CLI", "Remove somente o registro MCP")
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice == "x": return
         try:
-            if choice == "1": result(True, registration.prepare_runtime())
+            if choice == "1":
+                McpReconciliation(root).mark_pending()
+                result(True, "Reconexão MCP agendada para a próxima execução do Codex.")
             elif choice == "2":
-                message = registration.ensure(); McpReconciliation(root).mark_synchronized(); result(True, message)
-            elif choice == "3":
-                message = registration.replace(); McpReconciliation(root).mark_synchronized(); result(True, message)
-            elif choice == "4":
                 message = registration.remove(); McpReconciliation(root).mark_synchronized(); result(True, message)
             else: result(False, "Opção inválida.")
         except (CodexMcpError, McpReconciliationError) as error:
