@@ -2239,7 +2239,7 @@ def daemon_menu(root: Path) -> None:
 def skill_menu(skill: Skill, root: Path, skills: list[Skill]) -> None:
     while True:
         conflicted = skill.identifier in conflicting_skill_ids(skills)
-        enabled = is_skill_enabled(root, skill)
+        enabled = is_skill_enabled(root, skill, skills)
         state = "Desabilitar" if enabled else "Habilitar"
         screen(skill.title, f"Skill de integração · {'CONFLITO' if conflicted else ('ATIVA' if enabled else 'INATIVA')}")
         if skill.description: print(f"  {skill.description}\n")
@@ -2254,14 +2254,9 @@ def skill_menu(skill: Skill, root: Path, skills: list[Skill]) -> None:
         if conflicted:
             result(False, "Esta skill possui um ID em conflito e não pode ser alterada.")
         elif choice == "1":
-            if skill.catalog_managed:
-                identifiers = enabled_ids(root)
-                (identifiers.discard if enabled else identifiers.add)(skill.identifier)
-                ok, message = save_enabled(root, identifiers, skills)
-            else:
-                identifiers = enabled_ids(root, skills)
-                (identifiers.discard if enabled else identifiers.add)(skill.identifier)
-                ok, message = save_enabled(root, identifiers, skills)
+            identifiers = enabled_ids(root, skills)
+            (identifiers.discard if enabled else identifiers.add)(skill.identifier)
+            ok, message = save_enabled(root, identifiers, skills)
             result(ok, message if ok else f"{message} A alteração foi desfeita.")
         elif choice == "2" and skill.setup_script is not None:
             ok, message = invoke(skill, root)
@@ -2277,11 +2272,12 @@ def menu(skills: list[Skill], root: Path) -> int:
         item("D.", "Daemon", "Supervisor local e serviços da instância")
         integration = [skill for skill in skills if skill.catalog_managed]
         domain = [skill for skill in skills if not skill.catalog_managed]
+        conflicts = conflicting_skill_ids(skills)
+        enabled = enabled_ids(root, skills)
         def rendered(index: int, skill: Skill, width: int = 50) -> str:
-            if skill.identifier in conflicting_skill_ids(skills): state = Ui.badge("CONFLITO", "warning")
+            if skill.identifier in conflicts: state = Ui.badge("CONFLITO", "warning")
             else:
-                active = is_skill_enabled(root, skill)
-                state = Ui.badge("ATIVA", "active") if active else Ui.badge("inativa", "inactive")
+                state = Ui.badge("ATIVA", "active") if skill.identifier in enabled else Ui.badge("inativa", "inactive")
             return skill_item(index, skill, state, width)
         wide = len(domain) > 0 and shutil.get_terminal_size((78, 24)).columns >= 96
         if wide:
@@ -2324,23 +2320,25 @@ def main() -> int:
         system = initial_installation_wizard(ROOT, system)
         if system is None: return 0
     ensure_shikigami_resources(ROOT)
-    skills = discover(); by_id = {skill.identifier: skill for skill in skills if skill.identifier not in conflicting_skill_ids(skills)}
+    skills = discover(); conflicts = conflicting_skill_ids(skills); by_id = {skill.identifier: skill for skill in skills if skill.identifier not in conflicts}
     initialized, initialization_message = ensure_skill_state(ROOT, skills)
     if not initialized:
         result(False, initialization_message)
         return 2
     if args.action == "menu": return menu(skills, ROOT)
     if args.action == "list":
-        values = [{"id": skill.identifier, "title": skill.title, "enabled": is_skill_enabled(ROOT, skill), "description": skill.description, "conflict": skill.identifier in conflicting_skill_ids(skills)} for skill in skills]
+        enabled = enabled_ids(ROOT, skills)
+        values = [{"id": skill.identifier, "title": skill.title, "enabled": skill.identifier in enabled, "description": skill.description, "conflict": skill.identifier in conflicts} for skill in skills]
         if args.json: print(json.dumps({"ok": True, "skills": values}, ensure_ascii=False))
         else:
-            for skill in skills: print(f"{skill.identifier}\t{'enabled' if is_skill_enabled(ROOT, skill) else 'disabled'}\t{skill.description}")
+            for skill in skills: print(f"{skill.identifier}\t{'enabled' if skill.identifier in enabled else 'disabled'}\t{skill.description}")
         return 0
     if args.action == "status":
-        if args.json: print(json.dumps({"ok": True, "skills": sorted(active) if (active := enabled_ids(ROOT)) else []}, ensure_ascii=False))
-        else: print("\n".join(sorted(enabled_ids(ROOT))))
+        active = enabled_ids(ROOT, skills)
+        if args.json: print(json.dumps({"ok": True, "skills": sorted(active)}, ensure_ascii=False))
+        else: print("\n".join(sorted(active)))
         return 0
-    if args.skill in conflicting_skill_ids(skills): parser.error("--skill identifica skills em conflito entre catálogo e Shikigami; renomeie uma delas")
+    if args.skill in conflicts: parser.error("--skill identifica skills em conflito entre catálogo e Shikigami; renomeie uma delas")
     if args.skill not in by_id: parser.error("--skill deve identificar uma skill descoberta")
     if args.action == "configure":
         if by_id[args.skill].setup_script is None:

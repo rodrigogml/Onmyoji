@@ -405,7 +405,7 @@ class SystemSetupTests(unittest.TestCase):
             integration = MODULE.Skill("omie", "Omie", root / "available-skills" / "omie", "", root / "available-skills" / "omie" / "setupSkill.py")
             domain = MODULE.Skill("barinella", "Barinella", root / "shikigami" / "skills" / "barinella", "", catalog_managed=False)
             output = io.StringIO()
-            with patch("builtins.input", return_value="x"), patch.object(MODULE.shutil, "get_terminal_size", return_value=os.terminal_size((120, 24))), patch.object(MODULE.sys, "stdout", output):
+            with patch("builtins.input", return_value="x"), patch.object(MODULE.shutil, "get_terminal_size", return_value=os.terminal_size((120, 24))), patch.object(MODULE, "discover", side_effect=AssertionError("o menu não deve redescobrir skills")), patch.object(MODULE.sys, "stdout", output):
                 self.assertEqual(MODULE.menu([integration, domain], root), 0)
             first_header = next(line for line in output.getvalue().splitlines() if "SKILLS DE INTEGRAÇÃO" in line)
             self.assertIn("SKILLS DE DOMÍNIO", first_header)
