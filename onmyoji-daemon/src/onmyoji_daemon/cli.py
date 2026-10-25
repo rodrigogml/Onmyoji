@@ -23,9 +23,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("prepare-instance"); sub.add_parser("install-instance"); sub.add_parser("install-runtime"); sub.add_parser("remove-instance")
     sub.add_parser("process-status"); sub.add_parser("process-start")
     for action in ("process-stop", "process-force-stop"): sub.add_parser(action)
-    install_service = sub.add_parser("install-service"); install_service.add_argument("--name", required=True); install_service.add_argument("--description", required=True)
-    sub.add_parser("remove-service"); sub.add_parser("service-status")
-    for action in ("service-start", "service-stop", "service-restart", "service-force-stop"): sub.add_parser(action)
+    install_service = sub.add_parser("install-service"); install_service.add_argument("--name", required=True); install_service.add_argument("--description", required=True); install_service.add_argument("--scope", choices=["user", "system"], default="system"); install_service.add_argument("--run-as-user", default=""); install_service.add_argument("--run-as-group", default=""); install_service.add_argument("--use-sudo", action="store_true")
+    remove_service = sub.add_parser("remove-service"); remove_service.add_argument("--use-sudo", action="store_true"); sub.add_parser("service-status")
+    for action in ("service-start", "service-stop", "service-restart", "service-force-stop"): sub.add_parser(action).add_argument("--use-sudo", action="store_true")
     for action in ("start", "stop", "restart", "enable", "disable", "status"):
         command = sub.add_parser(action); command.add_argument("service", nargs="?", default="telegram")
     telegram = sub.add_parser("telegram"); telegram_sub = telegram.add_subparsers(dest="telegram_action", required=True)
@@ -66,13 +66,13 @@ def main(argv: list[str] | None = None) -> int:
         "process-start": lambda: management.start_background(root),
         "process-stop": lambda: management.stop_background(root),
         "process-force-stop": lambda: management.stop_background(root, True),
-        "install-service": lambda: management.install_service(root, args.name, args.description),
-        "remove-service": lambda: management.remove_service(root),
+        "install-service": lambda: management.install_service(root, args.name, args.description, args.scope, args.run_as_user, args.run_as_group, args.use_sudo),
+        "remove-service": lambda: management.remove_service(root, args.use_sudo),
         "service-status": lambda: management.service_status(root),
-        "service-start": lambda: management.service_action(root, "start"),
-        "service-stop": lambda: management.service_action(root, "stop"),
-        "service-restart": lambda: management.service_action(root, "restart"),
-        "service-force-stop": lambda: management.service_action(root, "force"),
+        "service-start": lambda: management.service_action(root, "start", args.use_sudo),
+        "service-stop": lambda: management.service_action(root, "stop", args.use_sudo),
+        "service-restart": lambda: management.service_action(root, "restart", args.use_sudo),
+        "service-force-stop": lambda: management.service_action(root, "force", args.use_sudo),
     }
     if args.action == "process-status":
         info = management.running_process(root); print(json.dumps(info or {"state": "stopped"}, ensure_ascii=False)); return 0

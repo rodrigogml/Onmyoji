@@ -126,6 +126,16 @@ def test_daemon_python_uses_selected_external_runtime(tmp_path):
     assert management.daemon_python(tmp_path) == Path("C:/Python/venv/Scripts/python.exe")
 
 
+def test_systemd_unit_uses_explicit_account_only_for_system_scope(tmp_path):
+    system = management._systemd_unit(tmp_path, "/opt/shikigami/python", Path("/opt/onmyoji-daemon/src"), "Daemon", "system", "shikigami", "agents")
+    user = management._systemd_unit(tmp_path, "/opt/shikigami/python", Path("/opt/onmyoji-daemon/src"), "Daemon", "user", "", "")
+
+    assert "User=shikigami" in system and "Group=agents" in system
+    assert "WantedBy=multi-user.target" in system
+    assert "User=" not in user and "Group=" not in user
+    assert "WantedBy=default.target" in user
+
+
 def test_miniapps_uses_private_daemon_python_when_available(tmp_path):
     data_dir = tmp_path / "configs" / "daemon" / "services" / "mini-apps"
     executable = data_dir.parent.parent / "venv" / ("Scripts/python.exe" if management.os.name == "nt" else "bin/python")

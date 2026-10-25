@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -20,7 +21,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 PROJECT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT / "src"))
-from onmyoji_daemon.management import applied_configuration_revision, configuration_revision, daemon_python, daemon_reachable, is_installed, runtime_ready
+from onmyoji_daemon.management import applied_configuration_revision, configuration_revision, daemon_python, daemon_reachable, is_installed, runtime_ready, service_info
 from onmyoji_daemon.instance import identity
 
 ROOT = PROJECT.parent
@@ -481,7 +482,7 @@ def validation(root: Path) -> list[dict[str, str]]:
 
 
 def daemon_validation(root: Path) -> list[dict[str, str]]:
-    """Diagnóstico da plataforma, deliberadamente independente de serviços."""
+    """Diagnóstico da plataforma e de seu registro opcional no sistema operacional."""
     checks: list[dict[str, str]] = []
     def add(state: str, label: str, detail: str) -> None: checks.append({"state": state, "label": label, "detail": detail})
     if not is_installed(root):
@@ -491,6 +492,15 @@ def daemon_validation(root: Path) -> list[dict[str, str]]:
     python = daemon_python(root)
     ready = runtime_ready(root)
     add("ok" if ready else "error", "Runtime Python do daemon", str(python) if ready else "O runtime escolhido ou suas dependências não estão prontos; use Instalar/validar daemon ou Reparar ambiente Python.")
+    service = service_info(root)
+    if not service:
+        add("pending", "Serviço do sistema operacional", "Não instalado; use Operação do daemon para registrar a inicialização persistente.")
+    else:
+        scope = str(service.get("scope") or "system")
+        account = str(service.get("run_as_user") or "conta padrão")
+        detail = f"{service.get('name')} · escopo {scope} · conta {account}"
+        if os.name == "nt" and account == "LocalSystem": detail += ". LocalSystem pode não acessar o login atual do Codex."
+        add("pending" if os.name == "nt" and account == "LocalSystem" else "ok", "Serviço do sistema operacional", detail)
     try:
         platform = daemon_data(root)
         app_server = platform.get("app_server", {})

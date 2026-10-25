@@ -333,7 +333,20 @@ def stop_background(root: Path, force: bool = False) -> tuple[bool, str]:
 def service_info(root: Path) -> dict: return _read_json(service_path(root))
 
 
-def install_service(root: Path, name: str, description: str) -> tuple[bool, str]:
+def _systemctl(scope: str, *arguments: str) -> list[str]:
+    return ["systemctl", *( ["--user"] if scope == "user" else []), *arguments]
+
+
+def _systemd_unit(root: Path, executable: str, source: Path, description: str, scope: str, run_as_user: str, run_as_group: str) -> str:
+    """Gera uma unit sem depender do shell e preservando paths com espaços."""
+    service = ["[Service]", "Type=simple", f"WorkingDirectory={root.resolve()}", f"Environment=PYTHONPATH={source}"]
+    if scope == "system" and run_as_user: service.append(f"User={run_as_user}")
+    if scope == "system" and run_as_group: service.append(f"Group={run_as_group}")
+    service.extend([f"ExecStart={executable} -m onmyoji_daemon.cli --onmyoji-root {root.resolve()} run", "Restart=on-failure", "RestartSec=3"])
+    return "\n".join(["[Unit]", f"Description={description}", "Wants=network-online.target", "After=network-online.target", "", *service, "", "[Install]", "WantedBy=default.target" if scope == "user" else "WantedBy=multi-user.target", ""])
+
+
+def install_service(root: Path, name: str, description: str, scope: str = "system", run_as_user: str = "", run_as_group: str = "", use_sudo: bool = False) -> tuple[bool, str]:
     if not is_installed(root): return False, "Instale primeiro o daemon desta instância."
     if service_path(root).exists(): return False, "Já existe um serviço instalado para esta instância."
     if running_process(root): return False, "Finalize o processo local antes de instalar o serviço."
@@ -341,6 +354,7 @@ def install_service(root: Path, name: str, description: str) -> tuple[bool, str]
     if not ready: return False, message
     executable = str(daemon_python(root))
     if os.name == "nt":
+        if scope != "system": return False, "O Windows Service é sempre instalado no escopo do sistema operacional."
         source = str(Path(__file__).resolve().parents[1]); environment = dict(os.environ)
         environment["PYTHONPATH"] = source + (os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else "")
         created = subprocess.run([executable, "-m", "onmyoji_daemon.windows_service", "--service-name", name, "--onmyoji-root", str(root.resolve()), "--startup", "auto", "install"], text=True, capture_output=True, env=environment, check=False)
@@ -348,16 +362,29 @@ def install_service(root: Path, name: str, description: str) -> tuple[bool, str]
         subprocess.run(["sc.exe", "description", name, description], text=True, capture_output=True, check=False)
     else:
         if not shutil.which("systemctl"): return False, "systemd não está disponível neste sistema."
-        unit = Path("/etc/systemd/system") / f"{name}.service"
+        if scope not in {"user", "system"}: return False, "Escopo de serviço inválido."
+        unit = (Path.home() / ".config" / "systemd" / "user" if scope == "user" else Path("/etc/systemd/system")) / f"{name}.service"
         source = Path(__file__).resolve().parents[1]
-        content = "\n".join(["[Unit]", f"Description={description}", "After=network-online.target", "", "[Service]", "Type=simple", f"WorkingDirectory={root.resolve()}", f"Environment=PYTHONPATH={source}", f"ExecStart={executable} -m onmyoji_daemon.cli --onmyoji-root {root.resolve()} run", "Restart=on-failure", "RestartSec=3", "", "[Install]", "WantedBy=multi-user.target", ""])
-        try: unit.write_text(content, encoding="utf-8")
-        except OSError as error: return False, f"Não foi possível gravar {unit}; execute o setup com privilégio administrativo: {error}"
-        reloaded = subprocess.run(["systemctl", "daemon-reload"], text=True, capture_output=True, check=False)
+        content = _systemd_unit(root, executable, source, description, scope, run_as_user, run_as_group)
+        elevated = scope == "system" and getattr(os, "geteuid", lambda: 0)() != 0
+        if elevated and not use_sudo: return False, "A instalação de serviço do sistema exige confirmação de sudo."
+        if elevated and not shutil.which("sudo"): return False, "sudo não está disponível. Execute o setup como root ou use su para obter uma sessão administrativa."
+        try:
+            if elevated:
+                written = subprocess.run(["sudo", "tee", str(unit)], input=content, text=True, capture_output=True, check=False)
+                if written.returncode != 0: return False, (written.stderr or written.stdout).strip() or "sudo não autorizou a gravação da unit."
+            else:
+                unit.parent.mkdir(parents=True, exist_ok=True); unit.write_text(content, encoding="utf-8")
+        except OSError as error:
+            privilege = "sudo" if scope == "system" else "permissão para o diretório do usuário"
+            return False, f"Não foi possível gravar {unit}; execute o setup com {privilege}: {error}"
+        command_prefix = ["sudo"] if elevated else []
+        reloaded = subprocess.run([*command_prefix, *_systemctl(scope, "daemon-reload")], text=True, capture_output=True, check=False)
         if reloaded.returncode != 0: return False, (reloaded.stderr or reloaded.stdout).strip()
-        enabled = subprocess.run(["systemctl", "enable", name], text=True, capture_output=True, check=False)
+        enabled = subprocess.run([*command_prefix, *_systemctl(scope, "enable", name)], text=True, capture_output=True, check=False)
         if enabled.returncode != 0: return False, (enabled.stderr or enabled.stdout).strip()
-    _write_json(service_path(root), {"schema_version": 1, "name": name, "description": description, "root": str(root.resolve()), "platform": platform.system()})
+    configured_user = run_as_user or ("LocalSystem" if os.name == "nt" else "")
+    _write_json(service_path(root), {"schema_version": 2, "name": name, "description": description, "root": str(root.resolve()), "platform": platform.system(), "scope": scope, "run_as_user": configured_user, "run_as_group": run_as_group})
     return True, f"Serviço {name} instalado."
 
 
@@ -367,17 +394,20 @@ def service_status(root: Path) -> tuple[bool, str]:
     if os.name == "nt":
         value = subprocess.run(["sc.exe", "query", str(info["name"])], text=True, capture_output=True, check=False)
         return value.returncode == 0, (value.stdout or value.stderr).strip()
-    value = subprocess.run(["systemctl", "status", str(info["name"]), "--no-pager"], text=True, capture_output=True, check=False)
+    value = subprocess.run(_systemctl(str(info.get("scope") or "system"), "status", str(info["name"]), "--no-pager"), text=True, capture_output=True, check=False)
     return value.returncode in {0, 3}, (value.stdout or value.stderr).strip()
 
 
-def service_action(root: Path, action: str) -> tuple[bool, str]:
+def service_action(root: Path, action: str, use_sudo: bool = False) -> tuple[bool, str]:
     info = service_info(root)
     if not info: return False, "Serviço do sistema operacional não está instalado para esta instância."
     if os.name != "nt":
         command = {"start": "start", "stop": "stop", "restart": "restart", "force": "kill"}.get(action)
         if not command: return False, "Ação de serviço inválida."
-        value = subprocess.run(["systemctl", command, str(info["name"])], text=True, capture_output=True, check=False)
+        scope = str(info.get("scope") or "system"); elevated = scope == "system" and getattr(os, "geteuid", lambda: 0)() != 0
+        if elevated and not use_sudo: return False, "A operação deste serviço de sistema exige confirmação de sudo."
+        if elevated and not shutil.which("sudo"): return False, "sudo não está disponível. Execute a operação como root ou use su para obter uma sessão administrativa."
+        value = subprocess.run([*( ["sudo"] if elevated else []), *_systemctl(scope, command, str(info["name"]))], text=True, capture_output=True, check=False)
         return value.returncode == 0, ("Serviço atualizado." if value.returncode == 0 else (value.stderr or value.stdout).strip())
     command = {"start": "start", "stop": "stop", "restart": "stop", "force": "stop"}.get(action)
     if not command: return False, "Ação de serviço inválida."
@@ -395,16 +425,22 @@ def service_action(root: Path, action: str) -> tuple[bool, str]:
     return value.returncode == 0, ("Serviço atualizado." if value.returncode == 0 else (value.stderr or value.stdout).strip())
 
 
-def remove_service(root: Path) -> tuple[bool, str]:
+def remove_service(root: Path, use_sudo: bool = False) -> tuple[bool, str]:
     info = service_info(root)
     if not info: return True, "Nenhum serviço do sistema operacional foi registrado nesta instância."
     if str(info.get("root")) != str(root.resolve()): return False, "Registro de serviço não pertence a esta instância."
     if os.name != "nt":
-        name = str(info["name"]); subprocess.run(["systemctl", "disable", "--now", name], text=True, capture_output=True, check=False)
-        unit = Path("/etc/systemd/system") / f"{name}.service"
-        try: unit.unlink(missing_ok=True)
+        name = str(info["name"]); scope = str(info.get("scope") or "system"); elevated = scope == "system" and getattr(os, "geteuid", lambda: 0)() != 0
+        if elevated and not use_sudo: return False, "A remoção deste serviço de sistema exige confirmação de sudo."
+        if elevated and not shutil.which("sudo"): return False, "sudo não está disponível. Execute a remoção como root ou use su para obter uma sessão administrativa."
+        prefix = ["sudo"] if elevated else []; subprocess.run([*prefix, *_systemctl(scope, "disable", "--now", name)], text=True, capture_output=True, check=False)
+        unit = (Path.home() / ".config" / "systemd" / "user" if scope == "user" else Path("/etc/systemd/system")) / f"{name}.service"
+        try:
+            if elevated: value = subprocess.run(["sudo", "rm", "-f", str(unit)], text=True, capture_output=True, check=False); value.check_returncode()
+            else: unit.unlink(missing_ok=True)
         except OSError as error: return False, f"Não foi possível remover {unit}: {error}"
-        value = subprocess.run(["systemctl", "daemon-reload"], text=True, capture_output=True, check=False)
+        except subprocess.CalledProcessError as error: return False, f"Não foi possível remover {unit}: {error}"
+        value = subprocess.run([*prefix, *_systemctl(scope, "daemon-reload")], text=True, capture_output=True, check=False)
         if value.returncode != 0: return False, (value.stderr or value.stdout).strip()
         service_path(root).unlink(missing_ok=True); return True, "Serviço systemd removido."
     service_action(root, "stop")

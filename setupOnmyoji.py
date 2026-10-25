@@ -1552,9 +1552,24 @@ def daemon_menu(root: Path) -> None:
             else: lifecycle(action)
 
     def service_menu() -> None:
+        def privileged_service_action(action: str) -> bool:
+            extras: list[str] = []
+            if os.name != "nt":
+                try: scope = json.loads((root / "configs" / "daemon" / "service.json").read_text(encoding="utf-8")).get("scope", "system")
+                except (OSError, ValueError): scope = "system"
+                if scope == "system" and hasattr(os, "geteuid") and os.geteuid() != 0:
+                    note("Esta operação exige sudo. A senha será solicitada pelo sistema, sem ser lida ou armazenada pelo Onmyōji.")
+                    if prompt("Continuar? [s/N]: ").strip().casefold() not in {"s", "sim"}: result(False, "Operação cancelada."); return False
+                    extras.append("--use-sudo")
+            return lifecycle(action, extras)
+
         while True:
             screen("Serviço do sistema operacional", "O daemon será iniciado e controlado pelo sistema operacional")
             if not service_installed():
+                if os.name == "nt":
+                    note("O Windows Service será instalado como LocalSystem. Essa conta pode não acessar o login atual do Codex; configure uma conta de serviço compatível no console Serviços do Windows antes de iniciá-lo.")
+                else:
+                    note("Escolha serviço do usuário para usar o login atual do Codex; serviço do sistema exige privilégios e uma conta Linux explícita.")
                 item("1.", "Instalar serviço")
                 item("X.", "Voltar")
                 choice = prompt("Opção: ").strip().casefold()
@@ -1564,7 +1579,20 @@ def daemon_menu(root: Path) -> None:
                 visible = instance_identity(root)
                 name = prompt(f"Nome do serviço [{default_name}]: ").strip() or default_name
                 description = prompt(f"Descrição [{f'Shikigami {visible} Daemon'}]: ").strip() or f"Shikigami {visible} Daemon"
-                lifecycle("install-service", ["--name", name, "--description", description]); continue
+                if os.name == "nt":
+                    if prompt("Instalar como LocalSystem? [s/N]: ").strip().casefold() not in {"s", "sim"}: result(False, "Instalação do serviço cancelada."); continue
+                    lifecycle("install-service", ["--name", name, "--description", description, "--scope", "system"]); continue
+                print()
+                item("1.", "Serviço do usuário", "systemd --user · recomendado para o login atual do Codex")
+                item("2.", "Serviço do sistema", "systemd · exige sudo e usuário Linux explícito")
+                selected = prompt("Escopo [1]: ").strip() or "1"
+                if selected == "1": lifecycle("install-service", ["--name", name, "--description", description, "--scope", "user"]); continue
+                if selected != "2": result(False, "Escolha 1 ou 2."); continue
+                run_as_user = prompt(f"Usuário Linux do serviço [{getpass.getuser()}]: ").strip() or getpass.getuser()
+                run_as_group = prompt("Grupo Linux do serviço [padrão do usuário]: ").strip()
+                note("O setup solicitará sudo para gravar e habilitar a unit de sistema. A senha não será lida nem armazenada pelo Onmyōji.")
+                if prompt("Continuar com a instalação de sistema? [s/N]: ").strip().casefold() not in {"s", "sim"}: result(False, "Instalação do serviço cancelada."); continue
+                lifecycle("install-service", ["--name", name, "--description", description, "--scope", "system", "--run-as-user", run_as_user, "--run-as-group", run_as_group, "--use-sudo"]); continue
             item("1.", "Status do serviço")
             item("2.", "Parar serviço" if service_running() else "Iniciar serviço")
             item("3.", "Reiniciar serviço")
@@ -1574,13 +1602,26 @@ def daemon_menu(root: Path) -> None:
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
             if choice == "1": lifecycle("service-status")
-            elif choice == "2": lifecycle("service-stop" if service_running() else "service-start")
-            elif choice == "3": lifecycle("service-restart")
-            elif choice == "4": lifecycle("service-force-stop")
+            elif choice == "2": privileged_service_action("service-stop" if service_running() else "service-start")
+            elif choice == "3": privileged_service_action("service-restart")
+            elif choice == "4": privileged_service_action("service-force-stop")
             elif choice == "5":
                 confirmation = prompt("Digite remover para confirmar: ").strip()
-                if confirmation == "remover": lifecycle("remove-service")
+                if confirmation == "remover": privileged_service_action("remove-service")
                 else: result(False, "Remoção cancelada; a confirmação deve ser exatamente remover.")
+            else: result(False, "Opção inválida.")
+
+    def operation_menu() -> None:
+        """Separa a execução temporária do gerenciamento persistente pelo SO."""
+        while True:
+            screen("Operação do daemon", "Processo local para uso temporário; serviço do SO para operação persistente")
+            item("1.", "Processo local", "Executar em segundo plano nesta sessão")
+            item("2.", "Serviço do sistema operacional", "Instalar, diagnosticar e gerenciar inicialização persistente")
+            item("X.", "Voltar")
+            choice = prompt("Opção: ").strip().casefold()
+            if choice in {"x", "\x1b"}: return
+            if choice == "1": process_menu()
+            elif choice == "2": service_menu()
             else: result(False, "Opção inválida.")
 
     def telegram_menu() -> None:
@@ -1988,8 +2029,7 @@ def daemon_menu(root: Path) -> None:
             install_daemon()
         elif choice == "2":
             if not installed(): result(False, "Instale o daemon pela opção 1 antes de operá-lo.")
-            elif service_installed(): service_menu()
-            else: process_menu()
+            else: operation_menu()
         elif choice == "3":
             if not installed(): result(False, "Instale o daemon pela opção 1 antes de configurar serviços.")
             else: services_menu()
