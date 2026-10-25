@@ -1,0 +1,14 @@
+schema_version = 1
+
+[defaults]
+api_base = "https://api.todoist.com/api/v1"
+timeout_seconds = 30
+max_retries = 2
+
+[profiles.example]
+enabled = true
+description = "Explique quando este perfil deve ser utilizado."
+credential_profile = "example"
+credential_entry_path = "APIs/Todoist/example"
+credential_field = "password"
+allowed_operations = ["todoist.list_tasks", "todoist.test_connection"]

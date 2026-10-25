@@ -1,0 +1,71 @@
+"""Servidor MCP local do Onmyōji, exposto somente por stdio."""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+from pathlib import Path
+import sys
+from typing import Any
+
+from .configuration import McpConfiguration
+from .todoist.tools import TodoistToolRegistry
+
+
+class McpApplication:
+    """Orquestra módulos MCP sem depender do transporte do protocolo."""
+
+    def __init__(self, root: Path):
+        self.configuration = McpConfiguration(root)
+        self.todoist = TodoistToolRegistry(self.configuration)
+
+    def definitions(self) -> list[dict[str, Any]]:
+        return self.todoist.definitions()
+
+    def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        return self.todoist.call(name, arguments)
+
+
+def create_server(root: Path):
+    """Cria o servidor MCP com tools calculadas a cada ``tools/list``."""
+    from mcp.server import Server
+    from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
+
+    application = McpApplication(root)
+
+    async def list_tools(_ctx, _params):
+        return ListToolsResult(tools=[Tool(name=item["name"], description=item["description"], input_schema=item["input_schema"]) for item in application.definitions()])
+
+    async def call_tool(_ctx, params):
+        try:
+            data = application.call(params.name, params.arguments or {})
+            text = json.dumps(data, ensure_ascii=False)
+            return CallToolResult(content=[TextContent(type="text", text=text)], structured_content=data)
+        except Exception as error:
+            # Erros de domínio já são sanitizados; nunca serialize exceções ou tracebacks.
+            return CallToolResult(content=[TextContent(type="text", text=str(error))], is_error=True)
+
+    return Server("Onmyoji", version="0.1.0", on_list_tools=list_tools, on_call_tool=call_tool)
+
+
+async def serve(root: Path) -> None:
+    """Atende um único cliente MCP no transporte stdio."""
+    from mcp.server.stdio import stdio_server
+
+    server = create_server(root)
+    async with stdio_server() as (read_stream, write_stream):
+        await server.run(read_stream, write_stream, server.create_initialization_options())
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="onmyoji-mcp")
+    parser.add_argument("--onmyoji-root", required=True, type=Path)
+    args = parser.parse_args(argv)
+    try:
+        asyncio.run(serve(args.onmyoji_root.resolve()))
+    except KeyboardInterrupt:
+        return 0
+    except Exception as error:
+        print(f"Erro ao iniciar o MCP Onmyoji: {error}", file=sys.stderr)
+        return 2
+    return 0

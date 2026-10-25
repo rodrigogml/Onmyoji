@@ -53,7 +53,9 @@ def test_app_server_does_not_pass_profiles_to_the_codex_subcommand(tmp_path):
         def terminate(self): pass
         def wait(self, timeout=None): return 0
 
-    with patch("onmyoji_daemon.telegram.subprocess.Popen", side_effect=lambda command, **_kwargs: captured.setdefault("command", command) and Process()):
+    launch = (["codex", "app-server", "--stdio"], settings.project, {"CODEX_HOME": str(settings.root)})
+    with patch("onmyoji_daemon.telegram.CodexLaunch.from_system") as configured, patch("onmyoji_daemon.telegram.subprocess.Popen", side_effect=lambda command, **_kwargs: captured.setdefault("command", command) and Process()):
+        configured.return_value.app_server_launch.return_value = launch
         client = CodexAppServer(settings)
         client.request = lambda *_args, **_kwargs: {}
         client.notify = lambda *_args, **_kwargs: None
@@ -61,6 +63,7 @@ def test_app_server_does_not_pass_profiles_to_the_codex_subcommand(tmp_path):
         client.stop()
 
     assert captured["command"] == ["codex", "app-server", "--stdio"]
+    configured.return_value.app_server_launch.assert_called_once()
 
 
 def test_gateway_sandbox_includes_only_configured_activity_root(tmp_path):

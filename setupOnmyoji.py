@@ -23,6 +23,10 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parent
+DAEMON_SOURCE = ROOT / "onmyoji-daemon" / "src"
+if str(DAEMON_SOURCE) not in sys.path:
+    sys.path.insert(0, str(DAEMON_SOURCE))
+from onmyoji_daemon.codex_execution import CodexExecutionError, CodexLaunch
 MANAGED_BEGIN = "# BEGIN ONMYOJI MANAGED SKILLS"
 MANAGED_END = "# END ONMYOJI MANAGED SKILLS"
 SYSTEM_BEGIN = "# BEGIN ONMYOJI MANAGED CODEX SETTINGS"
@@ -1072,22 +1076,28 @@ def launch_codex(root: Path, data: dict[str, object], login: bool = False, devic
     if login:
         configure_codex_login(root, data, device_auth)
         return
-    command = [str(data["executable"]), "--profile", SKILL_PROFILE_NAME]
-    if not login:
-        for directory in data["additional_writable_directories"]: command.extend(["--add-dir", str(directory)])
-    environment = dict(os.environ); environment["CODEX_HOME"] = str(root)
-    try: subprocess.run(command, cwd=str(data["project_directory"]), env=environment, check=False)
-    except OSError as error: result(False, f"Não foi possível iniciar o Codex-CLI: {error}")
+    try:
+        launch = CodexLaunch.from_data(root, data)
+        command, workspace, environment = launch.direct_launch(SKILL_PROFILE_NAME)
+        subprocess.run(command, cwd=str(workspace), env=environment, check=False)
+    except CodexExecutionError as error:
+        result(False, str(error))
+    except OSError as error:
+        result(False, f"Não foi possível iniciar o Codex-CLI: {error}")
 
 
 def launch_onmyoji_interactive(root: Path, data: dict[str, object]) -> None:
     """Modo opcional via App Server, para testar a composição Onmyōji de developer instructions."""
     ready, message = validate_system(data, require_ready=True, root=root)
     if not ready: result(False, f"Não iniciado: {message}"); return
-    environment = dict(os.environ); environment["CODEX_HOME"] = str(root); environment["PYTHONPATH"] = str(root / "onmyoji-daemon" / "src") + os.pathsep + environment.get("PYTHONPATH", "")
-    command = [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "interactive"]
-    try: subprocess.run(command, cwd=str(data["project_directory"]), env=environment, check=False)
-    except OSError as error: result(False, f"Não foi possível iniciar o console Onmyōji: {error}")
+    try:
+        launch = CodexLaunch.from_data(root, data)
+        command, workspace, environment = launch.interactive_launcher()
+        subprocess.run(command, cwd=str(workspace), env=environment, check=False)
+    except CodexExecutionError as error:
+        result(False, str(error))
+    except OSError as error:
+        result(False, f"Não foi possível iniciar o console Onmyōji: {error}")
 
 
 def writable_directories_diagnostics(root: Path, data: dict[str, object]) -> list[dict[str, str]]:
@@ -2313,6 +2323,7 @@ def menu(skills: list[Skill], root: Path) -> int:
         item("!.", "Diagnóstico", "Valida nome, executável e modelo do Codex-CLI")
         item("A.", "Codex-CLI", "Modelo, projeto, sandbox e permissões")
         item("D.", "Daemon", "Supervisor local e serviços da instância")
+        item("M.", "MCP", "Perfis de vault e integrações MCP")
         integration = [skill for skill in skills if skill.catalog_managed]
         domain = [skill for skill in skills if not skill.catalog_managed]
         conflicts = conflicting_skill_ids(skills)
@@ -2343,6 +2354,7 @@ def menu(skills: list[Skill], root: Path) -> int:
         if choice == "!": diagnostics_menu(root); continue
         if choice == "a": codex_menu(root); continue
         if choice == "d": daemon_menu(root); continue
+        if choice == "m": subprocess.run([sys.executable, str(root / "onmyoji-daemon" / "setupMcp.py")], check=False); continue
         if choice.isdigit() and 1 <= int(choice) <= len(skills): skill_menu(skills[int(choice) - 1], root, skills)
         else: result(False, "Opção inválida.")
 
