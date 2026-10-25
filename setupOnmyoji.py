@@ -1668,25 +1668,35 @@ def daemon_menu(root: Path) -> None:
             screen(title, subtitle)
             if section == "gateway":
                 item("1.", "Desabilitar Telegram" if enabled else "Habilitar Telegram")
-                item("3.", "Testar conexão com Telegram")
+                item("2.", "Testar conexão com Telegram")
             elif section == "credential":
-                item("2.", "Configurar credencial do bot", "Perfil KeePass e referência da entrada")
-                item("3.", "Testar conexão com Telegram")
+                item("1.", "Configurar credencial do bot", "Perfil KeePass e referência da entrada")
+                item("2.", "Testar conexão com Telegram")
             elif section == "app-server":
-                item("7.", "Testar agente Codex", "Execução controlada, sem mensagem ao bot")
-                item("9.", "Desabilitar App Server" if app_server_enabled else "Habilitar App Server", "Conversa persistente por Shikigami" if app_server_enabled else "Obrigatório para o Gateway Telegram")
-                item("10.", "Tempo de inatividade do App Server", f"{app_server_idle // 60} min · encerra somente sem turnos ativos")
+                item("1.", "Testar agente Codex", "Execução controlada, sem mensagem ao bot")
+                item("2.", "Desabilitar App Server" if app_server_enabled else "Habilitar App Server", "Conversa persistente por Shikigami" if app_server_enabled else "Obrigatório para o Gateway Telegram")
+                item("3.", "Tempo de inatividade do App Server", f"{app_server_idle // 60} min · encerra somente sem turnos ativos")
             elif section == "owners":
-                item("4.", "Parear owner", "Exige gateway em execução")
-                item("8.", "Atualizar comandos privados", "Regrava e confirma comandos de cada owner")
-                item("12.", "Preferências de execução do owner", "Habilitadas" if owner_preferences else "Desabilitadas")
+                item("1.", "Parear owner", "Exige gateway em execução")
+                item("2.", "Atualizar comandos privados", "Regrava e confirma comandos de cada owner")
+                item("3.", "Preferências de execução do owner", "Habilitadas" if owner_preferences else "Desabilitadas")
             else:
-                item("6.", "Desabilitar TOTP" if totp_enabled else "Configurar e habilitar TOTP")
-                item("11.", "Configurar respostas em áudio", (f"EccoVox: {voice_profile} · auto-off: {voice_auto_off} min" if voice_enabled else "Desabilitadas"))
-                item("13.", "Instruções do Shikigami", instruction_file)
+                item("1.", "Desabilitar TOTP" if totp_enabled else "Configurar e habilitar TOTP")
+                item("2.", "Configurar respostas em áudio", (f"EccoVox: {voice_profile} · auto-off: {voice_auto_off} min" if voice_enabled else "Desabilitadas"))
+                item("3.", "Instruções do Shikigami", instruction_file)
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
+            actions = {
+                "gateway": {"1": "1", "2": "3"},
+                "credential": {"1": "2", "2": "3"},
+                "app-server": {"1": "7", "2": "9", "3": "10"},
+                "owners": {"1": "4", "2": "8", "3": "12"},
+                "optional": {"1": "6", "2": "11", "3": "13"},
+            }[section]
+            if choice not in actions:
+                result(False, "Opção inválida."); continue
+            choice = actions[choice]
             if choice == "1":
                 if enabled:
                     if lifecycle("disable", ["telegram"]):
