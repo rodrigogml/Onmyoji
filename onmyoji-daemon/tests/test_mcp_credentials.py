@@ -108,3 +108,74 @@ def test_errors_are_sanitized_when_keepass_fails(tmp_path, monkeypatch):
 
     assert error.value.code == "keepass_error"
     assert "private" not in str(error.value)
+
+
+def test_entry_exists_lists_paths_without_reading_secret(tmp_path, monkeypatch):
+    write_config(tmp_path)
+    resolver = KeePassCredentialResolver(tmp_path)
+    monkeypatch.setattr("onmyoji_daemon.mcp.credentials.keepass._platform_name", lambda: "windows")
+    monkeypatch.setattr(resolver, "_windows_credential", lambda target: "master-password")
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout="APIs/\nAPIs/Todoist/\nAPIs/Todoist/example\n")
+
+    monkeypatch.setattr("onmyoji_daemon.mcp.credentials.keepass.subprocess.run", run)
+
+    assert resolver.entry_exists("example", "APIs/Todoist/example") is True
+    assert resolver.entry_exists("example", "APIs/Todoist/missing") is False
+    assert all("show" not in command for command, _ in calls)
+    assert all("master-password" not in command for command, _ in calls)
+
+
+def test_password_exists_checks_a_protected_field_without_returning_it(tmp_path, monkeypatch):
+    write_config(tmp_path)
+    resolver = KeePassCredentialResolver(tmp_path)
+    monkeypatch.setattr("onmyoji_daemon.mcp.credentials.keepass._platform_name", lambda: "windows")
+    monkeypatch.setattr(resolver, "_windows_credential", lambda target: "master-password")
+    monkeypatch.setattr(
+        "onmyoji_daemon.mcp.credentials.keepass.subprocess.run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="private-token\n"),
+    )
+
+    assert resolver.password_exists("example", "APIs/Todoist/example") is True
+
+
+def test_save_password_creates_missing_groups_and_entry_without_secret_in_command(tmp_path, monkeypatch):
+    write_config(tmp_path)
+    resolver = KeePassCredentialResolver(tmp_path)
+    monkeypatch.setattr("onmyoji_daemon.mcp.credentials.keepass._platform_name", lambda: "windows")
+    monkeypatch.setattr(resolver, "_windows_credential", lambda target: "master-password")
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout="" if command[1] == "ls" else "")
+
+    monkeypatch.setattr("onmyoji_daemon.mcp.credentials.keepass.subprocess.run", run)
+
+    assert resolver.save_password("example", "APIs/Todoist/new-account", "todoist-token") is True
+    assert [command[1] for command, _ in calls] == ["ls", "ls", "mkdir", "mkdir", "add"]
+    assert calls[-1][0][-2:] == ["APIs/Todoist/new-account", "--password-prompt"]
+    assert calls[-1][1]["input"] == "master-password\ntodoist-token\n"
+    assert all("todoist-token" not in command for command, _ in calls)
+
+
+def test_save_password_substitutes_existing_entry(tmp_path, monkeypatch):
+    write_config(tmp_path)
+    resolver = KeePassCredentialResolver(tmp_path)
+    monkeypatch.setattr("onmyoji_daemon.mcp.credentials.keepass._platform_name", lambda: "windows")
+    monkeypatch.setattr(resolver, "_windows_credential", lambda target: "master-password")
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        output = "APIs/Todoist/example\n" if command[1] == "ls" else ""
+        return SimpleNamespace(returncode=0, stdout=output)
+
+    monkeypatch.setattr("onmyoji_daemon.mcp.credentials.keepass.subprocess.run", run)
+
+    assert resolver.save_password("example", "APIs/Todoist/example", "replacement-token") is False
+    assert [command[1] for command, _ in calls] == ["ls", "edit"]
+    assert calls[-1][1]["input"] == "master-password\nreplacement-token\n"

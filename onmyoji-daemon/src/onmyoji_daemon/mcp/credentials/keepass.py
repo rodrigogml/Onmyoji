@@ -1,9 +1,9 @@
-"""Recupera segredos de integrações MCP por perfis locais do KeePassXC.
+"""Acessa segredos de integrações MCP por perfis locais do KeePassXC.
 
 O resolvedor lê somente ``configs/mcp/credentials.toml`` e nunca persiste,
-registra ou devolve metadados do cofre ao chamador. A senha mestra é obtida do
-provedor de credenciais configurado para o sistema operacional e é usada apenas
-como entrada padrão do ``keepassxc-cli``.
+registra nem devolve segredos ao chamador. A senha mestra é obtida do provedor
+de credenciais configurado para o sistema operacional e é usada apenas como
+entrada padrão do ``keepassxc-cli``. A escrita é restrita ao setup local.
 """
 from __future__ import annotations
 
@@ -97,6 +97,75 @@ class KeePassCredentialResolver:
         finally:
             del password
 
+    def entry_exists(self, profile_name: str, entry_path: str) -> bool:
+        """Informa se uma entrada permitida já existe no cofre.
+
+        A verificação lista apenas os caminhos. Ela não lê nem devolve campos
+        da entrada, para que o setup consiga decidir se deve reutilizar ou
+        substituir uma credencial sem revelar seu conteúdo.
+        """
+        profile_id = _require_string(profile_name, "invalid_profile", "Perfil de credencial inválido.")
+        requested_entry = _require_string(entry_path, "invalid_entry", "Entrada de credencial inválida.")
+        defaults, profile, vault = self._settings(profile_id)
+        self._require_allowed_entry(profile, requested_entry)
+        password = self._master_password(profile)
+        try:
+            return self._entry_exists(vault, defaults, requested_entry, password)
+        finally:
+            del password
+
+    def password_exists(self, profile_name: str, entry_path: str) -> bool:
+        """Informa se uma entrada possui uma senha protegida não vazia.
+
+        O valor é lido apenas para validar sua presença e é descartado antes
+        de retornar. Assim o configurador pode oferecer reutilização somente
+        quando há de fato uma chave salva.
+        """
+        profile_id = _require_string(profile_name, "invalid_profile", "Perfil de credencial inválido.")
+        requested_entry = _require_string(entry_path, "invalid_entry", "Entrada de credencial inválida.")
+        defaults, profile, vault = self._settings(profile_id)
+        self._require_allowed_entry(profile, requested_entry)
+        password = self._master_password(profile)
+        try:
+            try:
+                value = self._read_secret(vault, defaults, requested_entry, "password", password)
+            except CredentialError as error:
+                if error.code == "secret_not_found":
+                    return False
+                raise
+            del value
+            return True
+        finally:
+            del password
+
+    def save_password(self, profile_name: str, entry_path: str, password_value: str) -> bool:
+        """Cria ou substitui a senha protegida de uma entrada permitida.
+
+        Returns:
+            ``True`` quando a entrada foi criada; ``False`` quando uma entrada
+            existente recebeu a nova senha.
+
+        Raises:
+            CredentialError: Quando não for possível ler ou gravar o cofre.
+        """
+        profile_id = _require_string(profile_name, "invalid_profile", "Perfil de credencial inválido.")
+        requested_entry = _require_string(entry_path, "invalid_entry", "Entrada de credencial inválida.")
+        secret = _require_string(password_value, "invalid_secret", "A chave de autenticação é obrigatória.")
+        defaults, profile, vault = self._settings(profile_id)
+        self._require_allowed_entry(profile, requested_entry)
+        password = self._master_password(profile)
+        try:
+            exists = self._entry_exists(vault, defaults, requested_entry, password)
+            if exists:
+                self._edit_password(vault, defaults, requested_entry, password, secret)
+            else:
+                self._ensure_parent_groups(vault, defaults, requested_entry, password)
+                self._add_password(vault, defaults, requested_entry, password, secret)
+            return not exists
+        finally:
+            del password
+            del secret
+
     def _settings(self, profile_name: str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         try:
             data = tomllib.loads(self.path.read_text(encoding="utf-8"))
@@ -117,6 +186,14 @@ class KeePassCredentialResolver:
         if not isinstance(defaults, dict):
             raise CredentialError("invalid_config", "Configuração padrão de credenciais inválida.")
         return defaults, profile, vault
+
+    @staticmethod
+    def _require_allowed_entry(profile: dict[str, Any], entry_path: str) -> None:
+        roots = profile.get("allowed_entry_roots", [])
+        if not isinstance(roots, list) or not all(isinstance(item, str) and item.strip() for item in roots):
+            raise CredentialError("invalid_config", "Raízes permitidas do perfil são inválidas.")
+        if not _is_allowed_entry(entry_path, roots):
+            raise CredentialError("entry_denied", "Entrada de credencial não permitida para este perfil.")
 
     def _master_password(self, profile: dict[str, Any]) -> str:
         auth = profile.get("auth", {})
@@ -188,6 +265,67 @@ class KeePassCredentialResolver:
         if not value:
             raise CredentialError("secret_not_found", "A entrada KeePass não contém o campo solicitado.")
         return value
+
+    @staticmethod
+    def _command_settings(vault: dict[str, Any], defaults: dict[str, Any]) -> tuple[list[str], str, float]:
+        platform = _platform_name()
+        database = vault.get("database", {})
+        database_path = _require_string(database.get(platform) if isinstance(database, dict) else None, "invalid_config", "Caminho do cofre não configurado para esta plataforma.")
+        command = vault.get("cli_command", ["keepassxc-cli"])
+        if not isinstance(command, list) or not command or not all(isinstance(item, str) and item for item in command):
+            raise CredentialError("invalid_config", "Comando KeePassXC inválido.")
+        try:
+            timeout = float(defaults.get("timeout_seconds", 30))
+        except (TypeError, ValueError) as error:
+            raise CredentialError("invalid_config", "Timeout do cofre inválido.") from error
+        if timeout <= 0:
+            raise CredentialError("invalid_config", "Timeout do cofre inválido.")
+        return command, database_path, timeout
+
+    @classmethod
+    def _run_write_command(cls, vault: dict[str, Any], defaults: dict[str, Any], arguments: list[str], password: str, extra_input: str = "") -> str:
+        command, database_path, timeout = cls._command_settings(vault, defaults)
+        try:
+            resolved_arguments = [database_path if argument == "__DATABASE__" else argument for argument in arguments]
+            result = subprocess.run([*command, *resolved_arguments], input=password + "\n" + extra_input, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=timeout)
+        except FileNotFoundError as error:
+            raise CredentialError("cli_not_found", "keepassxc-cli não encontrado.") from error
+        except subprocess.TimeoutExpired as error:
+            raise CredentialError("timeout", "Tempo limite ao acessar o cofre.") from error
+        except OSError as error:
+            raise CredentialError("vault_unavailable", "Não foi possível iniciar o KeePassXC.") from error
+        if result.returncode:
+            raise CredentialError("keepass_error", "KeePassXC recusou a alteração no cofre.")
+        return result.stdout.rstrip("\r\n")
+
+    @classmethod
+    def _entry_exists(cls, vault: dict[str, Any], defaults: dict[str, Any], entry_path: str, password: str) -> bool:
+        output = cls._run_write_command(vault, defaults, ["ls", "-q", "-R", "-f", "__DATABASE__"], password)
+        normalized = _normalize_entry_path(entry_path)
+        return any(_normalize_entry_path(line.rstrip("/")) == normalized and not line.endswith("/") for line in output.splitlines())
+
+    @classmethod
+    def _ensure_parent_groups(cls, vault: dict[str, Any], defaults: dict[str, Any], entry_path: str, password: str) -> None:
+        parents = [part for part in _normalize_entry_path(entry_path).split("/")[:-1] if part]
+        if not parents:
+            return
+        output = cls._run_write_command(vault, defaults, ["ls", "-q", "-R", "-f", "__DATABASE__"], password)
+        groups = {_normalize_entry_path(line.rstrip("/")) for line in output.splitlines() if line.endswith("/")}
+        current: list[str] = []
+        for parent in parents:
+            current.append(parent)
+            group = "/".join(current)
+            if group not in groups:
+                cls._run_write_command(vault, defaults, ["mkdir", "-q", "__DATABASE__", group], password)
+                groups.add(group)
+
+    @classmethod
+    def _add_password(cls, vault: dict[str, Any], defaults: dict[str, Any], entry_path: str, password: str, secret: str) -> None:
+        cls._run_write_command(vault, defaults, ["add", "-q", "__DATABASE__", entry_path, "--password-prompt"], password, secret + "\n")
+
+    @classmethod
+    def _edit_password(cls, vault: dict[str, Any], defaults: dict[str, Any], entry_path: str, password: str, secret: str) -> None:
+        cls._run_write_command(vault, defaults, ["edit", "-q", "__DATABASE__", entry_path, "--password-prompt"], password, secret + "\n")
 
     @staticmethod
     def _check_access(vault: dict[str, Any], defaults: dict[str, Any], password: str) -> None:

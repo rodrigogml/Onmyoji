@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from onmyoji_daemon.mcp.configuration import McpConfiguration, McpConfigurationError
 from onmyoji_daemon.mcp.codex import CodexMcpError, CodexMcpRegistration
-from onmyoji_daemon.mcp.credentials import KeePassCredentialResolver
+from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialResolver
 from onmyoji_daemon.mcp.todoist import TodoistError, TodoistService
 
 
@@ -146,6 +146,108 @@ def vault_profiles_menu(config: McpConfiguration) -> None:
             except McpConfigurationError as error: result(False, str(error))
 
 
+def ask_todoist_token() -> str | None:
+    """Solicita um token sem imprimi-lo nem registrá-lo na configuração."""
+    try:
+        token = getpass.getpass(Ui.text("› Chave de autenticação Todoist (não será exibida): ", Ui.violet, Ui.bold))
+    except (EOFError, KeyboardInterrupt):
+        return None
+    return token.strip() or None
+
+
+def configure_todoist_credential(config: McpConfiguration, vault_profile: str, entry_path: str) -> tuple[str, str] | None:
+    """Decide se uma entrada Todoist é reutilizada ou gravada no KeePass.
+
+    O conteúdo da entrada nunca é lido pelo setup. Para uma entrada existente,
+    o usuário escolhe explicitamente preservá-la ou informar uma nova chave
+    para substituí-la; para uma inexistente, a única escrita possível é criar
+    a entrada com uma chave informada em prompt protegido.
+    """
+    resolver = KeePassCredentialResolver(config.root)
+    entry = entry_path
+    while True:
+        try:
+            exists = resolver.entry_exists(vault_profile, entry)
+        except CredentialError as error:
+            result(False, str(error))
+            return None
+        if exists:
+            try:
+                has_password = resolver.password_exists(vault_profile, entry)
+            except CredentialError as error:
+                result(False, str(error))
+                return None
+            if not has_password:
+                decision = choose(
+                    "Credencial Todoist",
+                    ["Informar a chave e salvar nesta entrada", "Escolher outra entrada KeePass"],
+                    "Informar a chave e salvar nesta entrada",
+                )
+                if decision is None:
+                    return None
+                if decision.startswith("Escolher"):
+                    entry = ask("Entrada KeePass do token", entry, True)
+                    if not entry:
+                        return None
+                    continue
+                token = ask_todoist_token()
+                if not token:
+                    result(False, "A chave de autenticação é obrigatória para atualizar a entrada.")
+                    continue
+                try:
+                    resolver.save_password(vault_profile, entry, token)
+                except CredentialError as error:
+                    result(False, str(error))
+                    return None
+                return entry, "password"
+            decision = choose(
+                "Credencial Todoist",
+                ["Usar a chave já salva", "Informar uma nova chave e substituir a salva", "Escolher outra entrada KeePass"],
+                "Usar a chave já salva",
+            )
+            if decision is None:
+                return None
+            if decision.startswith("Usar"):
+                return entry, "password"
+            if decision.startswith("Escolher"):
+                entry = ask("Entrada KeePass do token", entry, True)
+                if not entry:
+                    return None
+                continue
+            token = ask_todoist_token()
+            if not token:
+                result(False, "A chave de autenticação é obrigatória para substituir a entrada.")
+                continue
+            try:
+                resolver.save_password(vault_profile, entry, token)
+            except CredentialError as error:
+                result(False, str(error))
+                return None
+            return entry, "password"
+        decision = choose(
+            "Credencial Todoist",
+            ["Informar a chave e criar esta entrada", "Escolher outra entrada KeePass"],
+            "Informar a chave e criar esta entrada",
+        )
+        if decision is None:
+            return None
+        if decision.startswith("Escolher"):
+            entry = ask("Entrada KeePass do token", entry, True)
+            if not entry:
+                return None
+            continue
+        token = ask_todoist_token()
+        if not token:
+            result(False, "A chave de autenticação é obrigatória para criar a entrada.")
+            continue
+        try:
+            resolver.save_password(vault_profile, entry, token)
+        except CredentialError as error:
+            result(False, str(error))
+            return None
+        return entry, "password"
+
+
 def todoist_menu(config: McpConfiguration) -> None:
     while True:
         data = config.todoist(); names = sorted(data["profiles"]); status = "ATIVA" if config.todoist_tool_available() else "inativa"
@@ -160,8 +262,10 @@ def todoist_menu(config: McpConfiguration) -> None:
             if not name or not vault or name in data["profiles"]: result(False, "Nome inválido, repetido ou seleção cancelada."); continue
             entry = ask("Entrada KeePass do token", f"APIs/Todoist/{name}", True)
             description = ask("Descrição de quando utilizar este perfil", required=True)
-            field = ask("Campo KeePass (password ou notes)", "password", True)
-            if not entry or not description or field not in {"password", "notes"}: result(False, "Perfil Todoist inválido."); continue
+            if not entry or not description: result(False, "Perfil Todoist inválido."); continue
+            credential = configure_todoist_credential(config, vault, entry)
+            if credential is None: continue
+            entry, field = credential
             data["profiles"][name] = {"enabled": True, "description": description, "credential_profile": vault, "credential_entry_path": entry, "credential_field": field, "allowed_operations": ["todoist.list_tasks", "todoist.test_connection"]}
         elif choice == "2" and (name := select("MCP · Gerenciar perfil Todoist", names)):
             profile = data["profiles"][name]
@@ -178,10 +282,17 @@ def todoist_menu(config: McpConfiguration) -> None:
             if action in {"x", "\x1b"}: continue
             if action == "1":
                 vault = select("Escolha o perfil de vault", config.vault_profile_names())
-                if vault: profile["credential_profile"] = vault
+                if vault:
+                    credential = configure_todoist_credential(config, vault, profile["credential_entry_path"])
+                    if credential is None: continue
+                    profile["credential_profile"] = vault
+                    profile["credential_entry_path"], profile["credential_field"] = credential
             elif action == "2":
-                profile["credential_entry_path"] = ask("Entrada KeePass", profile["credential_entry_path"], True) or profile["credential_entry_path"]
-                profile["credential_field"] = ask("Campo", profile["credential_field"], True) or profile["credential_field"]
+                entry = ask("Entrada KeePass do token", profile["credential_entry_path"], True)
+                if not entry: continue
+                credential = configure_todoist_credential(config, profile["credential_profile"], entry)
+                if credential is None: continue
+                profile["credential_entry_path"], profile["credential_field"] = credential
             elif action == "3": profile["description"] = ask("Descrição", profile["description"], True) or profile["description"]
             elif action == "4": profile["enabled"] = True
             elif action == "5": profile["enabled"] = False
