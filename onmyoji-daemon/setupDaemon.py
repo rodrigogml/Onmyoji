@@ -23,6 +23,8 @@ PROJECT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT / "src"))
 from onmyoji_daemon.management import applied_configuration_revision, configuration_revision, daemon_python, daemon_reachable, is_installed, runtime_ready, service_info
 from onmyoji_daemon.instance import identity
+from onmyoji_daemon.mcp.configuration import McpConfiguration
+from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialResolver
 
 ROOT = PROJECT.parent
 MODEL = PROJECT / "configs" / "telegram.toml.model"
@@ -116,41 +118,19 @@ def bootstrap(root: Path) -> Path:
 
 
 def profiles(root: Path) -> list[str]:
-    try: values = tomllib.loads((root / "configs" / "keepass.toml").read_text(encoding="utf-8")).get("profiles", {})
-    except (OSError, tomllib.TOMLDecodeError): return []
-    return sorted(name for name, value in values.items() if name != "example" and isinstance(value, dict)) if isinstance(values, dict) else []
+    try: return McpConfiguration(root).vault_profile_names()
+    except Exception: return []
 
 
 def keepass_validation(root: Path) -> list[dict[str, str]]:
-    """Verifica a dependência KeePass antes de qualquer uso de credenciais."""
+    """Valida o cofre MCP compartilhado antes de qualquer uso do gateway."""
     checks: list[dict[str, str]] = []
     def add(state: str, label: str, detail: str) -> None: checks.append({"state": state, "label": label, "detail": detail})
-    source = root / "available-skills" / "keepass-vault" / "SKILL.md"
-    profile_path = root / "onmyoji-skills.config.toml"
     try:
-        entries = tomllib.loads(profile_path.read_text(encoding="utf-8")).get("skills", {}).get("config", [])
-        enabled = any(
-            isinstance(entry, dict)
-            and entry.get("enabled") is True
-            and isinstance(entry.get("path"), str)
-            and Path(entry["path"]).expanduser().resolve() == source.resolve()
-            for entry in entries
-        ) if isinstance(entries, list) else False
-    except (OSError, tomllib.TOMLDecodeError, AttributeError):
-        enabled = False
-    ready = source.is_dir() and enabled
-    add("ok" if ready else "error", "Skill KeePass Vault", "Instalada e habilitada." if ready else "Instale e habilite a skill KeePass Vault antes de configurar o Telegram.")
-    path = root / "configs" / "keepass.toml"
-    try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-        valid = isinstance(data.get("vaults", {}), dict) and isinstance(data.get("profiles", {}), dict)
-        add("ok" if valid else "error", "Configuração KeePass Vault", "Configuração local válida." if valid else "A configuração KeePass não possui cofres ou perfis válidos.")
-    except FileNotFoundError:
-        data = {}; add("error", "Configuração KeePass Vault", "Configure ao menos um cofre e perfil na skill KeePass Vault.")
-    except tomllib.TOMLDecodeError as error:
-        data = {}; add("error", "Configuração KeePass Vault", f"TOML inválido: {error}")
-    available = sorted(name for name, value in data.get("profiles", {}).items() if name != "example" and isinstance(value, dict)) if isinstance(data.get("profiles", {}), dict) else []
-    add("ok" if available else "error", "Perfis KeePass Vault", f"{len(available)} perfil(is) disponível(is)." if available else "Crie um perfil KeePass utilizável antes de configurar o token do bot.")
+        available = McpConfiguration(root).vault_profile_names()
+        add("ok" if available else "error", "Perfis de vault MCP", f"{len(available)} perfil(is) disponível(is)." if available else "Crie um perfil de vault MCP antes de configurar o token do bot.")
+    except Exception as error:
+        add("error", "Perfis de vault MCP", f"Configuração MCP inválida: {error}")
     return checks
 
 
@@ -160,10 +140,10 @@ def telegram_data(root: Path) -> dict:
 
 def save_telegram(root: Path, profile: str, entry: str, data: dict | None = None) -> None:
     data = data or telegram_data(root)
-    telegram = data.setdefault("telegram", {}); telegram["keepass_profile"] = profile; telegram["token_entry"] = entry
+    telegram = data.setdefault("telegram", {}); telegram["vault_profile"] = profile; telegram.pop("keepass_profile", None); telegram["token_entry"] = entry
     agent, app_server, limits, totp, voice = data.setdefault("agent", {}), data.setdefault("app_server", {}), data.setdefault("limits", {}), data.setdefault("totp", {}), data.setdefault("voice_reply", {})
     instructions = data.get('instructions', {})
-    lines = ["schema_version = 1", f"enabled = {str(bool(data.get('enabled', False))).lower()}", "", "[telegram]", f"keepass_profile = {json.dumps(profile, ensure_ascii=False)}", f"token_entry = {json.dumps(entry, ensure_ascii=False)}", f"poll_timeout_seconds = {int(telegram.get('poll_timeout_seconds', 30))}", "", "[agent]", f"max_parallel_conversations = {int(agent.get('max_parallel_conversations', 1))}", f"turn_timeout_seconds = {int(agent.get('turn_timeout_seconds', 900))}", "", "[instructions]", f"enabled = {str(bool(instructions.get('enabled', True))).lower()}", "shikigami_file = \"instructions.md\"", "", "[app_server]", f"enabled = {str(bool(app_server.get('enabled', False))).lower()}", f"idle_timeout_seconds = {int(app_server.get('idle_timeout_seconds', 1800))}", "", "[limits]", f"max_attachment_bytes = {int(limits.get('max_attachment_bytes', 20971520))}", f"max_batch_attachment_bytes = {int(limits.get('max_batch_attachment_bytes', 52428800))}", f"max_pending_items = {int(limits.get('max_pending_items', 50))}", f"max_retained_attachment_bytes = {int(limits.get('max_retained_attachment_bytes', 262144000))}", f"max_outbound_media_bytes = {int(limits.get('max_outbound_media_bytes', 20971520))}", f"max_outbound_media_per_turn = {int(limits.get('max_outbound_media_per_turn', 3))}", "", "[voice_reply]", f"enabled = {str(bool(voice.get('enabled', False))).lower()}", f"eccovox_profile = {json.dumps(str(voice.get('eccovox_profile', '')), ensure_ascii=False)}", f"language = {json.dumps(str(voice.get('language', 'pt-BR')), ensure_ascii=False)}", f"voice = {json.dumps(str(voice.get('voice', '')), ensure_ascii=False)}", f"speed = {float(voice.get('speed', 1.0))}", f"response_format = {json.dumps(str(voice.get('response_format', 'opus')), ensure_ascii=False)}", f"max_text_characters = {int(voice.get('max_text_characters', 3500))}", f"auto_off_minutes = {int(voice.get('auto_off_minutes', 15))}", f"fallback_to_text = {str(bool(voice.get('fallback_to_text', True))).lower()}", f"agent_outbound_media = {str(bool(voice.get('agent_outbound_media', False))).lower()}", "", "[totp]", f"enabled = {str(bool(totp.get('enabled', False))).lower()}", f"real_password_entry = {json.dumps(str(totp.get('real_password_entry', '')), ensure_ascii=False)}", f"fake_password_entry = {json.dumps(str(totp.get('fake_password_entry', '')), ensure_ascii=False)}", f"period_seconds = {int(totp.get('period_seconds', 30))}", ""]
+    lines = ["schema_version = 1", f"enabled = {str(bool(data.get('enabled', False))).lower()}", "", "[telegram]", f"vault_profile = {json.dumps(profile, ensure_ascii=False)}", f"token_entry = {json.dumps(entry, ensure_ascii=False)}", f"poll_timeout_seconds = {int(telegram.get('poll_timeout_seconds', 30))}", "", "[agent]", f"max_parallel_conversations = {int(agent.get('max_parallel_conversations', 1))}", f"turn_timeout_seconds = {int(agent.get('turn_timeout_seconds', 900))}", "", "[instructions]", f"enabled = {str(bool(instructions.get('enabled', True))).lower()}", "shikigami_file = \"instructions.md\"", "", "[app_server]", f"enabled = {str(bool(app_server.get('enabled', False))).lower()}", f"idle_timeout_seconds = {int(app_server.get('idle_timeout_seconds', 1800))}", "", "[limits]", f"max_attachment_bytes = {int(limits.get('max_attachment_bytes', 20971520))}", f"max_batch_attachment_bytes = {int(limits.get('max_batch_attachment_bytes', 52428800))}", f"max_pending_items = {int(limits.get('max_pending_items', 50))}", f"max_retained_attachment_bytes = {int(limits.get('max_retained_attachment_bytes', 262144000))}", f"max_outbound_media_bytes = {int(limits.get('max_outbound_media_bytes', 20971520))}", f"max_outbound_media_per_turn = {int(limits.get('max_outbound_media_per_turn', 3))}", "", "[voice_reply]", f"enabled = {str(bool(voice.get('enabled', False))).lower()}", f"eccovox_profile = {json.dumps(str(voice.get('eccovox_profile', '')), ensure_ascii=False)}", f"language = {json.dumps(str(voice.get('language', 'pt-BR')), ensure_ascii=False)}", f"voice = {json.dumps(str(voice.get('voice', '')), ensure_ascii=False)}", f"speed = {float(voice.get('speed', 1.0))}", f"response_format = {json.dumps(str(voice.get('response_format', 'opus')), ensure_ascii=False)}", f"max_text_characters = {int(voice.get('max_text_characters', 3500))}", f"auto_off_minutes = {int(voice.get('auto_off_minutes', 15))}", f"fallback_to_text = {str(bool(voice.get('fallback_to_text', True))).lower()}", f"agent_outbound_media = {str(bool(voice.get('agent_outbound_media', False))).lower()}", "", "[totp]", f"enabled = {str(bool(totp.get('enabled', False))).lower()}", f"real_password_entry = {json.dumps(str(totp.get('real_password_entry', '')), ensure_ascii=False)}", f"fake_password_entry = {json.dumps(str(totp.get('fake_password_entry', '')), ensure_ascii=False)}", f"period_seconds = {int(totp.get('period_seconds', 30))}", ""]
     agent_end = lines.index("", lines.index("[agent]") + 1)
     lines[agent_end:agent_end] = [f"owner_execution_preferences = {str(bool(agent.get('owner_execution_preferences', True))).lower()}", f"owner_allowed_models = {json.dumps(agent.get('owner_allowed_models', []), ensure_ascii=False)}", f"owner_allowed_reasoning_efforts = {json.dumps(agent.get('owner_allowed_reasoning_efforts', []), ensure_ascii=False)}"]
     target(root).write_text("\n".join(lines), encoding="utf-8", newline="\n")
@@ -221,25 +201,25 @@ def vault_request(root: Path, profile: str, request: dict, administrative: bool 
 
 
 def entry_exists(root: Path, profile: str, entry: str) -> tuple[bool, str]:
-    ok, value = vault_request(root, profile, {"operation": "read", "entry": {"path": entry}, "field": "password"})
-    if ok and isinstance(value, dict) and str(value.get("value") or ""):
-        return True, "A entrada e o token foram encontrados no KeePass."
-    if ok: return False, "A entrada existe, mas não contém um token utilizável."
-    # O wrapper deliberadamente não diferencia uma entrada ausente de outras falhas sem expor detalhes do cofre.
-    return False, str(value)
+    try:
+        found = KeePassCredentialResolver(root).password_exists(profile, entry)
+        return (True, "A entrada e o token foram encontrados no cofre MCP.") if found else (False, "A entrada existe, mas não contém um token utilizável.")
+    except CredentialError as error:
+        return False, str(error)
 
 
 def write_token(root: Path, profile: str, entry: str, token: str, exists: bool) -> tuple[bool, str]:
-    operation = "edit" if exists else "add"
-    # O token integra exclusivamente o JSON enviado pelo stdin ao wrapper.
-    ok, value = vault_request(root, profile, {"operation": operation, "path": entry, "values": {"password": token}}, administrative=True)
-    return (True, "Token gravado com segurança no KeePass.") if ok else (False, str(value))
+    try:
+        created = KeePassCredentialResolver(root).save_password(profile, entry, token)
+        return True, "Token gravado com segurança no cofre MCP." if created else "Token atualizado com segurança no cofre MCP."
+    except CredentialError as error:
+        return False, str(error)
 
 
 def save_totp(root: Path, enabled: bool, real_entry: str = "", fake_entry: str = "") -> None:
     data = telegram_data(root); totp = data.setdefault("totp", {})
     totp["enabled"], totp["real_password_entry"], totp["fake_password_entry"] = enabled, real_entry or str(totp.get("real_password_entry") or ""), fake_entry or str(totp.get("fake_password_entry") or "")
-    telegram = data.get("telegram", {}); save_telegram(root, str(telegram.get("keepass_profile") or ""), str(telegram.get("token_entry") or ""), data)
+    telegram = data.get("telegram", {}); save_telegram(root, str(telegram.get("vault_profile") or telegram.get("keepass_profile") or ""), str(telegram.get("token_entry") or ""), data)
 
 
 def save_app_server(root: Path, enabled: bool | None, idle_timeout: int | None) -> None:
@@ -266,7 +246,7 @@ def save_owner_execution_preferences(root: Path, enabled: bool, models: str, eff
     allowed_efforts = list(dict.fromkeys(value.strip() for value in efforts.split(";") if value.strip()))
     if any(value not in {"none", "low", "medium", "high", "xhigh", "max"} for value in allowed_efforts): raise ValueError("Esforços permitidos: none, low, medium, high, xhigh ou max.")
     agent.update({"owner_execution_preferences": enabled, "owner_allowed_models": allowed_models, "owner_allowed_reasoning_efforts": allowed_efforts})
-    telegram = data.get("telegram", {}); save_telegram(root, str(telegram.get("keepass_profile") or ""), str(telegram.get("token_entry") or ""), data)
+    telegram = data.get("telegram", {}); save_telegram(root, str(telegram.get("vault_profile") or telegram.get("keepass_profile") or ""), str(telegram.get("token_entry") or ""), data)
 
 
 def workspace(root: Path) -> Path:
@@ -367,7 +347,7 @@ def save_voice_reply(root: Path, enabled: bool, profile: str, auto_off_minutes: 
     if enabled or outbound_media: staging = ensure_gateway_activity_permissions(root, profile)
     data = telegram_data(root); voice = data.setdefault("voice_reply", {})
     voice.update({"enabled": enabled, "eccovox_profile": profile, "auto_off_minutes": auto_off_minutes, "agent_outbound_media": outbound_media})
-    telegram = data.get("telegram", {}); save_telegram(root, str(telegram.get("keepass_profile") or ""), str(telegram.get("token_entry") or ""), data)
+    telegram = data.get("telegram", {}); save_telegram(root, str(telegram.get("vault_profile") or telegram.get("keepass_profile") or ""), str(telegram.get("token_entry") or ""), data)
     return staging
 
 
@@ -445,24 +425,10 @@ def validation(root: Path) -> list[dict[str, str]]:
     except FileNotFoundError: add("pending", "Estrutura da configuração Telegram", "Abra Gateway Telegram para criar a configuração."); return checks
     except tomllib.TOMLDecodeError as error: add("error", "Estrutura da configuração Telegram", f"TOML inválido: {error}"); return checks
     telegram = data.get("telegram", {})
-    profile, entry = str(telegram.get("keepass_profile") or ""), str(telegram.get("token_entry") or "")
+    profile, entry = str(telegram.get("vault_profile") or telegram.get("keepass_profile") or ""), str(telegram.get("token_entry") or "")
     known = profiles(root)
-    add("ok" if profile and profile in known else "error", "Perfil KeePass", f"{profile!r} disponível." if profile in known else ("Selecione um perfil KeePass existente." if not profile else f"Perfil {profile!r} não encontrado."))
+    add("ok" if profile and profile in known else "error", "Perfil de vault MCP", f"{profile!r} disponível." if profile in known else ("Selecione um perfil de vault MCP existente." if not profile else f"Perfil {profile!r} não encontrado."))
     add("ok" if entry and not entry.endswith(":Shikigami") else "pending", "Referência do token", entry if entry and not entry.endswith(":Shikigami") else "Defina a entrada KeePass do token do bot.")
-    if os.name == "nt" and profile in known:
-        try:
-            keepass = tomllib.loads((root / "configs" / "keepass.toml").read_text(encoding="utf-8"))
-            auth = keepass.get("profiles", {}).get(profile, {}).get("auth", {}).get("windows", {})
-            credential_manager = isinstance(auth, dict) and auth.get("mode") == "windows_credential_manager"
-            service_account = str(service_info(root).get("run_as_user") or "")
-            if credential_manager and service_account.casefold() == "localsystem":
-                add("error", "Conta do serviço e KeePass", "LocalSystem não acessa a credencial do KeePass do usuário atual. Em Daemon > Processo/Serviço > Serviço do sistema operacional, escolha Configurar conta do serviço e use a conta que configurou o cofre.")
-            elif credential_manager and service_account:
-                add("ok", "Conta do serviço e KeePass", f"O serviço usa {service_account}. A inicialização do gateway validará o acesso ao KeePass dessa conta.")
-            elif credential_manager:
-                add("pending", "Conta do serviço e KeePass", "Defina a conta do Serviço Windows antes de habilitar o gateway.")
-        except (OSError, tomllib.TOMLDecodeError, AttributeError):
-            add("error", "Conta do serviço e KeePass", "Não foi possível validar a conta do Serviço Windows contra o perfil KeePass.")
     try:
         system = tomllib.loads((root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8")).get("codex", {})
         executable = Path(str(system.get("executable") or ""))
@@ -591,11 +557,11 @@ def daemon_validation(root: Path) -> list[dict[str, str]]:
 
 
 def test_telegram(root: Path) -> tuple[bool, str]:
-    from onmyoji_daemon.telegram import Settings, TelegramApi, Vault
+    from onmyoji_daemon.telegram import McpVault, Settings, TelegramApi
     marker = root / "configs" / "daemon" / "runtime" / "telegram-test.json"
     try:
         settings = Settings.load(root.resolve(), target(root).parent)
-        account = TelegramApi(Vault(settings).read(settings.token_entry)).call("getMe")
+        account = TelegramApi(McpVault(settings).read(settings.token_entry)).call("getMe")
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(json.dumps({"tested_at": time.time(), "bot": str(account.get("username") or account.get("first_name") or "")}), encoding="utf-8")
         return True, f"Bot autenticado: @{account.get('username') or account.get('first_name') or 'sem username'}"

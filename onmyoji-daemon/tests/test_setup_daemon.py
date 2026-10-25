@@ -46,38 +46,13 @@ def test_validation_requires_an_absolute_codex_executable_for_services(tmp_path)
     assert executable["state"] == "error"
 
 
-def test_telegram_validation_reports_missing_keepass_skill_before_credentials(tmp_path):
+def test_telegram_validation_reports_missing_mcp_vault_profiles(tmp_path):
     module = setup_module(); module.bootstrap(tmp_path)
 
     checks = module.validation(tmp_path)
 
-    skill = next(item for item in checks if item["label"] == "Skill KeePass Vault")
-    configuration = next(item for item in checks if item["label"] == "Configuração KeePass Vault")
-    profiles = next(item for item in checks if item["label"] == "Perfis KeePass Vault")
-    assert skill["state"] == "error"
-    assert configuration["state"] == "error"
+    profiles = next(item for item in checks if item["label"] == "Perfis de vault MCP")
     assert profiles["state"] == "error"
-
-
-def test_telegram_validation_rejects_localsystem_with_user_keepass_credential(tmp_path):
-    module = setup_module()
-    if module.os.name != "nt":
-        return
-    configs = tmp_path / "configs"; configs.mkdir()
-    (configs / "keepass.toml").write_text(
-        '[vaults.main]\ncli_command = ["keepassxc-cli"]\n\n[vaults.main.database]\nwindows = "C:/vault.kdbx"\nlinux = ""\n\n[profiles.main]\nvault = "main"\n\n[profiles.main.auth.windows]\nmode = "windows_credential_manager"\ntarget = "Onmyoji/KeePass/main"\n',
-        encoding="utf-8",
-    )
-    (configs / "daemon").mkdir()
-    (configs / "daemon" / "service.json").write_text('{"name":"Teste","root":"' + str(tmp_path.resolve()).replace("\\", "\\\\") + '","run_as_user":"LocalSystem"}', encoding="utf-8")
-    module.bootstrap(tmp_path)
-    module.save_telegram(tmp_path, "main", "APIs/Telegram:Bot")
-
-    checks = module.validation(tmp_path)
-
-    account = next(item for item in checks if item["label"] == "Conta do serviço e KeePass")
-    assert account["state"] == "error"
-    assert "LocalSystem" in account["detail"]
 
 
 def test_daemon_bootstrap_prepares_only_the_platform(tmp_path):

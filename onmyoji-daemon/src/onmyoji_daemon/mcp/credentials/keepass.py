@@ -13,6 +13,7 @@ from pathlib import Path
 import subprocess
 import tomllib
 from typing import Any
+import xml.etree.ElementTree as ET
 
 
 class CredentialError(ValueError):
@@ -70,7 +71,7 @@ class KeePassCredentialResolver:
         """
         profile_id = _require_string(profile_name, "invalid_profile", "Perfil de credencial inválido.")
         requested_entry = _require_string(entry_path, "invalid_entry", "Entrada de credencial inválida.")
-        if field not in {"password", "notes"}:
+        if field not in {"password", "notes", "totp"}:
             raise CredentialError("invalid_field", "Campo de credencial não permitido.")
 
         defaults, profile, vault = self._settings(profile_id)
@@ -85,6 +86,19 @@ class KeePassCredentialResolver:
             return self._read_secret(vault, defaults, requested_entry, field, password)
         finally:
             # Reduz a vida da referência; Python não garante limpeza de memória.
+            del password
+
+    def list_totp(self, profile_name: str) -> list[str]:
+        """Lista somente os caminhos permitidos que possuem TOTP configurado."""
+        profile_id = _require_string(profile_name, "invalid_profile", "Perfil de credencial inválido.")
+        defaults, profile, vault = self._settings(profile_id)
+        roots = profile.get("allowed_entry_roots", [])
+        if not isinstance(roots, list) or not all(isinstance(item, str) and item.strip() for item in roots):
+            raise CredentialError("invalid_config", "Raízes permitidas do perfil são inválidas.")
+        password = self._master_password(profile)
+        try:
+            return [entry for entry in self._list_totp(vault, defaults, password) if _is_allowed_entry(entry, roots)]
+        finally:
             del password
 
     def test_profile_access(self, profile_name: str) -> None:
@@ -250,9 +264,14 @@ class KeePassCredentialResolver:
             raise CredentialError("invalid_config", "Timeout do cofre inválido.") from error
         if timeout <= 0:
             raise CredentialError("invalid_config", "Timeout do cofre inválido.")
-        attribute = "Password" if field == "password" else "Notes"
+        arguments = [*command, "show", "-q"]
+        if field == "totp":
+            arguments += ["--totp", database_path, entry_path]
+        else:
+            attribute = "Password" if field == "password" else "Notes"
+            arguments += ["--show-protected", "-a", attribute, database_path, entry_path]
         try:
-            result = subprocess.run([*command, "show", "-q", "--show-protected", "-a", attribute, database_path, entry_path], input=password + "\n", text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=timeout)
+            result = subprocess.run(arguments, input=password + "\n", text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=timeout)
         except FileNotFoundError as error:
             raise CredentialError("cli_not_found", "keepassxc-cli não encontrado.") from error
         except subprocess.TimeoutExpired as error:
@@ -303,6 +322,26 @@ class KeePassCredentialResolver:
         output = cls._run_write_command(vault, defaults, ["ls", "-q", "-R", "-f", "__DATABASE__"], password)
         normalized = _normalize_entry_path(entry_path)
         return any(_normalize_entry_path(line.rstrip("/")) == normalized and not line.endswith("/") for line in output.splitlines())
+
+    @classmethod
+    def _list_totp(cls, vault: dict[str, Any], defaults: dict[str, Any], password: str) -> list[str]:
+        xml = cls._run_write_command(vault, defaults, ["export", "-q", "--format", "xml", "__DATABASE__"], password)
+        try:
+            root = ET.fromstring(xml)
+        except ET.ParseError as error:
+            raise CredentialError("keepass_error", "Exportação XML do KeePassXC inválida.") from error
+        entries: list[str] = []
+        def walk(group: ET.Element, prefix: str) -> None:
+            current = "/".join(item for item in (prefix, group.findtext("Name", "")) if item)
+            for entry in group.findall("Entry"):
+                values = {item.findtext("Key", ""): item.findtext("Value", "") for item in entry.findall("String")}
+                if values.get("Title") and values.get("otp"):
+                    entries.append("/".join((current, values["Title"])))
+            for child in group.findall("Group"):
+                walk(child, current)
+        for group in root.findall(".//Root/Group"):
+            walk(group, "")
+        return entries
 
     @classmethod
     def _ensure_parent_groups(cls, vault: dict[str, Any], defaults: dict[str, Any], entry_path: str, password: str) -> None:
