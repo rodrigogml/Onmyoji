@@ -97,9 +97,11 @@ def test_runtime_install_creates_private_environment(tmp_path, monkeypatch):
 
     assert ok and "validado" in message
     assert calls[0][:3] == [management.sys.executable, "-m", "venv"]
-    assert calls[1][:4] == [str(executable), "-m", "pip", "install"]
-    assert "--editable" not in calls[1]
-    assert any(str(value).startswith("aiohttp>=") for value in calls[1])
+    assert "--without-pip" in calls[0]
+    assert calls[1] == [str(executable), "-m", "pip", "--version"]
+    assert calls[2][:4] == [str(executable), "-m", "pip", "install"]
+    assert "--editable" not in calls[2]
+    assert any(str(value).startswith("aiohttp>=") for value in calls[2])
 
 
 def test_external_runtime_is_not_changed_without_install_permission(tmp_path, monkeypatch):

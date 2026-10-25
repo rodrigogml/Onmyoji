@@ -93,30 +93,60 @@ def ensure_runtime(root: Path, show_progress: bool = False, allow_install: bool 
     """Prepara o runtime escolhido e instala as dependências do daemon."""
     runtime = runtime_configuration(root); executable = daemon_python(root)
     if _runtime_ready(executable): return True, "Ambiente Python do daemon está pronto."
+    if not allow_install:
+        return False, "O runtime escolhido não possui os componentes necessários. Use Instalar/validar daemon e confirme a instalação dos componentes."
     if runtime["mode"] == "dedicated":
         environment = executable.parent.parent
         environment.parent.mkdir(parents=True, exist_ok=True)
         creator = runtime["base_python"] or sys.executable
         if not executable.is_file():
-            if show_progress: print(f"Criando ambiente dedicado com {creator}...")
-            created = subprocess.run([creator, "-m", "venv", str(environment)], text=True, capture_output=not show_progress, check=False)
+            if show_progress: print(f"[1/3] Criando ambiente dedicado com {creator} (sem pacotes)...")
+            try:
+                created = subprocess.run([creator, "-m", "venv", "--without-pip", str(environment)], text=True, capture_output=not show_progress, check=False, timeout=120)
+            except subprocess.TimeoutExpired:
+                return False, "A criação do ambiente Python excedeu 2 minutos. O ambiente parcial foi preservado para diagnóstico."
+            except OSError as error:
+                return False, "Não foi possível iniciar o Python para criar o ambiente: " + str(error)
             if created.returncode != 0:
                 detail = ((created.stderr or created.stdout) if not show_progress else "").strip()
                 return False, "Não foi possível criar o ambiente Python do daemon: " + (detail or "venv falhou")
             if show_progress: print("✓ Ambiente Python dedicado criado.")
     elif not executable.is_file():
         return False, "O executável Python escolhido não existe. Escolha outro runtime no instalador do daemon."
+    if show_progress: print("[2/3] Verificando o instalador de pacotes (pip)...")
+    try:
+        pip_available = subprocess.run([str(executable), "-m", "pip", "--version"], text=True, capture_output=not show_progress, check=False, timeout=30)
+    except subprocess.TimeoutExpired:
+        return False, "A verificação do pip excedeu 30 segundos. O runtime Python não respondeu."
+    except OSError as error:
+        return False, "Não foi possível executar o runtime Python escolhido: " + str(error)
+    if pip_available.returncode != 0:
+        if show_progress: print("Inicializando o pip no ambiente escolhido...")
+        try:
+            bootstrapped = subprocess.run([str(executable), "-m", "ensurepip", "--upgrade", "--default-pip"], text=True, capture_output=not show_progress, check=False, timeout=120)
+        except subprocess.TimeoutExpired:
+            return False, "A inicialização do pip excedeu 2 minutos. Consulte o runtime Python escolhido."
+        except OSError as error:
+            return False, "Não foi possível inicializar o pip: " + str(error)
+        if bootstrapped.returncode != 0:
+            detail = ((bootstrapped.stderr or bootstrapped.stdout) if not show_progress else "").strip().splitlines()
+            return False, "Não foi possível inicializar o pip: " + (detail[-1] if detail else "ensurepip falhou")
+        if show_progress: print("✓ Pip inicializado.")
     try:
         requirements = runtime_requirements()
     except (OSError, KeyError, TypeError, ValueError, tomllib.TOMLDecodeError):
         return False, "Não foi possível ler as dependências do daemon em pyproject.toml."
-    if not allow_install:
-        return False, "O runtime escolhido não possui os componentes necessários. Use Instalar/validar daemon e confirme a instalação dos componentes."
     if show_progress:
+        print("[3/3] Instalando os componentes do daemon...")
         print("Componentes que serão verificados/instalados:")
         for requirement in requirements: print("  • " + requirement)
         print("Instalando componentes; a saída do pip será exibida abaixo...")
-    installed = subprocess.run([str(executable), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", *requirements], text=True, capture_output=not show_progress, check=False)
+    try:
+        installed = subprocess.run([str(executable), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", *requirements], text=True, capture_output=not show_progress, check=False, timeout=600)
+    except subprocess.TimeoutExpired:
+        return False, "A instalação dos componentes excedeu 10 minutos. Verifique a conexão e o índice de pacotes Python."
+    except OSError as error:
+        return False, "Não foi possível iniciar o pip: " + str(error)
     if installed.returncode != 0:
         detail = ((installed.stderr or installed.stdout) if not show_progress else "").strip().splitlines()
         return False, "Não foi possível instalar as dependências do daemon: " + (detail[-1] if detail else "pip falhou")
