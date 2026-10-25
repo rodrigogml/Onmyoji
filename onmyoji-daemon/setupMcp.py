@@ -376,7 +376,7 @@ def manage_todoist_profile(config: McpConfiguration, name: str) -> None:
 def todoist_menu(config: McpConfiguration) -> None:
     while True:
         data = config.todoist(); names = sorted(data["profiles"]); status = "ATIVA" if config.todoist_tool_available() else "inativa"
-        screen("MCP · Todoist", f"Ferramenta todoist.list_tasks · {status}")
+        screen("MCP · Todoist", f"Integração MCP completa · {status}")
         item("1.", "Criar perfil")
         item("2.", "Gerenciar perfil", f"{len(names)} configurado(s)")
         item("X.", "Voltar")
@@ -392,7 +392,7 @@ def todoist_menu(config: McpConfiguration) -> None:
             entry, field = credential
             description = ask("Descrição de quando utilizar este perfil", required=True)
             if not description: result(False, "Perfil Todoist inválido."); continue
-            data["profiles"][name] = {"enabled": True, "description": description, "credential_profile": vault, "credential_entry_path": entry, "credential_field": field, "allowed_operations": ["todoist.list_tasks", "todoist.test_connection"]}
+            data["profiles"][name] = {"enabled": True, "description": description, "credential_profile": vault, "credential_entry_path": entry, "credential_field": field}
         elif choice == "2" and (name := select("MCP · Gerenciar perfil Todoist", names)):
             manage_todoist_profile(config, name)
         else:

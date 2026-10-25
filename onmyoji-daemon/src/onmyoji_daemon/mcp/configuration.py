@@ -160,9 +160,12 @@ class McpConfiguration:
                 raise McpConfigurationError("Referência de vault do perfil Todoist incompleta.")
             if profile["credential_field"] not in {"password", "notes"}:
                 raise McpConfigurationError("Campo KeePass do perfil Todoist inválido.")
+            # Configurações anteriores podem conter allowed_operations. O
+            # campo deixou de controlar a publicação: um perfil habilitado
+            # expõe toda a superfície Todoist do MCP.
             allowed = profile.get("allowed_operations")
-            if not isinstance(allowed, list) or not all(item in {"todoist.list_tasks", "todoist.test_connection"} for item in allowed):
-                raise McpConfigurationError("Operações Todoist inválidas.")
+            if allowed is not None and (not isinstance(allowed, list) or not all(isinstance(item, str) for item in allowed)):
+                raise McpConfigurationError("Operações Todoist legadas inválidas.")
 
     @staticmethod
     def _render_credentials(data: dict[str, Any]) -> str:
@@ -179,5 +182,5 @@ class McpConfiguration:
         defaults = data["defaults"]
         lines = ["schema_version = 1", "", "[defaults]", f"api_base = {_quote(defaults['api_base'])}", f"timeout_seconds = {defaults['timeout_seconds']}", f"max_retries = {defaults['max_retries']}"]
         for name, profile in sorted(data["profiles"].items()):
-            lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"credential_profile = {_quote(profile['credential_profile'])}", f"credential_entry_path = {_quote(profile['credential_entry_path'])}", f"credential_field = {_quote(profile['credential_field'])}", f"allowed_operations = {_array(profile['allowed_operations'])}"]
+            lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"credential_profile = {_quote(profile['credential_profile'])}", f"credential_entry_path = {_quote(profile['credential_entry_path'])}", f"credential_field = {_quote(profile['credential_field'])}"]
         return "\n".join(lines) + "\n"

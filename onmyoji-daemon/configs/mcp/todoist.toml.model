@@ -11,4 +11,3 @@ description = "Explique quando este perfil deve ser utilizado."
 credential_profile = "example"
 credential_entry_path = "APIs/Todoist/example"
 credential_field = "password"
-allowed_operations = ["todoist.list_tasks", "todoist.test_connection"]

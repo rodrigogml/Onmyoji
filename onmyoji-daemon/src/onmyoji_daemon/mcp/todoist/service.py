@@ -1,11 +1,11 @@
-"""Serviço Todoist de leitura para a primeira integração MCP.
+"""Serviço da integração Todoist publicada pelo servidor MCP interno.
 
-O serviço não conhece a implementação do cofre nem retorna respostas brutas da
-API. Ele obtém o token por um perfil de credencial MCP e oferece casos de uso
-explícitos, começando por :meth:`TodoistService.list_tasks`.
+O serviço não conhece a implementação do cofre. Ele obtém o token por um perfil
+de credencial MCP e nunca o inclui no resultado devolvido à tool.
 """
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 import time
@@ -16,6 +16,19 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from ..credentials import CredentialError, KeePassCredentialResolver
+
+
+OPERATIONS: dict[str, tuple[str, str, bool]] = {
+    "get_user": ("GET", "/user", False), "get_task": ("GET", "/tasks/{task_id}", False), "create_task": ("POST", "/tasks", False), "update_task": ("POST", "/tasks/{task_id}", False), "complete_task": ("POST", "/tasks/{task_id}/close", True), "reopen_task": ("POST", "/tasks/{task_id}/reopen", False), "delete_task": ("DELETE", "/tasks/{task_id}", True), "filter_tasks": ("GET", "/tasks/filter", False),
+    "list_projects": ("GET", "/projects", False), "get_project": ("GET", "/projects/{project_id}", False), "create_project": ("POST", "/projects", False), "update_project": ("POST", "/projects/{project_id}", False), "delete_project": ("DELETE", "/projects/{project_id}", True), "archive_project": ("POST", "/projects/{project_id}/archive", True), "unarchive_project": ("POST", "/projects/{project_id}/unarchive", False), "list_archived_projects": ("GET", "/projects/archived", False),
+    "list_sections": ("GET", "/sections", False), "get_section": ("GET", "/sections/{section_id}", False), "create_section": ("POST", "/sections", False), "update_section": ("POST", "/sections/{section_id}", False), "delete_section": ("DELETE", "/sections/{section_id}", True), "archive_section": ("POST", "/sections/{section_id}/archive", True), "unarchive_section": ("POST", "/sections/{section_id}/unarchive", False),
+    "list_labels": ("GET", "/labels", False), "get_label": ("GET", "/labels/{label_id}", False), "create_label": ("POST", "/labels", False), "update_label": ("POST", "/labels/{label_id}", False), "delete_label": ("DELETE", "/labels/{label_id}", True), "list_shared_labels": ("GET", "/labels/shared", False), "rename_shared_label": ("POST", "/labels/shared/rename", False), "remove_shared_label": ("POST", "/labels/shared/remove", True),
+    "list_comments": ("GET", "/comments", False), "get_comment": ("GET", "/comments/{comment_id}", False), "create_comment": ("POST", "/comments", False), "update_comment": ("POST", "/comments/{comment_id}", False), "delete_comment": ("DELETE", "/comments/{comment_id}", True), "list_project_collaborators": ("GET", "/projects/{project_id}/collaborators", False), "list_activities": ("GET", "/activities", False),
+    "list_reminders": ("GET", "/reminders", False), "get_reminder": ("GET", "/reminders/{reminder_id}", False), "create_reminder": ("POST", "/reminders", False), "update_reminder": ("POST", "/reminders/{reminder_id}", False), "delete_reminder": ("DELETE", "/reminders/{reminder_id}", True),
+    "list_backups": ("GET", "/backups", False), "download_backup": ("GET", "/backups/{backup_id}", False), "get_email_settings": ("GET", "/emails", False), "get_notification_settings": ("GET", "/notifications", False), "revoke_token": ("POST", "/revoke", True),
+}
+
+UPLOAD_OPERATIONS = {"upload_file", "delete_upload"}
 
 
 class TodoistError(ValueError):
@@ -32,11 +45,11 @@ def todoist_config_path(onmyoji_root: Path) -> Path:
 
 
 class TodoistService:
-    """Executa consultas Todoist autorizadas pelos perfis locais do MCP.
+    """Executa as operações Todoist pelos perfis locais do MCP.
 
-    A primeira versão deliberadamente contém apenas operações de leitura. Cada
-    operação requer autorização explícita no perfil, o que evita que uma futura
-    expansão da API amplie permissões de perfis existentes por acidente.
+    O token permanece no cofre MCP. Um perfil habilitado publica toda a
+    superfície suportada da integração; operações destrutivas exigem uma
+    confirmação explícita no argumento da tool.
     """
 
     def __init__(self, onmyoji_root: Path, credentials: KeePassCredentialResolver | None = None):
@@ -56,7 +69,6 @@ class TodoistService:
                 configuração, rede, protocolo ou API.
         """
         profile, defaults = self._profile(profile_name)
-        self._require_operation(profile, "todoist.list_tasks")
         token = self._token(profile)
         tasks: list[dict[str, Any]] = []
         cursor: str | None = None
@@ -76,10 +88,33 @@ class TodoistService:
                 raise TodoistError("invalid_response", "Todoist retornou uma paginação de tarefas inválida.")
             seen_cursors.add(cursor)
 
+    def invoke(self, profile_name: str, operation: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
+        """Executa uma operação Todoist publicada pelo MCP sem expor o token."""
+        profile, defaults = self._profile(profile_name)
+        if operation in UPLOAD_OPERATIONS:
+            return self._upload(profile, defaults, operation, arguments)
+        if operation == "sync":
+            return {"data": self._sync(profile, defaults, arguments)}
+        spec = OPERATIONS.get(operation)
+        if spec is None:
+            raise TodoistError("unsupported_operation", "Operação Todoist não suportada.")
+        method, template, destructive = spec
+        if destructive and arguments.get("confirm") is not True:
+            raise TodoistError("confirmation_required", "Confirme a operação destrutiva com confirm=true.")
+        params = arguments.get("params", {})
+        query = arguments.get("query", {})
+        body = arguments.get("body")
+        if not isinstance(params, Mapping) or not isinstance(query, Mapping) or body is not None and not isinstance(body, Mapping):
+            raise TodoistError("invalid_arguments", "Parâmetros, consulta e corpo devem ser objetos.")
+        path = self._endpoint(template, params)
+        if query:
+            path += "?" + urlencode({str(key): value for key, value in query.items() if value is not None}, doseq=True)
+        data = None if body is None else json.dumps(body).encode("utf-8")
+        return {"data": self._request_json(path, self._token(profile), defaults, method=method, data=data)}
+
     def test_connection(self, profile_name: str) -> dict[str, Any]:
         """Confirma a credencial do perfil sem devolver token ou dados da conta."""
         profile, defaults = self._profile(profile_name)
-        self._require_operation(profile, "todoist.test_connection")
         payload = self._request_json("/user", self._token(profile), defaults)
         if not isinstance(payload, Mapping) or not payload.get("id"):
             raise TodoistError("invalid_response", "Todoist não confirmou a identidade da credencial.")
@@ -106,14 +141,6 @@ class TodoistService:
             raise TodoistError("invalid_config", "Configuração padrão Todoist inválida.")
         return profile, defaults
 
-    @staticmethod
-    def _require_operation(profile: Mapping[str, Any], operation: str) -> None:
-        allowed = profile.get("allowed_operations")
-        if not isinstance(allowed, list) or not all(isinstance(item, str) for item in allowed):
-            raise TodoistError("invalid_config", "Operações permitidas do perfil Todoist são inválidas.")
-        if operation not in allowed:
-            raise TodoistError("operation_denied", "Operação Todoist não permitida para este perfil.")
-
     def _token(self, profile: Mapping[str, Any]) -> str:
         credential_profile = profile.get("credential_profile")
         credential_entry = profile.get("credential_entry_path")
@@ -125,7 +152,7 @@ class TodoistService:
         except CredentialError as error:
             raise TodoistError("credential_" + error.code, "Não foi possível obter a credencial Todoist.") from error
 
-    def _request_json(self, path: str, token: str, defaults: Mapping[str, Any]) -> Any:
+    def _request_json(self, path: str, token: str, defaults: Mapping[str, Any], *, method: str = "GET", data: bytes | None = None, content_type: str = "application/json") -> Any:
         base = defaults.get("api_base", "https://api.todoist.com/api/v1")
         if not isinstance(base, str) or not base.startswith("https://api.todoist.com/api/v1"):
             raise TodoistError("invalid_config", "Endpoint da API Todoist inválido.")
@@ -136,19 +163,63 @@ class TodoistService:
             raise TodoistError("invalid_config", "Timeout ou tentativas Todoist inválidos.") from error
         if timeout <= 0 or retries < 0:
             raise TodoistError("invalid_config", "Timeout ou tentativas Todoist inválidos.")
-        request = Request(base.rstrip("/") + path, headers={"Authorization": "Bearer " + token, "Accept": "application/json"}, method="GET")
+        headers = {"Authorization": "Bearer " + token, "Accept": "application/json"}
+        if data is not None: headers["Content-Type"] = content_type
+        request = Request(base.rstrip("/") + path, headers=headers, data=data, method=method)
         for attempt in range(retries + 1):
             try:
                 with urlopen(request, timeout=timeout) as response:
-                    return json.loads(response.read())
+                    raw = response.read()
+                    if not raw:
+                        return None
+                    try:
+                        return json.loads(raw)
+                    except json.JSONDecodeError:
+                        return {"content_base64": base64.b64encode(raw).decode("ascii")}
             except HTTPError as error:
                 if error.code not in {429, 500, 502, 503, 504} or attempt == retries:
                     raise TodoistError("todoist_http_error", f"Todoist retornou HTTP {error.code}.") from error
-            except (URLError, TimeoutError, json.JSONDecodeError) as error:
+            except (URLError, TimeoutError) as error:
                 if attempt == retries:
                     raise TodoistError("network_error", "Não foi possível consultar a API Todoist.") from error
             time.sleep(0.25 * (attempt + 1))
         raise TodoistError("network_error", "Não foi possível consultar a API Todoist.")
+
+    @staticmethod
+    def _endpoint(template: str, params: Mapping[str, Any]) -> str:
+        path = template
+        for segment in template.split("/"):
+            if not (segment.startswith("{") and segment.endswith("}")):
+                continue
+            key = segment[1:-1]
+            value = params.get(key)
+            if value is None or isinstance(value, (Mapping, list)):
+                raise TodoistError("missing_parameter", f"Parâmetro obrigatório ausente: {key}.")
+            path = path.replace("{" + key + "}", str(value))
+        return path
+
+    def _sync(self, profile: Mapping[str, Any], defaults: Mapping[str, Any], arguments: Mapping[str, Any]) -> Any:
+        commands = arguments.get("commands")
+        if not isinstance(commands, list) or any(not isinstance(command, Mapping) for command in commands):
+            raise TodoistError("invalid_arguments", "commands deve ser uma lista de objetos.")
+        form = urlencode({"sync_token": arguments.get("sync_token", "*"), "resource_types": json.dumps(["all"]), "commands": json.dumps(commands)}).encode("utf-8")
+        return self._request_json("/sync", self._token(profile), defaults, method="POST", data=form, content_type="application/x-www-form-urlencoded")
+
+    def _upload(self, profile: Mapping[str, Any], defaults: Mapping[str, Any], operation: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
+        if operation == "delete_upload":
+            upload_id = arguments.get("upload_id")
+            if not isinstance(upload_id, str) or not upload_id or arguments.get("confirm") is not True:
+                raise TodoistError("confirmation_required", "Informe upload_id e confirme a remoção com confirm=true.")
+            return {"data": self._request_json(f"/uploads/{upload_id}", self._token(profile), defaults, method="DELETE")}
+        file_path = arguments.get("file_path")
+        if not isinstance(file_path, str) or not Path(file_path).is_file():
+            raise TodoistError("file_not_found", "Arquivo para upload não encontrado.")
+        source = Path(file_path)
+        boundary = "----OnmyojiTodoist"
+        content = source.read_bytes()
+        name = str(arguments.get("filename") or source.name).replace('"', "")
+        payload = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\nContent-Type: application/octet-stream\r\n\r\n".encode() + content + f"\r\n--{boundary}--\r\n".encode())
+        return {"data": self._request_json("/uploads", self._token(profile), defaults, method="POST", data=payload, content_type=f"multipart/form-data; boundary={boundary}")}
 
     @staticmethod
     def _task(value: Mapping[str, Any]) -> dict[str, Any]:

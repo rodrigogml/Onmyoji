@@ -79,13 +79,11 @@ def test_list_tasks_uses_credential_profile_and_projects_safe_fields(tmp_path, m
     assert "private-token" not in requests[0][0].full_url
 
 
-def test_list_tasks_requires_explicit_permission(tmp_path):
+def test_list_tasks_ignores_legacy_operation_list(tmp_path, monkeypatch):
     write_config(tmp_path, '"todoist.test_connection"')
+    monkeypatch.setattr("onmyoji_daemon.mcp.todoist.service.urlopen", lambda *_args, **_kwargs: Response({"results": [], "next_cursor": None}))
 
-    with pytest.raises(TodoistError) as error:
-        TodoistService(tmp_path, Credentials()).list_tasks("example")
-
-    assert error.value.code == "operation_denied"
+    assert TodoistService(tmp_path, Credentials()).list_tasks("example") == {"tasks": []}
 
 
 def test_list_tasks_follows_todoist_cursor_pagination(tmp_path, monkeypatch):
@@ -139,3 +137,29 @@ def test_disabled_profile_cannot_call_the_integration(tmp_path):
         TodoistService(tmp_path, Credentials()).list_tasks("example")
 
     assert error.value.code == "profile_disabled"
+
+
+def test_invoke_builds_api_path_query_and_json_body(tmp_path, monkeypatch):
+    write_config(tmp_path)
+    calls = []
+
+    def open_request(request, timeout):
+        calls.append(request)
+        return Response({"id": "42", "content": "Nova tarefa"})
+
+    monkeypatch.setattr("onmyoji_daemon.mcp.todoist.service.urlopen", open_request)
+    result = TodoistService(tmp_path, Credentials()).invoke("example", "update_task", {"params": {"task_id": "42"}, "query": {"notify": True}, "body": {"content": "Nova tarefa"}})
+
+    assert result == {"data": {"id": "42", "content": "Nova tarefa"}}
+    assert calls[0].method == "POST"
+    assert calls[0].full_url == "https://api.todoist.com/api/v1/tasks/42?notify=True"
+    assert json.loads(calls[0].data) == {"content": "Nova tarefa"}
+
+
+def test_destructive_operation_requires_confirmation(tmp_path):
+    write_config(tmp_path)
+
+    with pytest.raises(TodoistError) as error:
+        TodoistService(tmp_path, Credentials()).invoke("example", "delete_task", {"params": {"task_id": "42"}})
+
+    assert error.value.code == "confirmation_required"
