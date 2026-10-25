@@ -346,6 +346,26 @@ def _systemd_unit(root: Path, executable: str, source: Path, description: str, s
     return "\n".join(["[Unit]", f"Description={description}", "Wants=network-online.target", "After=network-online.target", "", *service, "", "[Install]", "WantedBy=default.target" if scope == "user" else "WantedBy=multi-user.target", ""])
 
 
+def prepare_windows_service_host(root: Path) -> tuple[bool, str]:
+    """Posiciona o host pywin32 onde o Python reconhece corretamente o venv."""
+    executable = daemon_python(root); scripts = executable.parent; environment = scripts.parent; site_packages = environment / "Lib" / "site-packages"
+    service_source = next((candidate for candidate in (site_packages / "win32" / "pythonservice.exe", environment / "pythonservice.exe") if candidate.is_file()), None)
+    dlls = list((site_packages / "pywin32_system32").glob("pywintypes*.dll"))
+    try:
+        base_home = next(Path(line.split("=", 1)[1].strip()) for line in (environment / "pyvenv.cfg").read_text(encoding="utf-8").splitlines() if line.lower().startswith("home ="))
+    except (OSError, StopIteration):
+        return False, "Não foi possível identificar o Python-base do ambiente dedicado. Recrie o runtime do daemon."
+    python_dlls = list(base_home.glob("python*.dll"))
+    if not executable.is_file() or service_source is None or not dlls or not python_dlls:
+        return False, "O runtime não possui os arquivos do pywin32 necessários ao Serviço do Windows. Reinstale/valide o runtime do daemon."
+    try:
+        shutil.copy2(service_source, scripts / "pythonservice.exe")
+        for dll in [*dlls, *python_dlls]: shutil.copy2(dll, scripts / dll.name)
+    except OSError as error:
+        return False, f"Não foi possível preparar o host do Serviço do Windows: {error}"
+    return True, "Host do Serviço do Windows preparado no ambiente dedicado."
+
+
 def install_service(root: Path, name: str, description: str, scope: str = "system", run_as_user: str = "", run_as_group: str = "", use_sudo: bool = False) -> tuple[bool, str]:
     if not is_installed(root): return False, "Instale primeiro o daemon desta instância."
     if service_path(root).exists(): return False, "Já existe um serviço instalado para esta instância."
@@ -355,6 +375,8 @@ def install_service(root: Path, name: str, description: str, scope: str = "syste
     executable = str(daemon_python(root))
     if os.name == "nt":
         if scope != "system": return False, "O Windows Service é sempre instalado no escopo do sistema operacional."
+        host_ready, host_message = prepare_windows_service_host(root)
+        if not host_ready: return False, host_message
         source = str(Path(__file__).resolve().parents[1]); environment = dict(os.environ)
         environment["PYTHONPATH"] = source + (os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else "")
         created = subprocess.run([executable, "-m", "onmyoji_daemon.windows_service", "--service-name", name, "--onmyoji-root", str(root.resolve()), "--startup", "auto", "install"], text=True, capture_output=True, env=environment, check=False)

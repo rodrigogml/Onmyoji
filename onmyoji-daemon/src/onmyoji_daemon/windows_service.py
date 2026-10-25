@@ -51,6 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     root, name = args.onmyoji_root.resolve(), args.service_name
 
     OnmyojiManagedService._svc_name_ = name; OnmyojiManagedService._svc_display_name_ = name; OnmyojiManagedService._svc_description_ = f"Shikigami {identity(root)} Daemon"
+    OnmyojiManagedService._exe_name_ = str(root / "configs" / "daemon" / "venv" / "Scripts" / "pythonservice.exe")
     previous, __import__("sys").argv = __import__("sys").argv, [__import__("sys").argv[0], *remainder]
     try:
         win32serviceutil.HandleCommandLine(OnmyojiManagedService)

@@ -58,7 +58,7 @@ def test_instance_installation_and_service_identity_are_local(tmp_path, monkeypa
     assert default_service_name(root) == "Shikigami-Exemplo"
     assert default_service_description(root) == "Shikigami Exemplo Daemon"
     ok, _message = set_enabled(root, "telegram", True)
-    assert ok
+    assert ok, _message
     assert Supervisor(root).services["telegram"].enabled
     ok, _message = set_enabled(root, "mini-apps", True)
     assert ok
@@ -103,6 +103,24 @@ def test_runtime_install_creates_private_environment(tmp_path, monkeypatch):
     assert "--target" in calls[2]
     assert "--editable" not in calls[2]
     assert any(str(value).startswith("aiohttp>=") for value in calls[2])
+
+
+def test_windows_service_host_is_prepared_inside_dedicated_environment(tmp_path, monkeypatch):
+    scripts = tmp_path / "configs" / "daemon" / "venv" / "Scripts"
+    executable = scripts / "python.exe"; executable.parent.mkdir(parents=True); executable.touch()
+    base = tmp_path / "Python312"; base.mkdir(); (base / "python312.dll").write_bytes(b"python")
+    (scripts.parent / "pyvenv.cfg").write_text(f"home = {base}\n", encoding="utf-8")
+    site_packages = scripts.parent / "Lib" / "site-packages"
+    source = scripts.parent / "pythonservice.exe"; source.write_bytes(b"service")
+    dll = site_packages / "pywin32_system32" / "pywintypes312.dll"; dll.parent.mkdir(parents=True); dll.write_bytes(b"dll")
+    monkeypatch.setattr(management, "daemon_python", lambda _root: executable)
+
+    ok, _message = management.prepare_windows_service_host(tmp_path)
+
+    assert ok, _message
+    assert (scripts / "pythonservice.exe").read_bytes() == b"service"
+    assert (scripts / "pywintypes312.dll").read_bytes() == b"dll"
+    assert (scripts / "python312.dll").read_bytes() == b"python"
 
 
 def test_external_runtime_is_not_changed_without_install_permission(tmp_path, monkeypatch):
