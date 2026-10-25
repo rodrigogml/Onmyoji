@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import io
 from pathlib import Path
 from dataclasses import replace
 from unittest.mock import patch
 
-from onmyoji_daemon.telegram import AppServerTurn, Contacts, Gateway, Settings, Vault
+from onmyoji_daemon.telegram import AppServerTurn, CodexAppServer, Contacts, Gateway, Settings, Vault
 from onmyoji_daemon.launcher import _approval_policy, _sandbox_policy
 
 
@@ -37,6 +38,29 @@ def test_app_server_settings_prefer_daemon_platform_configuration(tmp_path):
     settings = Settings.load(tmp_path, data)
 
     assert settings.app_server_enabled and settings.app_server_idle_seconds == 120
+
+
+def test_app_server_does_not_pass_profiles_to_the_codex_subcommand(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    settings = Settings.load(tmp_path, data)
+    captured = {}
+
+    class Process:
+        stdin = io.StringIO()
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        def poll(self): return None
+        def terminate(self): pass
+        def wait(self, timeout=None): return 0
+
+    with patch("onmyoji_daemon.telegram.subprocess.Popen", side_effect=lambda command, **_kwargs: captured.setdefault("command", command) and Process()):
+        client = CodexAppServer(settings)
+        client.request = lambda *_args, **_kwargs: {}
+        client.notify = lambda *_args, **_kwargs: None
+        client.start()
+        client.stop()
+
+    assert captured["command"] == ["codex", "app-server", "--stdio"]
 
 
 def test_gateway_sandbox_includes_only_configured_activity_root(tmp_path):

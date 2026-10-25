@@ -144,7 +144,7 @@ class CodexAppServer:
     def start(self) -> None:
         if self.running(): return
         environment = dict(os.environ); environment["CODEX_HOME"] = str(self.settings.root)
-        self.process = subprocess.Popen([self.settings.executable, "--profile", "onmyoji-skills", "app-server", "--stdio"], cwd=self.settings.project, env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        self.process = subprocess.Popen([self.settings.executable, "app-server", "--stdio"], cwd=self.settings.project, env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         self.reader = threading.Thread(target=self._read_stdout, daemon=True); self.stderr_reader = threading.Thread(target=self._read_stderr, daemon=True); self.reader.start(); self.stderr_reader.start()
         self.request("initialize", {"clientInfo": {"name": "onmyoji_telegram_gateway", "title": "Onmyoji Telegram Gateway", "version": "1.0"}, "capabilities": {"experimentalApi": True}}); self.notify("initialized")
     def stop(self) -> None:
@@ -163,7 +163,12 @@ class CodexAppServer:
         with self.pending_lock:
             request_id, response = self.next_id, queue.Queue(maxsize=1); self.next_id += 1; self.pending[request_id] = response
         try: self._send({"method": method, "id": request_id, "params": params or {}}); message = response.get(timeout=timeout)
-        except queue.Empty as error: raise CodexProtocolError(f"Codex App Server excedeu o tempo de espera em {method}") from error
+        except queue.Empty as error:
+            exited = self.process.poll() if self.process else None
+            if exited is not None:
+                detail = f": {self.last_error}" if self.last_error else ""
+                raise CodexProtocolError(f"Codex App Server encerrou com código {exited} durante {method}{detail}") from error
+            raise CodexProtocolError(f"Codex App Server excedeu o tempo de espera em {method}") from error
         finally:
             with self.pending_lock: self.pending.pop(request_id, None)
         if message.get("error"):
