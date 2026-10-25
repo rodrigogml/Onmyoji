@@ -310,7 +310,51 @@ def render_codex_system(data: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
-def validate_system(data: dict[str, object], require_ready: bool = False) -> tuple[bool, str]:
+def workspace_directory(data: dict[str, object]) -> Path | None:
+    """Retorna a pasta de trabalho resolvida, quando ela foi configurada."""
+    project = str(data["project_directory"]).strip()
+    return Path(project).expanduser().resolve() if project else None
+
+
+def resolve_writable_directory(data: dict[str, object], directory: str) -> Path | None:
+    """Resolve uma raiz extra relativa à pasta de trabalho, sem alterar o texto salvo."""
+    path = Path(directory).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    workspace = workspace_directory(data)
+    return (workspace / path).resolve() if workspace else None
+
+
+def writable_directory_relation(root: Path, data: dict[str, object], candidate: Path, directories: list[str]) -> tuple[bool, str]:
+    """Impede raízes que concederiam escrita à instância ou ao workspace por herança."""
+    root = root.resolve()
+    workspace = workspace_directory(data)
+    protected = [("CODEX_HOME", root)]
+    if workspace:
+        protected.append(("pasta de trabalho", workspace))
+    for label, protected_path in protected:
+        if candidate == protected_path or protected_path.is_relative_to(candidate):
+            return False, f"O diretório inclui {label} ou um de seus diretórios anteriores e não pode ser liberado para escrita adicional."
+    for directory in directories:
+        existing = resolve_writable_directory(data, directory)
+        if not existing:
+            continue
+        if candidate == existing:
+            return False, f"Esse diretório já está configurado como {directory}."
+        if candidate.is_relative_to(existing):
+            return False, f"Esse diretório já está coberto pela raiz configurada {directory}."
+        if existing.is_relative_to(candidate):
+            return True, f"A nova raiz também abrange {directory}; ela amplia a área de escrita já configurada."
+    return True, ""
+
+
+def is_broad_writable_directory(directory: Path) -> bool:
+    """Identifica raízes que abrangem o perfil do usuário ou toda uma unidade."""
+    home = Path.home().resolve()
+    return directory == directory.parent or directory == home or home.is_relative_to(directory)
+
+
+def validate_system(data: dict[str, object], require_ready: bool = False, root: Path | None = None) -> tuple[bool, str]:
     if not isinstance(data.get("shikigami_identity"), str): return False, "Nome do Shikigami inválido."
     if not isinstance(data.get("shikigami_installed"), bool): return False, "Estado de instalação do Shikigami inválido."
     if data["shikigami_installed"] and not str(data["shikigami_identity"]).strip(): return False, "Informe o nome do Shikigami antes de concluir a instalação."
@@ -325,16 +369,22 @@ def validate_system(data: dict[str, object], require_ready: bool = False) -> tup
     if project and not Path(project).is_dir(): return False, f"Pasta de projeto não encontrada: {project}."
     directories = data["additional_writable_directories"]
     if not isinstance(directories, list) or not all(isinstance(directory, str) for directory in directories): return False, "Lista de diretórios adicionais inválida."
-    normalized = [str(Path(directory).resolve()) for directory in directories]
-    if len(normalized) != len(set(normalized)): return False, "A lista de diretórios adicionais contém caminhos repetidos."
+    normalized: list[str] = []
     for directory in directories:
-        if not Path(directory).is_dir(): return False, f"Diretório adicional não encontrado: {directory}."
+        resolved = resolve_writable_directory(data, directory)
+        if not resolved: return False, f"Defina a pasta do projeto antes de usar um diretório adicional relativo: {directory}."
+        normalized.append(str(resolved))
+        if not resolved.is_dir(): return False, f"Diretório adicional não encontrado: {directory}."
+        if root:
+            allowed, message = writable_directory_relation(root, data, resolved, [value for value in directories if value != directory])
+            if not allowed: return False, message
+    if len(normalized) != len(set(normalized)): return False, "A lista de diretórios adicionais contém caminhos repetidos."
     if require_ready and not project: return False, "Defina a pasta do projeto antes de executar o Codex."
     return True, "Configuração do Codex-CLI válida." if project else "Configuração salva; defina a pasta do projeto antes de executar o Codex."
 
 
 def save_system(root: Path, data: dict[str, object], validate: bool = True) -> tuple[bool, str]:
-    valid, message = validate_system(data)
+    valid, message = validate_system(data, root=root)
     if validate and not valid: return False, message
     system, codex = system_path(root), config_path(root)
     old_system = system.read_text(encoding="utf-8") if system.exists() else None
@@ -783,9 +833,19 @@ def manage_writable_directories(root: Path, data: dict[str, object]) -> dict[str
     while True:
         directories = list(data["additional_writable_directories"])
         screen("Diretórios adicionais de escrita", "Eles são adicionados ao sandbox além da pasta do projeto")
+        sandbox = str(data["sandbox_mode"])
+        if sandbox == "read-only":
+            note("O sandbox atual é read-only: a lista é preservada, mas não permite escrita até escolher workspace-write.")
+        elif sandbox == "danger-full-access":
+            note("O sandbox atual é danger-full-access: a lista é preservada, mas não restringe nem amplia o acesso atual.")
+        else:
+            note("Cada entrada amplia a escrita do sandbox workspace-write; conceda somente as raízes estritamente necessárias.")
         if directories:
             print("  Permitidos:")
-            for index, directory in enumerate(directories, 1): print(f"    {index}. {directory}")
+            for index, directory in enumerate(directories, 1):
+                resolved = resolve_writable_directory(data, directory)
+                suffix = f"  →  {resolved}" if resolved and not Path(directory).expanduser().is_absolute() else ""
+                print(f"    {index}. {directory}{suffix}")
         else:
             print("  Nenhum diretório adicional configurado.")
         print()
@@ -800,7 +860,23 @@ def manage_writable_directories(root: Path, data: dict[str, object]) -> dict[str
             if value.casefold() in {"x", "\x1b"}: continue
             if not value: result(False, "Nenhum caminho informado."); continue
             candidate = str(Path(value).expanduser())
-            if candidate in directories: result(False, "Esse diretório já está configurado."); continue
+            resolved = resolve_writable_directory(data, candidate)
+            if not resolved:
+                result(False, "Defina a pasta do projeto antes de usar um diretório adicional relativo."); continue
+            if not resolved.is_dir():
+                result(False, f"Diretório não encontrado: {candidate}."); continue
+            allowed, relation = writable_directory_relation(root, data, resolved, directories)
+            if not allowed:
+                result(False, relation); continue
+            note(f"O Codex poderá escrever em {candidate}{f' (equivale a {resolved})' if not Path(candidate).is_absolute() else ''}.")
+            confirmation = "PERMITIR AMPLA" if is_broad_writable_directory(resolved) else "PERMITIR"
+            if relation:
+                note(relation)
+                confirmation = "AMPLIAR"
+            elif confirmation == "PERMITIR AMPLA":
+                note("Esta é uma raiz abrangente: ela inclui o perfil do usuário ou uma unidade inteira.")
+            if prompt(f"Digite {confirmation} para confirmar: ").strip() != confirmation:
+                result(False, "Operação cancelada."); continue
             data = update_system(root, data, "additional_writable_directories", [*directories, candidate])
         elif choice == "2":
             if not directories: result(False, "Não há diretórios para remover."); continue
@@ -819,7 +895,7 @@ def manage_writable_directories(root: Path, data: dict[str, object]) -> dict[str
 
 def launch_codex(root: Path, data: dict[str, object], login: bool = False, device_auth: bool = False) -> None:
     """Abre o Codex CLI nativo; config.toml e --add-dir são seu contrato público."""
-    ready, message = validate_system(data, require_ready=not login)
+    ready, message = validate_system(data, require_ready=not login, root=root)
     if not ready: result(False, f"Não iniciado: {message}"); return
     if not login:
         synced, sync_message = sync_active_skill_links(root, enabled_ids(root), discover(root))
@@ -834,7 +910,7 @@ def launch_codex(root: Path, data: dict[str, object], login: bool = False, devic
 
 def launch_onmyoji_interactive(root: Path, data: dict[str, object]) -> None:
     """Modo opcional via App Server, para testar a composição Onmyōji de developer instructions."""
-    ready, message = validate_system(data, require_ready=True)
+    ready, message = validate_system(data, require_ready=True, root=root)
     if not ready: result(False, f"Não iniciado: {message}"); return
     synced, sync_message = sync_active_skill_links(root, enabled_ids(root), discover(root))
     if not synced: result(False, f"Não iniciado: {sync_message}"); return
@@ -842,6 +918,44 @@ def launch_onmyoji_interactive(root: Path, data: dict[str, object]) -> None:
     command = [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "interactive"]
     try: subprocess.run(command, cwd=str(data["project_directory"]), env=environment, check=False)
     except OSError as error: result(False, f"Não foi possível iniciar o console Onmyōji: {error}")
+
+
+def writable_directories_diagnostics(root: Path, data: dict[str, object]) -> list[dict[str, str]]:
+    """Valida individualmente as raízes extras e informa quando o sandbox não as aplica."""
+    directories = data["additional_writable_directories"]
+    if not isinstance(directories, list) or not all(isinstance(directory, str) for directory in directories):
+        return [{"state": "error", "label": "Diretórios adicionais de escrita", "detail": "Lista de diretórios inválida."}]
+    if not directories:
+        return [{"state": "ok", "label": "Diretórios adicionais de escrita", "detail": "Nenhum diretório adicional configurado."}]
+    sandbox = str(data["sandbox_mode"])
+    diagnostics: list[dict[str, str]] = []
+    for index, directory in enumerate(directories, 1):
+        resolved = resolve_writable_directory(data, directory)
+        label = f"Diretório adicional de escrita {index}"
+        if not resolved:
+            diagnostics.append({"state": "error", "label": label, "detail": f"A pasta de trabalho é necessária para resolver o caminho relativo: {directory}."})
+            continue
+        if not resolved.is_dir():
+            diagnostics.append({"state": "error", "label": label, "detail": f"Diretório não encontrado: {directory}."})
+            continue
+        allowed, relation = writable_directory_relation(root, data, resolved, [value for position, value in enumerate(directories) if position != index - 1])
+        if not allowed:
+            diagnostics.append({"state": "error", "label": label, "detail": relation})
+            continue
+        detail = f"{directory} → {resolved}" if not Path(directory).expanduser().is_absolute() else str(resolved)
+        if relation:
+            detail += f". {relation}"
+        if is_broad_writable_directory(resolved):
+            detail += " Escopo abrangente confirmado na configuração."
+        if sandbox not in SANDBOXES:
+            diagnostics.append({"state": "error", "label": label, "detail": detail + f" Sandbox inválido: {sandbox or '(não configurado)'}."})
+        elif sandbox == "read-only":
+            diagnostics.append({"state": "pending", "label": label, "detail": detail + " O sandbox read-only não aplica escrita."})
+        elif sandbox == "danger-full-access":
+            diagnostics.append({"state": "pending", "label": label, "detail": detail + " O sandbox danger-full-access torna esta raiz redundante."})
+        else:
+            diagnostics.append({"state": "ok", "label": label, "detail": detail})
+    return diagnostics
 
 
 def shikigami_diagnostics(root: Path) -> list[dict[str, str]]:
@@ -881,6 +995,7 @@ def shikigami_diagnostics(root: Path) -> list[dict[str, str]]:
         "label": "Política de aprovação",
         "detail": approval if approval in APPROVALS else f"Política inválida: {approval or '(não configurada)'}",
     })
+    diagnostics.extend(writable_directories_diagnostics(root, data))
     return diagnostics
 
 
@@ -897,7 +1012,7 @@ def diagnostics_menu(root: Path) -> None:
 def codex_menu(root: Path) -> None:
     data = load_system(root)
     while True:
-        ready, message = validate_system(data, require_ready=True)
+        ready, message = validate_system(data, require_ready=True, root=root)
         screen("Codex-CLI", "Configuração da instância do Shikigami")
         item("1.", "Executável", str(data["executable"] or "(não configurado)"))
         item("2.", "Modelo", str(data["model"]))

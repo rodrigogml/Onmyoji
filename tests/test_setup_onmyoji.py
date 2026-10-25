@@ -140,7 +140,25 @@ class SystemSetupTests(unittest.TestCase):
             MODULE.system_path(Path(temporary)).parent.mkdir()
             MODULE.system_path(Path(temporary)).write_text(MODULE.render_system(data), encoding="utf-8")
             diagnostics = MODULE.shikigami_diagnostics(Path(temporary))
-        self.assertEqual([(item["state"], item["label"]) for item in diagnostics], [("ok", "Nome do Shikigami"), ("ok", "Executável do Codex-CLI"), ("ok", "Modelo do Codex-CLI"), ("ok", "Pasta de trabalho"), ("ok", "Sandbox"), ("ok", "Política de aprovação")])
+        self.assertEqual([(item["state"], item["label"]) for item in diagnostics], [("ok", "Nome do Shikigami"), ("ok", "Executável do Codex-CLI"), ("ok", "Modelo do Codex-CLI"), ("ok", "Pasta de trabalho"), ("ok", "Sandbox"), ("ok", "Política de aprovação"), ("ok", "Diretórios adicionais de escrita")])
+
+    def test_diagnostics_validate_each_additional_writable_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "MeuShikigami"; workspace = Path(temporary) / "MeuShikigami-Work"
+            root.mkdir(); workspace.mkdir()
+            data = MODULE.default_system() | {"executable": sys.executable, "project_directory": str(workspace), "additional_writable_directories": [str(root.parent)]}
+            diagnostics = MODULE.writable_directories_diagnostics(root, data)
+            self.assertEqual(diagnostics[0]["state"], "error")
+            self.assertIn("diretórios anteriores", diagnostics[0]["detail"])
+
+    def test_diagnostics_mark_extra_writable_directory_pending_when_sandbox_is_not_workspace_write(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "MeuShikigami"; workspace = Path(temporary) / "MeuShikigami-Work"
+            root.mkdir(); workspace.mkdir(); (workspace / "exports").mkdir()
+            data = MODULE.default_system() | {"project_directory": str(workspace), "sandbox_mode": "read-only", "additional_writable_directories": ["exports"]}
+            diagnostics = MODULE.writable_directories_diagnostics(root, data)
+            self.assertEqual(diagnostics[0]["state"], "pending")
+            self.assertIn(str((workspace / "exports").resolve()), diagnostics[0]["detail"])
 
     def test_legacy_untrusted_approval_policy_is_migrated_to_on_request(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -190,6 +208,71 @@ class SystemSetupTests(unittest.TestCase):
             bad = data | {"project_directory": str(root / "missing")}
             self.assertFalse(MODULE.save_system(root, bad)[0])
             self.assertEqual(MODULE.load_system(root)["project_directory"], str(root))
+
+    def test_writable_directory_menu_keeps_relative_path_and_resolves_it_from_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch("builtins.input", side_effect=["1", "exports", "PERMITIR", "x"]):
+            root = Path(temporary) / "MeuShikigami"; workspace = Path(temporary) / "MeuShikigami-Work"
+            root.mkdir(); workspace.mkdir(); (workspace / "exports").mkdir()
+            data = MODULE.default_system() | {"executable": sys.executable, "project_directory": str(workspace)}
+            configured = MODULE.manage_writable_directories(root, data)
+            self.assertEqual(configured["additional_writable_directories"], ["exports"])
+            self.assertEqual(MODULE.resolve_writable_directory(configured, "exports"), (workspace / "exports").resolve())
+
+    def test_writable_directories_reject_duplicates_after_relative_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "MeuShikigami"; workspace = Path(temporary) / "MeuShikigami-Work"
+            root.mkdir(); workspace.mkdir(); (workspace / "exports").mkdir()
+            data = MODULE.default_system() | {"executable": sys.executable, "project_directory": str(workspace), "additional_writable_directories": ["exports", ".\\exports"]}
+            valid, message = MODULE.validate_system(data, root=root)
+            self.assertFalse(valid)
+            self.assertIn("já está configurado", message)
+
+    def test_writable_directories_reject_instance_workspace_and_their_parents(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "MeuShikigami"; workspace = Path(temporary) / "MeuShikigami-Work"
+            root.mkdir(); workspace.mkdir()
+            data = MODULE.default_system() | {"executable": sys.executable, "project_directory": str(workspace)}
+            for prohibited in (str(root), str(workspace), str(root.parent)):
+                valid, message = MODULE.validate_system(data | {"additional_writable_directories": [prohibited]}, root=root)
+                self.assertFalse(valid)
+                self.assertIn("diretórios anteriores", message)
+
+    def test_writable_directory_parent_of_existing_root_requires_expansion_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "MeuShikigami"; workspace = Path(temporary) / "MeuShikigami-Work"
+            root.mkdir(); workspace.mkdir(); (workspace / "shared" / "reports").mkdir(parents=True)
+            data = MODULE.default_system() | {"executable": sys.executable, "project_directory": str(workspace), "additional_writable_directories": ["shared/reports"]}
+            allowed, message = MODULE.writable_directory_relation(root, data, (workspace / "shared").resolve(), ["shared/reports"])
+            self.assertTrue(allowed)
+            self.assertIn("amplia", message)
+
+    def test_writable_directory_menu_removes_a_selected_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch("builtins.input", side_effect=["2", "1", "x"]):
+            root = Path(temporary) / "MeuShikigami"; workspace = Path(temporary) / "MeuShikigami-Work"
+            root.mkdir(); workspace.mkdir(); (workspace / "exports").mkdir()
+            data = MODULE.default_system() | {"executable": sys.executable, "project_directory": str(workspace), "additional_writable_directories": ["exports"]}
+            configured = MODULE.manage_writable_directories(root, data)
+            self.assertEqual(configured["additional_writable_directories"], [])
+
+    def test_writable_directory_menu_removes_all_entries_only_after_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch("builtins.input", side_effect=["3", "REMOVER", "x"]):
+            root = Path(temporary) / "MeuShikigami"; workspace = Path(temporary) / "MeuShikigami-Work"
+            root.mkdir(); workspace.mkdir(); (workspace / "exports").mkdir(); (workspace / "reports").mkdir()
+            data = MODULE.default_system() | {"executable": sys.executable, "project_directory": str(workspace), "additional_writable_directories": ["exports", "reports"]}
+            configured = MODULE.manage_writable_directories(root, data)
+            self.assertEqual(configured["additional_writable_directories"], [])
+
+    def test_writable_directory_menu_does_not_save_a_missing_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch("builtins.input", side_effect=["1", "missing", "x"]):
+            root = Path(temporary) / "MeuShikigami"; workspace = Path(temporary) / "MeuShikigami-Work"
+            root.mkdir(); workspace.mkdir()
+            data = MODULE.default_system() | {"executable": sys.executable, "project_directory": str(workspace)}
+            configured = MODULE.manage_writable_directories(root, data)
+            self.assertEqual(configured["additional_writable_directories"], [])
+
+    def test_writable_directory_broad_scope_detects_user_profile_and_volume_root(self) -> None:
+        self.assertTrue(MODULE.is_broad_writable_directory(Path.home().resolve()))
+        self.assertTrue(MODULE.is_broad_writable_directory(Path(Path.home().anchor)))
 
     def test_launches_native_codex_with_workspace_and_writable_directories(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
