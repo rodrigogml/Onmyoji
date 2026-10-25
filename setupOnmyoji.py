@@ -1580,7 +1580,7 @@ def daemon_menu(root: Path) -> None:
                 name = prompt(f"Nome do serviço [{default_name}]: ").strip() or default_name
                 description = prompt(f"Descrição [{f'Shikigami {visible} Daemon'}]: ").strip() or f"Shikigami {visible} Daemon"
                 if os.name == "nt":
-                    if prompt("Instalar como LocalSystem? [s/N]: ").strip().casefold() not in {"s", "sim"}: result(False, "Instalação do serviço cancelada."); continue
+                    if prompt("Confirmar a instalação do serviço Windows como LocalSystem? [s/N]: ").strip().casefold() not in {"s", "sim"}: result(False, "Instalação do serviço cancelada."); continue
                     if lifecycle("install-service", ["--name", name, "--description", description, "--scope", "system"]) and prompt("Iniciar agora e validar o registro? [S/n]: ").strip().casefold() in {"", "s", "sim"}:
                         lifecycle("service-start"); lifecycle("service-status")
                     continue
