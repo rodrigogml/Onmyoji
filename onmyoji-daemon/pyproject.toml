@@ -11,7 +11,7 @@ dependencies = ["aiohttp>=3.10,<4", "cryptography>=42,<47"]
 
 [project.optional-dependencies]
 windows = ["pywin32>=306"]
-test = ["pytest>=8"]
+test = ["pytest>=8", "jsonschema>=4,<5"]
 
 [project.scripts]
 onmyoji-daemon = "onmyoji_daemon.cli:main"

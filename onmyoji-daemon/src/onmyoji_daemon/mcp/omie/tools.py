@@ -5,6 +5,7 @@ from typing import Any
 
 from ..configuration import McpConfiguration
 from .service import OPERATIONS, OmieService
+from .publication import description, input_contract
 
 
 class OmieToolRegistry:
@@ -20,14 +21,14 @@ class OmieToolRegistry:
             tools.append({"name": "omie.list_profiles", "description": "Lista perfis Omie habilitados e seu contexto de uso.", "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}})
         for operation, (_, _, writes) in OPERATIONS.items():
             suffix = " Exige confirm=true porque altera dados no ERP." if writes else ""
-            tools.append({"name": "omie." + operation, "description": operation.replace("_", " ") + "." + suffix + self._context(profiles), "input_schema": self._schema(profiles, writes)})
+            tools.append({"name": "omie." + operation, "description": description(operation) + suffix + self._context(profiles), "input_schema": self._schema(profiles, operation, writes)})
         return tools
 
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         profiles = self.configuration.enabled_omie_profiles()
         if name == "omie.list_profiles" and len(profiles) > 1: return {"profiles": profiles}
         profile = self._profile(profiles, arguments)
-        operation = name.removeprefix("omie.")
+        operation = name.removeprefix("omie.") if name.startswith("omie.") else ""
         if profile and operation in OPERATIONS:
             return OmieService(self.configuration.root).invoke(profile, operation, arguments)
         raise ValueError("Tool Omie indisponível.")
@@ -45,9 +46,12 @@ class OmieToolRegistry:
         return name
 
     @staticmethod
-    def _schema(profiles: list[dict[str, str]], writes: bool) -> dict[str, Any]:
-        properties: dict[str, Any] = {"params": {"type": "object", "description": "Parâmetros de consulta Omie."}, "body": {"type": "object", "description": "Corpo da operação Omie."}}
+    def _schema(profiles: list[dict[str, str]], operation: str, writes: bool) -> dict[str, Any]:
+        field, contract = input_contract(operation)
+        properties: dict[str, Any] = {field: contract}
         required: list[str] = []
+        if "required" in contract or "anyOf" in contract or "allOf" in contract:
+            required.append(field)
         if len(profiles) > 1:
             properties["profile"] = {"type": "string", "enum": [item["name"] for item in profiles]}; required.append("profile")
         if writes:

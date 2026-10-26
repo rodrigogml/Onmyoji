@@ -10,6 +10,9 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from ..credentials import CredentialError, KeePassCredentialResolver
+from .contracts import build_params
+from .customers import create_customer
+from .exception import OmieError
 
 
 ENDPOINTS = {
@@ -35,16 +38,8 @@ OPERATIONS = {
 }
 
 
-class OmieError(ValueError):
-    """Erro funcional sanitizado da integração Omie."""
-
-    def __init__(self, code: str, message: str):
-        super().__init__(message)
-        self.code = code
-
-
 class OmieService:
-    """Obtém credenciais Omie do cofre MCP e confirma a conectividade."""
+    """Valida contratos e executa operações Omie com credenciais do cofre MCP."""
 
     def __init__(self, onmyoji_root: Path, credentials: KeePassCredentialResolver | None = None):
         self.root = onmyoji_root.resolve()
@@ -61,16 +56,20 @@ class OmieService:
 
     def invoke(self, profile_name: str, operation: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
         """Executa uma operação Omie registrada sem expor app_key ou app_secret."""
-        profile, defaults = self._profile(profile_name)
+        if not isinstance(arguments, Mapping):
+            raise OmieError("invalid_request", "Os argumentos devem ser um objeto JSON.")
         spec = OPERATIONS.get(operation)
         if spec is None:
             raise OmieError("unsupported_operation", "Operação Omie não suportada.")
         endpoint, method, writes = spec
         if writes and arguments.get("confirm") is not True:
             raise OmieError("confirmation_required", "Operações de escrita exigem confirm=true.")
-        parameters = arguments.get("body", arguments.get("params", {}))
-        if not isinstance(parameters, Mapping):
-            raise OmieError("invalid_arguments", "body ou params deve ser um objeto.")
+        parameters = build_params(operation, arguments)
+        profile, defaults = self._profile(profile_name)
+        if operation == "customers_create":
+            def request(method: str, params: Mapping[str, Any], *, retries: int | None = None) -> Any:
+                return self._request(profile, defaults, "customers", method, params, retries=retries)
+            return {"data": create_customer(parameters, request)}
         return {"data": self._request(profile, defaults, endpoint, method, parameters)}
 
     def _profile(self, profile_name: str) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -90,7 +89,7 @@ class OmieService:
             raise OmieError("profile_disabled", "Perfil Omie está desabilitado.")
         return profile, defaults
 
-    def _request(self, profile: Mapping[str, Any], defaults: Mapping[str, Any], endpoint: str, method: str, parameters: Mapping[str, Any]) -> Any:
+    def _request(self, profile: Mapping[str, Any], defaults: Mapping[str, Any], endpoint: str, method: str, parameters: Mapping[str, Any], *, retries: int | None = None) -> Any:
         key_field, secret_field = profile.get("app_key_field"), profile.get("app_secret_field")
         credential_profile, entry = profile.get("credential_profile"), profile.get("credential_entry_path")
         if not all(isinstance(value, str) and value for value in (key_field, secret_field, credential_profile, entry)):
@@ -98,7 +97,8 @@ class OmieService:
         try:
             app_key = self.credentials.resolve(credential_profile, entry, key_field)
             app_secret = self.credentials.resolve(credential_profile, entry, secret_field)
-            timeout, retries = float(defaults.get("timeout_seconds", 30)), int(defaults.get("max_retries", 2))
+            timeout = float(defaults.get("timeout_seconds", 30))
+            retries = int(defaults.get("max_retries", 2)) if retries is None else retries
         except CredentialError as error:
             raise OmieError("credential_" + error.code, "Não foi possível obter a credencial Omie.") from error
         except (TypeError, ValueError) as error:
@@ -114,11 +114,15 @@ class OmieService:
             except HTTPError as error:
                 if error.code not in {429, 500, 502, 503, 504} or attempt == retries:
                     raise OmieError("omie_http_error", f"A API Omie retornou HTTP {error.code}.") from error
-            except (URLError, TimeoutError, json.JSONDecodeError) as error:
+            except (URLError, TimeoutError) as error:
                 if attempt == retries:
                     raise OmieError("network_error", "Não foi possível consultar a API Omie.") from error
+            except (json.JSONDecodeError, UnicodeError) as error:
+                raise OmieError("invalid_response", "A API Omie retornou uma resposta inválida.") from error
             else:
-                if isinstance(result, Mapping) and (result.get("faultstring") or result.get("cCodStatus") not in (None, "0", 0)):
+                if not isinstance(result, Mapping):
+                    raise OmieError("invalid_response", "A API Omie retornou uma resposta inválida.")
+                if result.get("faultstring") or ("cCodStatus" in result and (type(result["cCodStatus"]) not in (str, int) or result["cCodStatus"] not in ("0", 0))):
                     raise OmieError("omie_api_error", "A API Omie retornou uma falha de negócio.")
                 return result
             time.sleep(0.25 * (attempt + 1))
