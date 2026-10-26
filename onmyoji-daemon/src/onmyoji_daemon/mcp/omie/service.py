@@ -12,7 +12,19 @@ from urllib.request import Request, urlopen
 from ..credentials import CredentialError, KeePassCredentialResolver
 
 
-DEPARTMENTS_ENDPOINT = "https://app.omie.com.br/api/v1/geral/departamentos/"
+ENDPOINTS = {
+    "document_types": "https://app.omie.com.br/api/v1/geral/tiposdoc/", "customers": "https://app.omie.com.br/api/v1/geral/clientes/",
+    "departments": "https://app.omie.com.br/api/v1/geral/departamentos/", "projects": "https://app.omie.com.br/api/v1/geral/projetos/",
+    "categories": "https://app.omie.com.br/api/v1/geral/categorias/", "bank_accounts": "https://app.omie.com.br/api/v1/geral/contacorrente/",
+}
+OPERATIONS = {
+    "document_types_list": ("document_types", "PesquisarTipoDocumento", False), "document_types_get": ("document_types", "ConsultarTipoDocumento", False),
+    "customers_list": ("customers", "ListarClientes", False), "customers_get": ("customers", "ConsultarCliente", False), "customers_create": ("customers", "IncluirCliente", True),
+    "departments_list": ("departments", "ListarDepartamentos", False), "departments_get": ("departments", "ConsultarDepartamento", False), "departments_create": ("departments", "IncluirDepartamento", True), "departments_update": ("departments", "AlterarDepartamento", True), "departments_delete": ("departments", "ExcluirDepartamento", True),
+    "projects_list": ("projects", "ListarProjetos", False), "projects_get": ("projects", "ConsultarProjeto", False), "projects_create": ("projects", "IncluirProjeto", True), "projects_update": ("projects", "AlterarProjeto", True), "projects_upsert": ("projects", "UpsertProjeto", True), "projects_delete": ("projects", "ExcluirProjeto", True),
+    "categories_list": ("categories", "ListarCategorias", False), "categories_get": ("categories", "ConsultarCategoria", False), "categories_create": ("categories", "IncluirCategoria", True), "categories_update": ("categories", "AlterarCategoria", True), "category_groups_create": ("categories", "IncluirGrupoCategoria", True), "category_groups_update": ("categories", "AlterarGrupoCategoria", True),
+    "bank_accounts_list": ("bank_accounts", "ListarContasCorrentes", False), "bank_accounts_get": ("bank_accounts", "ConsultarContaCorrente", False),
+}
 
 
 class OmieError(ValueError):
@@ -34,10 +46,24 @@ class OmieService:
     def test_connection(self, profile_name: str) -> dict[str, Any]:
         """Executa uma listagem mínima para confirmar as duas credenciais Omie."""
         profile, defaults = self._profile(profile_name)
-        data = self._request(profile, defaults, "ListarDepartamentos", {"pagina": 1, "registros_por_pagina": 1})
+        data = self._request(profile, defaults, "departments", "ListarDepartamentos", {"pagina": 1, "registros_por_pagina": 1})
         if not isinstance(data, Mapping):
             raise OmieError("invalid_response", "Omie não confirmou a resposta do perfil.")
         return {"profile": profile_name, "authenticated": True}
+
+    def invoke(self, profile_name: str, operation: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
+        """Executa uma operação Omie registrada sem expor app_key ou app_secret."""
+        profile, defaults = self._profile(profile_name)
+        spec = OPERATIONS.get(operation)
+        if spec is None:
+            raise OmieError("unsupported_operation", "Operação Omie não suportada.")
+        endpoint, method, writes = spec
+        if writes and arguments.get("confirm") is not True:
+            raise OmieError("confirmation_required", "Operações de escrita exigem confirm=true.")
+        parameters = arguments.get("body", arguments.get("params", {}))
+        if not isinstance(parameters, Mapping):
+            raise OmieError("invalid_arguments", "body ou params deve ser um objeto.")
+        return {"data": self._request(profile, defaults, endpoint, method, parameters)}
 
     def _profile(self, profile_name: str) -> tuple[dict[str, Any], dict[str, Any]]:
         try:
@@ -56,7 +82,7 @@ class OmieService:
             raise OmieError("profile_disabled", "Perfil Omie está desabilitado.")
         return profile, defaults
 
-    def _request(self, profile: Mapping[str, Any], defaults: Mapping[str, Any], method: str, parameters: Mapping[str, Any]) -> Any:
+    def _request(self, profile: Mapping[str, Any], defaults: Mapping[str, Any], endpoint: str, method: str, parameters: Mapping[str, Any]) -> Any:
         key_field, secret_field = profile.get("app_key_field"), profile.get("app_secret_field")
         credential_profile, entry = profile.get("credential_profile"), profile.get("credential_entry_path")
         if not all(isinstance(value, str) and value for value in (key_field, secret_field, credential_profile, entry)):
@@ -74,7 +100,7 @@ class OmieService:
         payload = json.dumps({"call": method, "app_key": app_key, "app_secret": app_secret, "param": [dict(parameters)]}, ensure_ascii=False).encode("utf-8")
         for attempt in range(retries + 1):
             try:
-                request = Request(DEPARTMENTS_ENDPOINT, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+                request = Request(ENDPOINTS[endpoint], data=payload, headers={"Content-Type": "application/json"}, method="POST")
                 with urlopen(request, timeout=timeout) as response:
                     result = json.loads(response.read())
             except HTTPError as error:

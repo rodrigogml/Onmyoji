@@ -10,6 +10,7 @@ from typing import Any
 
 from .configuration import McpConfiguration
 from .todoist.tools import TodoistToolRegistry
+from .omie.tools import OmieToolRegistry
 
 
 class McpApplication:
@@ -18,11 +19,14 @@ class McpApplication:
     def __init__(self, root: Path):
         self.configuration = McpConfiguration(root)
         self.todoist = TodoistToolRegistry(self.configuration)
+        self.omie = OmieToolRegistry(self.configuration)
 
     def definitions(self) -> list[dict[str, Any]]:
-        return self.todoist.definitions()
+        return self.todoist.definitions() + self.omie.definitions()
 
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if name.startswith("omie."):
+            return self.omie.call(name, arguments)
         return self.todoist.call(name, arguments)
 
 
