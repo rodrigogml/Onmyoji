@@ -224,6 +224,30 @@ class KeePassCredentialResolver:
         finally:
             del password, secret
 
+    def export_attachment(self, profile_name: str, entry_path: str, attachment_name: str, destination: Path) -> None:
+        """Exporta um anexo permitido para um destino temporário controlado pelo chamador."""
+        profile_id = _require_string(profile_name, "invalid_profile", "Perfil de credencial inválido.")
+        requested_entry = _require_string(entry_path, "invalid_entry", "Entrada de credencial inválida.")
+        name = _require_string(attachment_name, "invalid_attachment", "Nome do anexo inválido.")
+        if Path(name).name != name:
+            raise CredentialError("invalid_attachment", "Nome do anexo não pode conter um caminho.")
+        defaults, profile, vault = self._settings(profile_id)
+        self._require_allowed_entry(profile, requested_entry)
+        target = destination.resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        password = self._master_password(profile)
+        try:
+            self._run_write_command(vault, defaults, ["attachment-export", "-q", "__DATABASE__", requested_entry, name, str(target)], password)
+        finally:
+            del password
+        if not target.is_file():
+            raise CredentialError("attachment_export_failed", "KeePassXC não exportou o anexo solicitado.")
+        try:
+            target.chmod(0o600)
+        except OSError:
+            target.unlink(missing_ok=True)
+            raise CredentialError("attachment_permissions", "Não foi possível restringir a chave temporária.") from None
+
     def _settings(self, profile_name: str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         try:
             data = tomllib.loads(self.path.read_text(encoding="utf-8"))

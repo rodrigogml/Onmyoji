@@ -133,3 +133,15 @@ def test_mysql_tool_depends_on_enabled_profile_and_existing_vault_profile(tmp_pa
     document["profiles"]["db"]["enabled"] = True; config.save_mysql(document)
     assert config.mysql_tool_available() is True
     assert config.enabled_mysql_profiles() == [{"name": "db", "description": "Banco de teste."}]
+
+
+def test_ssh_tool_depends_on_enabled_profile_and_existing_vault_profile(tmp_path):
+    config = McpConfiguration(tmp_path); credentials = config.credentials()
+    credentials["vaults"]["vault-a"] = {"cli_command": ["keepassxc-cli"], "database": {"windows": "vault.kdbx", "linux": "vault.kdbx"}}
+    credentials["profiles"]["vault-a"] = {"vault": "vault-a", "allowed_entry_roots": [], "auth": {"windows": {"mode": "windows_credential_manager", "target": "target"}, "linux": {"mode": "command", "command": ["secret-tool"]}}}
+    config.save_credentials(credentials); document = config.ssh()
+    document["profiles"]["server"] = {"enabled": False, "description": "Servidor de teste.", "host": "server", "port": 22, "username": "user", "auth_mode": "password", "credential_profile": "vault-a", "credential_entry_path": "Servers/server", "password_field": "password", "key_attachment": "", "passphrase_field": "", "known_hosts": "known_hosts", "readable_roots": [], "writable_roots": []}
+    config.save_ssh(document); assert config.ssh_tool_available() is False
+    document["profiles"]["server"]["enabled"] = True; config.save_ssh(document)
+    assert config.ssh_tool_available() is True
+    assert config.enabled_ssh_profiles() == [{"name": "server", "description": "Servidor de teste."}]

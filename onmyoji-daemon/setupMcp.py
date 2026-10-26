@@ -33,6 +33,7 @@ from onmyoji_daemon.mcp.forward_email import ForwardEmailError, ForwardEmailServ
 from onmyoji_daemon.mcp.notion import NotionError, NotionService
 from onmyoji_daemon.mcp.aws import AwsError, AwsService
 from onmyoji_daemon.mcp.mysql import MySQLError, MySQLService
+from onmyoji_daemon.mcp.ssh import SshError, SshService, fetch_host_key, save_host_key
 from onmyoji_daemon.mcp.btg.configuration import BtgConfigurationError, DEFAULT_SCOPES, MONITOR_DEFAULTS, validate_profile as validate_btg_profile
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
 
@@ -1123,6 +1124,112 @@ def mysql_menu(config: McpConfiguration) -> None:
         else: result(False, "Opção inválida.")
 
 
+def trust_ssh_host(host: str, port: int, known_hosts: str) -> bool:
+    """Exibe a fingerprint antes de persistir a chave apresentada pelo host."""
+    try:
+        key, fingerprint = fetch_host_key(host, port)
+        screen("MCP · SSH", "Confirmar identidade do servidor")
+        note(f"Servidor: {host if port == 22 else f'[{host}]:{port}'}"); note(f"Chave: {key.get_name()} · {fingerprint}"); note(f"Arquivo: {known_hosts}")
+        confirmation = ask("Digite CONFIAR para gravar esta chave", required=True)
+        if confirmation is None or confirmation.casefold() != "confiar": result(False, "Chave SSH não gravada."); return False
+        save_host_key(Path(known_hosts), host, port, key); result(True, "Chave SSH confirmada e gravada."); return True
+    except SshError as error: result(False, str(error)); return False
+
+
+def ssh_authentication(config: McpConfiguration, vault: str, entry: str, mode: str, password_field: str = "password") -> dict[str, str] | None:
+    if mode == "password":
+        configured = configure_vault_entry_fields(config, vault, entry, "SSH", [("password_field", "Senha SSH", password_field)])
+        if configured is None: return None
+        return {"credential_entry_path": configured[0], **configured[1], "key_attachment": "", "passphrase_field": ""}
+    try:
+        if not KeePassCredentialResolver(config.root).entry_exists(vault, entry):
+            result(False, "A entrada KeePass deve existir e conter o anexo da chave privada."); return None
+    except CredentialError as error: result(False, str(error)); return None
+    attachment = ask("Nome do anexo da chave privada", "id_ed25519", True); passphrase = ask("Campo da passphrase (vazio = chave sem passphrase)")
+    if attachment is None or passphrase is None: return None
+    return {"credential_entry_path": entry, "password_field": "password", "key_attachment": attachment, "passphrase_field": passphrase}
+
+
+def manage_ssh_profile(config: McpConfiguration, name: str) -> None:
+    while True:
+        data = config.ssh(); profile = data["profiles"].get(name)
+        if not isinstance(profile, dict): return
+        screen("MCP · Perfil SSH", name)
+        item("1.", "Alterar servidor, porta e usuário"); item("2.", "Alterar autenticação e credencial"); item("3.", "Alterar descrição")
+        item("4.", "Confirmar chave do servidor"); item("5.", "Alterar raízes de upload", f"{len(profile['readable_roots'])} configurada(s)"); item("6.", "Alterar raízes de download", f"{len(profile['writable_roots'])} configurada(s)")
+        item("7.", "Habilitar"); item("8.", "Desabilitar"); item("9.", "Testar conexão"); item("10.", "Remover perfil"); item("X.", "Voltar")
+        action = prompt("Opção: ").strip().casefold()
+        if action in {"x", "\x1b"}: return
+        if action == "1":
+            host = ask("Host", profile["host"], True); port = ask("Porta", str(profile["port"]), True); username = ask("Usuário", profile["username"], True)
+            if not host or not port or not port.isdigit() or not username: result(False, "Servidor, porta ou usuário inválido."); continue
+            profile.update(host=host, port=int(port), username=username)
+            if not trust_ssh_host(host, int(port), profile["known_hosts"]): continue
+        elif action == "2":
+            vault = select("Escolha o perfil de vault", config.vault_profile_names())
+            if not vault: continue
+            mode_label = choose("Autenticação SSH", ["Senha", "Chave privada"], "Senha" if profile["auth_mode"] == "password" else "Chave privada")
+            if mode_label is None: continue
+            mode = "password" if mode_label == "Senha" else "key"; entry = ask("Entrada KeePass", profile["credential_entry_path"], True)
+            if not entry: continue
+            authentication = ssh_authentication(config, vault, entry, mode, profile.get("password_field", "password"))
+            if authentication is None: continue
+            profile.update(authentication); profile["credential_profile"], profile["auth_mode"] = vault, mode
+        elif action == "3":
+            value = ask("Descrição", profile["description"], True)
+            if not value: continue
+            profile["description"] = value
+        elif action == "4":
+            trust_ssh_host(profile["host"], profile["port"], profile["known_hosts"]); continue
+        elif action in {"5", "6"}:
+            key = "readable_roots" if action == "5" else "writable_roots"; value = ask("Raízes separadas por ;", ";".join(profile[key]))
+            if value is None: continue
+            profile[key] = [item.strip() for item in value.split(";") if item.strip()]
+        elif action == "7": profile["enabled"] = True
+        elif action == "8": profile["enabled"] = False
+        elif action == "9":
+            try: result(SshService(config.root).test_connection(name)["authenticated"], "Conexão e autenticação SSH confirmadas; nenhum comando foi executado.")
+            except (SshError, ValueError) as error: result(False, str(error))
+            continue
+        elif action == "10":
+            confirmation = ask("Digite REMOVER para confirmar", required=True)
+            if confirmation is None or confirmation.casefold() != "remover": result(False, "Perfil SSH não removido."); continue
+            del data["profiles"][name]
+            try: config.save_ssh(data); result(True, "Perfil SSH removido. Credenciais e known_hosts foram preservados.")
+            except McpConfigurationError as error: result(False, f"Perfil SSH não removido: {error}"); continue
+            return
+        else: result(False, "Opção inválida."); continue
+        try: config.save_ssh(data); result(True, "Perfil SSH atualizado.")
+        except McpConfigurationError as error: result(False, str(error))
+
+
+def ssh_menu(config: McpConfiguration) -> None:
+    while True:
+        data = config.ssh(); names = sorted(data["profiles"]); status = "ATIVA" if config.ssh_tool_available() else "inativa"
+        screen("MCP · SSH", f"Comandos remotos e transferências SFTP · {status}"); item("1.", "Criar perfil"); item("2.", "Gerenciar perfil", f"{len(names)} configurado(s)"); item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
+        if choice in {"x", "\x1b"}: return
+        if choice == "1":
+            name = ask("Nome do perfil SSH", required=True); vault = select("Escolha o perfil de vault", config.vault_profile_names())
+            if not name or not vault or name in data["profiles"]: result(False, "Nome inválido, repetido ou retorno solicitado."); continue
+            host = ask("Host", required=True); port = ask("Porta", "22", True); username = ask("Usuário", required=True)
+            mode_label = choose("Autenticação SSH", ["Senha", "Chave privada"], "Chave privada")
+            if not host or not port or not port.isdigit() or not username or mode_label is None: result(False, "Perfil SSH inválido."); continue
+            mode = "password" if mode_label == "Senha" else "key"; entry = ask("Entrada KeePass", f"APIs/SSH/{name}", True)
+            if not entry: continue
+            authentication = ssh_authentication(config, vault, entry, mode)
+            if authentication is None: continue
+            description = ask("Descrição de quando utilizar este perfil", required=True); readable = ask("Raízes de upload separadas por ; (opcional)"); writable = ask("Raízes de download separadas por ; (opcional)")
+            if None in (description, readable, writable): continue
+            known_hosts = str(config.root / "configs" / "mcp" / "ssh" / "known_hosts")
+            if not trust_ssh_host(host, int(port), known_hosts): continue
+            data["profiles"][name] = {"enabled": True, "description": description, "host": host, "port": int(port), "username": username, "auth_mode": mode, "credential_profile": vault, **authentication, "known_hosts": known_hosts, "readable_roots": [item.strip() for item in readable.split(";") if item.strip()], "writable_roots": [item.strip() for item in writable.split(";") if item.strip()]}
+            try: config.save_ssh(data); result(True, "Perfil SSH atualizado.")
+            except McpConfigurationError as error: result(False, str(error))
+        elif choice == "2" and (name := select("MCP · Gerenciar perfil SSH", names)): manage_ssh_profile(config, name)
+        else: result(False, "Opção inválida.")
+
+
 def btg_credentials(config: McpConfiguration, vault: str, entry: str) -> tuple[str, dict[str, str]] | None:
     """Configura Client ID/Secret preservando notes, reservado ao estado OAuth."""
     note("Use entrada dedicada ao BTG: Client ID em username, Client Secret em password. O estado OAuth permanece em notes.")
@@ -1469,6 +1576,7 @@ def integrations_menu(config: McpConfiguration) -> None:
         notion_profiles = config.notion()["profiles"]
         aws_profiles = config.aws()["profiles"]
         mysql_profiles = config.mysql()["profiles"]
+        ssh_profiles = config.ssh()["profiles"]
         screen("MCP · Integrações", "Selecione uma integração para configurar")
         integration_item("1.", "Todoist", todoist_profiles)
         integration_item("2.", "Omie", omie_profiles)
@@ -1479,6 +1587,7 @@ def integrations_menu(config: McpConfiguration) -> None:
         integration_item("7.", "Notion", notion_profiles)
         integration_item("8.", "AWS", aws_profiles)
         integration_item("9.", "MySQL", mysql_profiles)
+        integration_item("10.", "SSH", ssh_profiles)
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}:
@@ -1501,6 +1610,8 @@ def integrations_menu(config: McpConfiguration) -> None:
             aws_menu(config)
         elif choice == "9":
             mysql_menu(config)
+        elif choice == "10":
+            ssh_menu(config)
         else:
             result(False, "Opção inválida.")
 

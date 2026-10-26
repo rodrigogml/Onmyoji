@@ -198,3 +198,19 @@ def test_resolver_reads_and_writes_username_field(tmp_path, monkeypatch):
     assert resolver.field_exists("example", "APIs/Todoist/example", "username") is True
     assert resolver.save_field("example", "APIs/Todoist/example", "username", "new-app-key") is False
     assert any("--username" in command for command, _ in calls)
+
+
+def test_attachment_export_uses_master_password_on_stdin_and_restricts_file(tmp_path, monkeypatch):
+    write_config(tmp_path); resolver = KeePassCredentialResolver(tmp_path)
+    monkeypatch.setattr("onmyoji_daemon.mcp.credentials.keepass._platform_name", lambda: "windows")
+    monkeypatch.setattr(resolver, "_windows_credential", lambda _target: "master-password")
+    calls = []
+    def run(command, **kwargs):
+        calls.append((command, kwargs)); Path(command[-1]).write_text("private-key"); return SimpleNamespace(returncode=0, stdout="")
+    monkeypatch.setattr("onmyoji_daemon.mcp.credentials.keepass.subprocess.run", run)
+    target = tmp_path / "temporary" / "key"
+    resolver.export_attachment("example", "APIs/Todoist/example", "id_ed25519", target)
+    command, options = calls[0]
+    assert command[1:3] == ["attachment-export", "-q"]
+    assert "master-password" not in command and options["input"] == "master-password\n"
+    assert target.is_file()

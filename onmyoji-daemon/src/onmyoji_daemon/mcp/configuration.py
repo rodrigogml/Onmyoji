@@ -56,6 +56,10 @@ def empty_mysql() -> dict[str, Any]:
     return {"schema_version": 1, "defaults": {"executable": "mysql", "port": 3306, "connect_timeout": 10, "timeout_seconds": 120}, "profiles": {}}
 
 
+def empty_ssh() -> dict[str, Any]:
+    return {"schema_version": 1, "defaults": {"timeout_seconds": 30}, "profiles": {}}
+
+
 def empty_eccovox() -> dict[str, Any]:
     """Modelo da integração local de voz, sem segredos."""
     return {"schema_version": 1, "defaults": {"request_timeout_seconds": 120, "max_audio_bytes": 10485760, "max_text_characters": 4000}, "profiles": {}}
@@ -119,6 +123,10 @@ class McpConfiguration:
         return self.root / "configs" / "mcp" / "mysql.toml"
 
     @property
+    def ssh_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "ssh.toml"
+
+    @property
     def btg_path(self) -> Path:
         return self.root / "configs" / "mcp" / "btg-empresas.toml"
 
@@ -149,6 +157,9 @@ class McpConfiguration:
 
     def mysql(self) -> dict[str, Any]:
         return self._load(self.mysql_path, empty_mysql())
+
+    def ssh(self) -> dict[str, Any]:
+        return self._load(self.ssh_path, empty_ssh())
 
     def btg(self) -> dict[str, Any]:
         return self._load(self.btg_path, empty_btg())
@@ -194,6 +205,11 @@ class McpConfiguration:
     def save_mysql(self, data: dict[str, Any]) -> None:
         self._validate_mysql(data)
         self._save(self.mysql_path, self._render_mysql(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def save_ssh(self, data: dict[str, Any]) -> None:
+        self._validate_ssh(data)
+        self._save(self.ssh_path, self._render_ssh(data))
         McpReconciliation(self.root).mark_pending()
 
     def save_btg(self, data: dict[str, Any]) -> None:
@@ -289,6 +305,13 @@ class McpConfiguration:
         except (KeyError, McpConfigurationError):
             return False
 
+    def ssh_tool_available(self) -> bool:
+        try:
+            vault_profiles = self.credentials()["profiles"]
+            return any(profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles for profile in self.ssh()["profiles"].values())
+        except (KeyError, McpConfigurationError):
+            return False
+
     def enabled_todoist_profiles(self) -> list[dict[str, str]]:
         vault_profiles = self.credentials()["profiles"]
         return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.todoist()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
@@ -316,6 +339,10 @@ class McpConfiguration:
     def enabled_mysql_profiles(self) -> list[dict[str, str]]:
         vault_profiles = self.credentials()["profiles"]
         return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.mysql()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
+
+    def enabled_ssh_profiles(self) -> list[dict[str, str]]:
+        vault_profiles = self.credentials()["profiles"]
+        return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.ssh()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
 
     def enabled_btg_profiles(self) -> list[dict[str, str]]:
         vault_profiles = self.credentials()["profiles"]
@@ -520,6 +547,22 @@ class McpConfiguration:
             roots = profile.get("readable_roots")
             if not isinstance(roots, list) or not all(isinstance(value, str) and value.strip() for value in roots): raise McpConfigurationError("Raízes de scripts MySQL inválidas.")
 
+    def _validate_ssh(self, data: dict[str, Any]) -> None:
+        if data.get("schema_version") != 1 or not isinstance(data.get("defaults"), dict) or not isinstance(data.get("profiles"), dict): raise McpConfigurationError("Estrutura de perfis SSH inválida.")
+        timeout = data["defaults"].get("timeout_seconds")
+        if not isinstance(timeout, int) or timeout <= 0: raise McpConfigurationError("Timeout SSH inválido.")
+        for name, profile in data["profiles"].items():
+            _profile_name(name)
+            if not isinstance(profile, dict) or type(profile.get("enabled")) is not bool: raise McpConfigurationError("Estado do perfil SSH inválido.")
+            if not isinstance(profile.get("description"), str) or not 1 <= len(profile["description"].strip()) <= 240: raise McpConfigurationError("Descrição do perfil SSH é obrigatória e deve ter até 240 caracteres.")
+            if not all(isinstance(profile.get(key), str) and profile[key] for key in ("host", "username", "auth_mode", "credential_profile", "credential_entry_path", "known_hosts")): raise McpConfigurationError("Conexão ou credencial SSH incompleta.")
+            if not isinstance(profile.get("port"), int) or not 1 <= profile["port"] <= 65535 or profile["auth_mode"] not in {"password", "key"}: raise McpConfigurationError("Porta ou modo de autenticação SSH inválido.")
+            if profile["auth_mode"] == "password" and profile.get("password_field") not in {"username", "password", "url", "notes"}: raise McpConfigurationError("Campo de senha SSH inválido.")
+            if profile["auth_mode"] == "key" and (not isinstance(profile.get("key_attachment"), str) or not profile["key_attachment"] or profile.get("passphrase_field", "") not in {"", "username", "password", "url", "notes"}): raise McpConfigurationError("Anexo ou campo da chave SSH inválido.")
+            for key in ("readable_roots", "writable_roots"):
+                roots = profile.get(key)
+                if not isinstance(roots, list) or not all(isinstance(value, str) and value.strip() for value in roots): raise McpConfigurationError("Raízes de arquivos SSH inválidas.")
+
     def _validate_eccovox(self, data: dict[str, Any]) -> None:
         if data.get("schema_version") != 1 or not isinstance(data.get("defaults"), dict) or not isinstance(data.get("profiles"), dict):
             raise McpConfigurationError("Estrutura de perfis EccoVox inválida.")
@@ -606,6 +649,13 @@ class McpConfiguration:
         lines = ["schema_version = 1", "", "[defaults]", f"executable = {_quote(defaults['executable'])}", f"port = {defaults['port']}", f"connect_timeout = {defaults['connect_timeout']}", f"timeout_seconds = {defaults['timeout_seconds']}"]
         for name, profile in sorted(data["profiles"].items()):
             lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"host = {_quote(profile['host'])}", f"database = {_quote(profile.get('database', ''))}", f"socket = {_quote(profile.get('socket', ''))}", f"allow_client_commands = {'true' if profile['allow_client_commands'] else 'false'}", f"credential_profile = {_quote(profile['credential_profile'])}", f"credential_entry_path = {_quote(profile['credential_entry_path'])}", f"username_field = {_quote(profile['username_field'])}", f"password_field = {_quote(profile['password_field'])}", f"readable_roots = {_array(profile['readable_roots'])}"]
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _render_ssh(data: dict[str, Any]) -> str:
+        lines = ["schema_version = 1", "", "[defaults]", f"timeout_seconds = {data['defaults']['timeout_seconds']}"]
+        for name, profile in sorted(data["profiles"].items()):
+            lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"host = {_quote(profile['host'])}", f"port = {profile['port']}", f"username = {_quote(profile['username'])}", f"auth_mode = {_quote(profile['auth_mode'])}", f"credential_profile = {_quote(profile['credential_profile'])}", f"credential_entry_path = {_quote(profile['credential_entry_path'])}", f"password_field = {_quote(profile.get('password_field', 'password'))}", f"key_attachment = {_quote(profile.get('key_attachment', ''))}", f"passphrase_field = {_quote(profile.get('passphrase_field', ''))}", f"known_hosts = {_quote(profile['known_hosts'])}", f"readable_roots = {_array(profile['readable_roots'])}", f"writable_roots = {_array(profile['writable_roots'])}"]
         return "\n".join(lines) + "\n"
 
     @staticmethod
