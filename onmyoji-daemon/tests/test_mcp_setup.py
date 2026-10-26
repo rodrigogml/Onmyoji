@@ -43,7 +43,7 @@ def test_integration_summary_colors_states_and_limits_visible_names(monkeypatch)
 def test_integrations_menu_opens_btg_as_third_option(monkeypatch):
     module = setup_module()
     config = Mock()
-    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare"):
+    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email"):
         getattr(config, integration).return_value = {"profiles": {}}
     answers = iter(["3", "x"])
     monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
@@ -51,6 +51,35 @@ def test_integrations_menu_opens_btg_as_third_option(monkeypatch):
     monkeypatch.setattr(module, "btg_menu", btg_menu)
     module.integrations_menu(config)
     btg_menu.assert_called_once_with(config)
+
+
+def test_integrations_menu_opens_forward_email_as_sixth_option(monkeypatch):
+    module = setup_module()
+    config = Mock()
+    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email"):
+        getattr(config, integration).return_value = {"profiles": {}}
+    answers = iter(["6", "x"])
+    monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
+    forward_email_menu = Mock()
+    monkeypatch.setattr(module, "forward_email_menu", forward_email_menu)
+
+    module.integrations_menu(config)
+
+    forward_email_menu.assert_called_once_with(config)
+
+
+def test_forward_email_removal_is_case_insensitive_and_returns_to_profile_list(monkeypatch, capsys):
+    module = setup_module()
+    config = Mock()
+    data = {"profiles": {"mail": {"domain": "example.test"}}}
+    config.forward_email.return_value = data
+    answers = iter(["8", "ReMoVeR"])
+    monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
+
+    module.manage_forward_email_profile(config, "mail")
+
+    config.save_forward_email.assert_called_once_with({"profiles": {}})
+    assert "Perfil Forward Email removido" in capsys.readouterr().out
 
 
 def test_btg_diagnosis_stays_in_profile_menu(monkeypatch, capsys):

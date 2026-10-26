@@ -14,6 +14,7 @@ from .omie.tools import OmieToolRegistry
 from .btg.tools import BtgToolRegistry
 from .cloudflare.tools import CloudflareToolRegistry
 from .eccovox.tools import EccoVoxToolRegistry
+from .forward_email.tools import ForwardEmailToolRegistry
 
 
 class McpApplication:
@@ -26,9 +27,10 @@ class McpApplication:
         self.btg = BtgToolRegistry(self.configuration)
         self.cloudflare = CloudflareToolRegistry(self.configuration)
         self.eccovox = EccoVoxToolRegistry(self.configuration)
+        self.forward_email = ForwardEmailToolRegistry(self.configuration)
 
     def definitions(self) -> list[dict[str, Any]]:
-        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions() + self.cloudflare.definitions() + self.eccovox.definitions()
+        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions() + self.cloudflare.definitions() + self.eccovox.definitions() + self.forward_email.definitions()
 
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name.startswith("btg."):
@@ -39,6 +41,8 @@ class McpApplication:
             return self.cloudflare.call(name, arguments)
         if name.startswith("eccovox."):
             return self.eccovox.call(name, arguments)
+        if name.startswith("forward_email."):
+            return self.forward_email.call(name, arguments)
         return self.todoist.call(name, arguments)
 
 

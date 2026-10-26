@@ -1,0 +1,14 @@
+schema_version = 1
+
+[defaults]
+api_base = "https://api.forwardemail.net/v1"
+timeout_seconds = 30
+max_retries = 2
+
+[profiles.example]
+enabled = true
+description = "Domínios e aliases de correio da organização."
+credential_profile = "example"
+credential_entry_path = "APIs/ForwardEmail/example"
+credential_field = "password"
+domain = ""

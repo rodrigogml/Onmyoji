@@ -29,6 +29,7 @@ from onmyoji_daemon.mcp.omie import OmieError, OmieService
 from onmyoji_daemon.mcp.btg import BtgError, BtgService
 from onmyoji_daemon.mcp.cloudflare import CloudflareError, CloudflareService
 from onmyoji_daemon.mcp.eccovox import EccoVoxError, EccoVoxService
+from onmyoji_daemon.mcp.forward_email import ForwardEmailError, ForwardEmailService
 from onmyoji_daemon.mcp.btg.configuration import BtgConfigurationError, DEFAULT_SCOPES, MONITOR_DEFAULTS, validate_profile as validate_btg_profile
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
 
@@ -697,6 +698,129 @@ def cloudflare_menu(config: McpConfiguration) -> None:
             result(False, "Opção inválida.")
 
 
+def manage_forward_email_profile(config: McpConfiguration, name: str) -> None:
+    """Mantém o operador no perfil Forward Email até voltar ou removê-lo."""
+    while True:
+        data = config.forward_email()
+        profile = data["profiles"].get(name)
+        if not isinstance(profile, dict):
+            return
+        screen("MCP · Perfil Forward Email", name)
+        item("1.", "Alterar perfil de vault")
+        item("2.", "Alterar entrada e token")
+        item("3.", "Alterar descrição")
+        item("4.", "Alterar domínio padrão", profile.get("domain") or "não definido")
+        item("5.", "Habilitar")
+        item("6.", "Desabilitar")
+        item("7.", "Testar conexão")
+        item("8.", "Remover perfil")
+        item("X.", "Voltar")
+        action = prompt("Opção: ").strip().casefold()
+        if action in {"x", "\x1b"}:
+            return
+        if action == "1":
+            vault = select("Escolha o perfil de vault", config.vault_profile_names())
+            if not vault:
+                continue
+            credential = configure_vault_password_entry(config, vault, profile["credential_entry_path"], "Forward Email")
+            if credential is None:
+                continue
+            profile["credential_profile"] = vault
+            profile["credential_entry_path"], profile["credential_field"] = credential
+        elif action == "2":
+            entry = ask("Entrada KeePass do token", profile["credential_entry_path"], True)
+            if not entry:
+                continue
+            credential = configure_vault_password_entry(config, profile["credential_profile"], entry, "Forward Email")
+            if credential is None:
+                continue
+            profile["credential_entry_path"], profile["credential_field"] = credential
+        elif action == "3":
+            description = ask("Descrição", profile["description"], True)
+            if not description:
+                continue
+            profile["description"] = description
+        elif action == "4":
+            domain = ask("Domínio padrão (opcional)", profile.get("domain", ""))
+            if domain is None:
+                continue
+            profile["domain"] = domain
+        elif action == "5":
+            profile["enabled"] = True
+        elif action == "6":
+            profile["enabled"] = False
+        elif action == "7":
+            try:
+                result(ForwardEmailService(config.root).test_connection(name)["authenticated"], "Conexão confirmada.")
+            except ForwardEmailError as error:
+                result(False, str(error))
+            continue
+        elif action == "8":
+            confirmation = ask("Digite REMOVER para confirmar", required=True)
+            if confirmation is None or confirmation.casefold() != "remover":
+                result(False, "Perfil Forward Email não removido.")
+                continue
+            del data["profiles"][name]
+            try:
+                config.save_forward_email(data)
+                result(True, "Perfil Forward Email removido.")
+            except McpConfigurationError as error:
+                result(False, f"Perfil Forward Email não removido: {error}")
+                continue
+            return
+        else:
+            result(False, "Opção inválida.")
+            continue
+        try:
+            config.save_forward_email(data)
+            result(True, "Perfil Forward Email atualizado.")
+        except McpConfigurationError as error:
+            result(False, str(error))
+
+
+def forward_email_menu(config: McpConfiguration) -> None:
+    """Configura perfis Forward Email que compartilham o cofre MCP."""
+    while True:
+        data = config.forward_email(); names = sorted(data["profiles"]); status = "ATIVA" if config.forward_email_tool_available() else "inativa"
+        screen("MCP · Forward Email", f"Domínios e aliases · {status}")
+        item("1.", "Criar perfil")
+        item("2.", "Gerenciar perfil", f"{len(names)} configurado(s)")
+        item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
+        if choice in {"x", "\x1b"}:
+            return
+        if choice == "1":
+            name = ask("Nome do perfil Forward Email", required=True); vault = select("Escolha o perfil de vault", config.vault_profile_names())
+            if not name or not vault or name in data["profiles"]:
+                result(False, "Nome inválido, repetido ou retorno solicitado.")
+                continue
+            entry = ask("Entrada KeePass do token", f"APIs/ForwardEmail/{name}", True)
+            if not entry:
+                result(False, "Perfil Forward Email inválido.")
+                continue
+            credential = configure_vault_password_entry(config, vault, entry, "Forward Email")
+            if credential is None:
+                continue
+            entry, field = credential
+            description = ask("Descrição de quando utilizar este perfil", required=True)
+            if not description:
+                result(False, "Perfil Forward Email inválido.")
+                continue
+            domain = ask("Domínio padrão (opcional)")
+            if domain is None:
+                continue
+            data["profiles"][name] = {"enabled": True, "description": description, "credential_profile": vault, "credential_entry_path": entry, "credential_field": field, "domain": domain}
+            try:
+                config.save_forward_email(data)
+                result(True, "Perfil Forward Email atualizado.")
+            except McpConfigurationError as error:
+                result(False, str(error))
+        elif choice == "2" and (name := select("MCP · Gerenciar perfil Forward Email", names)):
+            manage_forward_email_profile(config, name)
+        else:
+            result(False, "Opção inválida.")
+
+
 def btg_credentials(config: McpConfiguration, vault: str, entry: str) -> tuple[str, dict[str, str]] | None:
     """Configura Client ID/Secret preservando notes, reservado ao estado OAuth."""
     note("Use entrada dedicada ao BTG: Client ID em username, Client Secret em password. O estado OAuth permanece em notes.")
@@ -1039,12 +1163,14 @@ def integrations_menu(config: McpConfiguration) -> None:
         btg_profiles = config.btg()["profiles"]
         cloudflare_profiles = config.cloudflare()["profiles"]
         eccovox_profiles = config.eccovox()["profiles"]
+        forward_email_profiles = config.forward_email()["profiles"]
         screen("MCP · Integrações", "Selecione uma integração para configurar")
         integration_item("1.", "Todoist", todoist_profiles)
         integration_item("2.", "Omie", omie_profiles)
         integration_item("3.", "BTG Empresas", btg_profiles)
         integration_item("4.", "EccoVox", eccovox_profiles)
         integration_item("5.", "Cloudflare", cloudflare_profiles)
+        integration_item("6.", "Forward Email", forward_email_profiles)
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}:
@@ -1059,6 +1185,8 @@ def integrations_menu(config: McpConfiguration) -> None:
             eccovox_menu(config)
         elif choice == "5":
             cloudflare_menu(config)
+        elif choice == "6":
+            forward_email_menu(config)
         else:
             result(False, "Opção inválida.")
 

@@ -72,3 +72,20 @@ def test_cloudflare_tool_depends_on_enabled_profile_and_existing_vault_profile(t
     config.save_cloudflare(cloudflare)
     assert config.cloudflare_tool_available() is True
     assert config.enabled_cloudflare_profiles() == [{"name": "dns", "description": "DNS público de teste."}]
+
+
+def test_forward_email_tool_depends_on_enabled_profile_and_existing_vault_profile(tmp_path):
+    config = McpConfiguration(tmp_path)
+    credentials = config.credentials()
+    credentials["vaults"]["vault-a"] = {"cli_command": ["keepassxc-cli"], "database": {"windows": "C:/vault.kdbx", "linux": "/vault.kdbx"}}
+    credentials["profiles"]["vault-a"] = vault_profile()
+    config.save_credentials(credentials)
+    forward_email = config.forward_email()
+    forward_email["profiles"]["mail"] = {"enabled": False, "description": "Correio de teste.", "credential_profile": "vault-a", "credential_entry_path": "APIs/ForwardEmail/mail", "credential_field": "password", "domain": "example.test"}
+    config.save_forward_email(forward_email)
+
+    assert config.forward_email_tool_available() is False
+    forward_email["profiles"]["mail"]["enabled"] = True
+    config.save_forward_email(forward_email)
+    assert config.forward_email_tool_available() is True
+    assert config.enabled_forward_email_profiles() == [{"name": "mail", "description": "Correio de teste."}]
