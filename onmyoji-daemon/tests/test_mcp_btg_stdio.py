@@ -1,4 +1,4 @@
-"""Handshake stdio BTG e rejeição de escrita bancária sem cofre ou API reais."""
+"""Handshake stdio BTG e rejeição de pagamentos sem autorização/contrato válido."""
 import asyncio
 import json
 import os
@@ -10,7 +10,7 @@ import pytest
 from onmyoji_daemon.mcp.configuration import McpConfiguration
 
 
-def test_stdio_btg_publishes_oauth_and_reads_but_no_bank_writes(tmp_path):
+def test_stdio_btg_publishes_payments_and_rejects_missing_confirmation(tmp_path):
     pytest.importorskip("mcp")
     from mcp.client.session import ClientSession
     from mcp.client.stdio import StdioServerParameters, stdio_client
@@ -34,14 +34,20 @@ def test_stdio_btg_publishes_oauth_and_reads_but_no_bank_writes(tmp_path):
             async with ClientSession(read, write, read_timeout_seconds=10) as session:
                 await session.initialize()
                 tools = (await session.list_tools()).tools
-                assert len(tools) == 11
+                assert len(tools) == 21
                 assert all("Conta sintética stdio" in tool.description for tool in tools)
-                assert not any("submit" in tool.name for tool in tools)
+                assert any(tool.name == "btg.submit_payment" for tool in tools)
                 result = await session.call_tool("btg.start_authorization", {"confirm": False})
                 assert result.is_error is True and "confirm=true" in str(result.content)
                 result = await session.call_tool("btg.list_statements", {"params": {"type": "simple"}})
                 assert result.is_error is True and "nonexistent" not in str(result.content)
                 result = await session.call_tool("btg.submit_payment", {})
                 assert result.is_error is True
+                assert "confirm=true" in str(result.content)
+                result = await session.call_tool("btg.prepare_payment", {"confirm": True, "body": {"type": "PIX_KEY", "amount": 0.01}})
+                assert result.is_error is True
+                result = await session.call_tool("btg.list_payments", {})
+                assert result.is_error is not True
+                assert result.structured_content["source"] == "local-memory"
 
     asyncio.run(check())

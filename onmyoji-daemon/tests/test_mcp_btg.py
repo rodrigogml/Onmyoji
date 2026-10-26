@@ -56,6 +56,10 @@ def test_configuration_is_private_and_change_marks_reconciliation_pending(tmp_pa
     {"redirect_uri": "https://external.invalid/callback#fragment"}, {"redirect_uri": "https://"},
     {"oauth_mode": "other"}, {"oauth_mode": []}, {"scopes": "openid"}, {"max_amount": "NaN"},
     {"max_amount": "-1"}, {"max_amount": "1.001"}, {"max_amount": 1.5}, {"monitor_enabled": 1},
+    {"pending_interval": None}, {"pending_interval": True}, {"pending_interval": 0},
+    {"scheduled_interval": "3600"}, {"confirmed_interval": 100001},
+    {"confirmation_days": -1}, {"max_pages": 1.5}, {"max_pending_days": []},
+    {"timeout_seconds": 61}, {"timeout_seconds": False},
 ])
 def test_invalid_profiles_are_rejected_without_writing_file(tmp_path, overrides):
     config = McpConfiguration(tmp_path)

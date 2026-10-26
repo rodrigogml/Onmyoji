@@ -27,7 +27,7 @@ from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialRes
 from onmyoji_daemon.mcp.todoist import TodoistError, TodoistService
 from onmyoji_daemon.mcp.omie import OmieError, OmieService
 from onmyoji_daemon.mcp.btg import BtgError, BtgService
-from onmyoji_daemon.mcp.btg.configuration import BtgConfigurationError, DEFAULT_SCOPES, validate_profile as validate_btg_profile
+from onmyoji_daemon.mcp.btg.configuration import BtgConfigurationError, DEFAULT_SCOPES, MONITOR_DEFAULTS, validate_profile as validate_btg_profile
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
 
 
@@ -578,6 +578,80 @@ def btg_credentials(config: McpConfiguration, vault: str, entry: str) -> tuple[s
     return configure_vault_entry_fields(config, vault, entry, "BTG Empresas", [("client_id_field", "Client ID", "username"), ("client_secret_field", "Client Secret", "password")])
 
 
+def btg_payment_settings(config: McpConfiguration, name: str) -> None:
+    while True:
+        data = config.btg()
+        profile = data["profiles"].get(name)
+        if not isinstance(profile, dict):
+            return
+        screen("MCP · BTG · Pagamentos e monitor", name)
+        item("1.", "Limite local por pagamento", "BRL " + profile.get("max_amount", "1000000.00"))
+        item("2.", "Monitor do perfil", "habilitado" if profile.get("monitor_enabled") else "desabilitado")
+        item("3.", "Intervalos de acompanhamento")
+        item("4.", "Consultar fila local")
+        item("5.", "Consultar pagamentos pendentes", "Um ciclo de leitura; não envia pagamentos")
+        item("X.", "Voltar")
+        action = prompt("Opção: ").strip().casefold()
+        if action in {"x", "\x1b"}:
+            return
+        if action == "1":
+            value = ask("Limite local em BRL (decimal com ponto)", profile.get("max_amount", "1000000.00"), True)
+            if value is None:
+                continue
+            profile["max_amount"] = value
+        elif action == "2":
+            selection = choose("Monitor deste perfil", ["Habilitado", "Desabilitado"], "Habilitado" if profile.get("monitor_enabled") else "Desabilitado")
+            if selection is None:
+                continue
+            if selection == "Habilitado":
+                try:
+                    note(ensure_mcp_runtime(config.root))
+                except McpRuntimeError as error:
+                    result(False, str(error))
+                    continue
+            profile["monitor_enabled"] = selection == "Habilitado"
+            note("O monitor apenas consulta registros existentes. Para execução contínua, habilite e inicie btg-payments-monitor no daemon; isso não é feito automaticamente.")
+        elif action == "3":
+            labels = {"pending_interval": "Pendentes: intervalo em segundos", "scheduled_interval": "Agendados: intervalo em segundos", "confirmed_interval": "Confirmados: intervalo em segundos", "confirmation_days": "Confirmados: janela em dias", "max_pages": "Máximo de páginas por recuperação", "max_pending_days": "Após quantos dias reduzir consultas de pendências"}
+            cancelled = False
+            for key, default in MONITOR_DEFAULTS.items():
+                value = ask(labels[key], str(profile.get(key, default)), True)
+                if value is None:
+                    cancelled = True
+                    break
+                if not value.isascii() or not value.isdigit() or not 1 <= int(value) <= 100000:
+                    result(False, "Informe inteiro de 1 a 100000. Nenhuma alteração foi salva.")
+                    cancelled = True
+                    break
+                profile[key] = int(value)
+            if cancelled:
+                continue
+        elif action in {"4", "5"}:
+            try:
+                if action == "5":
+                    note(ensure_mcp_runtime(config.root))
+                status = BtgService(config.root).invoke(name, "get_monitor_status" if action == "4" else "check_pending_payments", {})
+                if action == "4":
+                    note(f"Fila local: {status['duePayments']} pagamento(s) aguardando consulta" + (" ou mais." if status['hasMore'] else "."))
+                else:
+                    result(True, f"Ciclo concluído: {len(status['checked'])} consultado(s), {len(status['busy'])} reservado(s) por outra operação.")
+                    if any(item.get("lastError") for item in status["checked"]):
+                        note("Há consultas com erro; o último estado foi preservado. Confira o histórico pelo MCP.")
+                    if status["hasMore"]:
+                        note("Ainda há registros para consultar.")
+            except (BtgError, McpRuntimeError) as error:
+                result(False, str(error))
+            continue
+        else:
+            result(False, "Opção inválida.")
+            continue
+        try:
+            config.save_btg(data)
+            result(True, "Configuração de pagamentos e monitor atualizada.")
+        except McpConfigurationError as error:
+            result(False, str(error))
+
+
 def manage_btg_profile(config: McpConfiguration, name: str) -> None:
     while True:
         data = config.btg()
@@ -597,6 +671,7 @@ def manage_btg_profile(config: McpConfiguration, name: str) -> None:
         item("10.", "Consultar autorização OAuth")
         item("11.", "Cancelar autorização pendente")
         item("12.", "Testar conexão bancária", "Consulta somente a conta vinculada")
+        item("13.", "Pagamentos e monitor", "Limite local e consultas periódicas")
         item("X.", "Voltar")
         action = prompt("Opção: ").strip().casefold()
         if action in {"x", "\x1b"}:
@@ -644,6 +719,9 @@ def manage_btg_profile(config: McpConfiguration, name: str) -> None:
                 result(False, f"Perfil BTG não removido: {error}")
                 continue
             return
+        elif action == "13":
+            btg_payment_settings(config, name)
+            continue
         elif action == "8":
             origin = choose("URI de retorno BTG", ["Calcular pelo Gateway/Tunnel", "Informar manualmente"], "Calcular pelo Gateway/Tunnel")
             if origin is None:
@@ -703,7 +781,7 @@ def manage_btg_profile(config: McpConfiguration, name: str) -> None:
 def btg_menu(config: McpConfiguration) -> None:
     while True:
         data = config.btg()
-        screen("MCP · BTG Empresas", "Perfis, consentimento OAuth e consultas bancárias")
+        screen("MCP · BTG Empresas", "Perfis, OAuth, pagamentos e acompanhamento bancário")
         item("1.", "Criar perfil")
         item("2.", "Gerenciar perfil", f"{len(data['profiles'])} configurado(s)")
         item("X.", "Voltar")

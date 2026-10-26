@@ -1,4 +1,4 @@
-"""OAuth remoto e consultas BTG com credenciais mantidas no cofre MCP."""
+"""OAuth, consultas e pagamentos BTG com credenciais mantidas no cofre MCP."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -16,7 +16,7 @@ from .exception import BtgError
 
 
 class BtgService:
-    """Orquestra consentimento e consultas; não publica movimentações bancárias."""
+    """Orquestra consentimento, consultas e pagamentos com memória transacional."""
 
     def __init__(self, root: Path, credentials: KeePassCredentialResolver | None = None):
         self.root = root.resolve()
@@ -39,16 +39,28 @@ class BtgService:
         return {"callbackUrl": result["callbackUrl"], "configuredRedirectUri": client.profile["redirect_uri"], "redirectMatches": result["callbackUrl"] == client.profile["redirect_uri"]}
 
     def invoke(self, name: str, operation: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        """Executa OAuth remoto ou consultas registradas, sem publicar escritas bancárias."""
+        """Executa somente operações registradas e sanitiza falhas de persistência."""
         from .contracts import date, now, public, require, text
+        from .payment_tools import PAYMENT_DESCRIPTIONS
         reads = {"get_account": "accounts.get", "get_balance": "balances.get", "list_statements": "statements.list", "list_dda": "dda.list", "get_barcode": "barcodes.get", "list_bank_payments": "payments.remote-list"}
         require(isinstance(arguments, dict), "invalid_request", "Argumentos BTG devem ser objeto.")
-        require(operation in reads or operation in {"get_oauth_callback", "start_authorization", "get_authorization_status", "cancel_authorization"}, "unsupported_operation", "Operação BTG MCP não registrada.")
-        if operation in {"start_authorization", "cancel_authorization"}:
-            require(arguments.get("confirm") is True, "confirmation_required", "Confirme a operação OAuth com confirm=true.")
+        require(operation in reads or operation in PAYMENT_DESCRIPTIONS or operation in {"get_oauth_callback", "start_authorization", "get_authorization_status", "cancel_authorization"}, "unsupported_operation", "Operação BTG MCP não registrada.")
+        if operation in {"start_authorization", "cancel_authorization", "prepare_payment", "submit_payment", "cancel_payment"}:
+            require(arguments.get("confirm") is True, "confirmation_required", "Obtenha autorização explícita para a operação e informe confirm=true.")
         if operation == "get_oauth_callback":
             return self.get_oauth_callback(name)
         client = self.client(name)
+        if operation in PAYMENT_DESCRIPTIONS:
+            import sqlite3
+            from .payments import Engine
+            try:
+                return public(Engine(client.profile, client).invoke(operation, arguments))
+            except BtgError:
+                raise
+            except (sqlite3.Error, OSError) as error:
+                raise BtgError("persistence_unavailable", "Memória indisponível; não repita escritas bancárias sem recuperação.") from error
+            except (ValueError, TypeError, KeyError, AttributeError) as error:
+                raise BtgError("invalid_data", "Dados ou resposta inválidos; consulte a memória antes de repetir um envio.") from error
         if operation == "start_authorization":
             require(client.profile["oauth_mode"] == "remote", "remote_mode_required", "Use OAuth remoto para o BTG MCP.")
             require(bool(client.profile["redirect_uri"]), "redirect_required", "Configure a URI de retorno BTG no menu MCP antes de conectar.")

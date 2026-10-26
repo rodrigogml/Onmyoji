@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import copy
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -120,3 +121,51 @@ def test_btg_runtime_failure_does_not_leave_profile_menu(monkeypatch, capsys):
     service.invoke.assert_not_called()
     output = capsys.readouterr().out
     assert "Runtime indisponível" in output and output.count("PERFIL BTG EMPRESAS") == 2
+
+
+@pytest.mark.parametrize("action", ["4", "5"])
+def test_btg_payment_queue_commands_remain_in_settings_menu(monkeypatch, capsys, action):
+    module = setup_module()
+    config = Mock()
+    config.btg.return_value = {"profiles": {"company": {"max_amount": "100.00", "monitor_enabled": False}}}
+    answers = iter([action, "x"])
+    monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
+    service = Mock()
+    service.invoke.return_value = {"duePayments": 2, "hasMore": False, "checked": [], "busy": []}
+    monkeypatch.setattr(module, "BtgService", lambda _root: service)
+    monkeypatch.setattr(module, "ensure_mcp_runtime", lambda _root: "Runtime pronto")
+    module.btg_payment_settings(config, "company")
+    service.invoke.assert_called_once_with("company", "get_monitor_status" if action == "4" else "check_pending_payments", {})
+    config.save_btg.assert_not_called()
+    assert capsys.readouterr().out.count("PAGAMENTOS E MONITOR") == 2
+
+
+def test_btg_payment_limit_and_monitor_settings_do_not_start_daemon(monkeypatch):
+    module = setup_module()
+    config = Mock()
+    data = {"profiles": {"company": {"max_amount": "100.00", "monitor_enabled": False}}}
+    config.btg.side_effect = lambda: copy.deepcopy(data)
+    def save(candidate):
+        data.clear(); data.update(copy.deepcopy(candidate))
+    config.save_btg.side_effect = save
+    answers = iter(["1", "50.00", "2", "x"])
+    monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
+    monkeypatch.setattr(module, "choose", lambda *_args: "Habilitado")
+    runtime = Mock(return_value="Runtime pronto")
+    monkeypatch.setattr(module, "ensure_mcp_runtime", runtime)
+    run = Mock(side_effect=AssertionError("Não iniciar serviço automaticamente"))
+    monkeypatch.setattr(module.subprocess, "run", run)
+    module.btg_payment_settings(config, "company")
+    assert data["profiles"]["company"] == {"max_amount": "50.00", "monitor_enabled": True}
+    runtime.assert_called_once_with(config.root)
+    run.assert_not_called()
+
+
+def test_btg_partial_monitor_settings_are_not_saved_after_back(monkeypatch):
+    module = setup_module()
+    config = Mock()
+    config.btg.side_effect = lambda: {"profiles": {"company": {"max_amount": "100.00"}}}
+    answers = iter(["3", "600", "x", "x"])
+    monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
+    module.btg_payment_settings(config, "company")
+    config.save_btg.assert_not_called()

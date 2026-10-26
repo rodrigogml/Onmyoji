@@ -104,7 +104,7 @@ def test_read_operations_route_only_to_registered_bank_contracts(tmp_path, opera
         assert result["response"]["data"][0]["amount"] == "0.01"
 
 
-@pytest.mark.parametrize("operation", ["start_authorization", "cancel_authorization"])
+@pytest.mark.parametrize("operation", ["start_authorization", "cancel_authorization", "prepare_payment", "submit_payment", "cancel_payment"])
 @pytest.mark.parametrize("confirm", [None, False, "true", 1])
 def test_oauth_mutations_require_boolean_confirmation_before_accessing_profile(tmp_path, operation, confirm):
     service = BtgService(tmp_path)
@@ -131,8 +131,11 @@ def test_btg_tools_publish_complete_schemas_for_oauth_and_six_read_operations():
     config.enabled_btg_profiles.return_value = [{"name": "company", "description": "Conta principal"}]
     registry = BtgToolRegistry(config)
     tools = registry.definitions()
-    assert len(tools) == len(DESCRIPTIONS) == 11
-    assert not any("submit" in tool["name"] or "payment_create" in tool["name"] for tool in tools)
+    assert len(tools) == len(DESCRIPTIONS) == 21
+    assert not any("payment_create" in tool["name"] for tool in tools)
+    for operation in ("prepare_payment", "submit_payment", "cancel_payment"):
+        definition = next(tool for tool in tools if tool["name"] == "btg." + operation)
+        assert "confirm" in definition["input_schema"]["required"]
     for tool in tools:
         Draft202012Validator.check_schema(tool["input_schema"])
         assert "Conta principal" in tool["description"]

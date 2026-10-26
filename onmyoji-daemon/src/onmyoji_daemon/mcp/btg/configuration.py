@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 
 DEFAULT_SCOPES = "openid empresas.btgpactual.com/accounts.readonly brn:btg:empresas:banking:payments brn:btg:empresas:banking:direct-debit"
+MONITOR_DEFAULTS = {"pending_interval": 300, "scheduled_interval": 3600, "confirmed_interval": 86400, "confirmation_days": 7, "max_pages": 20, "max_pending_days": 30}
 
 
 @contextmanager
@@ -108,6 +109,12 @@ def validate_profile(name: str, profile: dict[str, Any]) -> None:
         raise BtgConfigurationError("Limite BTG deve ser texto decimal positivo com até duas casas.") from error
     if type(profile.get("monitor_enabled", False)) is not bool:
         raise BtgConfigurationError("Estado do monitor BTG inválido.")
+    for field, default in MONITOR_DEFAULTS.items():
+        value = profile.get(field, default)
+        if type(value) is not int or not 1 <= value <= 100000:
+            raise BtgConfigurationError("Intervalos, janelas e limites de consulta BTG devem ser inteiros de 1 a 100000.")
+    if "timeout_seconds" in profile and (type(profile["timeout_seconds"]) is not int or not 1 <= profile["timeout_seconds"] <= 60):
+        raise BtgConfigurationError("Timeout BTG deve ficar entre 1 e 60 segundos.")
 
 
 def validate_configuration(data: dict[str, Any]) -> None:
@@ -122,8 +129,8 @@ def validate_configuration(data: dict[str, Any]) -> None:
 
 def render_configuration(data: dict[str, Any]) -> str:
     lines = ["schema_version = 1", "", "[defaults]", f"timeout_seconds = {data['defaults']['timeout_seconds']}"]
-    defaults = {"account_id": "", "account_number": "", "branch_code": "", "redirect_uri": "", "oauth_mode": "remote", "scopes": DEFAULT_SCOPES, "max_amount": "1000000.00", "monitor_enabled": False}
-    fields = ("enabled", "description", "environment", "company_id", "account_id", "account_number", "branch_code", "credential_profile", "credential_entry_path", "redirect_uri", "oauth_mode", "scopes", "max_amount", "monitor_enabled")
+    defaults = {"account_id": "", "account_number": "", "branch_code": "", "redirect_uri": "", "oauth_mode": "remote", "scopes": DEFAULT_SCOPES, "max_amount": "1000000.00", "monitor_enabled": False, **MONITOR_DEFAULTS, "timeout_seconds": data["defaults"]["timeout_seconds"]}
+    fields = ("enabled", "description", "environment", "company_id", "account_id", "account_number", "branch_code", "credential_profile", "credential_entry_path", "redirect_uri", "oauth_mode", "scopes", "max_amount", "monitor_enabled", *MONITOR_DEFAULTS, "timeout_seconds")
     for name, profile in sorted(data["profiles"].items()):
         lines += ["", f"[profiles.{name}]"]
         for key in fields:

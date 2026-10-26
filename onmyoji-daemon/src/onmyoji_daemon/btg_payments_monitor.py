@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -19,6 +20,46 @@ class Monitor:
         self.lock = threading.Lock()
 
     def cycle(self) -> None:
+        with self.lock:
+            self.health["profiles"] = {}
+            self.health.pop("configError", None)
+            self.health.pop("mcpConfigError", None)
+        self._legacy_cycle()
+        self._mcp_cycle()
+        with self.lock:
+            self.health["lastCycleAt"] = dt.datetime.now(dt.timezone.utc).isoformat()
+
+    def _mcp_cycle(self) -> None:
+        from .mcp.configuration import McpConfiguration, McpConfigurationError
+        from .mcp.runtime import mcp_runtime_python
+        config = McpConfiguration(self.root)
+        try:
+            profiles = config.btg()["profiles"]
+            available = {profile["name"] for profile in config.enabled_btg_profiles()}
+        except (OSError, ValueError, McpConfigurationError):
+            with self.lock:
+                self.health["mcpConfigError"] = "invalid_config"
+            return
+        for name in sorted(available):
+            if self.stopped.is_set():
+                break
+            profile = profiles[name]
+            if profile.get("monitor_enabled") is not True:
+                continue
+            try:
+                environment = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parent.parent), "PYTHONUTF8": "1"}
+                command = [str(mcp_runtime_python(self.root)), "-m", "onmyoji_daemon.mcp.btg.monitor", "--onmyoji-root", str(self.root), "--profile", name]
+                process = subprocess.run(command, text=True, encoding="utf-8", capture_output=True, timeout=180, env=environment)
+                payload = json.loads(process.stdout)
+                valid = process.returncode == 0 and payload.get("ok") is True
+                checks = payload.get("data", {}).get("checked", []) if valid else []
+                status = {"ok": valid and all(not item.get("lastError") for item in checks), "checkedCount": len(checks), "pendingErrors": sum(bool(item.get("lastError")) for item in checks), "observedAt": dt.datetime.now(dt.timezone.utc).isoformat(), "errorCode": None if valid else payload.get("error", {}).get("code", "worker_failed")}
+            except (OSError, ValueError, subprocess.TimeoutExpired, AttributeError, TypeError):
+                status = {"ok": False, "errorCode": "monitor_cycle_failed"}
+            with self.lock:
+                self.health["profiles"]["mcp:" + name] = status
+
+    def _legacy_cycle(self) -> None:
         config = self.root / "configs" / "btg-empresas.toml"
         if not config.is_file():
             return

@@ -6,6 +6,7 @@ from typing import Any
 from ..configuration import McpConfiguration
 from .contracts import CONTRACTS
 from .service import BtgService
+from .payment_tools import PAYMENT_DESCRIPTIONS, payment_schema
 
 
 READS = {"get_account": "accounts.get", "get_balance": "balances.get", "list_statements": "statements.list", "list_dda": "dda.list", "get_barcode": "barcodes.get", "list_bank_payments": "payments.remote-list"}
@@ -21,10 +22,13 @@ DESCRIPTIONS = {
     "list_dda": "Consulta DDA disponível no banco com filtros e paginação explícita; não prepara nem paga títulos.",
     "get_barcode": "Consulta código de barras/linha digitável no banco, incluindo valor, beneficiário e vencimento. Não inicia pagamento.",
     "list_bank_payments": "Lista iniciações e pagamentos do banco. Envio aceito não comprova execução; não infira aprovador/horário de assinatura nem reenvie pagamentos com resultado incerto.",
+    **PAYMENT_DESCRIPTIONS,
 }
 
 
 def operation_schema(operation: str) -> dict[str, Any]:
+    if operation in PAYMENT_DESCRIPTIONS:
+        return payment_schema(operation)
     properties: dict[str, Any] = {}
     required: list[str] = []
     if operation in READS and operation != "get_account":
