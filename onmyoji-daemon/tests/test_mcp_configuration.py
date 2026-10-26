@@ -55,3 +55,20 @@ def test_omie_tool_depends_on_enabled_profile_and_existing_vault_profile(tmp_pat
     config.save_omie(omie)
     assert config.omie_tool_available() is True
     assert config.enabled_omie_profiles() == [{"name": "account-a", "description": "ERP de teste."}]
+
+
+def test_cloudflare_tool_depends_on_enabled_profile_and_existing_vault_profile(tmp_path):
+    config = McpConfiguration(tmp_path)
+    credentials = config.credentials()
+    credentials["vaults"]["vault-a"] = {"cli_command": ["keepassxc-cli"], "database": {"windows": "C:/vault.kdbx", "linux": "/vault.kdbx"}}
+    credentials["profiles"]["vault-a"] = vault_profile()
+    config.save_credentials(credentials)
+    cloudflare = config.cloudflare()
+    cloudflare["profiles"]["dns"] = {"enabled": False, "description": "DNS público de teste.", "credential_profile": "vault-a", "credential_entry_path": "APIs/Cloudflare/dns", "credential_field": "password", "zone_id": "zone-default"}
+    config.save_cloudflare(cloudflare)
+
+    assert config.cloudflare_tool_available() is False
+    cloudflare["profiles"]["dns"]["enabled"] = True
+    config.save_cloudflare(cloudflare)
+    assert config.cloudflare_tool_available() is True
+    assert config.enabled_cloudflare_profiles() == [{"name": "dns", "description": "DNS público de teste."}]

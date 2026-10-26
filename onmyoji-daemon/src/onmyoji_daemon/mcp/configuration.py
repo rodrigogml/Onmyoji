@@ -36,6 +36,10 @@ def empty_omie() -> dict[str, Any]:
     return {"schema_version": 1, "defaults": {"timeout_seconds": 30, "max_retries": 2}, "profiles": {}}
 
 
+def empty_cloudflare() -> dict[str, Any]:
+    return {"schema_version": 1, "defaults": {"api_base": "https://api.cloudflare.com/client/v4", "timeout_seconds": 30, "max_retries": 2}, "profiles": {}}
+
+
 def empty_eccovox() -> dict[str, Any]:
     """Modelo da integração local de voz, sem segredos."""
     return {"schema_version": 1, "defaults": {"request_timeout_seconds": 120, "max_audio_bytes": 10485760, "max_text_characters": 4000}, "profiles": {}}
@@ -79,6 +83,10 @@ class McpConfiguration:
         return omie_config_path(self.root)
 
     @property
+    def cloudflare_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "cloudflare.toml"
+
+    @property
     def btg_path(self) -> Path:
         return self.root / "configs" / "mcp" / "btg-empresas.toml"
 
@@ -94,6 +102,9 @@ class McpConfiguration:
 
     def omie(self) -> dict[str, Any]:
         return self._load(self.omie_path, empty_omie())
+
+    def cloudflare(self) -> dict[str, Any]:
+        return self._load(self.cloudflare_path, empty_cloudflare())
 
     def btg(self) -> dict[str, Any]:
         return self._load(self.btg_path, empty_btg())
@@ -114,6 +125,11 @@ class McpConfiguration:
     def save_omie(self, data: dict[str, Any]) -> None:
         self._validate_omie(data)
         self._save(self.omie_path, self._render_omie(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def save_cloudflare(self, data: dict[str, Any]) -> None:
+        self._validate_cloudflare(data)
+        self._save(self.cloudflare_path, self._render_cloudflare(data))
         McpReconciliation(self.root).mark_pending()
 
     def save_btg(self, data: dict[str, Any]) -> None:
@@ -174,6 +190,13 @@ class McpConfiguration:
         except (KeyError, McpConfigurationError):
             return False
 
+    def cloudflare_tool_available(self) -> bool:
+        try:
+            vault_profiles = self.credentials()["profiles"]
+            return any(profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles for profile in self.cloudflare()["profiles"].values())
+        except (KeyError, McpConfigurationError):
+            return False
+
     def enabled_todoist_profiles(self) -> list[dict[str, str]]:
         vault_profiles = self.credentials()["profiles"]
         return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.todoist()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
@@ -181,6 +204,10 @@ class McpConfiguration:
     def enabled_omie_profiles(self) -> list[dict[str, str]]:
         vault_profiles = self.credentials()["profiles"]
         return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.omie()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
+
+    def enabled_cloudflare_profiles(self) -> list[dict[str, str]]:
+        vault_profiles = self.credentials()["profiles"]
+        return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.cloudflare()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
 
     def enabled_btg_profiles(self) -> list[dict[str, str]]:
         vault_profiles = self.credentials()["profiles"]
@@ -280,6 +307,28 @@ class McpConfiguration:
             if profile["app_key_field"] not in {"username", "password", "url", "notes"} or profile["app_secret_field"] not in {"username", "password", "url", "notes"}:
                 raise McpConfigurationError("Campos KeePass do perfil Omie inválidos.")
 
+    def _validate_cloudflare(self, data: dict[str, Any]) -> None:
+        if data.get("schema_version") != 1 or not isinstance(data.get("defaults"), dict) or not isinstance(data.get("profiles"), dict):
+            raise McpConfigurationError("Estrutura de perfis Cloudflare inválida.")
+        defaults = data["defaults"]
+        api_base = defaults.get("api_base")
+        if not isinstance(api_base, str) or not api_base.startswith("https://"):
+            raise McpConfigurationError("Endpoint Cloudflare deve usar HTTPS.")
+        if not isinstance(defaults.get("timeout_seconds"), int) or defaults["timeout_seconds"] <= 0 or not isinstance(defaults.get("max_retries"), int) or defaults["max_retries"] < 0:
+            raise McpConfigurationError("Timeout ou tentativas Cloudflare inválidos.")
+        for name, profile in data["profiles"].items():
+            _profile_name(name)
+            if not isinstance(profile, dict) or type(profile.get("enabled")) is not bool:
+                raise McpConfigurationError("Estado do perfil Cloudflare inválido.")
+            if not isinstance(profile.get("description"), str) or not 1 <= len(profile["description"].strip()) <= 240:
+                raise McpConfigurationError("Descrição do perfil Cloudflare é obrigatória e deve ter até 240 caracteres.")
+            if not all(isinstance(profile.get(key), str) and profile[key] for key in ("credential_profile", "credential_entry_path", "credential_field")):
+                raise McpConfigurationError("Referência de vault do perfil Cloudflare incompleta.")
+            if profile["credential_field"] not in {"password", "notes"}:
+                raise McpConfigurationError("Campo KeePass do perfil Cloudflare inválido.")
+            if not isinstance(profile.get("zone_id", ""), str):
+                raise McpConfigurationError("Zone ID do perfil Cloudflare inválido.")
+
     def _validate_eccovox(self, data: dict[str, Any]) -> None:
         if data.get("schema_version") != 1 or not isinstance(data.get("defaults"), dict) or not isinstance(data.get("profiles"), dict):
             raise McpConfigurationError("Estrutura de perfis EccoVox inválida.")
@@ -326,6 +375,14 @@ class McpConfiguration:
         lines = ["schema_version = 1", "", "[defaults]", f"timeout_seconds = {defaults['timeout_seconds']}", f"max_retries = {defaults['max_retries']}"]
         for name, profile in sorted(data["profiles"].items()):
             lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"credential_profile = {_quote(profile['credential_profile'])}", f"credential_entry_path = {_quote(profile['credential_entry_path'])}", f"app_key_field = {_quote(profile['app_key_field'])}", f"app_secret_field = {_quote(profile['app_secret_field'])}"]
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _render_cloudflare(data: dict[str, Any]) -> str:
+        defaults = data["defaults"]
+        lines = ["schema_version = 1", "", "[defaults]", f"api_base = {_quote(defaults['api_base'])}", f"timeout_seconds = {defaults['timeout_seconds']}", f"max_retries = {defaults['max_retries']}"]
+        for name, profile in sorted(data["profiles"].items()):
+            lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"credential_profile = {_quote(profile['credential_profile'])}", f"credential_entry_path = {_quote(profile['credential_entry_path'])}", f"credential_field = {_quote(profile['credential_field'])}", f"zone_id = {_quote(profile.get('zone_id', ''))}"]
         return "\n".join(lines) + "\n"
 
     @staticmethod

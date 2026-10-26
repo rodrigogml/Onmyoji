@@ -27,6 +27,7 @@ from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialRes
 from onmyoji_daemon.mcp.todoist import TodoistError, TodoistService
 from onmyoji_daemon.mcp.omie import OmieError, OmieService
 from onmyoji_daemon.mcp.btg import BtgError, BtgService
+from onmyoji_daemon.mcp.cloudflare import CloudflareError, CloudflareService
 from onmyoji_daemon.mcp.eccovox import EccoVoxError, EccoVoxService
 from onmyoji_daemon.mcp.btg.configuration import BtgConfigurationError, DEFAULT_SCOPES, MONITOR_DEFAULTS, validate_profile as validate_btg_profile
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
@@ -573,6 +574,129 @@ def omie_menu(config: McpConfiguration) -> None:
             result(False, "Opção inválida.")
 
 
+def manage_cloudflare_profile(config: McpConfiguration, name: str) -> None:
+    """Mantém o operador no perfil Cloudflare até voltar ou removê-lo."""
+    while True:
+        data = config.cloudflare()
+        profile = data["profiles"].get(name)
+        if not isinstance(profile, dict):
+            return
+        screen("MCP · Perfil Cloudflare", name)
+        item("1.", "Alterar perfil de vault")
+        item("2.", "Alterar entrada e API Token")
+        item("3.", "Alterar descrição")
+        item("4.", "Alterar Zone ID padrão", profile.get("zone_id") or "não definido")
+        item("5.", "Habilitar")
+        item("6.", "Desabilitar")
+        item("7.", "Testar conexão")
+        item("8.", "Remover perfil")
+        item("X.", "Voltar")
+        action = prompt("Opção: ").strip().casefold()
+        if action in {"x", "\x1b"}:
+            return
+        if action == "1":
+            vault = select("Escolha o perfil de vault", config.vault_profile_names())
+            if not vault:
+                continue
+            credential = configure_vault_password_entry(config, vault, profile["credential_entry_path"], "Cloudflare")
+            if credential is None:
+                continue
+            profile["credential_profile"] = vault
+            profile["credential_entry_path"], profile["credential_field"] = credential
+        elif action == "2":
+            entry = ask("Entrada KeePass do API Token", profile["credential_entry_path"], True)
+            if not entry:
+                continue
+            credential = configure_vault_password_entry(config, profile["credential_profile"], entry, "Cloudflare")
+            if credential is None:
+                continue
+            profile["credential_entry_path"], profile["credential_field"] = credential
+        elif action == "3":
+            description = ask("Descrição", profile["description"], True)
+            if not description:
+                continue
+            profile["description"] = description
+        elif action == "4":
+            zone_id = ask("Zone ID padrão (opcional)", profile.get("zone_id", ""))
+            if zone_id is None:
+                continue
+            profile["zone_id"] = zone_id
+        elif action == "5":
+            profile["enabled"] = True
+        elif action == "6":
+            profile["enabled"] = False
+        elif action == "7":
+            try:
+                result(CloudflareService(config.root).test_connection(name)["authenticated"], "Conexão confirmada.")
+            except CloudflareError as error:
+                result(False, str(error))
+            continue
+        elif action == "8":
+            confirmation = ask("Digite REMOVER para confirmar", required=True)
+            if confirmation is None or confirmation.casefold() != "remover":
+                result(False, "Perfil Cloudflare não removido.")
+                continue
+            del data["profiles"][name]
+            try:
+                config.save_cloudflare(data)
+                result(True, "Perfil Cloudflare removido.")
+            except McpConfigurationError as error:
+                result(False, f"Perfil Cloudflare não removido: {error}")
+                continue
+            return
+        else:
+            result(False, "Opção inválida.")
+            continue
+        try:
+            config.save_cloudflare(data)
+            result(True, "Perfil Cloudflare atualizado.")
+        except McpConfigurationError as error:
+            result(False, str(error))
+
+
+def cloudflare_menu(config: McpConfiguration) -> None:
+    """Configura perfis Cloudflare que compartilham o cofre MCP."""
+    while True:
+        data = config.cloudflare(); names = sorted(data["profiles"]); status = "ATIVA" if config.cloudflare_tool_available() else "inativa"
+        screen("MCP · Cloudflare", f"Zonas e registros DNS · {status}")
+        item("1.", "Criar perfil")
+        item("2.", "Gerenciar perfil", f"{len(names)} configurado(s)")
+        item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
+        if choice in {"x", "\x1b"}:
+            return
+        if choice == "1":
+            name = ask("Nome do perfil Cloudflare", required=True); vault = select("Escolha o perfil de vault", config.vault_profile_names())
+            if not name or not vault or name in data["profiles"]:
+                result(False, "Nome inválido, repetido ou retorno solicitado.")
+                continue
+            entry = ask("Entrada KeePass do API Token", f"APIs/Cloudflare/{name}", True)
+            if not entry:
+                result(False, "Perfil Cloudflare inválido.")
+                continue
+            credential = configure_vault_password_entry(config, vault, entry, "Cloudflare")
+            if credential is None:
+                continue
+            entry, field = credential
+            description = ask("Descrição de quando utilizar este perfil", required=True)
+            if not description:
+                result(False, "Perfil Cloudflare inválido.")
+                continue
+            zone_id = ask("Zone ID padrão (opcional)")
+            if zone_id is None:
+                continue
+            data["profiles"][name] = {"enabled": True, "description": description, "credential_profile": vault, "credential_entry_path": entry, "credential_field": field, "zone_id": zone_id}
+            try:
+                config.save_cloudflare(data)
+                result(True, "Perfil Cloudflare atualizado.")
+            except McpConfigurationError as error:
+                result(False, str(error))
+        elif choice == "2" and (name := select("MCP · Gerenciar perfil Cloudflare", names)):
+            manage_cloudflare_profile(config, name)
+        else:
+            result(False, "Opção inválida.")
+
+
 def btg_credentials(config: McpConfiguration, vault: str, entry: str) -> tuple[str, dict[str, str]] | None:
     """Configura Client ID/Secret preservando notes, reservado ao estado OAuth."""
     note("Use entrada dedicada ao BTG: Client ID em username, Client Secret em password. O estado OAuth permanece em notes.")
@@ -913,12 +1037,14 @@ def integrations_menu(config: McpConfiguration) -> None:
         todoist_profiles = config.todoist()["profiles"]
         omie_profiles = config.omie()["profiles"]
         btg_profiles = config.btg()["profiles"]
+        cloudflare_profiles = config.cloudflare()["profiles"]
         eccovox_profiles = config.eccovox()["profiles"]
         screen("MCP · Integrações", "Selecione uma integração para configurar")
         integration_item("1.", "Todoist", todoist_profiles)
         integration_item("2.", "Omie", omie_profiles)
         integration_item("3.", "BTG Empresas", btg_profiles)
         integration_item("4.", "EccoVox", eccovox_profiles)
+        integration_item("5.", "Cloudflare", cloudflare_profiles)
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}:
@@ -931,6 +1057,8 @@ def integrations_menu(config: McpConfiguration) -> None:
             btg_menu(config)
         elif choice == "4":
             eccovox_menu(config)
+        elif choice == "5":
+            cloudflare_menu(config)
         else:
             result(False, "Opção inválida.")
 

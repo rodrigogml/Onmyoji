@@ -12,6 +12,7 @@ from .configuration import McpConfiguration
 from .todoist.tools import TodoistToolRegistry
 from .omie.tools import OmieToolRegistry
 from .btg.tools import BtgToolRegistry
+from .cloudflare.tools import CloudflareToolRegistry
 from .eccovox.tools import EccoVoxToolRegistry
 
 
@@ -23,16 +24,19 @@ class McpApplication:
         self.todoist = TodoistToolRegistry(self.configuration)
         self.omie = OmieToolRegistry(self.configuration)
         self.btg = BtgToolRegistry(self.configuration)
+        self.cloudflare = CloudflareToolRegistry(self.configuration)
         self.eccovox = EccoVoxToolRegistry(self.configuration)
 
     def definitions(self) -> list[dict[str, Any]]:
-        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions() + self.eccovox.definitions()
+        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions() + self.cloudflare.definitions() + self.eccovox.definitions()
 
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name.startswith("btg."):
             return self.btg.call(name, arguments)
         if name.startswith("omie."):
             return self.omie.call(name, arguments)
+        if name.startswith("cloudflare."):
+            return self.cloudflare.call(name, arguments)
         if name.startswith("eccovox."):
             return self.eccovox.call(name, arguments)
         return self.todoist.call(name, arguments)
