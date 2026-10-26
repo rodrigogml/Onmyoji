@@ -35,6 +35,7 @@ from onmyoji_daemon.mcp.aws import AwsError, AwsService
 from onmyoji_daemon.mcp.mysql import MySQLError, MySQLService
 from onmyoji_daemon.mcp.ssh import SshError, SshService, fetch_host_key, save_host_key
 from onmyoji_daemon.mcp.bis2cmd import Bis2CmdError, Bis2CmdService
+from onmyoji_daemon.mcp.bis10cmd import Bis10CmdError, Bis10CmdService
 from onmyoji_daemon.mcp.btg.configuration import BtgConfigurationError, DEFAULT_SCOPES, MONITOR_DEFAULTS, validate_profile as validate_btg_profile
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
 
@@ -1310,6 +1311,92 @@ def bis2cmd_menu(config: McpConfiguration) -> None:
         else: result(False, "Opção inválida.")
 
 
+def bis10cmd_credentials(config: McpConfiguration, vault: str, entry: str, kind: str, username_field: str = "username", password_field: str = "password") -> tuple[str, dict[str, str]] | None:
+    prefix = "jndi" if kind == "JNDI" else "bis"
+    note(f"Use entrada dedicada ao BIS10CMD {kind}: usuário em username e senha em password.")
+    return configure_vault_entry_fields(config, vault, entry, f"BIS10CMD {kind}", [(f"{prefix}_username_field", f"Usuário {kind}", username_field), (f"{prefix}_password_field", f"Senha {kind}", password_field)])
+
+
+def manage_bis10cmd_profile(config: McpConfiguration, name: str) -> None:
+    while True:
+        data = config.bis10cmd(); profile = data["profiles"].get(name)
+        if not isinstance(profile, dict): return
+        screen("MCP · Perfil BIS10CMD", name)
+        item("1.", "Alterar vault JNDI"); item("2.", "Alterar entrada JNDI"); item("3.", "Alterar vault BIS10"); item("4.", "Alterar entrada BIS10")
+        item("5.", "Alterar descrição"); item("6.", "Alterar JAR e diretório de trabalho"); item("7.", "Alterar host, porta e locale")
+        item("8.", "Habilitar"); item("9.", "Desabilitar"); item("10.", "Testar conexão"); item("11.", "Remover perfil"); item("X.", "Voltar")
+        action = prompt("Opção: ").strip().casefold()
+        if action in {"x", "\x1b"}: return
+        if action in {"1", "2", "3", "4"}:
+            jndi = action in {"1", "2"}; prefix = "jndi" if jndi else "bis"; kind = "JNDI" if jndi else "BIS10"
+            vault_key = prefix + "_credential_profile"; entry_key = prefix + "_credential_entry_path"
+            vault = select("Escolha o perfil de vault", config.vault_profile_names()) if action in {"1", "3"} else profile[vault_key]
+            if not vault: continue
+            entry = profile[entry_key] if action in {"1", "3"} else ask(f"Entrada KeePass {kind}", profile[entry_key], True)
+            if not entry: continue
+            credential = bis10cmd_credentials(config, vault, entry, kind, profile[prefix + "_username_field"], profile[prefix + "_password_field"])
+            if credential is None: continue
+            profile[vault_key], profile[entry_key] = vault, credential[0]; profile.update(credential[1])
+        elif action == "5":
+            value = ask("Descrição", profile["description"], True)
+            if not value: continue
+            profile["description"] = value
+        elif action == "6":
+            jar = ask("Arquivo JAR BIS10CMD", profile["jar_path"], True); working = ask("Diretório de trabalho", profile["working_dir"], True)
+            if not jar or not working: continue
+            profile["jar_path"], profile["working_dir"] = jar, working
+        elif action == "7":
+            host = ask("Host WildFly", profile["host"], True); port = ask("Porta", str(profile["port"]), True); locale = ask("Locale", profile["locale"], True)
+            if not host or not port or not port.isdigit() or not locale: result(False, "Host, porta ou locale inválido."); continue
+            profile["host"], profile["port"], profile["locale"] = host, int(port), locale
+        elif action == "8": profile["enabled"] = True
+        elif action == "9": profile["enabled"] = False
+        elif action == "10":
+            try: result(Bis10CmdService(config.root).test_connection(name)["authenticated"], "Conexão BIS10CMD confirmada.")
+            except (Bis10CmdError, ValueError) as error: result(False, str(error))
+            continue
+        elif action == "11":
+            confirmation = ask("Digite REMOVER para confirmar", required=True)
+            if confirmation is None or confirmation.casefold() != "remover": result(False, "Perfil BIS10CMD não removido."); continue
+            del data["profiles"][name]
+            try: config.save_bis10cmd(data); result(True, "Perfil BIS10CMD removido. As entradas KeePass foram preservadas.")
+            except McpConfigurationError as error: result(False, f"Perfil BIS10CMD não removido: {error}"); continue
+            return
+        else: result(False, "Opção inválida."); continue
+        try: config.save_bis10cmd(data); result(True, "Perfil BIS10CMD atualizado.")
+        except McpConfigurationError as error: result(False, str(error))
+
+
+def bis10cmd_menu(config: McpConfiguration) -> None:
+    while True:
+        data = config.bis10cmd(); names = sorted(data["profiles"]); status = "ATIVA" if config.bis10cmd_tool_available() else "inativa"
+        screen("MCP · BIS10CMD", f"Cliente BIS10 por EJB remoto · {status}"); item("1.", "Criar perfil"); item("2.", "Gerenciar perfil", f"{len(names)} configurado(s)"); item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
+        if choice in {"x", "\x1b"}: return
+        if choice == "1":
+            name = ask("Nome do perfil BIS10CMD", required=True)
+            if not name or name in data["profiles"]: result(False, "Nome inválido, repetido ou retorno solicitado."); continue
+            jndi_vault = select("Escolha o perfil de vault JNDI", config.vault_profile_names())
+            if not jndi_vault: continue
+            jndi_entry = ask("Entrada KeePass JNDI", f"APIs/BIS10CMD/JNDI/{name}", True)
+            if not jndi_entry: continue
+            jndi_credential = bis10cmd_credentials(config, jndi_vault, jndi_entry, "JNDI")
+            if jndi_credential is None: continue
+            bis_vault = select("Escolha o perfil de vault BIS10", config.vault_profile_names())
+            if not bis_vault: continue
+            bis_entry = ask("Entrada KeePass BIS10", f"APIs/BIS10CMD/BIS10/{name}", True)
+            if not bis_entry: continue
+            bis_credential = bis10cmd_credentials(config, bis_vault, bis_entry, "BIS10")
+            if bis_credential is None: continue
+            description = ask("Descrição de quando utilizar este perfil", required=True); jar = ask("Arquivo JAR BIS10CMD", "C:/opt/BIS10CMD/BISCMD-10.0.jar", True); working = ask("Diretório de trabalho", "C:/opt/BIS10CMD", True); host = ask("Host WildFly", "127.0.0.1", True); port = ask("Porta", "8080", True); locale = ask("Locale", "pt-BR", True)
+            if not description or not jar or not working or not host or not port or not port.isdigit() or not locale: result(False, "Perfil BIS10CMD inválido."); continue
+            data["profiles"][name] = {"enabled": True, "description": description, "jar_path": jar, "working_dir": working, "host": host, "port": int(port), "locale": locale, "jndi_credential_profile": jndi_vault, "jndi_credential_entry_path": jndi_credential[0], **jndi_credential[1], "bis_credential_profile": bis_vault, "bis_credential_entry_path": bis_credential[0], **bis_credential[1]}
+            try: config.save_bis10cmd(data); result(True, "Perfil BIS10CMD atualizado.")
+            except McpConfigurationError as error: result(False, str(error))
+        elif choice == "2" and (name := select("MCP · Gerenciar perfil BIS10CMD", names)): manage_bis10cmd_profile(config, name)
+        else: result(False, "Opção inválida.")
+
+
 def btg_credentials(config: McpConfiguration, vault: str, entry: str) -> tuple[str, dict[str, str]] | None:
     """Configura Client ID/Secret preservando notes, reservado ao estado OAuth."""
     note("Use entrada dedicada ao BTG: Client ID em username, Client Secret em password. O estado OAuth permanece em notes.")
@@ -1658,6 +1745,7 @@ def integrations_menu(config: McpConfiguration) -> None:
         mysql_profiles = config.mysql()["profiles"]
         ssh_profiles = config.ssh()["profiles"]
         bis2cmd_profiles = config.bis2cmd()["profiles"]
+        bis10cmd_profiles = config.bis10cmd()["profiles"]
         screen("MCP · Integrações", "Selecione uma integração para configurar")
         integration_item("1.", "Todoist", todoist_profiles)
         integration_item("2.", "Omie", omie_profiles)
@@ -1670,6 +1758,7 @@ def integrations_menu(config: McpConfiguration) -> None:
         integration_item("9.", "MySQL", mysql_profiles)
         integration_item("10.", "SSH", ssh_profiles)
         integration_item("11.", "BIS2CMD", bis2cmd_profiles)
+        integration_item("12.", "BIS10CMD", bis10cmd_profiles)
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}:
@@ -1696,6 +1785,8 @@ def integrations_menu(config: McpConfiguration) -> None:
             ssh_menu(config)
         elif choice == "11":
             bis2cmd_menu(config)
+        elif choice == "12":
+            bis10cmd_menu(config)
         else:
             result(False, "Opção inválida.")
 

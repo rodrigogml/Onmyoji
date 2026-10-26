@@ -177,3 +177,17 @@ def test_bis2cmd_tool_depends_on_enabled_profile_and_existing_vault_profile(tmp_
 
     assert config.bis2cmd_tool_available() is True
     assert config.enabled_bis2cmd_profiles() == [{"name": "erp", "description": "BIS2 da empresa de teste."}]
+
+
+def test_bis10cmd_tool_requires_both_enabled_vault_profiles(tmp_path):
+    config = McpConfiguration(tmp_path); credentials = config.credentials()
+    for name in ("jndi", "bis"):
+        credentials["vaults"][name] = {"cli_command": ["keepassxc-cli"], "database": {"windows": "vault.kdbx", "linux": "vault.kdbx"}}
+        credentials["profiles"][name] = {"vault": name, "allowed_entry_roots": [], "auth": {"windows": {"mode": "windows_credential_manager", "target": name}, "linux": {"mode": "command", "command": ["secret-tool"]}}}
+    config.save_credentials(credentials); document = config.bis10cmd()
+    document["profiles"]["erp"] = {"enabled": True, "description": "BIS10 de teste.", "jar_path": "BISCMD.jar", "working_dir": "BIS10CMD", "host": "localhost", "port": 8080, "locale": "pt-BR", "jndi_credential_profile": "jndi", "jndi_credential_entry_path": "JNDI", "jndi_username_field": "username", "jndi_password_field": "password", "bis_credential_profile": "bis", "bis_credential_entry_path": "BIS10", "bis_username_field": "username", "bis_password_field": "password"}
+    config.save_bis10cmd(document)
+    assert config.bis10cmd_tool_available() is True
+    assert config.enabled_bis10cmd_profiles() == [{"name": "erp", "description": "BIS10 de teste."}]
+    del credentials["profiles"]["bis"]; config.save_credentials(credentials)
+    assert config.bis10cmd_tool_available() is False

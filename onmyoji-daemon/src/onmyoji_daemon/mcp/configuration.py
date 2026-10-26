@@ -64,6 +64,10 @@ def empty_bis2cmd() -> dict[str, Any]:
     return {"schema_version": 1, "defaults": {"java_path": "java", "timeout_seconds": 180, "encoding": "utf-8"}, "profiles": {}}
 
 
+def empty_bis10cmd() -> dict[str, Any]:
+    return {"schema_version": 1, "defaults": {"java_path": "java", "timeout_seconds": 180, "encoding": "utf-8"}, "profiles": {}}
+
+
 def empty_eccovox() -> dict[str, Any]:
     """Modelo da integração local de voz, sem segredos."""
     return {"schema_version": 1, "defaults": {"request_timeout_seconds": 120, "max_audio_bytes": 10485760, "max_text_characters": 4000}, "profiles": {}}
@@ -135,6 +139,10 @@ class McpConfiguration:
         return self.root / "configs" / "mcp" / "bis2cmd.toml"
 
     @property
+    def bis10cmd_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "bis10cmd.toml"
+
+    @property
     def btg_path(self) -> Path:
         return self.root / "configs" / "mcp" / "btg-empresas.toml"
 
@@ -171,6 +179,9 @@ class McpConfiguration:
 
     def bis2cmd(self) -> dict[str, Any]:
         return self._load(self.bis2cmd_path, empty_bis2cmd())
+
+    def bis10cmd(self) -> dict[str, Any]:
+        return self._load(self.bis10cmd_path, empty_bis10cmd())
 
     def btg(self) -> dict[str, Any]:
         return self._load(self.btg_path, empty_btg())
@@ -225,6 +236,9 @@ class McpConfiguration:
 
     def save_bis2cmd(self, data: dict[str, Any]) -> None:
         self._validate_bis2cmd(data); self._save(self.bis2cmd_path, self._render_bis2cmd(data)); McpReconciliation(self.root).mark_pending()
+
+    def save_bis10cmd(self, data: dict[str, Any]) -> None:
+        self._validate_bis10cmd(data); self._save(self.bis10cmd_path, self._render_bis10cmd(data)); McpReconciliation(self.root).mark_pending()
 
     def save_btg(self, data: dict[str, Any]) -> None:
         try:
@@ -332,6 +346,12 @@ class McpConfiguration:
             return any(profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles for profile in self.bis2cmd()["profiles"].values())
         except (KeyError, McpConfigurationError): return False
 
+    def bis10cmd_tool_available(self) -> bool:
+        try:
+            vault_profiles = self.credentials()["profiles"]
+            return any(profile.get("enabled") is True and profile.get("jndi_credential_profile") in vault_profiles and profile.get("bis_credential_profile") in vault_profiles for profile in self.bis10cmd()["profiles"].values())
+        except (KeyError, McpConfigurationError): return False
+
     def enabled_todoist_profiles(self) -> list[dict[str, str]]:
         vault_profiles = self.credentials()["profiles"]
         return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.todoist()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
@@ -367,6 +387,10 @@ class McpConfiguration:
     def enabled_bis2cmd_profiles(self) -> list[dict[str, str]]:
         vault_profiles = self.credentials()["profiles"]
         return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.bis2cmd()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
+
+    def enabled_bis10cmd_profiles(self) -> list[dict[str, str]]:
+        vault_profiles = self.credentials()["profiles"]
+        return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.bis10cmd()["profiles"].items()) if profile.get("enabled") is True and profile.get("jndi_credential_profile") in vault_profiles and profile.get("bis_credential_profile") in vault_profiles]
 
     def enabled_btg_profiles(self) -> list[dict[str, str]]:
         vault_profiles = self.credentials()["profiles"]
@@ -600,6 +624,26 @@ class McpConfiguration:
                 roots = profile.get(key)
                 if not isinstance(roots, list) or not all(isinstance(value, str) and value.strip() for value in roots): raise McpConfigurationError("Raízes de arquivos BIS2CMD inválidas.")
 
+    def _validate_bis10cmd(self, data: dict[str, Any]) -> None:
+        if data.get("schema_version") != 1 or not isinstance(data.get("defaults"), dict) or not isinstance(data.get("profiles"), dict):
+            raise McpConfigurationError("Estrutura de perfis BIS10CMD inválida.")
+        defaults = data["defaults"]
+        if not isinstance(defaults.get("java_path"), str) or not defaults["java_path"] or not isinstance(defaults.get("timeout_seconds"), int) or defaults["timeout_seconds"] <= 0 or not isinstance(defaults.get("encoding"), str) or not defaults["encoding"]:
+            raise McpConfigurationError("Configuração operacional BIS10CMD inválida.")
+        credential_fields = {"username", "password", "url", "notes"}
+        for name, profile in data["profiles"].items():
+            _profile_name(name)
+            if not isinstance(profile, dict) or type(profile.get("enabled")) is not bool or not isinstance(profile.get("description"), str) or not 1 <= len(profile["description"].strip()) <= 240:
+                raise McpConfigurationError("Estado ou descrição do perfil BIS10CMD inválido.")
+            required = ("jar_path", "working_dir", "host", "locale", "jndi_credential_profile", "jndi_credential_entry_path", "jndi_username_field", "jndi_password_field", "bis_credential_profile", "bis_credential_entry_path", "bis_username_field", "bis_password_field")
+            if not all(isinstance(profile.get(key), str) and profile[key] for key in required):
+                raise McpConfigurationError("Execução ou credenciais BIS10CMD incompletas.")
+            if not isinstance(profile.get("port"), int) or not 1 <= profile["port"] <= 65535:
+                raise McpConfigurationError("Porta BIS10CMD inválida.")
+            for key in ("jndi_username_field", "jndi_password_field", "bis_username_field", "bis_password_field"):
+                if profile[key] not in credential_fields:
+                    raise McpConfigurationError("Campo KeePass BIS10CMD inválido.")
+
     def _validate_eccovox(self, data: dict[str, Any]) -> None:
         if data.get("schema_version") != 1 or not isinstance(data.get("defaults"), dict) or not isinstance(data.get("profiles"), dict):
             raise McpConfigurationError("Estrutura de perfis EccoVox inválida.")
@@ -700,6 +744,14 @@ class McpConfiguration:
         defaults = data["defaults"]; lines = ["schema_version = 1", "", "[defaults]", f"java_path = {_quote(defaults['java_path'])}", f"timeout_seconds = {defaults['timeout_seconds']}", f"encoding = {_quote(defaults['encoding'])}"]
         for name, profile in sorted(data["profiles"].items()):
             lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"jar_path = {_quote(profile['jar_path'])}", f"working_dir = {_quote(profile['working_dir'])}", f"host = {_quote(profile['host'])}", f"port = {profile['port']}", f"java_options = {_quote(profile.get('java_options', ''))}", f"credential_profile = {_quote(profile['credential_profile'])}", f"credential_entry_path = {_quote(profile['credential_entry_path'])}", f"username_field = {_quote(profile['username_field'])}", f"password_field = {_quote(profile['password_field'])}", f"readable_roots = {_array(profile['readable_roots'])}", f"writable_roots = {_array(profile['writable_roots'])}"]
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _render_bis10cmd(data: dict[str, Any]) -> str:
+        defaults = data["defaults"]
+        lines = ["schema_version = 1", "", "[defaults]", f"java_path = {_quote(defaults['java_path'])}", f"timeout_seconds = {defaults['timeout_seconds']}", f"encoding = {_quote(defaults['encoding'])}"]
+        for name, profile in sorted(data["profiles"].items()):
+            lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"jar_path = {_quote(profile['jar_path'])}", f"working_dir = {_quote(profile['working_dir'])}", f"host = {_quote(profile['host'])}", f"port = {profile['port']}", f"locale = {_quote(profile['locale'])}", f"jndi_credential_profile = {_quote(profile['jndi_credential_profile'])}", f"jndi_credential_entry_path = {_quote(profile['jndi_credential_entry_path'])}", f"jndi_username_field = {_quote(profile['jndi_username_field'])}", f"jndi_password_field = {_quote(profile['jndi_password_field'])}", f"bis_credential_profile = {_quote(profile['bis_credential_profile'])}", f"bis_credential_entry_path = {_quote(profile['bis_credential_entry_path'])}", f"bis_username_field = {_quote(profile['bis_username_field'])}", f"bis_password_field = {_quote(profile['bis_password_field'])}"]
         return "\n".join(lines) + "\n"
 
     @staticmethod
