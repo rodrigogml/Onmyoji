@@ -145,3 +145,35 @@ def test_ssh_tool_depends_on_enabled_profile_and_existing_vault_profile(tmp_path
     document["profiles"]["server"]["enabled"] = True; config.save_ssh(document)
     assert config.ssh_tool_available() is True
     assert config.enabled_ssh_profiles() == [{"name": "server", "description": "Servidor de teste."}]
+
+
+def test_bis2cmd_tool_depends_on_enabled_profile_and_existing_vault_profile(tmp_path):
+    config = McpConfiguration(tmp_path)
+    credentials = config.credentials()
+    credentials["vaults"]["vault-a"] = {"cli_command": ["keepassxc-cli"], "database": {"windows": "vault.kdbx", "linux": "vault.kdbx"}}
+    credentials["profiles"]["vault-a"] = vault_profile()
+    config.save_credentials(credentials)
+    document = config.bis2cmd()
+    document["profiles"]["erp"] = {
+        "enabled": False,
+        "description": "BIS2 da empresa de teste.",
+        "jar_path": "BISCMD.jar",
+        "working_dir": "biscmd",
+        "host": "localhost",
+        "port": 8080,
+        "java_options": "",
+        "credential_profile": "vault-a",
+        "credential_entry_path": "APIs/BIS2CMD/erp",
+        "username_field": "username",
+        "password_field": "password",
+        "readable_roots": [],
+        "writable_roots": [],
+    }
+    config.save_bis2cmd(document)
+
+    assert config.bis2cmd_tool_available() is False
+    document["profiles"]["erp"]["enabled"] = True
+    config.save_bis2cmd(document)
+
+    assert config.bis2cmd_tool_available() is True
+    assert config.enabled_bis2cmd_profiles() == [{"name": "erp", "description": "BIS2 da empresa de teste."}]

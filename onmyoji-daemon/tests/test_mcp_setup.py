@@ -43,7 +43,7 @@ def test_integration_summary_colors_states_and_limits_visible_names(monkeypatch)
 def test_integrations_menu_opens_btg_as_third_option(monkeypatch):
     module = setup_module()
     config = Mock()
-    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion", "aws", "mysql", "ssh"):
+    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion", "aws", "mysql", "ssh", "bis2cmd"):
         getattr(config, integration).return_value = {"profiles": {}}
     answers = iter(["3", "x"])
     monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
@@ -56,7 +56,7 @@ def test_integrations_menu_opens_btg_as_third_option(monkeypatch):
 def test_integrations_menu_opens_forward_email_as_sixth_option(monkeypatch):
     module = setup_module()
     config = Mock()
-    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion", "aws", "mysql", "ssh"):
+    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion", "aws", "mysql", "ssh", "bis2cmd"):
         getattr(config, integration).return_value = {"profiles": {}}
     answers = iter(["6", "x"])
     monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
@@ -85,7 +85,7 @@ def test_forward_email_removal_is_case_insensitive_and_returns_to_profile_list(m
 def test_integrations_menu_opens_notion_as_seventh_option(monkeypatch):
     module = setup_module()
     config = Mock()
-    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion", "aws", "mysql", "ssh"):
+    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion", "aws", "mysql", "ssh", "bis2cmd"):
         getattr(config, integration).return_value = {"profiles": {}}
     answers = iter(["7", "x"])
     monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
@@ -112,7 +112,7 @@ def test_notion_removal_is_case_insensitive(monkeypatch, capsys):
 
 def test_integrations_menu_opens_aws_as_eighth_option(monkeypatch):
     module = setup_module(); config = Mock()
-    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion", "aws", "mysql", "ssh"):
+    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion", "aws", "mysql", "ssh", "bis2cmd"):
         getattr(config, integration).return_value = {"profiles": {}}
     answers = iter(["8", "x"]); monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
     aws_menu = Mock(); monkeypatch.setattr(module, "aws_menu", aws_menu)
@@ -132,7 +132,7 @@ def test_aws_removal_is_case_insensitive(monkeypatch, capsys):
 
 def test_integrations_menu_opens_mysql_as_ninth_option(monkeypatch):
     module = setup_module(); config = Mock()
-    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion", "aws", "mysql", "ssh"):
+    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion", "aws", "mysql", "ssh", "bis2cmd"):
         getattr(config, integration).return_value = {"profiles": {}}
     answers = iter(["9", "x"]); monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
     mysql_menu = Mock(); monkeypatch.setattr(module, "mysql_menu", mysql_menu)
@@ -141,11 +141,20 @@ def test_integrations_menu_opens_mysql_as_ninth_option(monkeypatch):
 
 def test_integrations_menu_opens_ssh_as_tenth_option(monkeypatch):
     module = setup_module(); config = Mock()
-    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion", "aws", "mysql", "ssh"):
+    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion", "aws", "mysql", "ssh", "bis2cmd"):
         getattr(config, integration).return_value = {"profiles": {}}
     answers = iter(["10", "x"]); monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
     ssh_menu = Mock(); monkeypatch.setattr(module, "ssh_menu", ssh_menu)
     module.integrations_menu(config); ssh_menu.assert_called_once_with(config)
+
+
+def test_integrations_menu_opens_bis2cmd_as_eleventh_option(monkeypatch):
+    module = setup_module(); config = Mock()
+    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion", "aws", "mysql", "ssh", "bis2cmd"):
+        getattr(config, integration).return_value = {"profiles": {}}
+    answers = iter(["11", "x"]); monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
+    bis2cmd_menu = Mock(); monkeypatch.setattr(module, "bis2cmd_menu", bis2cmd_menu)
+    module.integrations_menu(config); bis2cmd_menu.assert_called_once_with(config)
 
 
 def test_ssh_removal_is_case_insensitive(monkeypatch, capsys):
@@ -156,6 +165,16 @@ def test_ssh_removal_is_case_insensitive(monkeypatch, capsys):
     module.manage_ssh_profile(config, "server")
     config.save_ssh.assert_called_once_with({"profiles": {}})
     assert "Perfil SSH removido" in capsys.readouterr().out
+
+
+def test_bis2cmd_removal_is_case_insensitive(monkeypatch, capsys):
+    module = setup_module(); config = Mock()
+    profile = {"enabled": True, "description": "BIS2 de teste.", "jar_path": "BISCMD.jar", "working_dir": "biscmd", "host": "localhost", "port": 8080, "java_options": "", "credential_profile": "vault", "credential_entry_path": "APIs/BIS2CMD/erp", "username_field": "username", "password_field": "password", "readable_roots": [], "writable_roots": []}
+    config.bis2cmd.return_value = {"profiles": {"erp": profile}}
+    answers = iter(["11", "ReMoVeR"]); monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
+    module.manage_bis2cmd_profile(config, "erp")
+    config.save_bis2cmd.assert_called_once_with({"profiles": {}})
+    assert "Perfil BIS2CMD removido" in capsys.readouterr().out
 
 
 def test_btg_diagnosis_stays_in_profile_menu(monkeypatch, capsys):

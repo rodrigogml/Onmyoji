@@ -19,6 +19,7 @@ from .notion.tools import NotionToolRegistry
 from .aws.tools import AwsToolRegistry
 from .mysql.tools import MySQLToolRegistry
 from .ssh.tools import SshToolRegistry
+from .bis2cmd.tools import Bis2CmdToolRegistry
 
 
 class McpApplication:
@@ -36,9 +37,10 @@ class McpApplication:
         self.aws = AwsToolRegistry(self.configuration)
         self.mysql = MySQLToolRegistry(self.configuration)
         self.ssh = SshToolRegistry(self.configuration)
+        self.bis2cmd = Bis2CmdToolRegistry(self.configuration)
 
     def definitions(self) -> list[dict[str, Any]]:
-        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions() + self.cloudflare.definitions() + self.eccovox.definitions() + self.forward_email.definitions() + self.notion.definitions() + self.aws.definitions() + self.mysql.definitions() + self.ssh.definitions()
+        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions() + self.cloudflare.definitions() + self.eccovox.definitions() + self.forward_email.definitions() + self.notion.definitions() + self.aws.definitions() + self.mysql.definitions() + self.ssh.definitions() + self.bis2cmd.definitions()
 
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name.startswith("btg."):
@@ -59,6 +61,8 @@ class McpApplication:
             return self.mysql.call(name, arguments)
         if name.startswith("ssh."):
             return self.ssh.call(name, arguments)
+        if name.startswith("bis2cmd."):
+            return self.bis2cmd.call(name, arguments)
         return self.todoist.call(name, arguments)
 
 
