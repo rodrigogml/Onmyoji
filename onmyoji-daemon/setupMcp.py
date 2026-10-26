@@ -31,6 +31,7 @@ from onmyoji_daemon.mcp.cloudflare import CloudflareError, CloudflareService
 from onmyoji_daemon.mcp.eccovox import EccoVoxError, EccoVoxService
 from onmyoji_daemon.mcp.forward_email import ForwardEmailError, ForwardEmailService
 from onmyoji_daemon.mcp.notion import NotionError, NotionService
+from onmyoji_daemon.mcp.aws import AwsError, AwsService
 from onmyoji_daemon.mcp.btg.configuration import BtgConfigurationError, DEFAULT_SCOPES, MONITOR_DEFAULTS, validate_profile as validate_btg_profile
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
 
@@ -945,6 +946,101 @@ def notion_menu(config: McpConfiguration) -> None:
             result(False, "Opção inválida.")
 
 
+def aws_credentials(config: McpConfiguration, vault: str, entry: str, access_field: str = "username", secret_field: str = "password") -> tuple[str, dict[str, str]] | None:
+    """Configura Access Key ID e Secret Access Key em uma entrada dedicada."""
+    note("Use entrada dedicada à AWS: Access Key ID em username e Secret Access Key em password.")
+    return configure_vault_entry_fields(config, vault, entry, "AWS", [("access_key_id_field", "Access Key ID", access_field), ("secret_access_key_field", "Secret Access Key", secret_field)])
+
+
+def manage_aws_profile(config: McpConfiguration, name: str) -> None:
+    """Mantém o operador no perfil AWS até voltar ou removê-lo."""
+    while True:
+        data = config.aws(); profile = data["profiles"].get(name)
+        if not isinstance(profile, dict): return
+        screen("MCP · Perfil AWS", name)
+        item("1.", "Alterar perfil de vault"); item("2.", "Alterar entrada e credenciais"); item("3.", "Alterar descrição")
+        item("4.", "Alterar região padrão", profile.get("region") or "não definida"); item("5.", "Alterar conta esperada", profile.get("expected_account_id") or "não definida")
+        item("6.", "Alterar executável AWS CLI", profile["cli_path"]); item("7.", "Alterar raízes de leitura", f"{len(profile['readable_roots'])} configurada(s)")
+        item("8.", "Alterar raízes de escrita", f"{len(profile['writable_roots'])} configurada(s)"); item("9.", "Habilitar"); item("10.", "Desabilitar")
+        item("11.", "Testar conexão"); item("12.", "Remover perfil"); item("X.", "Voltar")
+        action = prompt("Opção: ").strip().casefold()
+        if action in {"x", "\x1b"}: return
+        if action in {"1", "2"}:
+            vault = select("Escolha o perfil de vault", config.vault_profile_names()) if action == "1" else profile["credential_profile"]
+            if not vault: continue
+            entry = profile["credential_entry_path"] if action == "1" else ask("Entrada KeePass das credenciais", profile["credential_entry_path"], True)
+            if not entry: continue
+            credential = aws_credentials(config, vault, entry, profile["access_key_id_field"], profile["secret_access_key_field"])
+            if credential is None: continue
+            profile["credential_profile"], profile["credential_entry_path"] = vault, credential[0]
+            profile.update(credential[1])
+        elif action == "3":
+            value = ask("Descrição", profile["description"], True)
+            if not value: continue
+            profile["description"] = value
+        elif action == "4":
+            value = ask("Região padrão (vazio exige region em cada chamada)", profile.get("region", ""))
+            if value is None: continue
+            profile["region"] = value
+        elif action == "5":
+            value = ask("AWS Account ID esperado com 12 dígitos (vazio desabilita a validação)", profile.get("expected_account_id", ""))
+            if value is None: continue
+            profile["expected_account_id"] = value
+        elif action == "6":
+            value = ask("Executável AWS CLI", profile["cli_path"], True)
+            if not value: continue
+            profile["cli_path"] = value
+        elif action in {"7", "8"}:
+            key = "readable_roots" if action == "7" else "writable_roots"
+            value = ask("Raízes separadas por ; (vazio desabilita operações locais)", ";".join(profile[key]))
+            if value is None: continue
+            profile[key] = [item.strip() for item in value.split(";") if item.strip()]
+        elif action == "9": profile["enabled"] = True
+        elif action == "10": profile["enabled"] = False
+        elif action == "11":
+            try:
+                status = AwsService(config.root).test_connection(name); result(status["authenticated"], f"Conexão confirmada com a conta {status['account']}.")
+            except (AwsError, ValueError) as error: result(False, str(error))
+            continue
+        elif action == "12":
+            confirmation = ask("Digite REMOVER para confirmar", required=True)
+            if confirmation is None or confirmation.casefold() != "remover": result(False, "Perfil AWS não removido."); continue
+            del data["profiles"][name]
+            try: config.save_aws(data); result(True, "Perfil AWS removido. A entrada KeePass foi preservada.")
+            except McpConfigurationError as error: result(False, f"Perfil AWS não removido: {error}"); continue
+            return
+        else: result(False, "Opção inválida."); continue
+        try: config.save_aws(data); result(True, "Perfil AWS atualizado.")
+        except McpConfigurationError as error: result(False, str(error))
+
+
+def aws_menu(config: McpConfiguration) -> None:
+    """Configura perfis AWS que compartilham o cofre MCP."""
+    while True:
+        data = config.aws(); names = sorted(data["profiles"]); status = "ATIVA" if config.aws_tool_available() else "inativa"
+        screen("MCP · AWS", f"Identidade, S3 e IAM · {status}")
+        item("1.", "Criar perfil"); item("2.", "Gerenciar perfil", f"{len(names)} configurado(s)"); item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
+        if choice in {"x", "\x1b"}: return
+        if choice == "1":
+            name = ask("Nome do perfil AWS", required=True); vault = select("Escolha o perfil de vault", config.vault_profile_names())
+            if not name or not vault or name in data["profiles"]: result(False, "Nome inválido, repetido ou retorno solicitado."); continue
+            entry = ask("Entrada KeePass das credenciais", f"APIs/AWS/{name}", True)
+            if not entry: result(False, "Perfil AWS inválido."); continue
+            credential = aws_credentials(config, vault, entry)
+            if credential is None: continue
+            description = ask("Descrição de quando utilizar este perfil", required=True)
+            if not description: result(False, "Perfil AWS inválido."); continue
+            region = ask("Região padrão (opcional)"); account = ask("AWS Account ID esperado com 12 dígitos (recomendado)")
+            cli = ask("Executável AWS CLI", "aws", True); readable = ask("Raízes de leitura separadas por ; (opcional)"); writable = ask("Raízes de escrita separadas por ; (opcional)")
+            if None in (region, account, cli, readable, writable): continue
+            data["profiles"][name] = {"enabled": True, "description": description, "credential_profile": vault, "credential_entry_path": credential[0], **credential[1], "cli_path": cli, "region": region, "expected_account_id": account, "readable_roots": [item.strip() for item in readable.split(";") if item.strip()], "writable_roots": [item.strip() for item in writable.split(";") if item.strip()]}
+            try: config.save_aws(data); result(True, "Perfil AWS atualizado.")
+            except McpConfigurationError as error: result(False, str(error))
+        elif choice == "2" and (name := select("MCP · Gerenciar perfil AWS", names)): manage_aws_profile(config, name)
+        else: result(False, "Opção inválida.")
+
+
 def btg_credentials(config: McpConfiguration, vault: str, entry: str) -> tuple[str, dict[str, str]] | None:
     """Configura Client ID/Secret preservando notes, reservado ao estado OAuth."""
     note("Use entrada dedicada ao BTG: Client ID em username, Client Secret em password. O estado OAuth permanece em notes.")
@@ -1289,6 +1385,7 @@ def integrations_menu(config: McpConfiguration) -> None:
         eccovox_profiles = config.eccovox()["profiles"]
         forward_email_profiles = config.forward_email()["profiles"]
         notion_profiles = config.notion()["profiles"]
+        aws_profiles = config.aws()["profiles"]
         screen("MCP · Integrações", "Selecione uma integração para configurar")
         integration_item("1.", "Todoist", todoist_profiles)
         integration_item("2.", "Omie", omie_profiles)
@@ -1297,6 +1394,7 @@ def integrations_menu(config: McpConfiguration) -> None:
         integration_item("5.", "Cloudflare", cloudflare_profiles)
         integration_item("6.", "Forward Email", forward_email_profiles)
         integration_item("7.", "Notion", notion_profiles)
+        integration_item("8.", "AWS", aws_profiles)
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}:
@@ -1315,6 +1413,8 @@ def integrations_menu(config: McpConfiguration) -> None:
             forward_email_menu(config)
         elif choice == "7":
             notion_menu(config)
+        elif choice == "8":
+            aws_menu(config)
         else:
             result(False, "Opção inválida.")
 

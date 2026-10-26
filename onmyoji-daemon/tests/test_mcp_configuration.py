@@ -106,3 +106,18 @@ def test_notion_tool_depends_on_enabled_profile_and_existing_vault_profile(tmp_p
     config.save_notion(notion)
     assert config.notion_tool_available() is True
     assert config.enabled_notion_profiles() == [{"name": "workspace", "description": "Notion de teste."}]
+
+
+def test_aws_tool_depends_on_enabled_profile_and_existing_vault_profile(tmp_path):
+    config = McpConfiguration(tmp_path)
+    credentials = config.credentials()
+    credentials["vaults"]["vault-a"] = {"cli_command": ["keepassxc-cli"], "database": {"windows": "vault.kdbx", "linux": "vault.kdbx"}}
+    credentials["profiles"]["vault-a"] = {"vault": "vault-a", "allowed_entry_roots": [], "auth": {"windows": {"mode": "windows_credential_manager", "target": "target"}, "linux": {"mode": "command", "command": ["secret-tool"]}}}
+    config.save_credentials(credentials)
+    document = config.aws()
+    document["profiles"]["prod"] = {"enabled": False, "description": "Conta AWS de produção.", "credential_profile": "vault-a", "credential_entry_path": "APIs/AWS/prod", "access_key_id_field": "username", "secret_access_key_field": "password", "cli_path": "aws", "region": "sa-east-1", "expected_account_id": "123456789012", "readable_roots": [], "writable_roots": []}
+    config.save_aws(document)
+    assert config.aws_tool_available() is False
+    document["profiles"]["prod"]["enabled"] = True; config.save_aws(document)
+    assert config.aws_tool_available() is True
+    assert config.enabled_aws_profiles() == [{"name": "prod", "description": "Conta AWS de produção."}]

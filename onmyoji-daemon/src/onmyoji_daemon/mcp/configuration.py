@@ -48,6 +48,10 @@ def empty_notion() -> dict[str, Any]:
     return {"schema_version": 1, "defaults": {"api_base": "https://api.notion.com", "notion_version": "2026-03-11", "timeout_seconds": 30, "max_retries": 2, "page_size": 100}, "profiles": {}}
 
 
+def empty_aws() -> dict[str, Any]:
+    return {"schema_version": 1, "defaults": {"timeout_seconds": 30, "max_attempts": 3}, "profiles": {}}
+
+
 def empty_eccovox() -> dict[str, Any]:
     """Modelo da integração local de voz, sem segredos."""
     return {"schema_version": 1, "defaults": {"request_timeout_seconds": 120, "max_audio_bytes": 10485760, "max_text_characters": 4000}, "profiles": {}}
@@ -103,6 +107,10 @@ class McpConfiguration:
         return self.root / "configs" / "mcp" / "notion.toml"
 
     @property
+    def aws_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "aws.toml"
+
+    @property
     def btg_path(self) -> Path:
         return self.root / "configs" / "mcp" / "btg-empresas.toml"
 
@@ -127,6 +135,9 @@ class McpConfiguration:
 
     def notion(self) -> dict[str, Any]:
         return self._load(self.notion_path, empty_notion())
+
+    def aws(self) -> dict[str, Any]:
+        return self._load(self.aws_path, empty_aws())
 
     def btg(self) -> dict[str, Any]:
         return self._load(self.btg_path, empty_btg())
@@ -162,6 +173,11 @@ class McpConfiguration:
     def save_notion(self, data: dict[str, Any]) -> None:
         self._validate_notion(data)
         self._save(self.notion_path, self._render_notion(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def save_aws(self, data: dict[str, Any]) -> None:
+        self._validate_aws(data)
+        self._save(self.aws_path, self._render_aws(data))
         McpReconciliation(self.root).mark_pending()
 
     def save_btg(self, data: dict[str, Any]) -> None:
@@ -243,6 +259,13 @@ class McpConfiguration:
         except (KeyError, McpConfigurationError):
             return False
 
+    def aws_tool_available(self) -> bool:
+        try:
+            vault_profiles = self.credentials()["profiles"]
+            return any(profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles for profile in self.aws()["profiles"].values())
+        except (KeyError, McpConfigurationError):
+            return False
+
     def enabled_todoist_profiles(self) -> list[dict[str, str]]:
         vault_profiles = self.credentials()["profiles"]
         return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.todoist()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
@@ -262,6 +285,10 @@ class McpConfiguration:
     def enabled_notion_profiles(self) -> list[dict[str, str]]:
         vault_profiles = self.credentials()["profiles"]
         return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.notion()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
+
+    def enabled_aws_profiles(self) -> list[dict[str, str]]:
+        vault_profiles = self.credentials()["profiles"]
+        return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.aws()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
 
     def enabled_btg_profiles(self) -> list[dict[str, str]]:
         vault_profiles = self.credentials()["profiles"]
@@ -427,6 +454,31 @@ class McpConfiguration:
             if not isinstance(roots, list) or not all(isinstance(value, str) and value.strip() for value in roots):
                 raise McpConfigurationError("Raízes de leitura do perfil Notion inválidas.")
 
+    def _validate_aws(self, data: dict[str, Any]) -> None:
+        if data.get("schema_version") != 1 or not isinstance(data.get("defaults"), dict) or not isinstance(data.get("profiles"), dict):
+            raise McpConfigurationError("Estrutura de perfis AWS inválida.")
+        defaults = data["defaults"]
+        if not isinstance(defaults.get("timeout_seconds"), int) or defaults["timeout_seconds"] <= 0 or not isinstance(defaults.get("max_attempts"), int) or defaults["max_attempts"] <= 0:
+            raise McpConfigurationError("Timeout ou tentativas AWS inválidos.")
+        for name, profile in data["profiles"].items():
+            _profile_name(name)
+            if not isinstance(profile, dict) or type(profile.get("enabled")) is not bool:
+                raise McpConfigurationError("Estado do perfil AWS inválido.")
+            if not isinstance(profile.get("description"), str) or not 1 <= len(profile["description"].strip()) <= 240:
+                raise McpConfigurationError("Descrição do perfil AWS é obrigatória e deve ter até 240 caracteres.")
+            if not all(isinstance(profile.get(key), str) and profile[key] for key in ("credential_profile", "credential_entry_path", "access_key_id_field", "secret_access_key_field", "cli_path")):
+                raise McpConfigurationError("Credencial ou executável do perfil AWS incompleto.")
+            if profile["access_key_id_field"] not in {"username", "password", "url", "notes"} or profile["secret_access_key_field"] not in {"username", "password", "url", "notes"}:
+                raise McpConfigurationError("Campos KeePass do perfil AWS inválidos.")
+            region = profile.get("region", "")
+            account = profile.get("expected_account_id", "")
+            if not isinstance(region, str) or not isinstance(account, str) or account and (len(account) != 12 or not account.isascii() or not account.isdigit()):
+                raise McpConfigurationError("Região ou conta esperada do perfil AWS inválida.")
+            for key in ("readable_roots", "writable_roots"):
+                roots = profile.get(key)
+                if not isinstance(roots, list) or not all(isinstance(value, str) and value.strip() for value in roots):
+                    raise McpConfigurationError("Raízes de arquivos do perfil AWS inválidas.")
+
     def _validate_eccovox(self, data: dict[str, Any]) -> None:
         if data.get("schema_version") != 1 or not isinstance(data.get("defaults"), dict) or not isinstance(data.get("profiles"), dict):
             raise McpConfigurationError("Estrutura de perfis EccoVox inválida.")
@@ -497,6 +549,14 @@ class McpConfiguration:
         lines = ["schema_version = 1", "", "[defaults]", f"api_base = {_quote(defaults['api_base'])}", f"notion_version = {_quote(defaults['notion_version'])}", f"timeout_seconds = {defaults['timeout_seconds']}", f"max_retries = {defaults['max_retries']}", f"page_size = {defaults['page_size']}"]
         for name, profile in sorted(data["profiles"].items()):
             lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"credential_profile = {_quote(profile['credential_profile'])}", f"credential_entry_path = {_quote(profile['credential_entry_path'])}", f"credential_field = {_quote(profile['credential_field'])}", f"readable_roots = {_array(profile['readable_roots'])}"]
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _render_aws(data: dict[str, Any]) -> str:
+        defaults = data["defaults"]
+        lines = ["schema_version = 1", "", "[defaults]", f"timeout_seconds = {defaults['timeout_seconds']}", f"max_attempts = {defaults['max_attempts']}"]
+        for name, profile in sorted(data["profiles"].items()):
+            lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"credential_profile = {_quote(profile['credential_profile'])}", f"credential_entry_path = {_quote(profile['credential_entry_path'])}", f"access_key_id_field = {_quote(profile['access_key_id_field'])}", f"secret_access_key_field = {_quote(profile['secret_access_key_field'])}", f"cli_path = {_quote(profile['cli_path'])}", f"region = {_quote(profile.get('region', ''))}", f"expected_account_id = {_quote(profile.get('expected_account_id', ''))}", f"readable_roots = {_array(profile['readable_roots'])}", f"writable_roots = {_array(profile['writable_roots'])}"]
         return "\n".join(lines) + "\n"
 
     @staticmethod

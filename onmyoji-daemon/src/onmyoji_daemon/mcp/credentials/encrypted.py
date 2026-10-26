@@ -73,6 +73,66 @@ def save_notes(database: Path, password: str, entry_path: str, state: dict[str, 
         raise CredentialError("vault_write_failed", "Não foi possível bloquear o cofre para gravação OAuth.") from error
 
 
+def read_protected_field(database: Path, password: str, entry_path: str, field: str) -> str:
+    """Lê um campo protegido reservado sem exportá-lo pelo CLI."""
+    from .keepass import CredentialError
+    try:
+        from pykeepass import PyKeePass
+        keepass = PyKeePass(database, password=password)
+        normalized = entry_path.replace("\\", "/").strip("/")
+        entries = [entry for entry in keepass.entries if "/".join(entry.path).strip("/") == normalized]
+        if len(entries) != 1:
+            raise CredentialError("entry_not_unique", "Entrada ausente ou duplicada no cofre.")
+        return entries[0]._get_string_field(field) or ""
+    except CredentialError:
+        raise
+    except Exception as error:
+        raise CredentialError("vault_read_failed", "Não foi possível ler o campo protegido no cofre MCP.") from error
+
+
+def save_protected_field(database: Path, password: str, entry_path: str, field: str, value: str) -> None:
+    """Atualiza atomicamente um campo protegido de uma entrada existente."""
+    from .keepass import CredentialError
+    temporary: Path | None = None
+    try:
+        database = database.resolve()
+        with database_lock(database):
+            original = database.read_bytes()
+            original_hash = hashlib.sha256(original).digest()
+            from pykeepass import PyKeePass
+            keepass = PyKeePass(io.BytesIO(original), password=password)
+            normalized = entry_path.replace("\\", "/").strip("/")
+            entries = [entry for entry in keepass.entries if "/".join(entry.path).strip("/") == normalized]
+            if len(entries) != 1:
+                raise CredentialError("entry_not_unique", "Entrada ausente ou duplicada; cofre não alterado.")
+            entries[0]._set_string_field(field, value, True)
+            encrypted = io.BytesIO(); keepass.save(encrypted)
+            verified = PyKeePass(io.BytesIO(encrypted.getvalue()), password=password)
+            checked = [entry for entry in verified.entries if "/".join(entry.path).strip("/") == normalized]
+            if len(checked) != 1 or checked[0]._get_string_field(field) != value:
+                raise CredentialError("vault_write_failed", "Falha ao validar o campo protegido criptografado.")
+            with tempfile.NamedTemporaryFile(dir=database.parent, prefix=database.name + ".", suffix=".kdbx", delete=False) as target:
+                temporary = Path(target.name); target.write(encrypted.getvalue()); target.flush(); os.fsync(target.fileno())
+            shutil.copystat(database, temporary)
+            if hashlib.sha256(database.read_bytes()).digest() != original_hash:
+                raise CredentialError("vault_changed", "O cofre mudou durante a gravação; repita após sincronizá-lo.")
+            for attempt in range(6):
+                try:
+                    replace_database(temporary, database); temporary = None
+                    break
+                except PermissionError as error:
+                    if getattr(error, "winerror", None) != 32 or attempt == 5:
+                        raise
+                    time.sleep(0.2)
+    except CredentialError:
+        raise
+    except Exception as error:
+        raise CredentialError("vault_write_failed", "Não foi possível persistir o campo protegido no cofre MCP.") from error
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def _save_notes(database: Path, password: str, entry_path: str, state: dict[str, Any]) -> None:
     from .keepass import CredentialError
     try:

@@ -195,6 +195,35 @@ class KeePassCredentialResolver:
             del password
             del secret
 
+    def read_totp_uri(self, profile_name: str, entry_path: str) -> str:
+        """Lê internamente a URI TOTP protegida, sem publicá-la como ferramenta."""
+        from .encrypted import read_protected_field
+        profile_id = _require_string(profile_name, "invalid_profile", "Perfil de credencial inválido.")
+        requested_entry = _require_string(entry_path, "invalid_entry", "Entrada de credencial inválida.")
+        defaults, profile, vault = self._settings(profile_id)
+        self._require_allowed_entry(profile, requested_entry)
+        _, database, _ = self._command_settings(vault, defaults)
+        password = self._master_password(profile)
+        try:
+            return read_protected_field(Path(database), password, requested_entry, "otp")
+        finally:
+            del password
+
+    def save_totp_uri(self, profile_name: str, entry_path: str, uri: str) -> None:
+        """Grava atomicamente uma URI TOTP protegida em entrada existente."""
+        from .encrypted import save_protected_field
+        profile_id = _require_string(profile_name, "invalid_profile", "Perfil de credencial inválido.")
+        requested_entry = _require_string(entry_path, "invalid_entry", "Entrada de credencial inválida.")
+        secret = _require_string(uri, "invalid_secret", "URI TOTP inválida.")
+        defaults, profile, vault = self._settings(profile_id)
+        self._require_allowed_entry(profile, requested_entry)
+        _, database, _ = self._command_settings(vault, defaults)
+        password = self._master_password(profile)
+        try:
+            save_protected_field(Path(database), password, requested_entry, "otp", secret)
+        finally:
+            del password, secret
+
     def _settings(self, profile_name: str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         try:
             data = tomllib.loads(self.path.read_text(encoding="utf-8"))

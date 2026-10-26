@@ -33,6 +33,23 @@ def test_oauth_state_is_saved_encrypted_preserving_other_credentials(tmp_path, m
     assert error.value.code == "entry_not_unique"
 
 
+def test_protected_totp_roundtrip_preserves_entry_and_plaintext_is_absent(tmp_path, monkeypatch):
+    from pykeepass import PyKeePass, create_database
+    database = tmp_path / "vault.kdbx"
+    vault = create_database(str(database), password="test-master")
+    vault.add_entry(vault.root_group, "AWS", "ACCESS", "SECRET", notes="preserve")
+    vault.save()
+    resolver = KeePassCredentialResolver(tmp_path)
+    monkeypatch.setattr(resolver, "_settings", lambda _name: ({}, {"allowed_entry_roots": []}, {"database": {"windows": str(database), "linux": str(database)}, "cli_command": ["keepassxc-cli"]}))
+    monkeypatch.setattr(resolver, "_master_password", lambda _profile: "test-master")
+    uri = "otpauth://totp/AWS:owner?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&issuer=AWS"
+    resolver.save_totp_uri("vault", "AWS", uri)
+    assert resolver.read_totp_uri("vault", "AWS") == uri
+    entry = PyKeePass(str(database), password="test-master").find_entries(title="AWS", first=True)
+    assert (entry.username, entry.password, entry.notes) == ("ACCESS", "SECRET", "preserve")
+    assert uri.encode() not in database.read_bytes()
+
+
 def test_oauth_write_refuses_database_changed_during_encryption(tmp_path, monkeypatch):
     from pykeepass import PyKeePass, create_database
     from onmyoji_daemon.mcp.credentials.encrypted import save_notes
