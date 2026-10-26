@@ -21,6 +21,7 @@ from .mysql.tools import MySQLToolRegistry
 from .ssh.tools import SshToolRegistry
 from .bis2cmd.tools import Bis2CmdToolRegistry
 from .bis10cmd.tools import Bis10CmdToolRegistry
+from .google.tools import GoogleToolRegistry
 
 
 class McpApplication:
@@ -40,9 +41,10 @@ class McpApplication:
         self.ssh = SshToolRegistry(self.configuration)
         self.bis2cmd = Bis2CmdToolRegistry(self.configuration)
         self.bis10cmd = Bis10CmdToolRegistry(self.configuration)
+        self.google = GoogleToolRegistry(self.configuration)
 
     def definitions(self) -> list[dict[str, Any]]:
-        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions() + self.cloudflare.definitions() + self.eccovox.definitions() + self.forward_email.definitions() + self.notion.definitions() + self.aws.definitions() + self.mysql.definitions() + self.ssh.definitions() + self.bis2cmd.definitions() + self.bis10cmd.definitions()
+        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions() + self.cloudflare.definitions() + self.eccovox.definitions() + self.forward_email.definitions() + self.notion.definitions() + self.aws.definitions() + self.mysql.definitions() + self.ssh.definitions() + self.bis2cmd.definitions() + self.bis10cmd.definitions() + self.google.definitions()
 
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name.startswith("btg."):
@@ -67,6 +69,8 @@ class McpApplication:
             return self.bis2cmd.call(name, arguments)
         if name.startswith("bis10cmd."):
             return self.bis10cmd.call(name, arguments)
+        if name.startswith("google."):
+            return self.google.call(name, arguments)
         return self.todoist.call(name, arguments)
 
 

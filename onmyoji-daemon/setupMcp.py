@@ -36,6 +36,8 @@ from onmyoji_daemon.mcp.mysql import MySQLError, MySQLService
 from onmyoji_daemon.mcp.ssh import SshError, SshService, fetch_host_key, save_host_key
 from onmyoji_daemon.mcp.bis2cmd import Bis2CmdError, Bis2CmdService
 from onmyoji_daemon.mcp.bis10cmd import Bis10CmdError, Bis10CmdService
+from onmyoji_daemon.mcp.google import GoogleError, GoogleService
+from onmyoji_daemon.mcp.google.oauth import authorize as authorize_google
 from onmyoji_daemon.mcp.btg.configuration import BtgConfigurationError, DEFAULT_SCOPES, MONITOR_DEFAULTS, validate_profile as validate_btg_profile
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
 
@@ -1731,6 +1733,91 @@ def eccovox_menu(config: McpConfiguration) -> None:
             result(False, "Opção inválida.")
 
 
+def google_credentials(config: McpConfiguration, vault: str, entry: str, client_id_field: str = "username", client_secret_field: str = "password") -> tuple[str, dict[str, str]] | None:
+    note("Use entrada dedicada ao Google: Client ID em username e Client Secret em password. Os refresh tokens permanecem em notes.")
+    return configure_vault_entry_fields(config, vault, entry, "Google", [("client_id_field", "Client ID", client_id_field), ("client_secret_field", "Client Secret", client_secret_field)])
+
+
+def manage_google_profile(config: McpConfiguration, name: str) -> None:
+    while True:
+        data = config.google(); profile = data["profiles"].get(name)
+        if not isinstance(profile, dict): return
+        screen("MCP · Perfil Google", name)
+        item("1.", "Alterar perfil de vault"); item("2.", "Alterar entrada e credenciais"); item("3.", "Alterar descrição")
+        item("4.", "Alterar identificador OAuth"); item("5.", "Alterar usuário Gmail"); item("6.", "Alterar raízes de arquivos")
+        item("7.", "Habilitar"); item("8.", "Desabilitar"); item("9.", "Autorizar conta no Google")
+        item("10.", "Testar conexão"); item("11.", "Remover perfil"); item("X.", "Voltar")
+        action = prompt("Opção: ").strip().casefold()
+        if action in {"x", "\x1b"}: return
+        if action in {"1", "2"}:
+            vault = select("Escolha o perfil de vault", config.vault_profile_names()) if action == "1" else profile["credential_profile"]
+            if not vault: continue
+            entry = profile["credential_entry_path"] if action == "1" else ask("Entrada KeePass", profile["credential_entry_path"], True)
+            if not entry: continue
+            credential = google_credentials(config, vault, entry, profile["client_id_field"], profile["client_secret_field"])
+            if credential is None: continue
+            profile["credential_profile"], profile["credential_entry_path"] = vault, credential[0]; profile.update(credential[1])
+        elif action == "3":
+            value = ask("Descrição de quando utilizar este perfil", profile["description"], True)
+            if not value: continue
+            profile["description"] = value
+        elif action == "4":
+            value = ask("Identificador do token OAuth dentro da entrada", profile["oauth_profile"], True)
+            if not value: continue
+            profile["oauth_profile"] = value
+        elif action == "5":
+            value = ask("Usuário Gmail", profile["user_id"], True)
+            if not value: continue
+            profile["user_id"] = value
+        elif action == "6":
+            readable = ask("Raízes de leitura separadas por ;", ";".join(profile["readable_roots"])); writable = ask("Raízes de escrita separadas por ;", ";".join(profile["writable_roots"]))
+            if readable is None or writable is None: continue
+            profile["readable_roots"] = [item.strip() for item in readable.split(";") if item.strip()]; profile["writable_roots"] = [item.strip() for item in writable.split(";") if item.strip()]
+        elif action == "7": profile["enabled"] = True
+        elif action == "8": profile["enabled"] = False
+        elif action == "9":
+            try:
+                authorize_google(GoogleService(config.root), name, url_consumer=lambda url: note("Se o navegador não abrir, acesse nesta máquina: " + url)); result(True, "Conta Google autorizada; refresh token salvo no vault.")
+            except GoogleError as error: result(False, str(error))
+            continue
+        elif action == "10":
+            try: result(GoogleService(config.root).test_connection(name)["authenticated"], "Conexão Google confirmada.")
+            except (GoogleError, ValueError) as error: result(False, str(error))
+            continue
+        elif action == "11":
+            confirmation = ask("Digite REMOVER para confirmar", required=True)
+            if confirmation is None or confirmation.casefold() != "remover": result(False, "Perfil Google não removido."); continue
+            del data["profiles"][name]
+            try: config.save_google(data); result(True, "Perfil Google removido. A entrada KeePass e seus tokens foram preservados.")
+            except McpConfigurationError as error: result(False, f"Perfil Google não removido: {error}"); continue
+            return
+        else: result(False, "Opção inválida."); continue
+        try: config.save_google(data); result(True, "Perfil Google atualizado.")
+        except McpConfigurationError as error: result(False, str(error))
+
+
+def google_menu(config: McpConfiguration) -> None:
+    while True:
+        data = config.google(); names = sorted(data["profiles"]); status = "ATIVA" if config.google_tool_available() else "inativa"
+        screen("MCP · Google", f"Gmail, People, Drive e Calendar · {status}"); item("1.", "Criar perfil"); item("2.", "Gerenciar perfil", f"{len(names)} configurado(s)"); item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
+        if choice in {"x", "\x1b"}: return
+        if choice == "1":
+            name = ask("Nome do perfil Google", required=True); vault = select("Escolha o perfil de vault", config.vault_profile_names())
+            if not name or not vault or name in data["profiles"]: result(False, "Nome inválido, repetido ou retorno solicitado."); continue
+            entry = ask("Entrada KeePass", f"APIs/Google/{name}", True)
+            if not entry: continue
+            credential = google_credentials(config, vault, entry)
+            if credential is None: continue
+            description = ask("Descrição de quando utilizar este perfil", required=True); oauth_profile = ask("Identificador do token OAuth dentro da entrada", name, True); user_id = ask("Usuário Gmail", "me", True); readable = ask("Raízes de leitura separadas por ; (opcional)"); writable = ask("Raízes de escrita separadas por ; (opcional)")
+            if not description or not oauth_profile or not user_id or readable is None or writable is None: result(False, "Perfil Google não foi criado."); continue
+            data["profiles"][name] = {"enabled": True, "description": description, "oauth_profile": oauth_profile, "credential_profile": vault, "credential_entry_path": credential[0], **credential[1], "user_id": user_id, "readable_roots": [item.strip() for item in readable.split(";") if item.strip()], "writable_roots": [item.strip() for item in writable.split(";") if item.strip()]}
+            try: config.save_google(data); result(True, "Perfil Google salvo. Use Gerenciar perfil > Autorizar conta no Google para concluir o OAuth.")
+            except McpConfigurationError as error: result(False, str(error))
+        elif choice == "2" and (name := select("MCP · Gerenciar perfil Google", names)): manage_google_profile(config, name)
+        else: result(False, "Opção inválida.")
+
+
 def integrations_menu(config: McpConfiguration) -> None:
     """Lista integrações MCP e mantém cada configurador em seu próprio menu."""
     while True:
@@ -1746,6 +1833,7 @@ def integrations_menu(config: McpConfiguration) -> None:
         ssh_profiles = config.ssh()["profiles"]
         bis2cmd_profiles = config.bis2cmd()["profiles"]
         bis10cmd_profiles = config.bis10cmd()["profiles"]
+        google_profiles = config.google()["profiles"]
         screen("MCP · Integrações", "Selecione uma integração para configurar")
         integration_item("1.", "Todoist", todoist_profiles)
         integration_item("2.", "Omie", omie_profiles)
@@ -1759,6 +1847,7 @@ def integrations_menu(config: McpConfiguration) -> None:
         integration_item("10.", "SSH", ssh_profiles)
         integration_item("11.", "BIS2CMD", bis2cmd_profiles)
         integration_item("12.", "BIS10CMD", bis10cmd_profiles)
+        integration_item("13.", "Google", google_profiles)
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}:
@@ -1787,6 +1876,8 @@ def integrations_menu(config: McpConfiguration) -> None:
             bis2cmd_menu(config)
         elif choice == "12":
             bis10cmd_menu(config)
+        elif choice == "13":
+            google_menu(config)
         else:
             result(False, "Opção inválida.")
 
