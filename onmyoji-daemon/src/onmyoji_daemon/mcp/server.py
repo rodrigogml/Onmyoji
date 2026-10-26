@@ -17,6 +17,7 @@ from .eccovox.tools import EccoVoxToolRegistry
 from .forward_email.tools import ForwardEmailToolRegistry
 from .notion.tools import NotionToolRegistry
 from .aws.tools import AwsToolRegistry
+from .mysql.tools import MySQLToolRegistry
 
 
 class McpApplication:
@@ -32,9 +33,10 @@ class McpApplication:
         self.forward_email = ForwardEmailToolRegistry(self.configuration)
         self.notion = NotionToolRegistry(self.configuration)
         self.aws = AwsToolRegistry(self.configuration)
+        self.mysql = MySQLToolRegistry(self.configuration)
 
     def definitions(self) -> list[dict[str, Any]]:
-        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions() + self.cloudflare.definitions() + self.eccovox.definitions() + self.forward_email.definitions() + self.notion.definitions() + self.aws.definitions()
+        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions() + self.cloudflare.definitions() + self.eccovox.definitions() + self.forward_email.definitions() + self.notion.definitions() + self.aws.definitions() + self.mysql.definitions()
 
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name.startswith("btg."):
@@ -51,6 +53,8 @@ class McpApplication:
             return self.notion.call(name, arguments)
         if name.startswith("aws."):
             return self.aws.call(name, arguments)
+        if name.startswith("mysql."):
+            return self.mysql.call(name, arguments)
         return self.todoist.call(name, arguments)
 
 

@@ -43,7 +43,7 @@ def test_integration_summary_colors_states_and_limits_visible_names(monkeypatch)
 def test_integrations_menu_opens_btg_as_third_option(monkeypatch):
     module = setup_module()
     config = Mock()
-    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion", "aws"):
+    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion", "aws", "mysql"):
         getattr(config, integration).return_value = {"profiles": {}}
     answers = iter(["3", "x"])
     monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
@@ -56,7 +56,7 @@ def test_integrations_menu_opens_btg_as_third_option(monkeypatch):
 def test_integrations_menu_opens_forward_email_as_sixth_option(monkeypatch):
     module = setup_module()
     config = Mock()
-    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion", "aws"):
+    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion", "aws", "mysql"):
         getattr(config, integration).return_value = {"profiles": {}}
     answers = iter(["6", "x"])
     monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
@@ -85,7 +85,7 @@ def test_forward_email_removal_is_case_insensitive_and_returns_to_profile_list(m
 def test_integrations_menu_opens_notion_as_seventh_option(monkeypatch):
     module = setup_module()
     config = Mock()
-    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion", "aws"):
+    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion", "aws", "mysql"):
         getattr(config, integration).return_value = {"profiles": {}}
     answers = iter(["7", "x"])
     monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
@@ -112,7 +112,7 @@ def test_notion_removal_is_case_insensitive(monkeypatch, capsys):
 
 def test_integrations_menu_opens_aws_as_eighth_option(monkeypatch):
     module = setup_module(); config = Mock()
-    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion", "aws"):
+    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion", "aws", "mysql"):
         getattr(config, integration).return_value = {"profiles": {}}
     answers = iter(["8", "x"]); monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
     aws_menu = Mock(); monkeypatch.setattr(module, "aws_menu", aws_menu)
@@ -128,6 +128,15 @@ def test_aws_removal_is_case_insensitive(monkeypatch, capsys):
     module.manage_aws_profile(config, "prod")
     config.save_aws.assert_called_once_with({"profiles": {}})
     assert "Perfil AWS removido" in capsys.readouterr().out
+
+
+def test_integrations_menu_opens_mysql_as_ninth_option(monkeypatch):
+    module = setup_module(); config = Mock()
+    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion", "aws", "mysql"):
+        getattr(config, integration).return_value = {"profiles": {}}
+    answers = iter(["9", "x"]); monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
+    mysql_menu = Mock(); monkeypatch.setattr(module, "mysql_menu", mysql_menu)
+    module.integrations_menu(config); mysql_menu.assert_called_once_with(config)
 
 
 def test_btg_diagnosis_stays_in_profile_menu(monkeypatch, capsys):

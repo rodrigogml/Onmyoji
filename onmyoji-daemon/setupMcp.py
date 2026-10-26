@@ -32,6 +32,7 @@ from onmyoji_daemon.mcp.eccovox import EccoVoxError, EccoVoxService
 from onmyoji_daemon.mcp.forward_email import ForwardEmailError, ForwardEmailService
 from onmyoji_daemon.mcp.notion import NotionError, NotionService
 from onmyoji_daemon.mcp.aws import AwsError, AwsService
+from onmyoji_daemon.mcp.mysql import MySQLError, MySQLService
 from onmyoji_daemon.mcp.btg.configuration import BtgConfigurationError, DEFAULT_SCOPES, MONITOR_DEFAULTS, validate_profile as validate_btg_profile
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
 
@@ -1041,6 +1042,87 @@ def aws_menu(config: McpConfiguration) -> None:
         else: result(False, "Opção inválida.")
 
 
+def mysql_credentials(config: McpConfiguration, vault: str, entry: str, username_field: str = "username", password_field: str = "password") -> tuple[str, dict[str, str]] | None:
+    note("Use entrada dedicada ao MySQL: usuário em username e senha em password.")
+    return configure_vault_entry_fields(config, vault, entry, "MySQL", [("username_field", "Usuário", username_field), ("password_field", "Senha", password_field)])
+
+
+def manage_mysql_profile(config: McpConfiguration, name: str) -> None:
+    while True:
+        data = config.mysql(); profile = data["profiles"].get(name)
+        if not isinstance(profile, dict): return
+        screen("MCP · Perfil MySQL", name)
+        item("1.", "Alterar perfil de vault"); item("2.", "Alterar entrada e credenciais"); item("3.", "Alterar descrição"); item("4.", "Alterar servidor e banco")
+        item("5.", "Alterar socket", profile.get("socket") or "não definido"); item("6.", "Alterar raízes de scripts", f"{len(profile['readable_roots'])} configurada(s)")
+        item("7.", "Comandos livres do cliente", "habilitados" if profile["allow_client_commands"] else "desabilitados"); item("8.", "Habilitar"); item("9.", "Desabilitar")
+        item("10.", "Testar conexão"); item("11.", "Remover perfil"); item("X.", "Voltar")
+        action = prompt("Opção: ").strip().casefold()
+        if action in {"x", "\x1b"}: return
+        if action in {"1", "2"}:
+            vault = select("Escolha o perfil de vault", config.vault_profile_names()) if action == "1" else profile["credential_profile"]
+            if not vault: continue
+            entry = profile["credential_entry_path"] if action == "1" else ask("Entrada KeePass das credenciais", profile["credential_entry_path"], True)
+            if not entry: continue
+            credential = mysql_credentials(config, vault, entry, profile["username_field"], profile["password_field"])
+            if credential is None: continue
+            profile["credential_profile"], profile["credential_entry_path"] = vault, credential[0]; profile.update(credential[1])
+        elif action == "3":
+            value = ask("Descrição", profile["description"], True)
+            if not value: continue
+            profile["description"] = value
+        elif action == "4":
+            host = ask("Servidor MySQL", profile["host"], True); database = ask("Banco padrão (opcional)", profile.get("database", ""))
+            if host is None or database is None: continue
+            profile["host"], profile["database"] = host, database
+        elif action == "5":
+            value = ask("Socket MySQL (opcional)", profile.get("socket", ""))
+            if value is None: continue
+            profile["socket"] = value
+        elif action == "6":
+            value = ask("Raízes de scripts SQL separadas por ;", ";".join(profile["readable_roots"]))
+            if value is None: continue
+            profile["readable_roots"] = [item.strip() for item in value.split(";") if item.strip()]
+        elif action == "7": profile["allow_client_commands"] = not profile["allow_client_commands"]
+        elif action == "8": profile["enabled"] = True
+        elif action == "9": profile["enabled"] = False
+        elif action == "10":
+            try: result(MySQLService(config.root).test_connection(name)["authenticated"], "Conexão MySQL confirmada.")
+            except (MySQLError, ValueError) as error: result(False, str(error))
+            continue
+        elif action == "11":
+            confirmation = ask("Digite REMOVER para confirmar", required=True)
+            if confirmation is None or confirmation.casefold() != "remover": result(False, "Perfil MySQL não removido."); continue
+            del data["profiles"][name]
+            try: config.save_mysql(data); result(True, "Perfil MySQL removido. A entrada KeePass foi preservada.")
+            except McpConfigurationError as error: result(False, f"Perfil MySQL não removido: {error}"); continue
+            return
+        else: result(False, "Opção inválida."); continue
+        try: config.save_mysql(data); result(True, "Perfil MySQL atualizado.")
+        except McpConfigurationError as error: result(False, str(error))
+
+
+def mysql_menu(config: McpConfiguration) -> None:
+    while True:
+        data = config.mysql(); names = sorted(data["profiles"]); status = "ATIVA" if config.mysql_tool_available() else "inativa"
+        screen("MCP · MySQL", f"Consultas, scripts e administração · {status}"); item("1.", "Criar perfil"); item("2.", "Gerenciar perfil", f"{len(names)} configurado(s)"); item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
+        if choice in {"x", "\x1b"}: return
+        if choice == "1":
+            name = ask("Nome do perfil MySQL", required=True); vault = select("Escolha o perfil de vault", config.vault_profile_names())
+            if not name or not vault or name in data["profiles"]: result(False, "Nome inválido, repetido ou retorno solicitado."); continue
+            entry = ask("Entrada KeePass das credenciais", f"APIs/MySQL/{name}", True)
+            if not entry: continue
+            credential = mysql_credentials(config, vault, entry)
+            if credential is None: continue
+            description = ask("Descrição de quando utilizar este perfil", required=True); host = ask("Servidor MySQL", "127.0.0.1", True); database = ask("Banco padrão (opcional)"); socket = ask("Socket MySQL (opcional)"); roots = ask("Raízes de scripts SQL separadas por ; (opcional)")
+            if None in (description, host, database, socket, roots): continue
+            data["profiles"][name] = {"enabled": True, "description": description, "host": host, "database": database, "socket": socket, "allow_client_commands": False, "credential_profile": vault, "credential_entry_path": credential[0], **credential[1], "readable_roots": [item.strip() for item in roots.split(";") if item.strip()]}
+            try: config.save_mysql(data); result(True, "Perfil MySQL atualizado.")
+            except McpConfigurationError as error: result(False, str(error))
+        elif choice == "2" and (name := select("MCP · Gerenciar perfil MySQL", names)): manage_mysql_profile(config, name)
+        else: result(False, "Opção inválida.")
+
+
 def btg_credentials(config: McpConfiguration, vault: str, entry: str) -> tuple[str, dict[str, str]] | None:
     """Configura Client ID/Secret preservando notes, reservado ao estado OAuth."""
     note("Use entrada dedicada ao BTG: Client ID em username, Client Secret em password. O estado OAuth permanece em notes.")
@@ -1386,6 +1468,7 @@ def integrations_menu(config: McpConfiguration) -> None:
         forward_email_profiles = config.forward_email()["profiles"]
         notion_profiles = config.notion()["profiles"]
         aws_profiles = config.aws()["profiles"]
+        mysql_profiles = config.mysql()["profiles"]
         screen("MCP · Integrações", "Selecione uma integração para configurar")
         integration_item("1.", "Todoist", todoist_profiles)
         integration_item("2.", "Omie", omie_profiles)
@@ -1395,6 +1478,7 @@ def integrations_menu(config: McpConfiguration) -> None:
         integration_item("6.", "Forward Email", forward_email_profiles)
         integration_item("7.", "Notion", notion_profiles)
         integration_item("8.", "AWS", aws_profiles)
+        integration_item("9.", "MySQL", mysql_profiles)
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}:
@@ -1415,6 +1499,8 @@ def integrations_menu(config: McpConfiguration) -> None:
             notion_menu(config)
         elif choice == "8":
             aws_menu(config)
+        elif choice == "9":
+            mysql_menu(config)
         else:
             result(False, "Opção inválida.")
 
