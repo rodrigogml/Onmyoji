@@ -50,7 +50,7 @@ Todas as skills do catálogo também aceitam estas ações:
 - `status`: faz um diagnóstico sem gravar a configuração da skill; retorna ao menos `configured` e `valid` em JSON.
 - `configure`: abre o menu interativo da própria skill. Ele cria ou altera arquivos somente após a confirmação e a validação apropriadas.
 
-As skills que mantêm perfis de integração — AWS, BISCMD, BIS10CMD, Google, MySQL, Notion e SSH — também expõem uma API não interativa de configuração. Esse mecanismo é legado e será removido conforme cada integração for migrada para o MCP interno. Todoist, Omie, BTG Empresas, EccoVox, Cloudflare e Forward Email são configurados exclusivamente pelo menu MCP e consumidos pelo servidor MCP interno. Consulte a [integração Omie MCP](../onmyoji-daemon/docs/mcp-omie.md), a [integração Cloudflare MCP](../onmyoji-daemon/docs/mcp-cloudflare.md) e a [integração Forward Email MCP](../onmyoji-daemon/docs/mcp-forward-email.md).
+As skills que mantêm perfis de integração — AWS, BISCMD, BIS10CMD, Google, MySQL e SSH — também expõem uma API não interativa de configuração. Esse mecanismo é legado e será removido conforme cada integração for migrada para o MCP interno. Todoist, Omie, BTG Empresas, EccoVox, Cloudflare, Forward Email e Notion são configurados exclusivamente pelo menu MCP e consumidos pelo servidor MCP interno. Consulte a [integração Omie MCP](../onmyoji-daemon/docs/mcp-omie.md), a [integração Cloudflare MCP](../onmyoji-daemon/docs/mcp-cloudflare.md), a [integração Forward Email MCP](../onmyoji-daemon/docs/mcp-forward-email.md) e a [integração Notion MCP](../onmyoji-daemon/docs/mcp-notion.md).
 
 Há três variações deliberadas:
 

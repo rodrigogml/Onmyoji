@@ -43,7 +43,7 @@ def test_integration_summary_colors_states_and_limits_visible_names(monkeypatch)
 def test_integrations_menu_opens_btg_as_third_option(monkeypatch):
     module = setup_module()
     config = Mock()
-    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email"):
+    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion"):
         getattr(config, integration).return_value = {"profiles": {}}
     answers = iter(["3", "x"])
     monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
@@ -56,7 +56,7 @@ def test_integrations_menu_opens_btg_as_third_option(monkeypatch):
 def test_integrations_menu_opens_forward_email_as_sixth_option(monkeypatch):
     module = setup_module()
     config = Mock()
-    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email"):
+    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion"):
         getattr(config, integration).return_value = {"profiles": {}}
     answers = iter(["6", "x"])
     monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
@@ -80,6 +80,34 @@ def test_forward_email_removal_is_case_insensitive_and_returns_to_profile_list(m
 
     config.save_forward_email.assert_called_once_with({"profiles": {}})
     assert "Perfil Forward Email removido" in capsys.readouterr().out
+
+
+def test_integrations_menu_opens_notion_as_seventh_option(monkeypatch):
+    module = setup_module()
+    config = Mock()
+    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion"):
+        getattr(config, integration).return_value = {"profiles": {}}
+    answers = iter(["7", "x"])
+    monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
+    notion_menu = Mock()
+    monkeypatch.setattr(module, "notion_menu", notion_menu)
+
+    module.integrations_menu(config)
+
+    notion_menu.assert_called_once_with(config)
+
+
+def test_notion_removal_is_case_insensitive(monkeypatch, capsys):
+    module = setup_module()
+    config = Mock()
+    config.notion.return_value = {"profiles": {"workspace": {"readable_roots": []}}}
+    answers = iter(["8", "ReMoVeR"])
+    monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
+
+    module.manage_notion_profile(config, "workspace")
+
+    config.save_notion.assert_called_once_with({"profiles": {}})
+    assert "Perfil Notion removido" in capsys.readouterr().out
 
 
 def test_btg_diagnosis_stays_in_profile_menu(monkeypatch, capsys):

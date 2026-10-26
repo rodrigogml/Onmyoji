@@ -44,6 +44,10 @@ def empty_forward_email() -> dict[str, Any]:
     return {"schema_version": 1, "defaults": {"api_base": "https://api.forwardemail.net/v1", "timeout_seconds": 30, "max_retries": 2}, "profiles": {}}
 
 
+def empty_notion() -> dict[str, Any]:
+    return {"schema_version": 1, "defaults": {"api_base": "https://api.notion.com", "notion_version": "2026-03-11", "timeout_seconds": 30, "max_retries": 2, "page_size": 100}, "profiles": {}}
+
+
 def empty_eccovox() -> dict[str, Any]:
     """Modelo da integração local de voz, sem segredos."""
     return {"schema_version": 1, "defaults": {"request_timeout_seconds": 120, "max_audio_bytes": 10485760, "max_text_characters": 4000}, "profiles": {}}
@@ -95,6 +99,10 @@ class McpConfiguration:
         return self.root / "configs" / "mcp" / "forward-email.toml"
 
     @property
+    def notion_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "notion.toml"
+
+    @property
     def btg_path(self) -> Path:
         return self.root / "configs" / "mcp" / "btg-empresas.toml"
 
@@ -116,6 +124,9 @@ class McpConfiguration:
 
     def forward_email(self) -> dict[str, Any]:
         return self._load(self.forward_email_path, empty_forward_email())
+
+    def notion(self) -> dict[str, Any]:
+        return self._load(self.notion_path, empty_notion())
 
     def btg(self) -> dict[str, Any]:
         return self._load(self.btg_path, empty_btg())
@@ -146,6 +157,11 @@ class McpConfiguration:
     def save_forward_email(self, data: dict[str, Any]) -> None:
         self._validate_forward_email(data)
         self._save(self.forward_email_path, self._render_forward_email(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def save_notion(self, data: dict[str, Any]) -> None:
+        self._validate_notion(data)
+        self._save(self.notion_path, self._render_notion(data))
         McpReconciliation(self.root).mark_pending()
 
     def save_btg(self, data: dict[str, Any]) -> None:
@@ -220,6 +236,13 @@ class McpConfiguration:
         except (KeyError, McpConfigurationError):
             return False
 
+    def notion_tool_available(self) -> bool:
+        try:
+            vault_profiles = self.credentials()["profiles"]
+            return any(profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles for profile in self.notion()["profiles"].values())
+        except (KeyError, McpConfigurationError):
+            return False
+
     def enabled_todoist_profiles(self) -> list[dict[str, str]]:
         vault_profiles = self.credentials()["profiles"]
         return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.todoist()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
@@ -235,6 +258,10 @@ class McpConfiguration:
     def enabled_forward_email_profiles(self) -> list[dict[str, str]]:
         vault_profiles = self.credentials()["profiles"]
         return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.forward_email()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
+
+    def enabled_notion_profiles(self) -> list[dict[str, str]]:
+        vault_profiles = self.credentials()["profiles"]
+        return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.notion()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
 
     def enabled_btg_profiles(self) -> list[dict[str, str]]:
         vault_profiles = self.credentials()["profiles"]
@@ -378,6 +405,28 @@ class McpConfiguration:
             if not isinstance(profile.get("domain", ""), str):
                 raise McpConfigurationError("Domínio do perfil Forward Email inválido.")
 
+    def _validate_notion(self, data: dict[str, Any]) -> None:
+        if data.get("schema_version") != 1 or not isinstance(data.get("defaults"), dict) or not isinstance(data.get("profiles"), dict):
+            raise McpConfigurationError("Estrutura de perfis Notion inválida.")
+        defaults = data["defaults"]
+        if defaults.get("api_base") != "https://api.notion.com" or defaults.get("notion_version") != "2026-03-11":
+            raise McpConfigurationError("Endpoint ou versão Notion não suportados.")
+        if not isinstance(defaults.get("timeout_seconds"), int) or defaults["timeout_seconds"] <= 0 or not isinstance(defaults.get("max_retries"), int) or defaults["max_retries"] < 0 or not isinstance(defaults.get("page_size"), int) or not 1 <= defaults["page_size"] <= 100:
+            raise McpConfigurationError("Timeout, tentativas ou paginação Notion inválidos.")
+        for name, profile in data["profiles"].items():
+            _profile_name(name)
+            if not isinstance(profile, dict) or type(profile.get("enabled")) is not bool:
+                raise McpConfigurationError("Estado do perfil Notion inválido.")
+            if not isinstance(profile.get("description"), str) or not 1 <= len(profile["description"].strip()) <= 240:
+                raise McpConfigurationError("Descrição do perfil Notion é obrigatória e deve ter até 240 caracteres.")
+            if not all(isinstance(profile.get(key), str) and profile[key] for key in ("credential_profile", "credential_entry_path", "credential_field")):
+                raise McpConfigurationError("Referência de vault do perfil Notion incompleta.")
+            if profile["credential_field"] not in {"password", "notes"}:
+                raise McpConfigurationError("Campo KeePass do perfil Notion inválido.")
+            roots = profile.get("readable_roots")
+            if not isinstance(roots, list) or not all(isinstance(value, str) and value.strip() for value in roots):
+                raise McpConfigurationError("Raízes de leitura do perfil Notion inválidas.")
+
     def _validate_eccovox(self, data: dict[str, Any]) -> None:
         if data.get("schema_version") != 1 or not isinstance(data.get("defaults"), dict) or not isinstance(data.get("profiles"), dict):
             raise McpConfigurationError("Estrutura de perfis EccoVox inválida.")
@@ -440,6 +489,14 @@ class McpConfiguration:
         lines = ["schema_version = 1", "", "[defaults]", f"api_base = {_quote(defaults['api_base'])}", f"timeout_seconds = {defaults['timeout_seconds']}", f"max_retries = {defaults['max_retries']}"]
         for name, profile in sorted(data["profiles"].items()):
             lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"credential_profile = {_quote(profile['credential_profile'])}", f"credential_entry_path = {_quote(profile['credential_entry_path'])}", f"credential_field = {_quote(profile['credential_field'])}", f"domain = {_quote(profile.get('domain', ''))}"]
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _render_notion(data: dict[str, Any]) -> str:
+        defaults = data["defaults"]
+        lines = ["schema_version = 1", "", "[defaults]", f"api_base = {_quote(defaults['api_base'])}", f"notion_version = {_quote(defaults['notion_version'])}", f"timeout_seconds = {defaults['timeout_seconds']}", f"max_retries = {defaults['max_retries']}", f"page_size = {defaults['page_size']}"]
+        for name, profile in sorted(data["profiles"].items()):
+            lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"credential_profile = {_quote(profile['credential_profile'])}", f"credential_entry_path = {_quote(profile['credential_entry_path'])}", f"credential_field = {_quote(profile['credential_field'])}", f"readable_roots = {_array(profile['readable_roots'])}"]
         return "\n".join(lines) + "\n"
 
     @staticmethod

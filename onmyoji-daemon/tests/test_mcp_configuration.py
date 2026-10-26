@@ -89,3 +89,20 @@ def test_forward_email_tool_depends_on_enabled_profile_and_existing_vault_profil
     config.save_forward_email(forward_email)
     assert config.forward_email_tool_available() is True
     assert config.enabled_forward_email_profiles() == [{"name": "mail", "description": "Correio de teste."}]
+
+
+def test_notion_tool_depends_on_enabled_profile_and_existing_vault_profile(tmp_path):
+    config = McpConfiguration(tmp_path)
+    credentials = config.credentials()
+    credentials["vaults"]["vault-a"] = {"cli_command": ["keepassxc-cli"], "database": {"windows": "C:/vault.kdbx", "linux": "/vault.kdbx"}}
+    credentials["profiles"]["vault-a"] = vault_profile()
+    config.save_credentials(credentials)
+    notion = config.notion()
+    notion["profiles"]["workspace"] = {"enabled": False, "description": "Notion de teste.", "credential_profile": "vault-a", "credential_entry_path": "APIs/Notion/workspace", "credential_field": "password", "readable_roots": []}
+    config.save_notion(notion)
+
+    assert config.notion_tool_available() is False
+    notion["profiles"]["workspace"]["enabled"] = True
+    config.save_notion(notion)
+    assert config.notion_tool_available() is True
+    assert config.enabled_notion_profiles() == [{"name": "workspace", "description": "Notion de teste."}]

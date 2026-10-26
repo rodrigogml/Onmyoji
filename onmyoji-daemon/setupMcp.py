@@ -30,6 +30,7 @@ from onmyoji_daemon.mcp.btg import BtgError, BtgService
 from onmyoji_daemon.mcp.cloudflare import CloudflareError, CloudflareService
 from onmyoji_daemon.mcp.eccovox import EccoVoxError, EccoVoxService
 from onmyoji_daemon.mcp.forward_email import ForwardEmailError, ForwardEmailService
+from onmyoji_daemon.mcp.notion import NotionError, NotionService
 from onmyoji_daemon.mcp.btg.configuration import BtgConfigurationError, DEFAULT_SCOPES, MONITOR_DEFAULTS, validate_profile as validate_btg_profile
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
 
@@ -821,6 +822,129 @@ def forward_email_menu(config: McpConfiguration) -> None:
             result(False, "Opção inválida.")
 
 
+def manage_notion_profile(config: McpConfiguration, name: str) -> None:
+    """Mantém o operador no perfil Notion até voltar ou removê-lo."""
+    while True:
+        data = config.notion()
+        profile = data["profiles"].get(name)
+        if not isinstance(profile, dict):
+            return
+        screen("MCP · Perfil Notion", name)
+        item("1.", "Alterar perfil de vault")
+        item("2.", "Alterar entrada e token")
+        item("3.", "Alterar descrição")
+        item("4.", "Alterar raízes de upload", f"{len(profile['readable_roots'])} configurada(s)")
+        item("5.", "Habilitar")
+        item("6.", "Desabilitar")
+        item("7.", "Testar conexão")
+        item("8.", "Remover perfil")
+        item("X.", "Voltar")
+        action = prompt("Opção: ").strip().casefold()
+        if action in {"x", "\x1b"}:
+            return
+        if action == "1":
+            vault = select("Escolha o perfil de vault", config.vault_profile_names())
+            if not vault:
+                continue
+            credential = configure_vault_password_entry(config, vault, profile["credential_entry_path"], "Notion")
+            if credential is None:
+                continue
+            profile["credential_profile"] = vault
+            profile["credential_entry_path"], profile["credential_field"] = credential
+        elif action == "2":
+            entry = ask("Entrada KeePass do token", profile["credential_entry_path"], True)
+            if not entry:
+                continue
+            credential = configure_vault_password_entry(config, profile["credential_profile"], entry, "Notion")
+            if credential is None:
+                continue
+            profile["credential_entry_path"], profile["credential_field"] = credential
+        elif action == "3":
+            description = ask("Descrição", profile["description"], True)
+            if not description:
+                continue
+            profile["description"] = description
+        elif action == "4":
+            roots = ask("Raízes de upload separadas por ; (vazio desabilita uploads)", ";".join(profile["readable_roots"]))
+            if roots is None:
+                continue
+            profile["readable_roots"] = [value.strip() for value in roots.split(";") if value.strip()]
+        elif action == "5":
+            profile["enabled"] = True
+        elif action == "6":
+            profile["enabled"] = False
+        elif action == "7":
+            try:
+                result(NotionService(config.root).test_connection(name)["authenticated"], "Conexão confirmada.")
+            except NotionError as error:
+                result(False, str(error))
+            continue
+        elif action == "8":
+            confirmation = ask("Digite REMOVER para confirmar", required=True)
+            if confirmation is None or confirmation.casefold() != "remover":
+                result(False, "Perfil Notion não removido.")
+                continue
+            del data["profiles"][name]
+            try:
+                config.save_notion(data)
+                result(True, "Perfil Notion removido.")
+            except McpConfigurationError as error:
+                result(False, f"Perfil Notion não removido: {error}")
+                continue
+            return
+        else:
+            result(False, "Opção inválida.")
+            continue
+        try:
+            config.save_notion(data)
+            result(True, "Perfil Notion atualizado.")
+        except McpConfigurationError as error:
+            result(False, str(error))
+
+
+def notion_menu(config: McpConfiguration) -> None:
+    """Configura perfis Notion que compartilham o cofre MCP."""
+    while True:
+        data = config.notion(); names = sorted(data["profiles"]); status = "ATIVA" if config.notion_tool_available() else "inativa"
+        screen("MCP · Notion", f"Conteúdo, bases, views e arquivos · {status}")
+        item("1.", "Criar perfil")
+        item("2.", "Gerenciar perfil", f"{len(names)} configurado(s)")
+        item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
+        if choice in {"x", "\x1b"}:
+            return
+        if choice == "1":
+            name = ask("Nome do perfil Notion", required=True); vault = select("Escolha o perfil de vault", config.vault_profile_names())
+            if not name or not vault or name in data["profiles"]:
+                result(False, "Nome inválido, repetido ou retorno solicitado.")
+                continue
+            entry = ask("Entrada KeePass do token", f"APIs/Notion/{name}", True)
+            if not entry:
+                result(False, "Perfil Notion inválido.")
+                continue
+            credential = configure_vault_password_entry(config, vault, entry, "Notion")
+            if credential is None:
+                continue
+            entry, field = credential
+            description = ask("Descrição de quando utilizar este perfil", required=True)
+            if not description:
+                result(False, "Perfil Notion inválido.")
+                continue
+            roots = ask("Raízes de upload separadas por ; (opcional)")
+            if roots is None:
+                continue
+            data["profiles"][name] = {"enabled": True, "description": description, "credential_profile": vault, "credential_entry_path": entry, "credential_field": field, "readable_roots": [value.strip() for value in roots.split(";") if value.strip()]}
+            try:
+                config.save_notion(data)
+                result(True, "Perfil Notion atualizado.")
+            except McpConfigurationError as error:
+                result(False, str(error))
+        elif choice == "2" and (name := select("MCP · Gerenciar perfil Notion", names)):
+            manage_notion_profile(config, name)
+        else:
+            result(False, "Opção inválida.")
+
+
 def btg_credentials(config: McpConfiguration, vault: str, entry: str) -> tuple[str, dict[str, str]] | None:
     """Configura Client ID/Secret preservando notes, reservado ao estado OAuth."""
     note("Use entrada dedicada ao BTG: Client ID em username, Client Secret em password. O estado OAuth permanece em notes.")
@@ -1164,6 +1288,7 @@ def integrations_menu(config: McpConfiguration) -> None:
         cloudflare_profiles = config.cloudflare()["profiles"]
         eccovox_profiles = config.eccovox()["profiles"]
         forward_email_profiles = config.forward_email()["profiles"]
+        notion_profiles = config.notion()["profiles"]
         screen("MCP · Integrações", "Selecione uma integração para configurar")
         integration_item("1.", "Todoist", todoist_profiles)
         integration_item("2.", "Omie", omie_profiles)
@@ -1171,6 +1296,7 @@ def integrations_menu(config: McpConfiguration) -> None:
         integration_item("4.", "EccoVox", eccovox_profiles)
         integration_item("5.", "Cloudflare", cloudflare_profiles)
         integration_item("6.", "Forward Email", forward_email_profiles)
+        integration_item("7.", "Notion", notion_profiles)
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}:
@@ -1187,6 +1313,8 @@ def integrations_menu(config: McpConfiguration) -> None:
             cloudflare_menu(config)
         elif choice == "6":
             forward_email_menu(config)
+        elif choice == "7":
+            notion_menu(config)
         else:
             result(False, "Opção inválida.")
 
