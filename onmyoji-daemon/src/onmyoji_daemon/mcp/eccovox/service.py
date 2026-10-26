@@ -124,6 +124,8 @@ class EccoVoxService:
     def _contained(value: str, roots: tuple[Path, ...], field: str, must_exist: bool) -> Path:
         if not isinstance(value, str) or not value.strip():
             raise EccoVoxError("invalid_request", f"{field} é obrigatório.")
+        if not must_exist and Path(value).is_symlink():
+            raise EccoVoxError("path_not_allowed", f"{field} não pode ser um link simbólico.")
         path = Path(value).resolve()
         if must_exist and not path.is_file():
             raise EccoVoxError("file_not_found", f"{field} deve identificar um arquivo existente.")

@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from onmyoji_daemon.mcp.configuration import McpConfiguration
 from onmyoji_daemon.mcp.eccovox.tools import EccoVoxToolRegistry
+from onmyoji_daemon.mcp.eccovox.service import EccoVoxError, EccoVoxService
 
 
 def configured(root: Path) -> McpConfiguration:
@@ -32,3 +35,11 @@ def test_eccovox_configuration_is_kept_in_mcp_subdirectory(tmp_path):
     config = configured(tmp_path)
     assert config.eccovox_path == tmp_path / "configs" / "mcp" / "eccovox.toml"
     assert json.loads(json.dumps(config.eccovox()))["profiles"]["voz"]["enabled"] is True
+
+
+def test_eccovox_rejects_symbolic_link_as_synthesis_output(tmp_path):
+    config = configured(tmp_path); target = tmp_path / "write" / "target.mp3"; link = tmp_path / "write" / "link.mp3"
+    try: link.symlink_to(target)
+    except OSError: pytest.skip("Links simbólicos indisponíveis nesta plataforma.")
+    with pytest.raises(EccoVoxError, match="link simbólico"):
+        EccoVoxService(tmp_path)._contained(str(link), (tmp_path / "write",), "output_path", False)
