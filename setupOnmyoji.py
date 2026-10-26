@@ -1864,7 +1864,7 @@ def daemon_menu(root: Path) -> None:
                 if changed.returncode == 0: offer_restart()
             elif choice == "11":
                 active = prompt("Habilitar respostas em áudio? [S/n]: ").strip().casefold() not in {"n", "x", "\x1b"}
-                profile = prompt(f"Perfil EccoVox [{voice_profile or 'eccovox'}]: ").strip() or voice_profile or "eccovox"
+                profile = prompt(f"Perfil MCP EccoVox [{voice_profile}]: ").strip() or voice_profile
                 raw = prompt(f"Desligar áudio após minutos sem interação [{voice_auto_off}]: ").strip()
                 try: minutes = int(raw) if raw else voice_auto_off
                 except ValueError: result(False, "Informe minutos inteiros."); continue

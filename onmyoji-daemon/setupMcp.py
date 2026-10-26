@@ -27,6 +27,7 @@ from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialRes
 from onmyoji_daemon.mcp.todoist import TodoistError, TodoistService
 from onmyoji_daemon.mcp.omie import OmieError, OmieService
 from onmyoji_daemon.mcp.btg import BtgError, BtgService
+from onmyoji_daemon.mcp.eccovox import EccoVoxError, EccoVoxService
 from onmyoji_daemon.mcp.btg.configuration import BtgConfigurationError, DEFAULT_SCOPES, MONITOR_DEFAULTS, validate_profile as validate_btg_profile
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
 
@@ -834,16 +835,90 @@ def btg_menu(config: McpConfiguration) -> None:
             result(False, str(error))
 
 
+def manage_eccovox_profile(config: McpConfiguration, name: str) -> None:
+    while True:
+        data = config.eccovox(); profile = data["profiles"].get(name)
+        if not isinstance(profile, dict): return
+        screen("MCP · Perfil EccoVox", name)
+        item("1.", "Alterar descrição")
+        item("2.", "Alterar endpoint local")
+        item("3.", "Alterar raízes de leitura")
+        item("4.", "Alterar raízes de escrita")
+        item("5.", "Habilitar" if not profile["enabled"] else "Desabilitar")
+        item("6.", "Testar conexão")
+        item("7.", "Remover perfil")
+        item("X.", "Voltar")
+        action = prompt("Opção: ").strip().casefold()
+        if action in {"x", "\x1b"}: return
+        if action == "1":
+            value = ask("Descrição", profile["description"], True)
+            if value is None: continue
+            profile["description"] = value
+        elif action == "2":
+            value = ask("Endpoint HTTP local", profile["base_url"], True)
+            if value is None: continue
+            profile["base_url"] = value
+        elif action in {"3", "4"}:
+            key = "readable_roots" if action == "3" else "writable_roots"
+            value = ask("Raízes separadas por ;", ";".join(profile[key]), True)
+            if value is None: continue
+            profile[key] = [item.strip() for item in value.split(";") if item.strip()]
+        elif action == "5": profile["enabled"] = not profile["enabled"]
+        elif action == "6":
+            try:
+                EccoVoxService(config.root).health(name); result(True, "Runtime EccoVox respondeu à consulta de saúde.")
+            except EccoVoxError as error: result(False, str(error))
+            continue
+        elif action == "7":
+            confirmation = ask("Digite REMOVER para confirmar", required=True)
+            if confirmation is None or confirmation.casefold() != "remover": result(False, "Perfil EccoVox não removido."); continue
+            del data["profiles"][name]
+            try: config.save_eccovox(data); result(True, "Perfil EccoVox removido.")
+            except McpConfigurationError as error: result(False, f"Perfil EccoVox não removido: {error}"); continue
+            return
+        else: result(False, "Opção inválida."); continue
+        try: config.save_eccovox(data); result(True, "Perfil EccoVox atualizado.")
+        except McpConfigurationError as error: result(False, str(error))
+
+
+def eccovox_menu(config: McpConfiguration) -> None:
+    while True:
+        data = config.eccovox(); names = sorted(data["profiles"])
+        screen("MCP · EccoVox", "Perfis locais para transcrição e síntese de voz")
+        item("1.", "Criar perfil")
+        item("2.", "Gerenciar perfil", f"{len(names)} configurado(s)")
+        item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
+        if choice in {"x", "\x1b"}: return
+        if choice == "1":
+            name = ask("Nome do perfil", required=True)
+            if not name or name in data["profiles"]: result(False, "Nome inválido ou perfil já existente."); continue
+            description = ask("Descrição de quando utilizar este perfil", required=True)
+            endpoint = ask("Endpoint HTTP local", "http://127.0.0.1:8870", True)
+            readable = ask("Raízes de leitura, separadas por ;", required=True)
+            writable = ask("Raízes de escrita, separadas por ;", required=True)
+            if not all((description, endpoint, readable, writable)): result(False, "Perfil EccoVox não foi criado."); continue
+            data["profiles"][name] = {"enabled": True, "description": description, "base_url": endpoint, "readable_roots": [item.strip() for item in readable.split(";") if item.strip()], "writable_roots": [item.strip() for item in writable.split(";") if item.strip()]}
+            try: config.save_eccovox(data); result(True, "Perfil EccoVox salvo no MCP.")
+            except McpConfigurationError as error: result(False, str(error))
+        elif choice == "2" and (name := select("MCP · Gerenciar perfil EccoVox", names)):
+            manage_eccovox_profile(config, name)
+        else:
+            result(False, "Opção inválida.")
+
+
 def integrations_menu(config: McpConfiguration) -> None:
     """Lista integrações MCP e mantém cada configurador em seu próprio menu."""
     while True:
         todoist_profiles = config.todoist()["profiles"]
         omie_profiles = config.omie()["profiles"]
         btg_profiles = config.btg()["profiles"]
+        eccovox_profiles = config.eccovox()["profiles"]
         screen("MCP · Integrações", "Selecione uma integração para configurar")
         integration_item("1.", "Todoist", todoist_profiles)
         integration_item("2.", "Omie", omie_profiles)
         integration_item("3.", "BTG Empresas", btg_profiles)
+        integration_item("4.", "EccoVox", eccovox_profiles)
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}:
@@ -854,6 +929,8 @@ def integrations_menu(config: McpConfiguration) -> None:
             omie_menu(config)
         elif choice == "3":
             btg_menu(config)
+        elif choice == "4":
+            eccovox_menu(config)
         else:
             result(False, "Opção inválida.")
 

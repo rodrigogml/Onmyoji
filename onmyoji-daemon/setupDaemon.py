@@ -265,21 +265,6 @@ def telegram_staging(root: Path) -> Path:
     return workspace(root) / ".onmyoji" / "telegram" / "staging"
 
 
-def render_eccovox(data: dict) -> str:
-    defaults = data.get("defaults", {})
-    lines = ["schema_version = 1", "", "[defaults]"]
-    for key, default in (("request_timeout_seconds", 120), ("max_audio_bytes", 10485760), ("max_text_characters", 4000)):
-        lines.append(f"{key} = {int(defaults.get(key, default))}")
-    for name, profile in sorted(data.get("profiles", {}).items()):
-        lines.extend(["", f"[profiles.{name}]"])
-        lines.append(f"base_url = {json.dumps(str(profile.get('base_url') or ''), ensure_ascii=False)}")
-        for key in ("readable_roots", "writable_roots"):
-            values = profile.get(key, [])
-            if not isinstance(values, list): raise ValueError(f"Perfil EccoVox {name!r} possui {key} inválido.")
-            lines.append(f"{key} = {json.dumps([str(value) for value in values], ensure_ascii=False)}")
-    return "\n".join(lines) + "\n"
-
-
 def save_system(root: Path, data: dict) -> None:
     """Atualiza a configuração local e o bloco gerado do Codex de forma atômica."""
     system_path, codex_path = root / "configs" / "onmyoji-system.toml", root / "config.toml"
@@ -311,24 +296,17 @@ def save_system(root: Path, data: dict) -> None:
 
 
 def ensure_gateway_activity_permissions(root: Path, profile: str) -> Path:
-    """Autoriza apenas o staging do Telegram para EccoVox e para o sandbox do agente."""
+    """Autoriza o staging do Telegram no perfil MCP EccoVox e no sandbox."""
     if not profile.strip(): raise ValueError("Informe o perfil EccoVox que fará TTS e STT.")
     staging = telegram_staging(root).resolve(); staging.mkdir(parents=True, exist_ok=True)
-    config = root / "configs" / "eccovox.toml"
-    try: ecco = tomllib.loads(config.read_text(encoding="utf-8"))
-    except FileNotFoundError as error: raise ValueError(f"Não existe configuração EccoVox. Configure antes o perfil {profile!r} na skill EccoVox.") from error
-    except tomllib.TOMLDecodeError as error: raise ValueError(f"A configuração EccoVox é inválida: {error}") from error
-    profiles_data = ecco.get("profiles", {})
-    selected = profiles_data.get(profile) if isinstance(profiles_data, dict) else None
-    if not isinstance(selected, dict): raise ValueError(f"O perfil EccoVox {profile!r} não existe. Configure-o antes na skill EccoVox.")
+    mcp = McpConfiguration(root); ecco = mcp.eccovox(); selected = ecco["profiles"].get(profile)
+    if not isinstance(selected, dict) or selected.get("enabled") is not True: raise ValueError(f"O perfil MCP EccoVox {profile!r} não existe ou está desabilitado. Configure-o antes no menu MCP.")
     for key in ("readable_roots", "writable_roots"):
         roots = selected.setdefault(key, [])
         if not isinstance(roots, list): raise ValueError(f"O perfil EccoVox {profile!r} possui {key} inválido.")
         if all(Path(str(value)).resolve() != staging for value in roots): roots.append(str(staging))
-    old_ecco = config.read_text(encoding="utf-8")
     try:
-        config.write_text(render_eccovox(ecco), encoding="utf-8", newline="\n")
-        tomllib.loads(config.read_text(encoding="utf-8"))
+        mcp.save_eccovox(ecco)
         system_path = root / "configs" / "onmyoji-system.toml"
         system = tomllib.loads(system_path.read_text(encoding="utf-8")); codex = system.setdefault("codex", {})
         roots = codex.setdefault("additional_writable_directories", [])
@@ -336,7 +314,6 @@ def ensure_gateway_activity_permissions(root: Path, profile: str) -> Path:
         if all(Path(str(value)).resolve() != staging for value in roots): roots.append(str(staging))
         save_system(root, system)
     except Exception:
-        config.write_text(old_ecco, encoding="utf-8", newline="\n")
         raise
     return staging
 
@@ -460,14 +437,14 @@ def validation(root: Path) -> list[dict[str, str]]:
         add("error", "Área de anexos no workspace", "Configure primeiro o workspace do Shikigami; anexos nunca ficam no CODEX_HOME.")
     voice = data.get("voice_reply", {})
     if bool(voice.get("enabled", False)):
-        profile_name, config = str(voice.get("eccovox_profile") or ""), root / "configs" / "eccovox.toml"
+        profile_name = str(voice.get("eccovox_profile") or "")
         try:
-            profiles_data = tomllib.loads(config.read_text(encoding="utf-8")).get("profiles", {}); selected = profiles_data.get(profile_name, {}) if isinstance(profiles_data, dict) else {}
+            selected = McpConfiguration(root).eccovox()["profiles"].get(profile_name, {})
             readable, writable = selected.get("readable_roots", []), selected.get("writable_roots", [])
             staging = (activity / "staging").resolve()
-            ready = profile_name and isinstance(readable, list) and isinstance(writable, list) and any(Path(str(value)).resolve() == staging for value in readable) and any(Path(str(value)).resolve() == staging for value in writable)
-            add("ok" if ready else "error", "EccoVox para respostas em áudio", f"Perfil {profile_name!r} pode ler e gravar somente no staging Telegram: {staging}" if ready else "Abra Configurar respostas em áudio: o setup autoriza automaticamente o staging no perfil EccoVox e no sandbox do agente.")
-        except (OSError, tomllib.TOMLDecodeError, AttributeError): add("error", "EccoVox para respostas em áudio", "Configure a skill EccoVox antes de habilitar respostas em áudio.")
+            ready = profile_name and selected.get("enabled") is True and isinstance(readable, list) and isinstance(writable, list) and any(Path(str(value)).resolve() == staging for value in readable) and any(Path(str(value)).resolve() == staging for value in writable)
+            add("ok" if ready else "error", "EccoVox para respostas em áudio", f"Perfil MCP {profile_name!r} pode ler e gravar no staging Telegram: {staging}" if ready else "Abra Configurar respostas em áudio: o setup autoriza automaticamente o staging no perfil MCP EccoVox e no sandbox do agente.")
+        except (OSError, tomllib.TOMLDecodeError, AttributeError, KeyError): add("error", "EccoVox para respostas em áudio", "Configure um perfil MCP EccoVox antes de habilitar respostas em áudio.")
     contacts = root / "configs" / "daemon" / "services" / "telegram" / "contacts.json"
     try:
         values = json.loads(contacts.read_text(encoding="utf-8")); owners = [item for item in values.get("contacts", []) if isinstance(item, dict) and "owner" in item.get("roles", [])]

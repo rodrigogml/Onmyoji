@@ -8,7 +8,7 @@ O workspace do Shikigami é externo ao `CODEX_HOME`, não é versionado por este
 
 ## Arquivos de atividade do agente
 
-`CODEX_HOME` abriga definições, modelos, configurações locais e estado de integração; não é o destino de arquivos produzidos pelo trabalho do agente. Toda skill que gerar, baixar, transcrever, exportar, materializar ou usar arquivos temporários deve direcioná-los a uma subpasta dedicada dentro do workspace do Shikigami. A subpasta deve ser específica da integração e incluída explicitamente nas raízes permitidas da skill e no sandbox quando necessário. Esse padrão permite que Shikigamis sem permissão de escrita em seu próprio `CODEX_HOME` continuem trabalhando normalmente e impede que dados operacionais se confundam com configurações. A skill EccoVox usa por padrão `WORKPATH/.onmyoji/eccovox` como sua área de leitura e escrita.
+`CODEX_HOME` abriga definições, modelos, configurações locais e estado de integração; não é o destino de arquivos produzidos pelo trabalho do agente. Toda integração que gerar, baixar, transcrever, exportar, materializar ou usar arquivos temporários deve direcioná-los a uma subpasta dedicada dentro do workspace do Shikigami. A subpasta deve ser específica da integração e incluída explicitamente nas raízes autorizadas do serviço e no sandbox quando necessário. Esse padrão permite que Shikigamis sem permissão de escrita em seu próprio `CODEX_HOME` continuem trabalhando normalmente e impede que dados operacionais se confundam com configurações. O serviço MCP EccoVox usa as raízes explícitas configuradas em `configs/mcp/eccovox.toml`.
 
 ```text
 Shikigami-<Nome> (CODEX_HOME e repositório da instância)

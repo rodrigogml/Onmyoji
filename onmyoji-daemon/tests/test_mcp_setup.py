@@ -43,7 +43,7 @@ def test_integration_summary_colors_states_and_limits_visible_names(monkeypatch)
 def test_integrations_menu_opens_btg_as_third_option(monkeypatch):
     module = setup_module()
     config = Mock()
-    for integration in ("todoist", "omie", "btg"):
+    for integration in ("todoist", "omie", "btg", "eccovox"):
         getattr(config, integration).return_value = {"profiles": {}}
     answers = iter(["3", "x"])
     monkeypatch.setattr(module, "prompt", lambda _label: next(answers))

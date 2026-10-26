@@ -18,14 +18,15 @@ def test_voice_setup_authorizes_only_telegram_staging(tmp_path):
     module = setup_module(); workspace = tmp_path / "workspace"; workspace.mkdir()
     configs = tmp_path / "configs"; configs.mkdir()
     (configs / "onmyoji-system.toml").write_text('[shikigami]\nidentity = "Exemplo"\ninstalled = true\n\n[codex]\nmodel = "gpt-5.6-terra"\nmodel_reasoning_effort = "medium"\nproject_directory = "' + workspace.as_posix() + '"\nsandbox_mode = "workspace-write"\napproval_policy = "never"\nadditional_writable_directories = []\n', encoding="utf-8")
-    (configs / "eccovox.toml").write_text('[defaults]\nrequest_timeout_seconds = 120\nmax_audio_bytes = 100\nmax_text_characters = 100\n\n[profiles.eccovox]\nbase_url = "http://127.0.0.1:8870"\nreadable_roots = []\nwritable_roots = []\n', encoding="utf-8")
+    mcp = configs / "mcp"; mcp.mkdir()
+    (mcp / "eccovox.toml").write_text('schema_version = 1\n\n[defaults]\nrequest_timeout_seconds = 120\nmax_audio_bytes = 100\nmax_text_characters = 100\n\n[profiles.eccovox]\nenabled = true\ndescription = "Voz do gateway"\nbase_url = "http://127.0.0.1:8870"\nreadable_roots = []\nwritable_roots = []\n', encoding="utf-8")
     (tmp_path / "config.toml").write_text("", encoding="utf-8")
     target = module.bootstrap(tmp_path); data = module.telegram_data(tmp_path); module.save_telegram(tmp_path, "vault", "APIs/Telegram:Bot", data)
 
     staging = module.save_voice_reply(tmp_path, True, "eccovox", 15, True)
 
     assert staging == workspace / ".onmyoji" / "telegram" / "staging" and staging.is_dir()
-    ecco = tomllib.loads((configs / "eccovox.toml").read_text(encoding="utf-8"))["profiles"]["eccovox"]
+    ecco = tomllib.loads((configs / "mcp" / "eccovox.toml").read_text(encoding="utf-8"))["profiles"]["eccovox"]
     assert ecco["readable_roots"] == [str(staging)] and ecco["writable_roots"] == [str(staging)]
     complete_system = tomllib.loads((configs / "onmyoji-system.toml").read_text(encoding="utf-8"))
     assert complete_system["shikigami"] == {"identity": "Exemplo", "installed": True}

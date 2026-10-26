@@ -36,6 +36,11 @@ def empty_omie() -> dict[str, Any]:
     return {"schema_version": 1, "defaults": {"timeout_seconds": 30, "max_retries": 2}, "profiles": {}}
 
 
+def empty_eccovox() -> dict[str, Any]:
+    """Modelo da integração local de voz, sem segredos."""
+    return {"schema_version": 1, "defaults": {"request_timeout_seconds": 120, "max_audio_bytes": 10485760, "max_text_characters": 4000}, "profiles": {}}
+
+
 def _quote(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
@@ -77,6 +82,10 @@ class McpConfiguration:
     def btg_path(self) -> Path:
         return self.root / "configs" / "mcp" / "btg-empresas.toml"
 
+    @property
+    def eccovox_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "eccovox.toml"
+
     def credentials(self) -> dict[str, Any]:
         return self._load(self.credentials_path, empty_credentials())
 
@@ -88,6 +97,9 @@ class McpConfiguration:
 
     def btg(self) -> dict[str, Any]:
         return self._load(self.btg_path, empty_btg())
+
+    def eccovox(self) -> dict[str, Any]:
+        return self._load(self.eccovox_path, empty_eccovox())
 
     def save_credentials(self, data: dict[str, Any]) -> None:
         self._validate_credentials(data)
@@ -123,6 +135,11 @@ class McpConfiguration:
                 self._save(self.btg_path, render_btg(candidate))
         except BtgConfigurationError as error:
             raise McpConfigurationError(str(error)) from error
+        McpReconciliation(self.root).mark_pending()
+
+    def save_eccovox(self, data: dict[str, Any]) -> None:
+        self._validate_eccovox(data)
+        self._save(self.eccovox_path, self._render_eccovox(data))
         McpReconciliation(self.root).mark_pending()
 
     def update_btg_profile(self, name: str, updater) -> None:
@@ -168,6 +185,9 @@ class McpConfiguration:
     def enabled_btg_profiles(self) -> list[dict[str, str]]:
         vault_profiles = self.credentials()["profiles"]
         return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.btg()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
+
+    def enabled_eccovox_profiles(self) -> list[dict[str, str]]:
+        return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.eccovox()["profiles"].items()) if profile.get("enabled") is True]
 
     @staticmethod
     def _load(path: Path, empty: dict[str, Any]) -> dict[str, Any]:
@@ -260,6 +280,28 @@ class McpConfiguration:
             if profile["app_key_field"] not in {"username", "password", "url", "notes"} or profile["app_secret_field"] not in {"username", "password", "url", "notes"}:
                 raise McpConfigurationError("Campos KeePass do perfil Omie inválidos.")
 
+    def _validate_eccovox(self, data: dict[str, Any]) -> None:
+        if data.get("schema_version") != 1 or not isinstance(data.get("defaults"), dict) or not isinstance(data.get("profiles"), dict):
+            raise McpConfigurationError("Estrutura de perfis EccoVox inválida.")
+        defaults = data["defaults"]
+        for key, maximum in (("request_timeout_seconds", 300), ("max_audio_bytes", 104857600), ("max_text_characters", 100000)):
+            value = defaults.get(key)
+            if not isinstance(value, int) or not 1 <= value <= maximum:
+                raise McpConfigurationError("Limites padrão EccoVox inválidos.")
+        for name, profile in data["profiles"].items():
+            _profile_name(name)
+            if not isinstance(profile, dict) or type(profile.get("enabled")) is not bool:
+                raise McpConfigurationError("Estado do perfil EccoVox inválido.")
+            if not isinstance(profile.get("description"), str) or not 1 <= len(profile["description"].strip()) <= 240:
+                raise McpConfigurationError("Descrição do perfil EccoVox é obrigatória e deve ter até 240 caracteres.")
+            base_url = profile.get("base_url")
+            if not isinstance(base_url, str) or not base_url.strip():
+                raise McpConfigurationError("Endpoint EccoVox inválido.")
+            for key in ("readable_roots", "writable_roots"):
+                roots = profile.get(key)
+                if not isinstance(roots, list) or not all(isinstance(value, str) and value.strip() for value in roots):
+                    raise McpConfigurationError("Raízes de arquivos EccoVox inválidas.")
+
     @staticmethod
     def _render_credentials(data: dict[str, Any]) -> str:
         lines = ["schema_version = 1", "", "[defaults]", f"timeout_seconds = {data['defaults']['timeout_seconds']}"]
@@ -284,4 +326,12 @@ class McpConfiguration:
         lines = ["schema_version = 1", "", "[defaults]", f"timeout_seconds = {defaults['timeout_seconds']}", f"max_retries = {defaults['max_retries']}"]
         for name, profile in sorted(data["profiles"].items()):
             lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"credential_profile = {_quote(profile['credential_profile'])}", f"credential_entry_path = {_quote(profile['credential_entry_path'])}", f"app_key_field = {_quote(profile['app_key_field'])}", f"app_secret_field = {_quote(profile['app_secret_field'])}"]
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _render_eccovox(data: dict[str, Any]) -> str:
+        defaults = data["defaults"]
+        lines = ["schema_version = 1", "", "[defaults]", f"request_timeout_seconds = {defaults['request_timeout_seconds']}", f"max_audio_bytes = {defaults['max_audio_bytes']}", f"max_text_characters = {defaults['max_text_characters']}"]
+        for name, profile in sorted(data["profiles"].items()):
+            lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"base_url = {_quote(profile['base_url'])}", f"readable_roots = {_array(profile['readable_roots'])}", f"writable_roots = {_array(profile['writable_roots'])}"]
         return "\n".join(lines) + "\n"

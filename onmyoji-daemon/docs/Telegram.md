@@ -20,3 +20,11 @@ acesso adicional fora dele.
 Em contraste, o estado privado do serviço — configuração, credenciais,
 sessões, logs e metadados operacionais — pertence a
 `configs/daemon/services/telegram/` e não é versionado.
+
+## Voz
+
+Transcrição e síntese usam diretamente o serviço interno MCP EccoVox. O perfil
+selecionado pelo Gateway fica em `configs/mcp/eccovox.toml`; ao habilitar voz,
+o setup adiciona somente o staging do Telegram às raízes de leitura e escrita
+desse perfil. Assim, a integração não depende de uma skill e continua limitada
+aos arquivos transitórios do workspace.

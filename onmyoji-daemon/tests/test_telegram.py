@@ -102,16 +102,15 @@ def test_interactive_console_translates_policy_and_relative_writable_directories
     assert policy == {"type": "workspaceWrite", "writableRoots": [str(tmp_path.resolve()), str(reports.resolve())], "networkAccess": False}
 
 
-def test_tts_uses_local_eccovox_profile_only_for_wrapper_selection(tmp_path):
+def test_tts_uses_internal_mcp_eccovox_service(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
     config = tmp_path / "shikigami" / "daemon" / "telegram.toml"; config.write_text(config.read_text(encoding="utf-8") + "\n[voice_reply]\nenabled = true\neccovox_profile = \"eccovox\"\n", encoding="utf-8")
     gateway = Gateway(Settings.load(tmp_path, data)); output = tmp_path / "voice.opus"; captured = {}
-    def run(command, **kwargs):
-        captured["command"], captured["request"] = command, json.loads(kwargs["input"])
-        output.write_bytes(b"audio")
-        return type("Result", (), {"stdout": json.dumps({"ok": True})})()
-    with patch("onmyoji_daemon.telegram.subprocess.run", side_effect=run): gateway._tts("Teste", output)
-    assert captured["command"][-1] == "eccovox" and "profile" not in captured["request"]
+    def synthesize(_self, profile, text, output_path, response_format, **kwargs):
+        captured.update({"profile": profile, "text": text, "output": output_path, "format": response_format, **kwargs})
+        Path(output_path).write_bytes(b"audio")
+    with patch("onmyoji_daemon.telegram.EccoVoxService.synthesize", synthesize): gateway._tts("Teste", output)
+    assert captured["profile"] == "eccovox" and captured["output"] == str(output)
 
 
 def test_contacts_are_local_and_do_not_share_owners(tmp_path):
