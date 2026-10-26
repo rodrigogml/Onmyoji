@@ -37,7 +37,7 @@ Cada `setupSkill.py` é responsável exclusivamente pela configuração da sua s
 
 Quando uma skill precisa da referência `vault_profile`, o configurador lê os perfis já definidos em `configs/keepass.toml` e oferece um seletor numérico. Não solicite esse identificador como texto livre; se ainda não houver perfis KeePass, informe que a skill KeePass Vault deve ser configurada primeiro.
 
-Após a escolha do perfil KeePass, sugira a entrada de credencial no formato `APIs/<Integração>:<perfil-da-skill-em-CamelCase>`, por exemplo `APIs/Omie:Laveli` para o perfil local `laveli`. O usuário pode ajustar a sugestão ao criar uma configuração; não substitua uma entrada já configurada durante edição.
+Após a escolha do perfil KeePass, sugira a entrada de credencial no formato `APIs/<Integração>:<perfil-da-skill-em-CamelCase>`, por exemplo `APIs/Notion:Laveli` para o perfil local `laveli`. O usuário pode ajustar a sugestão ao criar uma configuração; não substitua uma entrada já configurada durante edição.
 
 Quando uma skill oferecer teste de perfil, ele deve selecionar um perfil existente e executar somente uma operação de leitura mínima. O resultado deve confirmar a autenticação ou descrever a falha sem imprimir credenciais, tokens nem a resposta completa da API.
 
@@ -50,7 +50,7 @@ Todas as skills do catálogo também aceitam estas ações:
 - `status`: faz um diagnóstico sem gravar a configuração da skill; retorna ao menos `configured` e `valid` em JSON.
 - `configure`: abre o menu interativo da própria skill. Ele cria ou altera arquivos somente após a confirmação e a validação apropriadas.
 
-As skills que mantêm perfis de integração — AWS, BISCMD, BIS10CMD, Cloudflare, EccoVox, Forward Email, Google, MySQL, Notion, Omie e SSH — também expõem a API não interativa `profile-schema`, `profile-list`, `profile-create`, `profile-update`, `profile-delete` e `profile-test`. A entrada e a saída são JSON; mutações exigem os campos de perfil válidos e a exclusão exige confirmação explícita. Essa é a API usada por `onmyoji-control`. Todoist é configurado exclusivamente pelo menu MCP e consumido pelo servidor MCP interno.
+As skills que mantêm perfis de integração — AWS, BISCMD, BIS10CMD, Cloudflare, EccoVox, Forward Email, Google, MySQL, Notion e SSH — também expõem a API não interativa `profile-schema`, `profile-list`, `profile-create`, `profile-update`, `profile-delete` e `profile-test`. A entrada e a saída são JSON; mutações exigem os campos de perfil válidos e a exclusão exige confirmação explícita. Essa é a API usada por `onmyoji-control`. Todoist e Omie são configurados exclusivamente pelo menu MCP e consumidos pelo servidor MCP interno. Consulte a [integração Omie MCP](../onmyoji-daemon/docs/mcp-omie.md).
 
 Há três variações deliberadas:
 
