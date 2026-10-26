@@ -10,6 +10,7 @@ os arquivos da aplicação.
 | --- | --- |
 | Código e assets publicados | Um subdiretório do workspace configurado do Shikigami (`codex.project_directory`) |
 | Registro de publicações, sessões, TLS, Tunnel, eventos e uploads temporários | `configs/daemon/services/mini-apps/` |
+| Perfis de vault e referências de credenciais | `configs/mcp/credentials.toml` e `configs/daemon/services/mini-apps/tunnel.toml` |
 
 O Gateway rejeita uma raiz fora do workspace, inclusive caminhos que escapem
 por link simbólico. Ele também rejeita qualquer diretório de estado fora de
@@ -20,3 +21,11 @@ deixe de ser válida é marcada com erro e não é servida.
 Alterações no diretório publicado são consumidas diretamente pelo Gateway; não
 há sincronização de arquivos. Para mover uma Mini App, atualize sua publicação
 com a nova raiz e entrypoint válidos dentro do workspace.
+
+## Credencial do Cloudflare Tunnel
+
+O Tunnel seleciona um perfil de vault MCP e uma entrada KeePass. O token é
+resolvido diretamente pelo serviço interno `KeePassCredentialResolver`, somente
+em memória, sem invocar a skill KeePass Vault, scripts intermediários, sessões
+ou arquivos temporários. A configuração do Tunnel persiste apenas
+`credential_profile`, `credential_entry_path` e o campo protegido utilizado.

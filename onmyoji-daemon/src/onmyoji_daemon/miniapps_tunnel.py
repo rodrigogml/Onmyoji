@@ -1,7 +1,7 @@
 """Cloudflare Named Tunnel para o Gateway de Mini Apps.
 
-Este módulo não lê nem grava segredos. O setup obtém o token do KeePass e o
-entrega somente em memória para ``TunnelProcess`` ao iniciar cloudflared.
+O token é resolvido diretamente pelo serviço interno de credenciais do MCP e
+permanece somente em memória durante chamadas Cloudflare e execução do Tunnel.
 """
 from __future__ import annotations
 
@@ -18,6 +18,8 @@ from typing import Any
 import urllib.error
 import urllib.request
 import tomllib
+
+from .mcp.credentials import CredentialError, KeePassCredentialResolver
 
 
 class TunnelError(RuntimeError): pass
@@ -130,8 +132,9 @@ class TunnelProcess:
 
 class TunnelController:
     """Configuração privada, provisionamento confirmado e processo local."""
-    def __init__(self, root: Path, data_dir: Path, local_url: str):
+    def __init__(self, root: Path, data_dir: Path, local_url: str, credentials: KeePassCredentialResolver | None = None):
         self.root, self.path, self.local_url, self.process = root, data_dir / "tunnel.toml", local_url, None
+        self.credentials = credentials or KeePassCredentialResolver(root)
 
     def settings(self) -> dict[str, Any]:
         try: value = tomllib.loads(self.path.read_text(encoding="utf-8"))
@@ -140,25 +143,29 @@ class TunnelController:
         return value if value.get("schema_version") == 1 else {}
 
     def configure(self, values: dict[str, Any]) -> dict[str, Any]:
-        required = ("account_id", "zone_id", "hostname", "keepass_profile", "token_entry")
+        required = ("account_id", "zone_id", "hostname", "credential_profile", "credential_entry_path")
         if any(not str(values.get(key) or "").strip() for key in required): raise TunnelError("configuração de tunnel incompleta")
+        credential_profile = str(values["credential_profile"]).strip()
+        credential_entry = str(values["credential_entry_path"]).strip()
+        try:
+            if not self.credentials.password_exists(credential_profile, credential_entry):
+                raise TunnelError("A entrada do cofre MCP não contém o token do Tunnel")
+        except CredentialError as error:
+            raise TunnelError("Não foi possível validar o token do Tunnel no cofre MCP") from error
         definition = TunnelDefinition(*(str(values[key]).strip() for key in ("account_id", "zone_id", "hostname")), str(values.get("tunnel_id") or ""), str(values.get("tunnel_name") or "onmyoji-mini-apps")); definition.validate()
         executable = str(values.get("cloudflared_executable") or "cloudflared")
         # JSON string literals tambem sao TOML basic strings e lidam
         # corretamente com aspas, barras e caracteres de escape do Windows.
         encode = lambda value: json.dumps(str(value), ensure_ascii=False)
-        content = "\n".join(["schema_version = 1", f"account_id = {encode(definition.account_id)}", f"zone_id = {encode(definition.zone_id)}", f"hostname = {encode(definition.hostname)}", f"tunnel_id = {encode(definition.tunnel_id)}", f"tunnel_name = {encode(definition.tunnel_name)}", f"keepass_profile = {encode(values['keepass_profile'])}", f"token_entry = {encode(values['token_entry'])}", f"cloudflared_executable = {encode(executable)}", ""])
+        content = "\n".join(["schema_version = 1", f"account_id = {encode(definition.account_id)}", f"zone_id = {encode(definition.zone_id)}", f"hostname = {encode(definition.hostname)}", f"tunnel_id = {encode(definition.tunnel_id)}", f"tunnel_name = {encode(definition.tunnel_name)}", f"credential_profile = {encode(credential_profile)}", f"credential_entry_path = {encode(credential_entry)}", 'credential_field = "password"', f"cloudflared_executable = {encode(executable)}", ""])
         self.path.parent.mkdir(parents=True, exist_ok=True); self.path.write_text(content, encoding="utf-8", newline="\n")
         return self.status()
 
     def _token(self, settings: dict[str, Any]) -> str:
-        wrapper = self.root / "available-skills" / "keepass-vault" / "scripts" / "keepass_vault.py"
-        request = {"operation": "read", "entry": {"path": settings["token_entry"]}, "field": "password"}
-        result = subprocess.run([str(__import__("sys").executable), str(wrapper), "--config", str(self.root / "configs" / "keepass.toml"), "--profile", str(settings["keepass_profile"])], input=json.dumps(request), text=True, capture_output=True, timeout=45)
-        try: payload = json.loads(result.stdout); token = payload["result"]["value"]
-        except (ValueError, KeyError, TypeError) as error: raise TunnelError("KeePass não retornou token de Tunnel") from error
-        if not payload.get("ok") or not isinstance(token, str) or not token: raise TunnelError("KeePass não retornou token de Tunnel")
-        return token
+        try:
+            return self.credentials.resolve(str(settings["credential_profile"]), str(settings["credential_entry_path"]), str(settings.get("credential_field") or "password"))
+        except (CredentialError, KeyError, TypeError) as error:
+            raise TunnelError("O cofre MCP não retornou o token do Tunnel") from error
 
     def provision(self, confirm: bool) -> dict[str, Any]:
         settings = self.settings()

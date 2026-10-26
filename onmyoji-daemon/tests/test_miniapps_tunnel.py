@@ -3,9 +3,15 @@ from __future__ import annotations
 import pytest
 import sys
 import time
+from unittest.mock import Mock
 
 import onmyoji_daemon.miniapps_tunnel as module
 from onmyoji_daemon.miniapps_tunnel import CloudflareClient, TunnelController, TunnelDefinition, TunnelError, TunnelProcess
+
+
+def controller(root):
+    credentials = Mock(); credentials.password_exists.return_value = True
+    return TunnelController(root, root / "state", "https://localhost:39391", credentials)
 
 
 def test_tunnel_definition_requires_account_zone_and_hostname():
@@ -31,19 +37,36 @@ def test_cloudflare_returns_the_runtime_token_only_from_its_tunnel_endpoint(monk
 
 
 def test_tunnel_controller_persists_only_configuration_references(tmp_path):
-    controller = TunnelController(tmp_path, tmp_path / "state", "https://localhost:39391")
-    state = controller.configure({"account_id": "account", "zone_id": "zone", "hostname": "apps.example.com", "keepass_profile": "local", "token_entry": "APIs/Tunnel", "cloudflared_executable": "cloudflared"})
+    tunnel = controller(tmp_path)
+    state = tunnel.configure({"account_id": "account", "zone_id": "zone", "hostname": "apps.example.com", "credential_profile": "local", "credential_entry_path": "APIs/Tunnel", "cloudflared_executable": "cloudflared"})
     assert state["configured"] and not state["provisioned"]
     saved = (tmp_path / "state" / "tunnel.toml").read_text(encoding="utf-8")
     assert "APIs/Tunnel" in saved and "token =" not in saved
 
 
 def test_tunnel_configuration_uses_valid_toml_for_windows_paths(tmp_path):
-    controller = TunnelController(tmp_path, tmp_path / "state", "https://localhost:39391")
-    controller.configure({"account_id": "account", "zone_id": "zone", "hostname": "apps.example.com", "keepass_profile": "local\"profile", "token_entry": "APIs\\Tunnel", "cloudflared_executable": r"C:\\Program Files\\cloudflared.exe"})
-    settings = controller.settings()
-    assert settings["keepass_profile"] == 'local"profile'
-    assert settings["token_entry"] == "APIs\\Tunnel"
+    tunnel = controller(tmp_path)
+    tunnel.configure({"account_id": "account", "zone_id": "zone", "hostname": "apps.example.com", "credential_profile": "local\"profile", "credential_entry_path": "APIs\\Tunnel", "cloudflared_executable": r"C:\\Program Files\\cloudflared.exe"})
+    settings = tunnel.settings()
+    assert settings["credential_profile"] == 'local"profile'
+    assert settings["credential_entry_path"] == "APIs\\Tunnel"
+
+
+def test_tunnel_reads_token_directly_from_internal_mcp_credentials(tmp_path):
+    resolver = Mock(); resolver.resolve.return_value = "api-token"
+    controller = TunnelController(tmp_path, tmp_path / "state", "https://localhost:39391", resolver)
+
+    token = controller._token({"credential_profile": "vault", "credential_entry_path": "APIs/Cloudflare", "credential_field": "password"})
+
+    assert token == "api-token"
+    resolver.resolve.assert_called_once_with("vault", "APIs/Cloudflare", "password")
+
+
+def test_tunnel_configuration_rejects_missing_mcp_secret(tmp_path):
+    resolver = Mock(); resolver.password_exists.return_value = False
+    tunnel = TunnelController(tmp_path, tmp_path / "state", "https://localhost:39391", resolver)
+    with pytest.raises(TunnelError, match="não contém"):
+        tunnel.configure({"account_id": "account", "zone_id": "zone", "hostname": "apps.example.com", "credential_profile": "vault", "credential_entry_path": "APIs/Cloudflare"})
 
 
 def test_ingress_is_limited_to_local_tls_hop(monkeypatch):
@@ -70,9 +93,9 @@ def test_tunnel_process_reports_sanitized_startup_failure():
 
 
 def test_tunnel_controller_uses_a_runtime_token_without_persisting_it(tmp_path, monkeypatch):
-    controller = TunnelController(tmp_path, tmp_path / "state", "https://localhost:39391")
-    controller.configure({"account_id": "account", "zone_id": "zone", "hostname": "apps.example.com", "tunnel_id": "tunnel", "keepass_profile": "local", "token_entry": "APIs/Tunnel", "cloudflared_executable": "cloudflared"})
-    monkeypatch.setattr(controller, "_token", lambda _settings: "api-token")
+    tunnel = controller(tmp_path)
+    tunnel.configure({"account_id": "account", "zone_id": "zone", "hostname": "apps.example.com", "tunnel_id": "tunnel", "credential_profile": "local", "credential_entry_path": "APIs/Tunnel", "cloudflared_executable": "cloudflared"})
+    monkeypatch.setattr(tunnel, "_token", lambda _settings: "api-token")
     received = {}
     class Client:
         def __init__(self, token): received["api_token"] = token
@@ -85,5 +108,5 @@ def test_tunnel_controller_uses_a_runtime_token_without_persisting_it(tmp_path, 
     monkeypatch.setattr(module, "CloudflareClient", Client)
     monkeypatch.setattr(module, "TunnelProcess", Process)
 
-    assert controller.start()["running"]
+    assert tunnel.start()["running"]
     assert received == {"api_token": "api-token", "account_id": "account", "tunnel_id": "tunnel", "executable": "cloudflared", "runtime_token": "runtime-token"}

@@ -27,6 +27,8 @@ DAEMON_SOURCE = ROOT / "onmyoji-daemon" / "src"
 if str(DAEMON_SOURCE) not in sys.path:
     sys.path.insert(0, str(DAEMON_SOURCE))
 from onmyoji_daemon.codex_execution import CodexExecutionError, CodexLaunch
+from onmyoji_daemon.mcp.configuration import McpConfiguration
+from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialResolver
 MANAGED_BEGIN = "# BEGIN ONMYOJI MANAGED SKILLS"
 MANAGED_END = "# END ONMYOJI MANAGED SKILLS"
 SYSTEM_BEGIN = "# BEGIN ONMYOJI MANAGED CODEX SETTINGS"
@@ -985,6 +987,52 @@ def choose(label: str, values: list[str], current: str) -> str | None:
         if not choice: return current
         if choice.isdigit() and 1 <= int(choice) <= len(values): return values[int(choice) - 1]
         result(False, "Opção inválida.")
+
+
+def configure_mcp_password_reference(root: Path, integration: str, default_entry: str, current_profile: str = "", current_entry: str = "") -> tuple[str, str] | None:
+    """Seleciona um perfil MCP e garante uma senha na entrada escolhida."""
+    profiles = McpConfiguration(root).vault_profile_names()
+    if not profiles:
+        result(False, "Nenhum perfil de vault MCP disponível. Configure-o primeiro no menu MCP.")
+        return None
+    selected = current_profile if current_profile in profiles else profiles[0]
+    profile = choose(f"{integration} · Perfil de vault MCP", profiles, selected)
+    if profile is None:
+        return None
+    resolver = KeePassCredentialResolver(root)
+    entry = current_entry or default_entry
+    while True:
+        informed = prompt(f"Entrada KeePass [{entry}]: ").strip()
+        if informed.casefold() in {"x", "\x1b"}:
+            return None
+        entry = informed or entry
+        try:
+            exists = resolver.entry_exists(profile, entry)
+            has_password = exists and resolver.password_exists(profile, entry)
+        except CredentialError as error:
+            result(False, str(error))
+            return None
+        if has_password:
+            action = choose(f"Credencial · {integration}", ["Usar a chave já salva", "Informar nova chave e substituir", "Reinformar entrada KeePass"], "Usar a chave já salva")
+            if action is None: return None
+            if action.startswith("Usar"): return profile, entry
+            if action.startswith("Reinformar"): continue
+        else:
+            verb = "salvar nesta entrada" if exists else "criar esta entrada"
+            action = choose(f"Credencial · {integration}", [f"Informar a chave e {verb}", "Reinformar entrada KeePass"], f"Informar a chave e {verb}")
+            if action is None: return None
+            if action.startswith("Reinformar"): continue
+        secret = getpass.getpass(Ui.text(f"› Chave de autenticação {integration} (não será exibida): ", Ui.violet, Ui.bold)).strip()
+        if not secret:
+            result(False, "A chave de autenticação é obrigatória.")
+            continue
+        try:
+            created = resolver.save_password(profile, entry, secret)
+        except CredentialError as error:
+            result(False, str(error))
+            return None
+        result(True, "Entrada criada no cofre MCP." if created else "Chave atualizada no cofre MCP.")
+        return profile, entry
 
 
 def update_system(root: Path, data: dict[str, object], key: str, value: object) -> dict[str, object]:
@@ -2134,7 +2182,7 @@ def daemon_menu(root: Path) -> None:
             if diagnosis is None: return
             tunnel = diagnosis.get("tunnel", {}) if isinstance(diagnosis.get("tunnel"), dict) else {}
             screen("Domínio e Cloudflare Tunnel", "Exposição pública opcional; todas as Mini Apps continuam protegidas por autenticação")
-            item("1.", "Entender pré-requisitos e configurar", "Domínio, permissões Cloudflare e referência KeePass")
+            item("1.", "Entender pré-requisitos e configurar", "Domínio, permissões Cloudflare e vault MCP")
             item("2.", "Provisionar Tunnel e DNS", "Cria/altera recursos Cloudflare após confirmação")
             item("3.", "Consultar/iniciar/reiniciar Tunnel", "Em execução" if tunnel.get("running") else "Parado")
             item("4.", "Baixar cloudflared oficial", "Somente se o executável não estiver disponível")
@@ -2144,10 +2192,10 @@ def daemon_menu(root: Path) -> None:
             if choice == "1":
                 screen("Preparar acesso público", "Reúna estes dados antes de criar qualquer recurso na Cloudflare")
                 print("  1. Um domínio já adicionado à Cloudflare.")
-                print("  2. Um token Cloudflare guardado no KeePass, com permissão Account > Cloudflare Tunnel > Edit e Zone > DNS > Edit.")
+                print("  2. Um token Cloudflare guardado em um perfil de vault MCP, com permissão Account > Cloudflare Tunnel > Edit e Zone > DNS > Edit.")
                 print("  3. Account ID e Zone ID, encontrados no painel Overview da conta e da zona.")
                 print("  4. Um hostname livre dentro da zona, por exemplo apps.seudominio.com.")
-                print("\n  O Onmyōji recebe somente os IDs e a referência do token no KeePass; o token nunca é solicitado nem gravado aqui.")
+                print("\n  O token é armazenado somente no KeePass e resolvido em memória pelo serviço interno de credenciais do MCP.")
                 if prompt("Digite configurar quando os dados estiverem prontos, ou X para voltar: ").strip().casefold() != "configurar": result(False, "Configuração pública adiada; o Gateway local continua disponível."); continue
                 print("\n  Account ID identifica sua conta Cloudflare; copie-o do painel da conta.")
                 account_id = prompt("Cloudflare Account ID: ").strip()
@@ -2155,12 +2203,18 @@ def daemon_menu(root: Path) -> None:
                 zone_id = prompt("Cloudflare Zone ID: ").strip()
                 print("\n  Hostname é o endereço que será criado no DNS, por exemplo apps.seudominio.com.")
                 hostname = prompt("Hostname público: ").strip()
-                print("\n  Perfil e entrada apenas apontam para o token já salvo no KeePass.")
-                keepass_profile = prompt("Perfil KeePass: ").strip()
-                token_entry = prompt("Entrada KeePass do token de API Cloudflare: ").strip()
+                try:
+                    current = tomllib.loads((root / "configs" / "daemon" / "services" / "mini-apps" / "tunnel.toml").read_text(encoding="utf-8"))
+                except (OSError, tomllib.TOMLDecodeError):
+                    current = {}
+                credential = configure_mcp_password_reference(root, "Cloudflare Tunnel", "APIs/Cloudflare/MiniApps", str(current.get("credential_profile") or ""), str(current.get("credential_entry_path") or ""))
+                if credential is None:
+                    result(False, "Configuração do Tunnel cancelada.")
+                    continue
+                credential_profile, credential_entry = credential
                 print("\n  Pressione Enter se cloudflared estiver no PATH; caso contrário, informe o caminho do executável.")
                 executable = prompt("Executável cloudflared [cloudflared]: ").strip() or "cloudflared"
-                values = {"account_id": account_id, "zone_id": zone_id, "hostname": hostname, "keepass_profile": keepass_profile, "token_entry": token_entry, "cloudflared_executable": executable}
+                values = {"account_id": account_id, "zone_id": zone_id, "hostname": hostname, "credential_profile": credential_profile, "credential_entry_path": credential_entry, "cloudflared_executable": executable}
                 completed = miniapps_command("tunnel", "configure", "--values", json.dumps(values))
             elif choice == "2":
                 if prompt("Digite provisionar para criar/atualizar Tunnel, ingress e DNS: ").strip() != "provisionar": result(False, "Cancelado."); continue

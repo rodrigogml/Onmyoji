@@ -33,6 +33,15 @@ class SystemSetupTests(unittest.TestCase):
             self.assertEqual(MODULE.prompt("Opção: "), "x")
         input_mock.assert_called_once_with("› Opção: ")
 
+    def test_miniapps_credential_reference_reuses_existing_mcp_secret(self) -> None:
+        configuration = MagicMock(); configuration.vault_profile_names.return_value = ["principal"]
+        resolver = MagicMock(); resolver.entry_exists.return_value = True; resolver.password_exists.return_value = True
+        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "McpConfiguration", return_value=configuration), patch.object(MODULE, "KeePassCredentialResolver", return_value=resolver), patch.object(MODULE, "choose", side_effect=["principal", "Usar a chave já salva"]), patch.object(MODULE, "prompt", return_value=""):
+            selected = MODULE.configure_mcp_password_reference(Path(temporary), "Cloudflare Tunnel", "APIs/Cloudflare/MiniApps")
+        self.assertEqual(selected, ("principal", "APIs/Cloudflare/MiniApps"))
+        resolver.password_exists.assert_called_once_with("principal", "APIs/Cloudflare/MiniApps")
+        resolver.save_password.assert_not_called()
+
     def test_initial_configuration_starts_uninstalled_without_instance_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

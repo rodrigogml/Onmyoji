@@ -4,6 +4,7 @@ from pathlib import Path
 import asyncio
 import socket
 import pytest
+from unittest.mock import Mock
 
 from aiohttp import ClientSession, TCPConnector
 from onmyoji_daemon.miniapps import MiniAppsGateway
@@ -79,7 +80,8 @@ def test_diagnose_distinguishes_local_readiness_from_optional_public_access(tmp_
 
 def test_diagnose_marks_a_provisioned_tunnel_without_cloudflared_as_action(tmp_path):
     gateway, _workspace = configured_gateway(tmp_path)
-    gateway.tunnel.configure({"account_id": "account", "zone_id": "zone", "hostname": "apps.example.com", "tunnel_id": "tunnel", "keepass_profile": "local", "token_entry": "APIs/Tunnel", "cloudflared_executable": "missing-cloudflared"})
+    gateway.tunnel.credentials = Mock(); gateway.tunnel.credentials.password_exists.return_value = True
+    gateway.tunnel.configure({"account_id": "account", "zone_id": "zone", "hostname": "apps.example.com", "tunnel_id": "tunnel", "credential_profile": "local", "credential_entry_path": "APIs/Tunnel", "cloudflared_executable": "missing-cloudflared"})
     diagnosis = gateway.diagnose()
     tunnel = next(item for item in diagnosis["checks"] if item["id"] == "tunnel")
     assert tunnel["state"] == "action"
