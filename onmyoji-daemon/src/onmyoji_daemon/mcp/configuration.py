@@ -12,6 +12,7 @@ from typing import Any
 from .credentials import mcp_credentials_path
 from .reconciliation import McpReconciliation
 from .todoist import todoist_config_path
+from .btg.configuration import BtgConfigurationError, empty_configuration as empty_btg, render_configuration as render_btg, validate_configuration as validate_btg
 
 
 def omie_config_path(onmyoji_root: Path) -> Path:
@@ -72,6 +73,10 @@ class McpConfiguration:
     def omie_path(self) -> Path:
         return omie_config_path(self.root)
 
+    @property
+    def btg_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "btg-empresas.toml"
+
     def credentials(self) -> dict[str, Any]:
         return self._load(self.credentials_path, empty_credentials())
 
@@ -80,6 +85,9 @@ class McpConfiguration:
 
     def omie(self) -> dict[str, Any]:
         return self._load(self.omie_path, empty_omie())
+
+    def btg(self) -> dict[str, Any]:
+        return self._load(self.btg_path, empty_btg())
 
     def save_credentials(self, data: dict[str, Any]) -> None:
         self._validate_credentials(data)
@@ -94,6 +102,14 @@ class McpConfiguration:
     def save_omie(self, data: dict[str, Any]) -> None:
         self._validate_omie(data)
         self._save(self.omie_path, self._render_omie(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def save_btg(self, data: dict[str, Any]) -> None:
+        try:
+            validate_btg(data)
+        except BtgConfigurationError as error:
+            raise McpConfigurationError(str(error)) from error
+        self._save(self.btg_path, render_btg(data))
         McpReconciliation(self.root).mark_pending()
 
     def vault_profile_names(self) -> list[str]:
@@ -124,6 +140,10 @@ class McpConfiguration:
     def enabled_omie_profiles(self) -> list[dict[str, str]]:
         vault_profiles = self.credentials()["profiles"]
         return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.omie()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
+
+    def enabled_btg_profiles(self) -> list[dict[str, str]]:
+        vault_profiles = self.credentials()["profiles"]
+        return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.btg()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
 
     @staticmethod
     def _load(path: Path, empty: dict[str, Any]) -> dict[str, Any]:

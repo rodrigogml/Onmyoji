@@ -11,6 +11,7 @@ from typing import Any
 from .configuration import McpConfiguration
 from .todoist.tools import TodoistToolRegistry
 from .omie.tools import OmieToolRegistry
+from .btg.tools import BtgToolRegistry
 
 
 class McpApplication:
@@ -20,11 +21,14 @@ class McpApplication:
         self.configuration = McpConfiguration(root)
         self.todoist = TodoistToolRegistry(self.configuration)
         self.omie = OmieToolRegistry(self.configuration)
+        self.btg = BtgToolRegistry(self.configuration)
 
     def definitions(self) -> list[dict[str, Any]]:
-        return self.todoist.definitions() + self.omie.definitions()
+        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions()
 
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if name.startswith("btg."):
+            return self.btg.call(name, arguments)
         if name.startswith("omie."):
             return self.omie.call(name, arguments)
         return self.todoist.call(name, arguments)

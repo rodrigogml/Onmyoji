@@ -26,6 +26,8 @@ from onmyoji_daemon.mcp.configuration import McpConfiguration, McpConfigurationE
 from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialResolver
 from onmyoji_daemon.mcp.todoist import TodoistError, TodoistService
 from onmyoji_daemon.mcp.omie import OmieError, OmieService
+from onmyoji_daemon.mcp.btg import BtgError, BtgService
+from onmyoji_daemon.mcp.btg.configuration import BtgConfigurationError, DEFAULT_SCOPES, validate_profile as validate_btg_profile
 
 
 def ask(label: str, current: str = "", required: bool = False) -> str | None:
@@ -569,14 +571,155 @@ def omie_menu(config: McpConfiguration) -> None:
             result(False, "Opção inválida.")
 
 
+def btg_credentials(config: McpConfiguration, vault: str, entry: str) -> tuple[str, dict[str, str]] | None:
+    """Configura Client ID/Secret preservando notes, reservado ao estado OAuth."""
+    note("Use entrada dedicada ao BTG: Client ID em username, Client Secret em password. O estado OAuth permanece em notes.")
+    return configure_vault_entry_fields(config, vault, entry, "BTG Empresas", [("client_id_field", "Client ID", "username"), ("client_secret_field", "Client Secret", "password")])
+
+
+def manage_btg_profile(config: McpConfiguration, name: str) -> None:
+    while True:
+        data = config.btg()
+        profile = data["profiles"].get(name)
+        if not isinstance(profile, dict):
+            return
+        screen("MCP · Perfil BTG Empresas", f"{name} · {profile['environment']} · CNPJ {profile['company_id']}")
+        item("1.", "Alterar perfil de vault")
+        item("2.", "Alterar entrada e credenciais")
+        item("3.", "Alterar descrição")
+        item("4.", "Habilitar")
+        item("5.", "Desabilitar")
+        item("6.", "Diagnosticar credenciais e OAuth", "Consulta local; não acessa o banco")
+        item("7.", "Remover perfil")
+        item("8.", "Configurar URI de retorno OAuth")
+        item("X.", "Voltar")
+        action = prompt("Opção: ").strip().casefold()
+        if action in {"x", "\x1b"}:
+            return
+        if action in {"1", "2"}:
+            vault = select("Escolha o perfil de vault", config.vault_profile_names()) if action == "1" else profile["credential_profile"]
+            if not vault:
+                continue
+            entry = profile["credential_entry_path"] if action == "1" else ask("Entrada KeePass das credenciais", profile["credential_entry_path"], True)
+            if not entry:
+                continue
+            credential = btg_credentials(config, vault, entry)
+            if credential is None:
+                continue
+            profile["credential_profile"] = vault
+            profile["credential_entry_path"] = credential[0]
+        elif action == "3":
+            description = ask("Descrição", profile["description"], True)
+            if not description:
+                continue
+            profile["description"] = description
+        elif action == "4": profile["enabled"] = True
+        elif action == "5": profile["enabled"] = False
+        elif action == "6":
+            try:
+                status = BtgService(config.root).get_auth_status(name)
+                result(True, "Client ID e Client Secret disponíveis no cofre MCP.")
+                note("Consentimento local válido." if status["authenticated"] else "Sem consentimento local válido; o fluxo OAuth ainda está em migração para o MCP.")
+                if status["pending"]:
+                    note("Há consentimento pendente salvo no cofre.")
+                note("Este diagnóstico não consulta o banco nem confirma pagamentos.")
+            except BtgError as error:
+                result(False, str(error))
+            continue
+        elif action == "7":
+            confirmation = ask("Digite REMOVER para confirmar", required=True)
+            if confirmation is None or confirmation.casefold() != "remover":
+                result(False, "Perfil BTG não removido.")
+                continue
+            del data["profiles"][name]
+            try:
+                config.save_btg(data)
+                result(True, "Perfil BTG removido. A entrada KeePass foi preservada.")
+            except McpConfigurationError as error:
+                result(False, f"Perfil BTG não removido: {error}")
+                continue
+            return
+        elif action == "8":
+            redirect = ask("URI já cadastrada no aplicativo BTG", profile.get("redirect_uri", ""))
+            if redirect is None:
+                continue
+            profile["redirect_uri"] = redirect
+        else:
+            result(False, "Opção inválida.")
+            continue
+        try:
+            config.save_btg(data)
+            result(True, "Perfil BTG atualizado.")
+        except McpConfigurationError as error:
+            result(False, str(error))
+
+
+def btg_menu(config: McpConfiguration) -> None:
+    while True:
+        data = config.btg()
+        screen("MCP · BTG Empresas", "Primeira etapa: perfis, credenciais e diagnóstico local do OAuth")
+        item("1.", "Criar perfil")
+        item("2.", "Gerenciar perfil", f"{len(data['profiles'])} configurado(s)")
+        item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
+        if choice in {"x", "\x1b"}:
+            return
+        if choice == "2":
+            name = select("MCP · Gerenciar perfil BTG", sorted(data["profiles"]))
+            if name:
+                manage_btg_profile(config, name)
+            continue
+        if choice != "1":
+            result(False, "Opção inválida.")
+            continue
+        name = ask("Nome do perfil BTG", required=True)
+        if not name or name in data["profiles"]:
+            result(False, "Nome inválido, repetido ou retorno solicitado.")
+            continue
+        environment = choose("Ambiente BTG", ["sandbox", "production"], "sandbox")
+        if environment is None:
+            continue
+        company = ask("CNPJ da empresa (14 dígitos)", required=True)
+        if company is None:
+            continue
+        vault = select("Escolha o perfil de vault", config.vault_profile_names())
+        if not vault:
+            continue
+        entry = ask("Entrada KeePass das credenciais", f"Integrations/BTG/{name}", True)
+        if not entry:
+            continue
+        profile = {"enabled": True, "description": "Perfil em configuração", "environment": environment, "company_id": company, "credential_profile": vault, "credential_entry_path": entry, "oauth_mode": "remote", "scopes": DEFAULT_SCOPES, "redirect_uri": "", "max_amount": "1000000.00", "monitor_enabled": False}
+        try:
+            validate_btg_profile(name, profile)
+        except BtgConfigurationError as error:
+            result(False, str(error))
+            continue
+        credential = btg_credentials(config, vault, entry)
+        if credential is None:
+            continue
+        profile["credential_entry_path"] = credential[0]
+        description = ask("Descrição de quando utilizar este perfil", required=True)
+        if not description:
+            continue
+        profile["description"] = description
+        data["profiles"][name] = profile
+        try:
+            config.save_btg(data)
+            result(True, "Perfil BTG salvo no MCP. O fluxo bancário completo continua na skill durante a migração.")
+        except McpConfigurationError as error:
+            result(False, str(error))
+
+
 def integrations_menu(config: McpConfiguration) -> None:
     """Lista integrações MCP e mantém cada configurador em seu próprio menu."""
     while True:
         todoist_profiles = config.todoist()["profiles"]
         omie_profiles = config.omie()["profiles"]
+        btg_profiles = config.btg()["profiles"]
         screen("MCP · Integrações", "Selecione uma integração para configurar")
         integration_item("1.", "Todoist", todoist_profiles)
         integration_item("2.", "Omie", omie_profiles)
+        integration_item("3.", "BTG Empresas", btg_profiles)
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}:
@@ -585,6 +728,8 @@ def integrations_menu(config: McpConfiguration) -> None:
             todoist_menu(config)
         elif choice == "2":
             omie_menu(config)
+        elif choice == "3":
+            btg_menu(config)
         else:
             result(False, "Opção inválida.")
 

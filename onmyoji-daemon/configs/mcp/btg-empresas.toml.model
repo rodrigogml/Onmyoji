@@ -1,0 +1,20 @@
+schema_version = 1
+
+[defaults]
+timeout_seconds = 30
+
+[profiles.example]
+enabled = true
+description = "Explique quando esta conta PJ deve ser utilizada."
+environment = "sandbox"
+company_id = "30306294000145"
+credential_profile = "example"
+credential_entry_path = "Integrations/BTG/example"
+account_id = ""
+account_number = ""
+branch_code = ""
+redirect_uri = ""
+oauth_mode = "remote"
+scopes = "openid empresas.btgpactual.com/accounts.readonly brn:btg:empresas:banking:payments brn:btg:empresas:banking:direct-debit"
+max_amount = "1000000.00"
+monitor_enabled = false
