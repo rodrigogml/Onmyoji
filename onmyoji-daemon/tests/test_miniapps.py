@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import asyncio
 import socket
+import pytest
 
 from aiohttp import ClientSession, TCPConnector
 from onmyoji_daemon.miniapps import MiniAppsGateway
@@ -10,10 +11,11 @@ from onmyoji_daemon.miniapps_pki import ensure_material, server_context
 
 
 def configured_gateway(tmp_path: Path) -> tuple[MiniAppsGateway, Path]:
+    root = tmp_path / "code"; root.mkdir()
     workspace = tmp_path / "workspace"; workspace.mkdir()
-    configs = tmp_path / "configs"; configs.mkdir()
+    configs = root / "configs"; configs.mkdir()
     (configs / "onmyoji-system.toml").write_text("[codex]\nproject_directory = " + repr(str(workspace)) + "\n", encoding="utf-8")
-    return MiniAppsGateway(tmp_path, tmp_path / "state", "token", 39391), workspace
+    return MiniAppsGateway(root, configs / "daemon" / "services" / "mini-apps", "token", 39391), workspace
 
 
 def test_create_claim_publication_in_workspace(tmp_path):
@@ -31,6 +33,21 @@ def test_rejects_root_outside_workspace(tmp_path):
     try: gateway.create({"root_path": str(app), "entrypoint": "app.py"})
     except ValueError as error: assert "workspace" in str(error)
     else: raise AssertionError("root outside workspace was accepted")
+
+
+def test_rejects_gateway_state_outside_configs(tmp_path):
+    with pytest.raises(ValueError, match="configs"):
+        MiniAppsGateway(tmp_path, tmp_path / "workspace-state", "token", 39391)
+
+
+def test_workspace_change_invalidates_existing_publication(tmp_path):
+    gateway, workspace = configured_gateway(tmp_path)
+    app = workspace / "report"; app.mkdir(); (app / "app.py").write_text("", encoding="utf-8")
+    created = gateway.create({"root_path": str(app), "entrypoint": "app.py"})
+    replacement = tmp_path / "replacement"; replacement.mkdir()
+    (gateway.root / "configs" / "onmyoji-system.toml").write_text("[codex]\nproject_directory = " + repr(str(replacement)) + "\n", encoding="utf-8")
+    gateway._restore_publications()
+    assert gateway.inspect(created["id"])["state"] == "ERROR"
 
 
 def test_rejects_entrypoint_with_syntax_error(tmp_path):

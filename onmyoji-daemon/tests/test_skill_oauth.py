@@ -343,7 +343,7 @@ def test_second_provider_can_use_different_endpoint_without_issuer_parameter(bro
 def test_http_callback_rate_limit_and_result_not_found(tmp_path):
     from onmyoji_daemon.miniapps import MiniAppsGateway
     from aiohttp.test_utils import make_mocked_request
-    gateway = MiniAppsGateway(tmp_path, tmp_path / "data", "test-token", 1234)
+    gateway = MiniAppsGateway(tmp_path, tmp_path / "configs" / "daemon" / "services" / "mini-apps", "test-token", 1234)
     request = make_mocked_request("GET", "/oauth/skills/one/callback", match_info={"skill": "one"})
     gateway.oauth_callback_hits[request.remote or "unknown"] = [time.time()] * 30
     assert asyncio.run(gateway.skill_oauth_callback(request)).status == 429

@@ -127,6 +127,9 @@ def _json(value: Any) -> str: return json.dumps(value, ensure_ascii=False, separ
 class MiniAppsGateway:
     def __init__(self, root: Path, data_dir: Path, token: str, http_port: int):
         self.root, self.data_dir, self.token, self.http_port = root.resolve(), data_dir.resolve(), token, http_port
+        state_root = self.root / "configs"
+        try: self.data_dir.relative_to(state_root)
+        except ValueError as error: raise ValueError("Estado do Gateway Mini Apps deve permanecer em configs/") from error
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.data_dir / "registry.sqlite3", check_same_thread=False)
         self.db.row_factory = sqlite3.Row; self.lock = threading.RLock()
@@ -170,22 +173,25 @@ class MiniAppsGateway:
         with self.lock:
             rows = self.db.execute("SELECT id,root_path,entrypoint,persistent,state FROM apps WHERE state != 'DELETED'").fetchall()
         for row in rows:
-            entrypoint = Path(str(row["root_path"])) / str(row["entrypoint"])
-            if bool(row["persistent"]) and not entrypoint.is_file():
-                self.mark_error(str(row["id"]), "missing_root", "root_path ou entrypoint não existe após reinício")
-            elif bool(row["persistent"]) and str(row["state"]) == "ERROR":
-                with self.lock:
-                    state = "PUBLISHED_UNCLAIMED" if json.loads(self.db.execute("SELECT auth_json FROM apps WHERE id=?", (row["id"],)).fetchone()[0]).get("type") == "claim" else "ACTIVE"
-                    self.db.execute("UPDATE apps SET state=?,last_error=NULL,updated_at=? WHERE id=?", (state, _now(), row["id"])); self.db.commit()
-                self._event("app.recovered", str(row["id"]))
+            item = {"root_path": str(row["root_path"]), "entrypoint": str(row["entrypoint"])}
+            try: self._registered_paths(item)
+            except ValueError:
+                self.mark_error(str(row["id"]), "invalid_root", "Raiz ou entrypoint da publicação não é mais válido")
+            else:
+                if bool(row["persistent"]) and str(row["state"]) == "ERROR":
+                    with self.lock:
+                        state = "PUBLISHED_UNCLAIMED" if json.loads(self.db.execute("SELECT auth_json FROM apps WHERE id=?", (row["id"],)).fetchone()[0]).get("type") == "claim" else "ACTIVE"
+                        self.db.execute("UPDATE apps SET state=?,last_error=NULL,updated_at=? WHERE id=?", (state, _now(), row["id"])); self.db.commit()
+                    self._event("app.recovered", str(row["id"]))
 
     def _workspace(self) -> Path:
         import tomllib
         path = self.root / "configs" / "onmyoji-system.toml"
         try: value = tomllib.loads(path.read_text(encoding="utf-8")); raw = value["codex"]["project_directory"]
         except (OSError, ValueError, KeyError, TypeError) as error: raise ValueError("workspace do Shikigami não está configurado") from error
-        workspace = Path(str(raw)).resolve()
-        if not workspace.is_dir(): raise ValueError("workspace configurado não existe")
+        if not isinstance(raw, str) or not raw.strip() or not Path(raw).is_absolute(): raise ValueError("workspace configurado é inválido")
+        workspace = Path(raw).resolve()
+        if not workspace.is_dir() or workspace.is_relative_to(self.root): raise ValueError("workspace configurado não existe ou pertence ao Onmyōji")
         return workspace
 
     def _event(self, event: str, app_id: str | None = None, error_code: str | None = None, details: str | None = None) -> None:
@@ -202,20 +208,25 @@ class MiniAppsGateway:
         local_url = f"https://localhost:{self.http_port}/a/{item['id']}/"
         tunnel = self.tunnel.status(); hostname = tunnel.get("hostname") if tunnel.get("provisioned") else None
         public_url = f"https://{hostname}/a/{item['id']}/" if hostname else None
-        entrypoint_ok = (Path(item["root_path"]) / item["entrypoint"]).is_file()
+        try: self._registered_paths(item); entrypoint_ok = True
+        except ValueError: entrypoint_ok = False
         health = "ok" if entrypoint_ok and item["state"] not in {"ERROR", "EXPIRED"} else "degraded"
         result.update({"auth_type": item["auth"].get("type"), "timeouts": item["policies"], "health": health, "url": public_url or local_url, "local_url": local_url, "public_url": public_url})
         return result
 
-    def _validate(self, root_path: str, entrypoint: str) -> tuple[Path, Path]:
-        workspace = self._workspace(); app_root = Path(root_path).resolve()
+    def _registered_paths(self, item: dict[str, Any]) -> tuple[Path, Path]:
+        workspace = self._workspace(); app_root = Path(str(item["root_path"])).resolve()
         try: app_root.relative_to(workspace)
         except ValueError as error: raise ValueError("root_path deve pertencer ao workspace configurado") from error
         if not app_root.is_dir(): raise ValueError("root_path não existe")
-        target = (app_root / entrypoint).resolve()
+        target = (app_root / str(item["entrypoint"])).resolve()
         try: target.relative_to(app_root)
         except ValueError as error: raise ValueError("entrypoint deve pertencer ao root_path") from error
         if not target.is_file() or target.suffix != ".py": raise ValueError("entrypoint Python não existe")
+        return app_root, target
+
+    def _validate(self, root_path: str, entrypoint: str) -> tuple[Path, Path]:
+        app_root, target = self._registered_paths({"root_path": root_path, "entrypoint": entrypoint})
         try: compile(target.read_text(encoding="utf-8"), str(target), "exec")
         except (OSError, UnicodeDecodeError, SyntaxError) as error: raise ValueError("entrypoint Python não pode ser carregado") from error
         return app_root, target
@@ -376,6 +387,7 @@ class MiniAppsGateway:
     def publish(self, app_id: str) -> dict[str, Any]:
         item = self._app(app_id)
         if item["state"] == "DELETED": raise ValueError("publication deleted")
+        self._registered_paths(item)
         item["state"] = "PUBLISHED_UNCLAIMED" if item["auth"]["type"] == "claim" else "ACTIVE"; item["last_error"] = None; self._store(item); self._event("app.published", app_id); return self.inspect(app_id)
 
     def unpublish(self, app_id: str) -> dict[str, Any]:
@@ -389,7 +401,7 @@ class MiniAppsGateway:
         self._schedule_release(app_id); self._event("app.deleted", app_id); return self.inspect(app_id)
 
     def reload(self, app_id: str) -> dict[str, Any]:
-        self._app(app_id); self._schedule_release(app_id, "app.reloaded"); return self.inspect(app_id)
+        item = self._app(app_id); self._registered_paths(item); self._schedule_release(app_id, "app.reloaded"); return self.inspect(app_id)
 
     async def _release(self, app_id: str) -> None:
         item = self.instances.pop(app_id, None)
@@ -411,12 +423,12 @@ class MiniAppsGateway:
         candidates.extend((venv_root / "lib").glob("python*/site-packages") if (venv_root / "lib").is_dir() else [])
         for candidate in candidates:
             if candidate.is_dir(): site.addsitedir(str(candidate))
-        entrypoint = Path(item["root_path"]) / item["entrypoint"]
+        root, entrypoint = self._registered_paths(item)
         module_name = f"_onmyoji_miniapp_{item['id']}_{uuid.uuid4().hex}"
         spec = importlib.util.spec_from_file_location(module_name, entrypoint)
         if not spec or not spec.loader: raise RuntimeError("não foi possível carregar entrypoint")
         module = importlib.util.module_from_spec(spec); sys.modules[module_name] = module
-        root_path = str(Path(item["root_path"]).resolve())
+        root_path = str(root)
         if root_path not in sys.path: sys.path.insert(0, root_path)
         spec.loader.exec_module(module)
         factory = getattr(module, "create_app", None)
@@ -514,6 +526,10 @@ class MiniAppsGateway:
         self._expire(item)
         item = self._app(app_id, include_deleted=False)
         if item["state"] in {"ERROR", "EXPIRED", "UNPUBLISHED"}: raise web.HTTPServiceUnavailable(text="Mini App unavailable")
+        try: self._registered_paths(item)
+        except ValueError:
+            self.mark_error(app_id, "invalid_root", "Raiz ou entrypoint da publicação não é mais válido")
+            raise web.HTTPServiceUnavailable(text="Mini App unavailable")
         if item["auth"]["type"] == "claim" and request.query.get("claim"):
             claim = str(request.query["claim"])
             if _now() > item["created_at"] + item["policies"]["claim_timeout"]:
