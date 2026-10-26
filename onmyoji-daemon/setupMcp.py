@@ -38,6 +38,8 @@ from onmyoji_daemon.mcp.bis2cmd import Bis2CmdError, Bis2CmdService
 from onmyoji_daemon.mcp.bis10cmd import Bis10CmdError, Bis10CmdService
 from onmyoji_daemon.mcp.google import GoogleError, GoogleService
 from onmyoji_daemon.mcp.google.oauth import authorize as authorize_google
+from onmyoji_daemon.mcp.spotify import SpotifyError, SpotifyService
+from onmyoji_daemon.mcp.spotify.oauth import authorize as authorize_spotify
 from onmyoji_daemon.mcp.btg.configuration import BtgConfigurationError, DEFAULT_SCOPES, MONITOR_DEFAULTS, validate_profile as validate_btg_profile
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
 
@@ -1818,6 +1820,84 @@ def google_menu(config: McpConfiguration) -> None:
         else: result(False, "Opção inválida.")
 
 
+def spotify_credentials(config: McpConfiguration, vault: str, entry: str, client_id_field: str = "username") -> tuple[str, dict[str, str]] | None:
+    note("Use entrada dedicada ao Spotify: Client ID em username. O fluxo OAuth PKCE gravará o refresh token em password.")
+    return configure_vault_entry_fields(config, vault, entry, "Spotify", [("client_id_field", "Client ID", client_id_field)])
+
+
+def manage_spotify_profile(config: McpConfiguration, name: str) -> None:
+    while True:
+        data = config.spotify(); profile = data["profiles"].get(name)
+        if not isinstance(profile, dict): return
+        redirect_uri = f"http://127.0.0.1:{profile['callback_port']}/callback"
+        screen("MCP · Perfil Spotify", name)
+        item("1.", "Alterar perfil de vault"); item("2.", "Alterar entrada e Client ID"); item("3.", "Alterar descrição")
+        item("4.", "Alterar porta de callback", redirect_uri); item("5.", "Habilitar"); item("6.", "Desabilitar")
+        item("7.", "Autorizar conta no Spotify"); item("8.", "Testar conexão"); item("9.", "Remover perfil"); item("X.", "Voltar")
+        action = prompt("Opção: ").strip().casefold()
+        if action in {"x", "\x1b"}: return
+        if action in {"1", "2"}:
+            vault = select("Escolha o perfil de vault", config.vault_profile_names()) if action == "1" else profile["credential_profile"]
+            if not vault: continue
+            entry = profile["credential_entry_path"] if action == "1" else ask("Entrada KeePass", profile["credential_entry_path"], True)
+            if not entry: continue
+            credential = spotify_credentials(config, vault, entry, profile["client_id_field"])
+            if credential is None: continue
+            profile["credential_profile"], profile["credential_entry_path"] = vault, credential[0]; profile.update(credential[1])
+        elif action == "3":
+            value = ask("Descrição de quando utilizar este perfil", profile["description"], True)
+            if not value: continue
+            profile["description"] = value
+        elif action == "4":
+            value = ask("Porta do callback local", str(profile["callback_port"]), True)
+            if not value or not value.isdigit(): result(False, "Porta de callback inválida."); continue
+            profile["callback_port"] = int(value)
+        elif action == "5": profile["enabled"] = True
+        elif action == "6": profile["enabled"] = False
+        elif action == "7":
+            note(f"Cadastre exatamente esta Redirect URI no Spotify Dashboard: {redirect_uri}")
+            try:
+                authorize_spotify(SpotifyService(config.root), name, url_consumer=lambda url: note("Se o navegador não abrir, acesse nesta máquina: " + url)); result(True, "Conta Spotify autorizada; refresh token salvo no vault.")
+            except SpotifyError as error: result(False, str(error))
+            continue
+        elif action == "8":
+            try: result(SpotifyService(config.root).test_connection(name)["authenticated"], "Conexão Spotify confirmada.")
+            except (SpotifyError, ValueError) as error: result(False, str(error))
+            continue
+        elif action == "9":
+            confirmation = ask("Digite REMOVER para confirmar", required=True)
+            if confirmation is None or confirmation.casefold() != "remover": result(False, "Perfil Spotify não removido."); continue
+            del data["profiles"][name]
+            try: config.save_spotify(data); result(True, "Perfil Spotify removido. A entrada KeePass e seu token foram preservados.")
+            except McpConfigurationError as error: result(False, f"Perfil Spotify não removido: {error}"); continue
+            return
+        else: result(False, "Opção inválida."); continue
+        try: config.save_spotify(data); result(True, "Perfil Spotify atualizado.")
+        except McpConfigurationError as error: result(False, str(error))
+
+
+def spotify_menu(config: McpConfiguration) -> None:
+    while True:
+        data = config.spotify(); names = sorted(data["profiles"]); status = "ATIVA" if config.spotify_tool_available() else "inativa"
+        screen("MCP · Spotify", f"Catálogo, biblioteca, playlists e player · {status}"); item("1.", "Criar perfil"); item("2.", "Gerenciar perfil", f"{len(names)} configurado(s)"); item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
+        if choice in {"x", "\x1b"}: return
+        if choice == "1":
+            name = ask("Nome do perfil Spotify", required=True); vault = select("Escolha o perfil de vault", config.vault_profile_names())
+            if not name or not vault or name in data["profiles"]: result(False, "Nome inválido, repetido ou retorno solicitado."); continue
+            entry = ask("Entrada KeePass", f"APIs/Spotify/{name}", True)
+            if not entry: continue
+            credential = spotify_credentials(config, vault, entry)
+            if credential is None: continue
+            description = ask("Descrição de quando utilizar este perfil", required=True); callback_port = ask("Porta do callback local", "8888", True)
+            if not description or not callback_port or not callback_port.isdigit(): result(False, "Perfil Spotify não foi criado."); continue
+            data["profiles"][name] = {"enabled": True, "description": description, "credential_profile": vault, "credential_entry_path": credential[0], **credential[1], "refresh_token_field": "password", "callback_port": int(callback_port)}
+            try: config.save_spotify(data); result(True, "Perfil Spotify salvo. Cadastre a Redirect URI exibida e use Gerenciar perfil > Autorizar conta no Spotify.")
+            except McpConfigurationError as error: result(False, str(error))
+        elif choice == "2" and (name := select("MCP · Gerenciar perfil Spotify", names)): manage_spotify_profile(config, name)
+        else: result(False, "Opção inválida.")
+
+
 def integrations_menu(config: McpConfiguration) -> None:
     """Lista integrações MCP e mantém cada configurador em seu próprio menu."""
     while True:
@@ -1834,6 +1914,7 @@ def integrations_menu(config: McpConfiguration) -> None:
         bis2cmd_profiles = config.bis2cmd()["profiles"]
         bis10cmd_profiles = config.bis10cmd()["profiles"]
         google_profiles = config.google()["profiles"]
+        spotify_profiles = config.spotify()["profiles"]
         screen("MCP · Integrações", "Selecione uma integração para configurar")
         integration_item("1.", "Todoist", todoist_profiles)
         integration_item("2.", "Omie", omie_profiles)
@@ -1848,6 +1929,7 @@ def integrations_menu(config: McpConfiguration) -> None:
         integration_item("11.", "BIS2CMD", bis2cmd_profiles)
         integration_item("12.", "BIS10CMD", bis10cmd_profiles)
         integration_item("13.", "Google", google_profiles)
+        integration_item("14.", "Spotify", spotify_profiles)
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}:
@@ -1878,6 +1960,8 @@ def integrations_menu(config: McpConfiguration) -> None:
             bis10cmd_menu(config)
         elif choice == "13":
             google_menu(config)
+        elif choice == "14":
+            spotify_menu(config)
         else:
             result(False, "Opção inválida.")
 

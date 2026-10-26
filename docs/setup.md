@@ -50,7 +50,7 @@ Todas as skills do catálogo também aceitam estas ações:
 - `status`: faz um diagnóstico sem gravar a configuração da skill; retorna ao menos `configured` e `valid` em JSON.
 - `configure`: abre o menu interativo da própria skill. Ele cria ou altera arquivos somente após a confirmação e a validação apropriadas.
 
-Todoist, Omie, BTG Empresas, EccoVox, Cloudflare, Forward Email, Notion, AWS, MySQL, SSH, BIS2CMD, BIS10CMD e Google são configurados exclusivamente pelo menu MCP e consumidos pelo servidor MCP interno. Consulte a documentação específica em `onmyoji-daemon/docs/mcp-*.md`, incluindo a [integração Google MCP](../onmyoji-daemon/docs/mcp-google.md).
+Todoist, Omie, BTG Empresas, EccoVox, Cloudflare, Forward Email, Notion, AWS, MySQL, SSH, BIS2CMD, BIS10CMD, Google e Spotify são configurados exclusivamente pelo menu MCP e consumidos pelo servidor MCP interno. Consulte a documentação específica em `onmyoji-daemon/docs/mcp-*.md`, incluindo a [integração Google MCP](../onmyoji-daemon/docs/mcp-google.md) e a [integração Spotify MCP](../onmyoji-daemon/docs/mcp-spotify.md).
 
 Há três variações deliberadas:
 

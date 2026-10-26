@@ -14,6 +14,7 @@ from .reconciliation import McpReconciliation
 from .todoist import todoist_config_path
 from .btg.configuration import BtgConfigurationError, configuration_lock as btg_configuration_lock, empty_configuration as empty_btg, render_configuration as render_btg, validate_configuration as validate_btg
 from .google.configuration import empty_configuration as empty_google, render_configuration as render_google, validate_configuration as validate_google
+from .spotify.configuration import empty_configuration as empty_spotify, render_configuration as render_spotify, validate_configuration as validate_spotify
 
 
 def omie_config_path(onmyoji_root: Path) -> Path:
@@ -148,6 +149,10 @@ class McpConfiguration:
         return self.root / "configs" / "mcp" / "google.toml"
 
     @property
+    def spotify_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "spotify.toml"
+
+    @property
     def btg_path(self) -> Path:
         return self.root / "configs" / "mcp" / "btg-empresas.toml"
 
@@ -190,6 +195,9 @@ class McpConfiguration:
 
     def google(self) -> dict[str, Any]:
         return self._load(self.google_path, empty_google())
+
+    def spotify(self) -> dict[str, Any]:
+        return self._load(self.spotify_path, empty_spotify())
 
     def btg(self) -> dict[str, Any]:
         return self._load(self.btg_path, empty_btg())
@@ -252,6 +260,11 @@ class McpConfiguration:
         try: validate_google(data)
         except ValueError as error: raise McpConfigurationError(str(error)) from error
         self._save(self.google_path, render_google(data)); McpReconciliation(self.root).mark_pending()
+
+    def save_spotify(self, data: dict[str, Any]) -> None:
+        try: validate_spotify(data)
+        except ValueError as error: raise McpConfigurationError(str(error)) from error
+        self._save(self.spotify_path, render_spotify(data)); McpReconciliation(self.root).mark_pending()
 
     def save_btg(self, data: dict[str, Any]) -> None:
         try:
@@ -371,6 +384,12 @@ class McpConfiguration:
             return any(profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles for profile in self.google()["profiles"].values())
         except (KeyError, McpConfigurationError): return False
 
+    def spotify_tool_available(self) -> bool:
+        try:
+            vault_profiles = self.credentials()["profiles"]
+            return any(profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles for profile in self.spotify()["profiles"].values())
+        except (KeyError, McpConfigurationError): return False
+
     def enabled_todoist_profiles(self) -> list[dict[str, str]]:
         vault_profiles = self.credentials()["profiles"]
         return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.todoist()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
@@ -414,6 +433,10 @@ class McpConfiguration:
     def enabled_google_profiles(self) -> list[dict[str, str]]:
         vault_profiles = self.credentials()["profiles"]
         return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.google()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
+
+    def enabled_spotify_profiles(self) -> list[dict[str, str]]:
+        vault_profiles = self.credentials()["profiles"]
+        return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.spotify()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
 
     def enabled_btg_profiles(self) -> list[dict[str, str]]:
         vault_profiles = self.credentials()["profiles"]

@@ -22,6 +22,7 @@ from .ssh.tools import SshToolRegistry
 from .bis2cmd.tools import Bis2CmdToolRegistry
 from .bis10cmd.tools import Bis10CmdToolRegistry
 from .google.tools import GoogleToolRegistry
+from .spotify.tools import SpotifyToolRegistry
 
 
 class McpApplication:
@@ -42,9 +43,10 @@ class McpApplication:
         self.bis2cmd = Bis2CmdToolRegistry(self.configuration)
         self.bis10cmd = Bis10CmdToolRegistry(self.configuration)
         self.google = GoogleToolRegistry(self.configuration)
+        self.spotify = SpotifyToolRegistry(self.configuration)
 
     def definitions(self) -> list[dict[str, Any]]:
-        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions() + self.cloudflare.definitions() + self.eccovox.definitions() + self.forward_email.definitions() + self.notion.definitions() + self.aws.definitions() + self.mysql.definitions() + self.ssh.definitions() + self.bis2cmd.definitions() + self.bis10cmd.definitions() + self.google.definitions()
+        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions() + self.cloudflare.definitions() + self.eccovox.definitions() + self.forward_email.definitions() + self.notion.definitions() + self.aws.definitions() + self.mysql.definitions() + self.ssh.definitions() + self.bis2cmd.definitions() + self.bis10cmd.definitions() + self.google.definitions() + self.spotify.definitions()
 
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name.startswith("btg."):
@@ -71,6 +73,8 @@ class McpApplication:
             return self.bis10cmd.call(name, arguments)
         if name.startswith("google."):
             return self.google.call(name, arguments)
+        if name.startswith("spotify."):
+            return self.spotify.call(name, arguments)
         return self.todoist.call(name, arguments)
 
 
