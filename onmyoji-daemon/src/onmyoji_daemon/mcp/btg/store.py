@@ -4,10 +4,7 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import json
-import os
-import shutil
 import sqlite3
-import tempfile
 import uuid
 from pathlib import Path
 from typing import Any, Iterator
@@ -49,47 +46,15 @@ PRAGMA user_version=1;
 
 
 class Store:
-    def __init__(self, root: Path, context: str, profile: str, legacy_root: Path | None = None):
+    def __init__(self, root: Path, context: str, profile: str):
         self.root = root.resolve() / "memory"
         require(self.root.resolve().is_relative_to(root.resolve()), "invalid_storage", "Memória deve permanecer no estado MCP BTG.")
         self.root.mkdir(parents=True, exist_ok=True)
         self.path, self.context, self.profile = self.root / "payments.sqlite3", context, profile
         require(not self.path.is_symlink() and self.path.resolve().is_relative_to(self.root.resolve()), "invalid_storage", "A memória SQLite deve permanecer no estado MCP BTG.")
-        self._migrate_legacy(legacy_root)
         with self.connection() as con:
             require(con.execute("PRAGMA user_version").fetchone()[0] in (0, 1), "schema_version", "Versão de memória não suportada.")
             con.executescript(SCHEMA)
-
-    def _migrate_legacy(self, legacy_root: Path | None) -> None:
-        """Copia o snapshot legado uma vez, sem alterar sua origem no workspace."""
-        if self.path.exists() or legacy_root is None:
-            return
-        legacy_root = legacy_root.resolve()
-        source = legacy_root / "payments.sqlite3"
-        if not source.is_file() or source.is_symlink() or not source.resolve().is_relative_to(legacy_root):
-            return
-        temporary: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(dir=self.root, prefix="payments.", suffix=".sqlite3", delete=False) as stream:
-                temporary = Path(stream.name)
-            with contextlib.closing(sqlite3.connect(f"{source.as_uri()}?mode=ro", uri=True)) as origin, contextlib.closing(sqlite3.connect(temporary)) as destination:
-                origin.backup(destination)
-                require(destination.execute("PRAGMA integrity_check").fetchone()[0] == "ok", "invalid_legacy_memory", "Memória legada inválida; origem preservada.")
-            if self.path.exists():
-                return
-            os.replace(temporary, self.path)
-            temporary = None
-            receipts = legacy_root / "receipts"
-            target = self.root / "receipts"
-            if receipts.is_dir() and not receipts.is_symlink() and not target.exists():
-                for entry in receipts.rglob("*"):
-                    require(not entry.is_symlink() and entry.resolve().is_relative_to(receipts.resolve()), "invalid_legacy_memory", "Comprovante legado inválido; origem preservada.")
-                shutil.copytree(receipts, target, symlinks=False)
-        except (OSError, sqlite3.Error) as error:
-            raise BtgError("legacy_memory_migration_failed", "Não foi possível copiar a memória BTG anterior; origem preservada.") from error
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
 
     @contextlib.contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:

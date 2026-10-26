@@ -39,25 +39,6 @@ def storage_root(config: Path) -> Path:
     return target
 
 
-def legacy_storage_root(config: Path) -> Path | None:
-    """Localiza apenas para migração a memória BTG da versão anterior.
-
-    A ausência ou a invalidez do workspace antigo não impede o MCP. A cópia,
-    quando existe, preserva a origem e nunca é repetida após criar o destino.
-    """
-    root = instance_root(config)
-    try:
-        import tomllib
-        value = tomllib.loads((root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8"))["codex"]["project_directory"]
-        workspace = Path(value).resolve()
-        if not isinstance(value, str) or not workspace.is_dir() or workspace.is_relative_to(root):
-            return None
-        target = workspace / ".onmyoji" / "btg-empresas"
-        return target if target.is_dir() and target.resolve().is_relative_to(workspace) else None
-    except (OSError, ValueError, KeyError, TypeError):
-        return None
-
-
 def load_profile(config: Path, name: str) -> dict[str, Any]:
     try:
         data = tomllib.loads(config.read_text(encoding="utf-8"))
@@ -73,9 +54,6 @@ def load_profile(config: Path, name: str) -> dict[str, Any]:
     raw.setdefault("scopes", DEFAULT_SCOPES)
     raw.setdefault("oauth_mode", "remote")
     raw["storage_root"] = str(storage_root(config))
-    legacy = legacy_storage_root(config)
-    if legacy is not None:
-        raw["legacy_storage_root"] = str(legacy)
     for key, default in (("timeout_seconds", 30), ("pending_interval", 300), ("scheduled_interval", 3600), ("confirmed_interval", 86400), ("confirmation_days", 7), ("max_pages", 20), ("max_pending_days", 30)):
         raw.setdefault(key, default)
     raw.update(_config=str(config.resolve()), _profile=name)

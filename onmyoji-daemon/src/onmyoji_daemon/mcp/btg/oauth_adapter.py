@@ -19,7 +19,7 @@ def dispatch(root: Path, request: dict) -> dict:
     action = request.get("action")
     if action == "describe":
         state_root = storage_root(Path(profile["_config"]))
-        return {"issuer": client.id_base, "authorizationEndpoint": client.id_base + "/oauth2/authorize", "redirectUri": profile["redirect_uri"], "workspace": str(state_root), "binding": digest({"oauth": client.binding(), "account": context(profile), "vault": profile["credential_entry_path"], "vaultProfile": profile["credential_profile"], "scopes": profile["scopes"], "storage": str(state_root), "mode": profile["oauth_mode"]}), "requireIssuer": True}
+        return {"issuer": client.id_base, "authorizationEndpoint": client.id_base + "/oauth2/authorize", "redirectUri": profile["redirect_uri"], "storage_root": str(state_root), "binding": digest({"oauth": client.binding(), "account": context(profile), "vault": profile["credential_entry_path"], "vaultProfile": profile["credential_profile"], "scopes": profile["scopes"], "storage": str(state_root), "mode": profile["oauth_mode"]}), "requireIssuer": True}
     require(profile["oauth_mode"] == "remote", "remote_mode_required", "Use OAuth remoto para o BTG MCP.")
     if action in {"start", "complete"}:
         require(bool(profile["redirect_uri"]) and request.get("redirectUri") == profile["redirect_uri"], "redirect_mismatch", "Callback diverge do perfil MCP.")

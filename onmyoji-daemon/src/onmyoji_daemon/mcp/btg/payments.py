@@ -50,8 +50,7 @@ class Engine:
         require(bool(self.profile["account_id"]), "account_setup_required", "Conclua a conexão da conta pelo setup BTG antes de operar.")
         if self._store is None:
             root = Path(self.profile.get("storage_root") or storage_root(Path(self.profile["_config"])))
-            legacy = Path(self.profile["legacy_storage_root"]) if self.profile.get("legacy_storage_root") else None
-            self._store = Store(root, context(self.profile), self.profile["_profile"], legacy)
+            self._store = Store(root, context(self.profile), self.profile["_profile"])
         return self._store
 
     def check_barcode(self, item: dict[str, Any]) -> dict[str, Any]:

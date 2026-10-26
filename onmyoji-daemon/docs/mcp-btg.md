@@ -1,4 +1,4 @@
-# Migração BTG Empresas para o MCP
+# BTG Empresas no MCP
 
 ## Etapa implementada
 
@@ -27,8 +27,8 @@ tenha revogado. Não inicia consentimento nem renova tokens.
 ## Conectar e consultar
 
 No menu do perfil, configure a URI de retorno pelo Gateway/Tunnel e cadastre
-exatamente a mesma URI no aplicativo BTG. O callback MCP é
-`/oauth/mcp/btg/callback`; o caminho legado permanece independente.
+exatamente a mesma URI no aplicativo BTG. O callback é
+`/oauth/mcp/btg/callback`.
 Depois, use **Conectar ao BTG**, confirme a operação e abra o link retornado
 no navegador. Gateway, mini-apps e Tunnel precisam estar disponíveis para
 esse fluxo remoto; o MCP continua local por stdio.
@@ -72,12 +72,6 @@ não é criptografado. A conta descoberta não pode ser
 silenciosamente substituída por outra conta/CNPJ/ambiente. Para outro vínculo,
 crie um novo perfil. Uma tela de setup aberta antes do callback não apaga os
 dados da conta ao salvar alterações posteriores.
-
-> [!WARNING]
-> Enquanto a skill antiga for necessária, use uma entrada KeePass dedicada
-> ao perfil MCP. Compartilhar a mesma entrada OAuth entre callbacks distintos
-> troca o vínculo dos tokens e pode interromper o outro fluxo. Nenhum perfil
-> ou consentimento legado é importado automaticamente.
 
 ## Pagamentos e memória
 
@@ -129,11 +123,9 @@ ser seguido de estorno; `PROCESSED` não comprova assinatura humana.
 Os registros ficam em `configs/mcp/btg-empresas/memory/payments.sqlite3` e os
 PDFs em `configs/mcp/btg-empresas/memory/receipts/`; locks de credenciais ficam
 em `configs/mcp/btg-empresas/locks/`. Esse estado é interno ao servidor MCP e
-não é devolvido como caminho para o agente. Na primeira execução, se ainda não
-houver destino, o servidor copia de forma atômica o banco e os comprovantes do
-local legado no workspace, preservando a origem sem mover nem apagar arquivos.
-Os backups regulares do Shikigami passam, portanto, a concentrar esse estado em
-`configs/`. O campo `profile` do registro identifica seu criador, não renomeia
+não é devolvido como caminho para o agente. Os backups regulares do Shikigami
+passam, portanto, a concentrar esse estado em `configs/`. O campo `profile` do
+registro identifica seu criador, não renomeia
 o perfil MCP atual.
 Tokens, identidade do operador, chaves de idempotência e leases não são
 publicados nos registros retornados. O histórico distingue lançamento,
@@ -155,10 +147,9 @@ manual sem sair do menu. Não inicia serviços automaticamente. Consultas MCP
 manuais e pagamentos não exigem daemon; somente o acompanhamento contínuo
 depende do serviço `btg-payments-monitor` habilitado e em execução.
 
-O serviço lê tanto os perfis legados quanto os MCP durante a transição. Para
-MCP, exige perfil habilitado, vault configurado e `monitor_enabled=true`; executa
-somente o módulo interno de consultas, sem scripts da skill. A saúde no daemon
-separa perfis MCP pelo prefixo `mcp:` e não publica IDs nem dados financeiros.
+O serviço exige perfil habilitado, vault configurado e `monitor_enabled=true`;
+executa somente o módulo interno de consultas. A saúde no daemon separa perfis
+MCP pelo prefixo `mcp:` e não publica IDs nem dados financeiros.
 `get_monitor_status` não confirma que esse processo esteja vivo.
 
 Os padrões são: pendentes a cada 300 segundos, agendados a cada 3600,
@@ -169,22 +160,15 @@ como quitadas ou falhas. A janela de confirmados não garante irreversibilidade;
 manuais, processos e reinícios. Dois perfis do mesmo contexto podem consultar
 o mesmo histórico; não habilite dois monitores sem necessidade.
 
-## Próximas etapas da migração
+## Cobertura da integração
 
-| Superfície legada | Tratamento no MCP |
+| Capacidade | Implementação MCP |
 | --- | --- |
-| `auth.status` | Implementado: diagnóstico local e consulta da sessão remota separados. |
-| `auth.start`, `auth.complete`, `auth.callback-info`, `auth.cancel` | Implementados com callback próprio do Gateway e persistência no cofre MCP; conclusão do OAuth é interna, sem método para receber códigos manualmente. |
-| `accounts.get`, `balances.get`, `statements.list`, `dda.list`, `barcodes.get`, `payments.remote-list` | Implementados nas seis consultas autenticadas acima. |
-| `payments.prepare`, `payments.submit`, `payments.cancel` | Implementados com autorização específica, hash, decimais exatos, reserva transacional e recuperação de resultado incerto. |
-| `payments.list`, `payments.get`, `payments.history`, `payments.refresh`, `payments.receipt` | Implementados com memória interna em `configs/mcp/` e comprovantes sem exposição de caminhos. |
-| `monitor.status`, `monitor.check` e serviço contínuo | Implementados nos métodos MCP e no worker interno do daemon, coexistindo com perfis legados. |
-| Backup/restauração da memória | O backup regular de `configs/` inclui a memória MCP; manutenção legada permanece restrita a dados legados durante a transição. |
-
-> [!IMPORTANT]
-> A skill BTG, seu callback e monitor permanecem operacionais durante a
-> migração. Criar um perfil MCP não altera os perfis legados nem inicia
-> consentimento, pagamento ou serviço automaticamente.
+| Diagnóstico e OAuth | `btg.get_auth_status`, callback próprio do Gateway e persistência no cofre MCP. |
+| Consultas bancárias | Conta, saldo, extrato, DDA, código de barras e pagamentos remotos. |
+| Pagamentos | Preparação, envio, cancelamento, histórico, recuperação de resultado incerto e comprovante interno. |
+| Monitoramento | Ferramentas MCP e worker interno do daemon, sem scripts de skill. |
+| Backup | O backup regular de `configs/` inclui a memória MCP. |
 
 Testes desta etapa usam transporte simulado e KDBX com credenciais sintéticas.
 Não iniciam consentimentos reais, acessam contas reais, enviam ou cancelam

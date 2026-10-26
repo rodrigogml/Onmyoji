@@ -125,13 +125,15 @@ class SkillOAuth:
         parsed = urllib.parse.urlsplit(origin)
         ensure(parsed.scheme == "https" and bool(parsed.hostname) and not parsed.username and not parsed.password and parsed.path in {"", "/"} and not parsed.query and not parsed.fragment, "Origem OAuth pública inválida")
         metadata = self.adapter(skill, profile, "describe")
-        fields = {"issuer", "authorizationEndpoint", "redirectUri", "workspace", "binding"}
-        ensure(fields <= set(metadata) <= fields | {"requireIssuer"}, "Metadados do adaptador OAuth inválidos")
-        ensure(all(isinstance(metadata[k], str) and bool(metadata[k]) for k in fields) and type(metadata.get("requireIssuer", False)) is bool, "Metadados OAuth incompletos")
+        fields = {"issuer", "authorizationEndpoint", "redirectUri", "binding"}
+        location = "storage_root" if skill == "mcp-btg" else "workspace"
+        required = fields | {location}
+        ensure(required <= set(metadata) <= required | {"requireIssuer"}, "Metadados do adaptador OAuth inválidos")
+        ensure(all(isinstance(metadata[k], str) and bool(metadata[k]) for k in required) and type(metadata.get("requireIssuer", False)) is bool, "Metadados OAuth incompletos")
         for field in ("issuer", "authorizationEndpoint"):
             value = urllib.parse.urlsplit(metadata[field])
             ensure(value.scheme == "https" and bool(value.hostname) and not value.username and not value.password and not value.fragment, "URI OAuth inválida")
-        declared = Path(metadata["workspace"]).resolve()
+        declared = Path(metadata[location]).resolve()
         if skill == "mcp-btg":
             expected = self.root / "configs" / "mcp" / "btg-empresas"
             ensure(declared == expected.resolve(), "Estado OAuth BTG MCP inválido")

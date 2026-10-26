@@ -15,7 +15,7 @@ from jsonschema import Draft202012Validator
 
 from onmyoji_daemon.mcp.btg.payments import Engine
 from onmyoji_daemon.mcp.btg.contracts import BtgError, bank_date, date, digest, json_exact, money, prepare_item, public
-from onmyoji_daemon.mcp.btg.store import SCHEMA, Store
+from onmyoji_daemon.mcp.btg.store import Store
 from onmyoji_daemon.mcp.btg.service import BtgService
 from onmyoji_daemon.mcp.btg.tools import BtgToolRegistry
 from onmyoji_daemon.mcp.btg.payment_tools import preparation_schema
@@ -72,22 +72,6 @@ def prepared_engine(profile, body):
     engine = Engine(profile, bank)
     payment = engine.prepare(body)
     return engine, bank, payment
-
-
-def test_store_migrates_legacy_memory_to_configs_without_removing_source(tmp_path):
-    legacy = tmp_path / "work" / ".onmyoji" / "btg-empresas"
-    legacy.mkdir(parents=True)
-    source = legacy / "payments.sqlite3"
-    with sqlite3.connect(source) as con:
-        con.executescript(SCHEMA)
-    receipts = legacy / "receipts"; receipts.mkdir()
-    (receipts / "receipt.pdf").write_bytes(b"%PDF-legacy")
-    state = tmp_path / "code" / "configs" / "mcp" / "btg-empresas"
-    store = Store(state, "context", "company", legacy)
-    assert store.path == state / "memory" / "payments.sqlite3"
-    assert store.path.is_file() and source.is_file()
-    assert (store.root / "receipts" / "receipt.pdf").read_bytes() == b"%PDF-legacy"
-    assert not (tmp_path / "work" / ".onmyoji" / "btg-empresas" / "locks").exists()
 
 
 def test_payment_lifecycle_and_restart_preserve_evidence(profile, body):

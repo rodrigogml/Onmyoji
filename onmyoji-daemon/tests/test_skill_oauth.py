@@ -29,7 +29,8 @@ class Adapter:
         redirect = "https://apps.example.com" + oauth_callback_path(skill)
         if action == "describe":
             state = self.root / "configs" / "mcp" / "btg-empresas" if skill == "mcp-btg" else self.workspace
-            return {"issuer": "https://id.example.com", "authorizationEndpoint": "https://id.example.com/authorize", "redirectUri": redirect, "workspace": str(state), "binding": self.binding, "requireIssuer": True}
+            location = "storage_root" if skill == "mcp-btg" else "workspace"
+            return {"issuer": "https://id.example.com", "authorizationEndpoint": "https://id.example.com/authorize", "redirectUri": redirect, location: str(state), "binding": self.binding, "requireIssuer": True}
         if action == "start":
             return {"authorizationUrl": "https://id.example.com/authorize?" + urllib.parse.urlencode({"state": values["state"], "redirect_uri": values["redirectUri"], "response_type": "code"}), "expiresIn": 600}
         if action == "complete":
@@ -257,20 +258,6 @@ def test_mcp_btg_adapter_is_fixed_module_with_mcp_runtime_and_secret_in_stdin(tm
     assert json.loads(kwargs["input"])["code"] == "private-code"
 
 
-def test_mcp_btg_and_legacy_btg_sessions_are_isolated(broker):
-    service, _adapter = broker
-    legacy = service.start("btg-empresas", "company", True)
-    migrated = service.start("mcp-btg", "company", True)
-    assert migrated["callbackUrl"] == "https://apps.example.com/oauth/mcp/btg/callback"
-    assert legacy["callbackUrl"] == "https://apps.example.com/oauth/skills/btg-empresas/callback"
-    with pytest.raises(OAuthError):
-        service.callback("btg-empresas", query(migrated))
-    assert service.status(migrated["sessionId"])["status"] == "awaiting"
-    service.callback("mcp-btg", query(migrated))
-    assert service.status(migrated["sessionId"])["status"] == "completed"
-    assert service.status(legacy["sessionId"])["status"] == "awaiting"
-
-
 def test_gateway_requires_running_tunnel_and_cli_routes_oauth(tmp_path, monkeypatch, capsys):
     from onmyoji_daemon import cli
     from onmyoji_daemon.miniapps import MiniAppsGateway
@@ -283,8 +270,8 @@ def test_gateway_requires_running_tunnel_and_cli_routes_oauth(tmp_path, monkeypa
     monkeypatch.setattr(cli, "endpoint", lambda _root: ("127.0.0.1", 1234, "test-token"))
     calls = []
     monkeypatch.setattr(cli, "call", lambda h,p,t,method,params,**kw: calls.append((method, params)) or {"status": "awaiting"})
-    assert cli.main(["--onmyoji-root", str(root), "mini-apps", "oauth", "start", "--skill", "btg-empresas", "--profile", "company", "--confirm"]) == 0
-    assert calls[0] == ("mini-apps.oauth.start", {"skill": "btg-empresas", "profile": "company", "confirm": True})
+    assert cli.main(["--onmyoji-root", str(root), "mini-apps", "oauth", "start", "--skill", "mcp-btg", "--profile", "company", "--confirm"]) == 0
+    assert calls[0] == ("mini-apps.oauth.start", {"skill": "mcp-btg", "profile": "company", "confirm": True})
 
 
 @pytest.mark.parametrize("cleanup_fails", [False, True])
