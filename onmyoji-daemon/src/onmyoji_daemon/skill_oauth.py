@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
+import json
+import contextlib
 import re
 import secrets
 import sqlite3
@@ -40,15 +41,18 @@ def oauth_callback_path(integration: str) -> str:
 
 
 class SkillOAuth:
-    def __init__(self, root: Path, workspace: Path, public_origin: Callable[[], str]):
-        self.root, self.workspace = root.resolve(), workspace.resolve()
-        ensure(not self.workspace.is_relative_to(self.root), "Workspace OAuth deve ser externo ao CODEX_HOME")
+    def __init__(self, root: Path, workspace: Path | None, public_origin: Callable[[], str]):
+        self.root = root.resolve()
+        self.workspace = workspace.resolve() if workspace is not None else None
+        if self.workspace is not None:
+            ensure(not self.workspace.is_relative_to(self.root), "Workspace OAuth deve ser externo ao CODEX_HOME")
         self.public_origin = public_origin
-        directory = self.workspace / ".onmyoji" / "skill-oauth"
-        ensure(directory.resolve().is_relative_to(self.workspace), "OAuth workspace inválido")
+        directory = self.root / "configs" / "daemon" / "services" / "mini-apps" / "oauth"
+        ensure(directory.resolve().is_relative_to(self.root / "configs"), "Estado OAuth deve permanecer em configs.")
         directory.mkdir(parents=True, exist_ok=True)
         self.path = directory / "sessions.sqlite3"
         self.lock = threading.RLock()
+        self._migrate_legacy_sessions()
         with self.connection() as con:
             con.executescript("""
             CREATE TABLE IF NOT EXISTS authorization (
@@ -61,6 +65,30 @@ class SkillOAuth:
             CREATE UNIQUE INDEX IF NOT EXISTS authorization_active ON authorization(skill,profile)
               WHERE status IN ('creating','awaiting','processing');
             """)
+
+    def _migrate_legacy_sessions(self) -> None:
+        """Copia sessões antigas antes de trocar a localização, sem apagar a origem."""
+        if self.path.exists() or self.workspace is None:
+            return
+        source = self.workspace / ".onmyoji" / "skill-oauth" / "sessions.sqlite3"
+        if not source.is_file() or source.is_symlink() or not source.resolve().is_relative_to(self.workspace):
+            return
+        temporary: Path | None = None
+        try:
+            import tempfile
+            with tempfile.NamedTemporaryFile(dir=self.path.parent, prefix="sessions.", suffix=".sqlite3", delete=False) as stream:
+                temporary = Path(stream.name)
+            with contextlib.closing(sqlite3.connect(f"{source.as_uri()}?mode=ro", uri=True)) as origin, contextlib.closing(sqlite3.connect(temporary)) as destination:
+                origin.backup(destination)
+                ensure(destination.execute("PRAGMA integrity_check").fetchone()[0] == "ok", "Sessões OAuth antigas inválidas; origem preservada")
+            if not self.path.exists():
+                os.replace(temporary, self.path)
+                temporary = None
+        except (OSError, sqlite3.Error) as error:
+            raise OAuthError("Não foi possível copiar sessões OAuth antigas; origem preservada") from error
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     def connection(self) -> sqlite3.Connection:
         con = sqlite3.connect(self.path, timeout=30)
@@ -103,7 +131,12 @@ class SkillOAuth:
         for field in ("issuer", "authorizationEndpoint"):
             value = urllib.parse.urlsplit(metadata[field])
             ensure(value.scheme == "https" and bool(value.hostname) and not value.username and not value.password and not value.fragment, "URI OAuth inválida")
-        ensure(Path(metadata["workspace"]).resolve().is_relative_to(self.workspace), "Workspace OAuth deve pertencer à instância")
+        declared = Path(metadata["workspace"]).resolve()
+        if skill == "mcp-btg":
+            expected = self.root / "configs" / "mcp" / "btg-empresas"
+            ensure(declared == expected.resolve(), "Estado OAuth BTG MCP inválido")
+        else:
+            ensure(self.workspace is not None and declared.is_relative_to(self.workspace), "Workspace OAuth deve pertencer à instância")
         callback = origin.rstrip("/") + oauth_callback_path(skill)
         return {**metadata, "callbackUrl": callback, "redirectMatches": callback == metadata["redirectUri"]}
 

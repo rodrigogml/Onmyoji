@@ -15,7 +15,7 @@ from jsonschema import Draft202012Validator
 
 from onmyoji_daemon.mcp.btg.payments import Engine
 from onmyoji_daemon.mcp.btg.contracts import BtgError, bank_date, date, digest, json_exact, money, prepare_item, public
-from onmyoji_daemon.mcp.btg.store import Store
+from onmyoji_daemon.mcp.btg.store import SCHEMA, Store
 from onmyoji_daemon.mcp.btg.service import BtgService
 from onmyoji_daemon.mcp.btg.tools import BtgToolRegistry
 from onmyoji_daemon.mcp.btg.payment_tools import preparation_schema
@@ -74,6 +74,22 @@ def prepared_engine(profile, body):
     return engine, bank, payment
 
 
+def test_store_migrates_legacy_memory_to_configs_without_removing_source(tmp_path):
+    legacy = tmp_path / "work" / ".onmyoji" / "btg-empresas"
+    legacy.mkdir(parents=True)
+    source = legacy / "payments.sqlite3"
+    with sqlite3.connect(source) as con:
+        con.executescript(SCHEMA)
+    receipts = legacy / "receipts"; receipts.mkdir()
+    (receipts / "receipt.pdf").write_bytes(b"%PDF-legacy")
+    state = tmp_path / "code" / "configs" / "mcp" / "btg-empresas"
+    store = Store(state, "context", "company", legacy)
+    assert store.path == state / "memory" / "payments.sqlite3"
+    assert store.path.is_file() and source.is_file()
+    assert (store.root / "receipts" / "receipt.pdf").read_bytes() == b"%PDF-legacy"
+    assert not (tmp_path / "work" / ".onmyoji" / "btg-empresas" / "locks").exists()
+
+
 def test_payment_lifecycle_and_restart_preserve_evidence(profile, body):
     engine, bank, row = prepared_engine(profile, body)
     submitted = engine.submit(row["id"], row["preparationHash"])
@@ -88,7 +104,9 @@ def test_payment_lifecycle_and_restart_preserve_evidence(profile, body):
     assert confirmed["requestedPaymentDate"] == "2026-10-20" and confirmed["bankPaymentDate"] == "2026-10-21"
     assert confirmed["dueDate"] is None and confirmed["nextCheckAt"]
     receipt = restarted.invoke("get_payment_receipt", {"payment_id": row["id"]})
-    assert Path(receipt["path"]).read_bytes().startswith(b"%PDF-")
+    assert receipt["receipt_id"] == row["id"] and receipt["available"] is True
+    assert "path" not in receipt
+    assert Path(restarted.store.get(row["id"])["receiptPath"]).name.endswith(".pdf")
     bank.status = "REVERTED"
     reversed_row = restarted.refresh(row["id"])
     assert reversed_row["bankStatus"] == "REVERTED" and reversed_row["nextCheckAt"] is None
@@ -414,7 +432,8 @@ def test_mcp_registry_payment_lifecycle_and_sanitized_history(profile, body, mon
     assert history["source"] == "local-memory" and isinstance(history["events"][0]["evidence"], dict)
     assert "operatorId" not in json.dumps(history) and "idempotencyKey" not in json.dumps(history)
     receipt = registry.call("btg.get_payment_receipt", {"payment_id": identifier})
-    assert Path(receipt["path"]).is_relative_to(Path(profile["workspace"]))
+    assert receipt == {"receipt_id": identifier, "available": True, "source": "bank", "observedAt": receipt["observedAt"]}
+    assert "path" not in receipt
     assert registry.call("btg.get_monitor_status", {})["source"] == "local-memory"
     assert registry.call("btg.check_pending_payments", {})["checked"] == []
 

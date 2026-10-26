@@ -64,9 +64,10 @@ e devolvem `source: "bank"`, instante de observação e valores decimais como
 texto. Paginação deve ser tratada explicitamente; aceite de envio não é
 comprovação de execução. Nenhum desses métodos movimenta valores.
 
-O workspace configurado para o Codex deve existir fora da raiz do Onmyōji:
-ele abriga locks operacionais, memória financeira e comprovantes, não tokens
-ou senhas. Proteja o workspace com ACLs e armazenamento apropriados; o SQLite
+O MCP não usa o workspace do Codex para estado operacional. Locks locais,
+memória financeira e comprovantes ficam em
+`configs/mcp/btg-empresas/`; os tokens continuam exclusivamente no KDBX.
+Proteja o diretório `configs/` com ACLs e armazenamento apropriados; o SQLite
 não é criptografado. A conta descoberta não pode ser
 silenciosamente substituída por outra conta/CNPJ/ambiente. Para outro vínculo,
 crie um novo perfil. Uma tela de setup aberta antes do callback não apaga os
@@ -92,7 +93,7 @@ de OAuth e consultas, existem:
 | `btg.get_payment` | Consultar um registro local por `payment_id`. |
 | `btg.get_payment_history` | Consultar eventos imutáveis e evidências por `payment_id`. |
 | `btg.refresh_payment` | Consultar o banco e atualizar o registro, sem reenviar. |
-| `btg.get_payment_receipt` | Obter PDF de pagamento confirmado, salvo no workspace. |
+| `btg.get_payment_receipt` | Solicitar e salvar internamente o PDF de pagamento confirmado; retorna somente a confirmação, nunca um caminho de arquivo. |
 | `btg.get_monitor_status` | Consultar habilitação e fila locais do perfil. |
 | `btg.check_pending_payments` | Executar um ciclo limitado de consultas da fila. Nunca envia pagamentos. |
 
@@ -125,11 +126,15 @@ não aprova pagamentos. A API usada não informa aprovador ou horário de cada
 assinatura. `CONFIRMED` fornece evidência de execução observada e ainda pode
 ser seguido de estorno; `PROCESSED` não comprova assinatura humana.
 
-Os registros ficam em `<workspace>/.onmyoji/btg-empresas/payments.sqlite3` e os
-PDFs em `receipts/`. Esse formato e o isolamento por empresa/ambiente/conta são
-compatíveis com o legado: perfis que apontem para a mesma conta e workspace
-enxergam o mesmo histórico, sem copiar, mover ou apagar registros. O campo
-`profile` do registro identifica seu criador, não renomeia o perfil MCP atual.
+Os registros ficam em `configs/mcp/btg-empresas/memory/payments.sqlite3` e os
+PDFs em `configs/mcp/btg-empresas/memory/receipts/`; locks de credenciais ficam
+em `configs/mcp/btg-empresas/locks/`. Esse estado é interno ao servidor MCP e
+não é devolvido como caminho para o agente. Na primeira execução, se ainda não
+houver destino, o servidor copia de forma atômica o banco e os comprovantes do
+local legado no workspace, preservando a origem sem mover nem apagar arquivos.
+Os backups regulares do Shikigami passam, portanto, a concentrar esse estado em
+`configs/`. O campo `profile` do registro identifica seu criador, não renomeia
+o perfil MCP atual.
 Tokens, identidade do operador, chaves de idempotência e leases não são
 publicados nos registros retornados. O histórico distingue lançamento,
 vencimento, data solicitada,
@@ -172,15 +177,14 @@ o mesmo histórico; não habilite dois monitores sem necessidade.
 | `auth.start`, `auth.complete`, `auth.callback-info`, `auth.cancel` | Implementados com callback próprio do Gateway e persistência no cofre MCP; conclusão do OAuth é interna, sem método para receber códigos manualmente. |
 | `accounts.get`, `balances.get`, `statements.list`, `dda.list`, `barcodes.get`, `payments.remote-list` | Implementados nas seis consultas autenticadas acima. |
 | `payments.prepare`, `payments.submit`, `payments.cancel` | Implementados com autorização específica, hash, decimais exatos, reserva transacional e recuperação de resultado incerto. |
-| `payments.list`, `payments.get`, `payments.history`, `payments.refresh`, `payments.receipt` | Implementados com memória compatível e comprovantes no workspace externo. |
+| `payments.list`, `payments.get`, `payments.history`, `payments.refresh`, `payments.receipt` | Implementados com memória interna em `configs/mcp/` e comprovantes sem exposição de caminhos. |
 | `monitor.status`, `monitor.check` e serviço contínuo | Implementados nos métodos MCP e no worker interno do daemon, coexistindo com perfis legados. |
-| Backup/restauração da memória | Preservar manutenção explícita e bloqueio de reenvio após restauração. |
+| Backup/restauração da memória | O backup regular de `configs/` inclui a memória MCP; manutenção legada permanece restrita a dados legados durante a transição. |
 
 > [!IMPORTANT]
 > A skill BTG, seu callback e monitor permanecem operacionais durante a
-> migração. A manutenção de backup/restauração ainda usa o código legado e
-> será migrada antes de remover a skill. Criar um perfil MCP não altera os
-> perfis legados nem inicia consentimento, pagamento ou serviço automaticamente.
+> migração. Criar um perfil MCP não altera os perfis legados nem inicia
+> consentimento, pagamento ou serviço automaticamente.
 
 Testes desta etapa usam transporte simulado e KDBX com credenciais sintéticas.
 Não iniciam consentimentos reais, acessam contas reais, enviam ou cancelam

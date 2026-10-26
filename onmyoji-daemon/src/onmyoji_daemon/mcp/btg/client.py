@@ -31,17 +31,31 @@ def instance_root(config: Path) -> Path:
     return config.resolve().parents[2]
 
 
-def instance_workspace(config: Path) -> Path:
+def storage_root(config: Path) -> Path:
+    """Retorna o estado operacional BTG, isolado em configs do MCP."""
+    root = instance_root(config)
+    target = root / "configs" / "mcp" / "btg-empresas"
+    require(target.resolve().is_relative_to((root / "configs" / "mcp").resolve()), "invalid_storage", "Estado BTG deve permanecer em configs/mcp.")
+    return target
+
+
+def legacy_storage_root(config: Path) -> Path | None:
+    """Localiza apenas para migração a memória BTG da versão anterior.
+
+    A ausência ou a invalidez do workspace antigo não impede o MCP. A cópia,
+    quando existe, preserva a origem e nunca é repetida após criar o destino.
+    """
     root = instance_root(config)
     try:
-        system = tomllib.loads((root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8"))
-        value = system["codex"]["project_directory"]
-    except (OSError, ValueError, KeyError, TypeError) as error:
-        raise BtgError("invalid_workspace", "Configure a pasta do projeto no menu Codex-CLI.") from error
-    require(isinstance(value, str) and bool(value.strip()) and Path(value).is_absolute(), "invalid_workspace", "Workspace BTG inválido.")
-    workspace = Path(value).resolve()
-    require(workspace.is_dir() and not workspace.is_relative_to(root), "invalid_workspace", "O workspace deve existir e ficar fora do CODEX_HOME.")
-    return workspace
+        import tomllib
+        value = tomllib.loads((root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8"))["codex"]["project_directory"]
+        workspace = Path(value).resolve()
+        if not isinstance(value, str) or not workspace.is_dir() or workspace.is_relative_to(root):
+            return None
+        target = workspace / ".onmyoji" / "btg-empresas"
+        return target if target.is_dir() and target.resolve().is_relative_to(workspace) else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 def load_profile(config: Path, name: str) -> dict[str, Any]:
@@ -58,7 +72,10 @@ def load_profile(config: Path, name: str) -> dict[str, Any]:
         raw.setdefault(key, "")
     raw.setdefault("scopes", DEFAULT_SCOPES)
     raw.setdefault("oauth_mode", "remote")
-    raw["workspace"] = str(instance_workspace(config))
+    raw["storage_root"] = str(storage_root(config))
+    legacy = legacy_storage_root(config)
+    if legacy is not None:
+        raw["legacy_storage_root"] = str(legacy)
     for key, default in (("timeout_seconds", 30), ("pending_interval", 300), ("scheduled_interval", 3600), ("confirmed_interval", 86400), ("confirmation_days", 7), ("max_pages", 20), ("max_pending_days", 30)):
         raw.setdefault(key, default)
     raw.update(_config=str(config.resolve()), _profile=name)
@@ -99,8 +116,10 @@ def account_company_matches(profile: dict[str, Any], row: dict[str, Any]) -> boo
 @contextlib.contextmanager
 def credential_lock(profile: dict[str, Any], *, scope: str | None = None):
     """Serialize rotação de token por entrada do vault entre processos."""
-    root = Path(profile["workspace"]) / ".onmyoji" / "btg-empresas" / "locks"
-    require(root.resolve().is_relative_to(Path(profile["workspace"]).resolve()), "invalid_workspace", "Locks devem permanecer dentro do workspace.")
+    configured = profile.get("storage_root")
+    state = Path(configured).resolve() if isinstance(configured, str) and configured else storage_root(Path(profile["_config"]))
+    root = state / "locks"
+    require(root.resolve().is_relative_to(state), "invalid_storage", "Locks devem permanecer no estado MCP BTG.")
     root.mkdir(parents=True, exist_ok=True)
     name = digest(scope) if scope is not None else digest({k: profile[k] for k in ("vault_profile", "vault_entry_path")})
     with (root / (name + ".lock")).open("a+b") as stream:

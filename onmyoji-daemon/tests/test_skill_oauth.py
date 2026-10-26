@@ -17,7 +17,8 @@ from onmyoji_daemon.skill_oauth import OAuthError, SkillOAuth, hash_value, oauth
 
 
 class Adapter:
-    def __init__(self, workspace):
+    def __init__(self, root, workspace):
+        self.root = root
         self.workspace = workspace
         self.calls = []
         self.binding = "configuration-v1"
@@ -27,7 +28,8 @@ class Adapter:
         self.calls.append((skill, profile, action, values))
         redirect = "https://apps.example.com" + oauth_callback_path(skill)
         if action == "describe":
-            return {"issuer": "https://id.example.com", "authorizationEndpoint": "https://id.example.com/authorize", "redirectUri": redirect, "workspace": str(self.workspace), "binding": self.binding, "requireIssuer": True}
+            state = self.root / "configs" / "mcp" / "btg-empresas" if skill == "mcp-btg" else self.workspace
+            return {"issuer": "https://id.example.com", "authorizationEndpoint": "https://id.example.com/authorize", "redirectUri": redirect, "workspace": str(state), "binding": self.binding, "requireIssuer": True}
         if action == "start":
             return {"authorizationUrl": "https://id.example.com/authorize?" + urllib.parse.urlencode({"state": values["state"], "redirect_uri": values["redirectUri"], "response_type": "code"}), "expiresIn": 600}
         if action == "complete":
@@ -44,7 +46,7 @@ def broker(tmp_path):
     root, workspace = tmp_path / "code", tmp_path / "work"
     root.mkdir(); workspace.mkdir()
     broker = SkillOAuth(root, workspace, lambda: "https://apps.example.com")
-    adapter = Adapter(workspace)
+    adapter = Adapter(root, workspace)
     broker.adapter = adapter
     return broker, adapter
 
@@ -69,6 +71,23 @@ def test_stable_route_temporary_sessions_and_secret_free_storage(broker):
         stored = json.dumps(con.execute("SELECT * FROM authorization").fetchall())
     assert "private-code" not in stored and "access_token" not in stored
     assert query(first)["state"][0] not in stored
+
+
+def test_oauth_sessions_use_configs_and_copy_legacy_database(tmp_path):
+    root, workspace = tmp_path / "code", tmp_path / "work"
+    root.mkdir(); workspace.mkdir()
+    source = workspace / ".onmyoji" / "skill-oauth" / "sessions.sqlite3"
+    source.parent.mkdir(parents=True)
+    with sqlite3.connect(source) as con:
+        con.execute("CREATE TABLE legacy_marker (value TEXT)")
+        con.execute("INSERT INTO legacy_marker VALUES ('preserved')")
+    service = SkillOAuth(root, workspace, lambda: "https://apps.example.com")
+    assert service.path == root / "configs" / "daemon" / "services" / "mini-apps" / "oauth" / "sessions.sqlite3"
+    assert source.is_file()
+    with sqlite3.connect(service.path) as con:
+        assert con.execute("SELECT value FROM legacy_marker").fetchone()[0] == "preserved"
+    without_workspace = SkillOAuth(tmp_path / "no-workspace", None, lambda: "https://apps.example.com")
+    assert without_workspace.path.is_relative_to(tmp_path / "no-workspace" / "configs")
 
 
 def test_parallel_provider_profiles_are_isolated(broker):
@@ -192,7 +211,7 @@ def test_https_callback_without_cookie_or_custom_header_and_clean_result(tmp_pat
         probe.bind(("127.0.0.1", 0)); port = probe.getsockname()[1]
     gateway = MiniAppsGateway(root, root / "configs" / "daemon" / "services" / "mini-apps", "test-token", port)
     gateway.tunnel.status = lambda: {"provisioned": True, "running": True, "hostname": "apps.example.com"}
-    service = gateway._oauth_broker(); adapter = Adapter(workspace); service.adapter = adapter
+    service = gateway._oauth_broker(); adapter = Adapter(root, workspace); service.adapter = adapter
     gateway.start_http()
     try:
         session = gateway.rpc("mini-apps.oauth.start", {"skill": integration, "profile": "company", "confirm": True})

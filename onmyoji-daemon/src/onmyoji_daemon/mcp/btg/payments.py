@@ -10,7 +10,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from .client import Client, context
+from .client import Client, context, storage_root
 from .contracts import BtgError, bank_company_id, bank_date, digest, future, money, now, prepare_item, public, require, text
 from .store import Store
 
@@ -49,7 +49,9 @@ class Engine:
     def store(self) -> Store:
         require(bool(self.profile["account_id"]), "account_setup_required", "Conclua a conexão da conta pelo setup BTG antes de operar.")
         if self._store is None:
-            self._store = Store(Path(self.profile["workspace"]), context(self.profile), self.profile["_profile"])
+            root = Path(self.profile.get("storage_root") or storage_root(Path(self.profile["_config"])))
+            legacy = Path(self.profile["legacy_storage_root"]) if self.profile.get("legacy_storage_root") else None
+            self._store = Store(root, context(self.profile), self.profile["_profile"], legacy)
         return self._store
 
     def check_barcode(self, item: dict[str, Any]) -> dict[str, Any]:
@@ -244,4 +246,5 @@ class Engine:
         require(row["bankPaymentId"] is not None and row["bankStatus"] == "CONFIRMED", "receipt_unavailable", "Atualize e confirme o pagamento antes de obter comprovante.")
         content = self.client.call("payments.receipt", payment_id=row["bankPaymentId"])
         require(isinstance(content, bytes), "invalid_receipt", "Comprovante inválido.")
-        return {"path": self.store.receipt(identifier, content), "source": "bank", "observedAt": now()}
+        self.store.receipt(identifier, content)
+        return {"receipt_id": identifier, "available": True, "source": "bank", "observedAt": now()}

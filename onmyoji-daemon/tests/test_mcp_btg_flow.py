@@ -4,12 +4,13 @@ from __future__ import annotations
 import copy
 from decimal import Decimal
 import json
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 from jsonschema import Draft202012Validator
 
-from onmyoji_daemon.mcp.btg.client import Client, load_profile
+from onmyoji_daemon.mcp.btg.client import Client, load_profile, storage_root
 from onmyoji_daemon.mcp.btg.contracts import BtgError
 from onmyoji_daemon.mcp.btg.service import BtgService
 from onmyoji_daemon.mcp.btg.tools import BtgToolRegistry, DESCRIPTIONS, READS
@@ -41,6 +42,19 @@ def connected_client(config):
     client.token_request = Mock(return_value={"binding": client.binding(), "expiresAt": 9999999999, "access_token": "synthetic-access", "refresh_token": "synthetic-refresh", "operatorId": "test-operator"})
     client.call = Mock(return_value={"data": [{"accountId": "30306294000145-208-50-001", "bankCode": "208", "taxId": "30306294000145", "number": "001", "branchCode": "50"}]})
     return client, credentials
+
+
+def test_profile_uses_configs_state_without_codex_workspace(tmp_path):
+    root = tmp_path / "code"
+    (root / "configs").mkdir(parents=True)
+    config = McpConfiguration(root)
+    data = config.btg()
+    data["profiles"]["company"] = {"enabled": True, "description": "Empresa", "environment": "sandbox", "company_id": "30306294000145", "credential_profile": "vault", "credential_entry_path": "BTG/test", "redirect_uri": "https://apps.example.com/oauth/mcp/btg/callback"}
+    config.save_btg(data)
+    profile = load_profile(config.btg_path, "company")
+    assert Path(profile["storage_root"]) == root / "configs" / "mcp" / "btg-empresas"
+    assert Path(profile["storage_root"]) == storage_root(config.btg_path)
+    assert "legacy_storage_root" not in profile
 
 
 def test_callback_discovers_and_saves_account_without_changing_profile_identity(setup):

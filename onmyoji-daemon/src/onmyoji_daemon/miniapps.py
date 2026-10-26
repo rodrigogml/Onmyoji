@@ -661,7 +661,11 @@ class MiniAppsGateway:
     def _oauth_broker(self) -> SkillOAuth:
         with self.lock:
             if self.skill_oauth is None:
-                self.skill_oauth = SkillOAuth(self.root, self._workspace(), self._oauth_origin)
+                try:
+                    workspace = self._workspace()
+                except ValueError:
+                    workspace = None
+                self.skill_oauth = SkillOAuth(self.root, workspace, self._oauth_origin)
             return self.skill_oauth
 
     @staticmethod

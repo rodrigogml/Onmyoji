@@ -12,7 +12,7 @@ PAYMENT_DESCRIPTIONS = {
     "get_payment": "Obtém registro LOCAL de pagamento, evidências, datas distintas e pendências. Não consulta o banco; use refresh_payment para atualizar.",
     "get_payment_history": "Consulta histórico imutável LOCAL de eventos de um pagamento. Não invente aprovador nem horário de assinatura; não são expostos pela API.",
     "refresh_payment": "Consulta o banco e atualiza evidências de um pagamento local. Recupera iniciações incertas sem reenviar, exige correspondência única de referência, conta, valor e modalidade. Execução observada não informa aprovador/horário de assinatura. Falhas preservam o último estado e sua desatualização.",
-    "get_payment_receipt": "Obtém PDF de um pagamento observado como CONFIRMED e salva somente no workspace externo; retorna o caminho. Não envie o arquivo a terceiros sem instrução do usuário. Atualize o registro antes quando necessário.",
+    "get_payment_receipt": "Obtém PDF de um pagamento observado como CONFIRMED e o salva no estado interno do MCP. Retorna somente a confirmação, nunca um caminho de arquivo. Atualize o registro antes quando necessário.",
     "get_monitor_status": "Consulta fila e habilitação LOCAL do monitor do perfil. Não prova saúde do processo contínuo: consulte o status do daemon para isso.",
     "check_pending_payments": "Executa ciclo limitado de consultas para pagamentos pendentes da memória. Nunca cria, envia ou reenvia pagamentos. Devolve checked, busy e hasMore; não conclua que a fila está vazia quando hasMore=true.",
 }
