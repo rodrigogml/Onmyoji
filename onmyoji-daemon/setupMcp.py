@@ -28,6 +28,7 @@ from onmyoji_daemon.mcp.todoist import TodoistError, TodoistService
 from onmyoji_daemon.mcp.omie import OmieError, OmieService
 from onmyoji_daemon.mcp.btg import BtgError, BtgService
 from onmyoji_daemon.mcp.btg.configuration import BtgConfigurationError, DEFAULT_SCOPES, validate_profile as validate_btg_profile
+from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
 
 
 def ask(label: str, current: str = "", required: bool = False) -> str | None:
@@ -592,6 +593,10 @@ def manage_btg_profile(config: McpConfiguration, name: str) -> None:
         item("6.", "Diagnosticar credenciais e OAuth", "Consulta local; não acessa o banco")
         item("7.", "Remover perfil")
         item("8.", "Configurar URI de retorno OAuth")
+        item("9.", "Conectar ao BTG", "Consentimento remoto e descoberta da conta")
+        item("10.", "Consultar autorização OAuth")
+        item("11.", "Cancelar autorização pendente")
+        item("12.", "Testar conexão bancária", "Consulta somente a conta vinculada")
         item("X.", "Voltar")
         action = prompt("Opção: ").strip().casefold()
         if action in {"x", "\x1b"}:
@@ -619,7 +624,7 @@ def manage_btg_profile(config: McpConfiguration, name: str) -> None:
             try:
                 status = BtgService(config.root).get_auth_status(name)
                 result(True, "Client ID e Client Secret disponíveis no cofre MCP.")
-                note("Consentimento local válido." if status["authenticated"] else "Sem consentimento local válido; o fluxo OAuth ainda está em migração para o MCP.")
+                note("Consentimento local válido." if status["authenticated"] else "Sem consentimento local válido. Use Conectar ao BTG após configurar a URI de retorno.")
                 if status["pending"]:
                     note("Há consentimento pendente salvo no cofre.")
                 note("Este diagnóstico não consulta o banco nem confirma pagamentos.")
@@ -640,10 +645,51 @@ def manage_btg_profile(config: McpConfiguration, name: str) -> None:
                 continue
             return
         elif action == "8":
-            redirect = ask("URI já cadastrada no aplicativo BTG", profile.get("redirect_uri", ""))
+            origin = choose("URI de retorno BTG", ["Calcular pelo Gateway/Tunnel", "Informar manualmente"], "Calcular pelo Gateway/Tunnel")
+            if origin is None:
+                continue
+            if origin.startswith("Calcular"):
+                try:
+                    redirect = BtgService(config.root).get_oauth_callback(name)["callbackUrl"]
+                    note("Cadastre exatamente esta URI no aplicativo BTG: " + redirect)
+                except BtgError as error:
+                    result(False, str(error))
+                    continue
+            else:
+                redirect = ask("URI já cadastrada no aplicativo BTG", profile.get("redirect_uri", ""))
             if redirect is None:
                 continue
             profile["redirect_uri"] = redirect
+        elif action in {"9", "10", "11", "12"}:
+            service = BtgService(config.root)
+            try:
+                if action == "9":
+                    confirmation = ask("Digite CONECTAR para iniciar o consentimento no navegador", required=True)
+                    if confirmation is None or confirmation.casefold() != "conectar":
+                        note("Conexão não iniciada.")
+                        continue
+                    note(ensure_mcp_runtime(config.root))
+                    authorization = service.invoke(name, "start_authorization", {"confirm": True})
+                    result(True, "Abra este link no seu navegador para autorizar o acesso:")
+                    print(authorization["authorizationUrl"])
+                    note("O callback salva os tokens no cofre e descobre a conta automaticamente. Consulte a autorização após concluir no navegador.")
+                elif action == "10":
+                    status = service.invoke(name, "get_authorization_status", {})
+                    result(True, "Situação OAuth: " + str(status.get("status", "consentimento local válido" if status.get("authenticated") else "sem autorização ativa")))
+                elif action == "11":
+                    confirmation = ask("Digite CANCELAR para encerrar a autorização pendente", required=True)
+                    if confirmation is None or confirmation.casefold() != "cancelar":
+                        note("Autorização pendente preservada.")
+                        continue
+                    service.invoke(name, "cancel_authorization", {"confirm": True})
+                    result(True, "Autorização pendente cancelada.")
+                else:
+                    note(ensure_mcp_runtime(config.root))
+                    service.invoke(name, "get_account", {})
+                    result(True, "Conexão bancária e identidade da conta BTG confirmadas.")
+            except (BtgError, McpRuntimeError) as error:
+                result(False, str(error))
+            continue
         else:
             result(False, "Opção inválida.")
             continue
@@ -657,7 +703,7 @@ def manage_btg_profile(config: McpConfiguration, name: str) -> None:
 def btg_menu(config: McpConfiguration) -> None:
     while True:
         data = config.btg()
-        screen("MCP · BTG Empresas", "Primeira etapa: perfis, credenciais e diagnóstico local do OAuth")
+        screen("MCP · BTG Empresas", "Perfis, consentimento OAuth e consultas bancárias")
         item("1.", "Criar perfil")
         item("2.", "Gerenciar perfil", f"{len(data['profiles'])} configurado(s)")
         item("X.", "Voltar")
@@ -705,7 +751,7 @@ def btg_menu(config: McpConfiguration) -> None:
         data["profiles"][name] = profile
         try:
             config.save_btg(data)
-            result(True, "Perfil BTG salvo no MCP. O fluxo bancário completo continua na skill durante a migração.")
+            result(True, "Perfil BTG salvo no MCP. Configure a URI de retorno e conecte ao BTG para descobrir a conta.")
         except McpConfigurationError as error:
             result(False, str(error))
 

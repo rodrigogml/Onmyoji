@@ -11,13 +11,16 @@ dependencies = ["aiohttp>=3.10,<4", "cryptography>=42,<47"]
 
 [project.optional-dependencies]
 windows = ["pywin32>=306"]
-test = ["pytest>=8", "jsonschema>=4,<5"]
+test = ["pytest>=8", "jsonschema>=4,<5", "pykeepass>=4.1,<5"]
 
 [project.scripts]
 onmyoji-daemon = "onmyoji_daemon.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"onmyoji_daemon.mcp.btg" = ["api_contracts.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import secrets
 import sqlite3
@@ -31,6 +32,11 @@ def ensure(condition: bool, message: str) -> None:
 
 def hash_value(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def oauth_callback_path(integration: str) -> str:
+    """Mantém callbacks MCP e legados separados, incluindo a identidade da sessão."""
+    return "/oauth/mcp/btg/callback" if integration == "mcp-btg" else "/oauth/skills/" + integration + "/callback"
 
 
 class SkillOAuth:
@@ -67,10 +73,16 @@ class SkillOAuth:
         ensure(action in {"describe", "start", "complete", "cancel"}, "Ação OAuth inválida")
         candidates = [self.root / "available-skills" / skill / "scripts" / "oauth_adapter.py", self.root / "shikigami" / "skills" / skill / "scripts" / "oauth_adapter.py"]
         script = next((p for p in candidates if p.is_file()), None)
-        ensure(script is not None and script.resolve().is_relative_to(self.root), "Skill não possui adaptador OAuth local")
+        if skill == "mcp-btg":
+            from .mcp.runtime import mcp_runtime_python
+            command = [str(mcp_runtime_python(self.root)), "-m", "onmyoji_daemon.mcp.btg.oauth_adapter", "--onmyoji-root", str(self.root)]
+        else:
+            ensure(script is not None and script.resolve().is_relative_to(self.root), "Skill não possui adaptador OAuth local")
+            command = [sys.executable, str(script), "--onmyoji-root", str(self.root)]
         request = {"version": 1, "action": action, "profile": profile, **values}
         try:
-            result = subprocess.run([sys.executable, str(script), "--onmyoji-root", str(self.root)], input=json.dumps(request), text=True, encoding="utf-8", capture_output=True, timeout=180)
+            environment = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parent.parent), "PYTHONUTF8": "1"}
+            result = subprocess.run(command, input=json.dumps(request), text=True, encoding="utf-8", capture_output=True, timeout=180, env=environment)
             payload = json.loads(result.stdout)
         except (OSError, ValueError, subprocess.TimeoutExpired) as error:
             raise OAuthError("Adaptador OAuth indisponível; verifique o perfil") from error
@@ -92,7 +104,7 @@ class SkillOAuth:
             value = urllib.parse.urlsplit(metadata[field])
             ensure(value.scheme == "https" and bool(value.hostname) and not value.username and not value.password and not value.fragment, "URI OAuth inválida")
         ensure(Path(metadata["workspace"]).resolve().is_relative_to(self.workspace), "Workspace OAuth deve pertencer à instância")
-        callback = origin.rstrip("/") + "/oauth/skills/" + skill + "/callback"
+        callback = origin.rstrip("/") + oauth_callback_path(skill)
         return {**metadata, "callbackUrl": callback, "redirectMatches": callback == metadata["redirectUri"]}
 
     @staticmethod

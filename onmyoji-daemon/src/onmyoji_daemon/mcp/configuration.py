@@ -12,7 +12,7 @@ from typing import Any
 from .credentials import mcp_credentials_path
 from .reconciliation import McpReconciliation
 from .todoist import todoist_config_path
-from .btg.configuration import BtgConfigurationError, empty_configuration as empty_btg, render_configuration as render_btg, validate_configuration as validate_btg
+from .btg.configuration import BtgConfigurationError, configuration_lock as btg_configuration_lock, empty_configuration as empty_btg, render_configuration as render_btg, validate_configuration as validate_btg
 
 
 def omie_config_path(onmyoji_root: Path) -> Path:
@@ -107,9 +107,33 @@ class McpConfiguration:
     def save_btg(self, data: dict[str, Any]) -> None:
         try:
             validate_btg(data)
+            with btg_configuration_lock(self.root):
+                previous = self.btg()["profiles"]
+                candidate = copy.deepcopy(data)
+                for name, incoming in candidate["profiles"].items():
+                    existing = previous.get(name, {})
+                    if existing.get("account_id"):
+                        if any(existing.get(key) != incoming.get(key) for key in ("environment", "company_id")):
+                            raise BtgConfigurationError("Use outro perfil para mudar empresa ou ambiente de uma conta descoberta.")
+                        for key in ("account_id", "account_number", "branch_code"):
+                            if incoming.get(key) and incoming[key] != existing[key]:
+                                raise BtgConfigurationError("A conta foi descoberta enquanto o perfil era editado; reabra o perfil.")
+                            incoming[key] = existing[key]
+                validate_btg(candidate)
+                self._save(self.btg_path, render_btg(candidate))
         except BtgConfigurationError as error:
             raise McpConfigurationError(str(error)) from error
-        self._save(self.btg_path, render_btg(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def update_btg_profile(self, name: str, updater) -> None:
+        """Atualiza um perfil sob a mesma trava usada pelo menu e pelo callback."""
+        with btg_configuration_lock(self.root):
+            data = self.btg()
+            if name not in data["profiles"]:
+                raise McpConfigurationError("Perfil BTG não encontrado.")
+            updater(data["profiles"][name])
+            validate_btg(data)
+            self._save(self.btg_path, render_btg(data))
         McpReconciliation(self.root).mark_pending()
 
     def vault_profile_names(self) -> list[str]:

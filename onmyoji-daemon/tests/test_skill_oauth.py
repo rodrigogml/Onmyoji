@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 from aiohttp import ClientSession, TCPConnector
-from onmyoji_daemon.skill_oauth import OAuthError, SkillOAuth, hash_value
+from onmyoji_daemon.skill_oauth import OAuthError, SkillOAuth, hash_value, oauth_callback_path
 
 
 class Adapter:
@@ -25,7 +25,7 @@ class Adapter:
 
     def __call__(self, skill, profile, action, **values):
         self.calls.append((skill, profile, action, values))
-        redirect = "https://apps.example.com/oauth/skills/" + skill + "/callback"
+        redirect = "https://apps.example.com" + oauth_callback_path(skill)
         if action == "describe":
             return {"issuer": "https://id.example.com", "authorizationEndpoint": "https://id.example.com/authorize", "redirectUri": redirect, "workspace": str(self.workspace), "binding": self.binding, "requireIssuer": True}
         if action == "start":
@@ -182,7 +182,8 @@ def test_redirect_configuration_and_confirmation_required(broker):
         service.start("one", "company", True)
 
 
-def test_https_callback_without_cookie_or_custom_header_and_clean_result(tmp_path):
+@pytest.mark.parametrize("integration,callback_path", [("one", "/oauth/skills/one/callback"), ("mcp-btg", "/oauth/mcp/btg/callback")])
+def test_https_callback_without_cookie_or_custom_header_and_clean_result(tmp_path, integration, callback_path):
     from onmyoji_daemon.miniapps import MiniAppsGateway
     root, workspace = tmp_path / "code", tmp_path / "work"
     (root / "configs").mkdir(parents=True); workspace.mkdir()
@@ -194,10 +195,14 @@ def test_https_callback_without_cookie_or_custom_header_and_clean_result(tmp_pat
     service = gateway._oauth_broker(); adapter = Adapter(workspace); service.adapter = adapter
     gateway.start_http()
     try:
-        session = gateway.rpc("mini-apps.oauth.start", {"skill": "one", "profile": "company", "confirm": True})
+        session = gateway.rpc("mini-apps.oauth.start", {"skill": integration, "profile": "company", "confirm": True})
         async def verify():
             async with ClientSession(connector=TCPConnector(ssl=False)) as browser:
-                url = f"https://localhost:{port}/oauth/skills/one/callback?" + urllib.parse.urlencode({k: v[0] for k, v in query(session).items()})
+                url = f"https://localhost:{port}" + callback_path + "?" + urllib.parse.urlencode({k: v[0] for k, v in query(session).items()})
+                if integration == "mcp-btg":
+                    alias = f"https://localhost:{port}/oauth/skills/mcp-btg/callback?" + urllib.parse.urlencode({k: v[0] for k, v in query(session).items()})
+                    async with browser.get(alias, allow_redirects=False) as response:
+                        assert response.status == 400
                 async with browser.get(url, allow_redirects=False) as response:
                     assert response.status == 303
                     location = response.headers["Location"]
@@ -214,6 +219,37 @@ def test_https_callback_without_cookie_or_custom_header_and_clean_result(tmp_pat
         assert gateway.rpc("mini-apps.oauth.status", {"session_id": session["sessionId"]})["status"] == "completed"
     finally:
         gateway.stop_http()
+
+
+def test_mcp_btg_adapter_is_fixed_module_with_mcp_runtime_and_secret_in_stdin(tmp_path, monkeypatch):
+    root, workspace = tmp_path / "code", tmp_path / "work"
+    root.mkdir(); workspace.mkdir()
+    service = SkillOAuth(root, workspace, lambda: "https://apps.example.com")
+    calls = []
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout='{"ok":true,"data":{"authenticated":true}}')
+    monkeypatch.setattr("onmyoji_daemon.skill_oauth.subprocess.run", run)
+    assert service.adapter("mcp-btg", "company", "complete", code="private-code")["authenticated"]
+    command, kwargs = calls[0]
+    assert command[1:3] == ["-m", "onmyoji_daemon.mcp.btg.oauth_adapter"]
+    assert "configs" in command[0] and "mcp" in command[0]
+    assert "private-code" not in " ".join(command)
+    assert json.loads(kwargs["input"])["code"] == "private-code"
+
+
+def test_mcp_btg_and_legacy_btg_sessions_are_isolated(broker):
+    service, _adapter = broker
+    legacy = service.start("btg-empresas", "company", True)
+    migrated = service.start("mcp-btg", "company", True)
+    assert migrated["callbackUrl"] == "https://apps.example.com/oauth/mcp/btg/callback"
+    assert legacy["callbackUrl"] == "https://apps.example.com/oauth/skills/btg-empresas/callback"
+    with pytest.raises(OAuthError):
+        service.callback("btg-empresas", query(migrated))
+    assert service.status(migrated["sessionId"])["status"] == "awaiting"
+    service.callback("mcp-btg", query(migrated))
+    assert service.status(migrated["sessionId"])["status"] == "completed"
+    assert service.status(legacy["sessionId"])["status"] == "awaiting"
 
 
 def test_gateway_requires_running_tunnel_and_cli_routes_oauth(tmp_path, monkeypatch, capsys):

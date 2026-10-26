@@ -5,6 +5,8 @@ import importlib.util
 from pathlib import Path
 from unittest.mock import Mock
 
+import pytest
+
 
 def setup_module():
     path = Path(__file__).resolve().parents[1] / "setupMcp.py"
@@ -84,3 +86,37 @@ def test_btg_credentials_configure_two_fields_and_preserve_notes(monkeypatch):
     config = Mock()
     module.btg_credentials(config, "vault", "Integrations/BTG/empresa")
     assert configure.call_args.args[-1] == [("client_id_field", "Client ID", "username"), ("client_secret_field", "Client Secret", "password")]
+
+
+@pytest.mark.parametrize("action,confirmation,operation", [("9", "CoNeCtAr", "start_authorization"), ("10", None, "get_authorization_status"), ("11", "CaNcElAr", "cancel_authorization"), ("12", None, "get_account")])
+def test_btg_oauth_and_bank_commands_remain_in_profile_menu(monkeypatch, capsys, action, confirmation, operation):
+    module = setup_module()
+    config = Mock()
+    config.btg.return_value = {"profiles": {"empresa": {"environment": "sandbox", "company_id": "30306294000145"}}}
+    answers = iter([action, *([confirmation] if confirmation else []), "x"])
+    monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
+    service = Mock()
+    service.invoke.return_value = {"authorizationUrl": "https://auth.example.test/authorize", "status": "awaiting"}
+    monkeypatch.setattr(module, "BtgService", lambda _root: service)
+    runtime = Mock(return_value="Runtime pronto")
+    monkeypatch.setattr(module, "ensure_mcp_runtime", runtime)
+    module.manage_btg_profile(config, "empresa")
+    assert service.invoke.call_args.args == ("empresa", operation, {"confirm": True} if confirmation else {})
+    assert runtime.call_count == (1 if action in {"9", "12"} else 0)
+    assert capsys.readouterr().out.count("PERFIL BTG EMPRESAS") == 2
+    config.save_btg.assert_not_called()
+
+
+def test_btg_runtime_failure_does_not_leave_profile_menu(monkeypatch, capsys):
+    module = setup_module()
+    config = Mock()
+    config.btg.return_value = {"profiles": {"empresa": {"environment": "sandbox", "company_id": "30306294000145"}}}
+    answers = iter(["12", "x"])
+    monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
+    monkeypatch.setattr(module, "ensure_mcp_runtime", Mock(side_effect=module.McpRuntimeError("Runtime indisponível")))
+    service = Mock()
+    monkeypatch.setattr(module, "BtgService", lambda _root: service)
+    module.manage_btg_profile(config, "empresa")
+    service.invoke.assert_not_called()
+    output = capsys.readouterr().out
+    assert "Runtime indisponível" in output and output.count("PERFIL BTG EMPRESAS") == 2

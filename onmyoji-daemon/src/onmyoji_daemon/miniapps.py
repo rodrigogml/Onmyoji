@@ -31,7 +31,7 @@ from aiohttp import web
 from .rpc import RpcServer
 from .miniapps_pki import ensure_material, install_trust, server_context
 from .miniapps_tunnel import TunnelController, TunnelError
-from .skill_oauth import OAuthError, SkillOAuth
+from .skill_oauth import OAuthError, SkillOAuth, oauth_callback_path
 
 
 STATES = {"CREATED", "PUBLISHED_UNCLAIMED", "ACTIVE", "UNPUBLISHED", "EXPIRED", "ERROR", "DELETED"}
@@ -575,7 +575,7 @@ class MiniAppsGateway:
                 skill = str(params.get("skill", "")).strip()
                 if not skill or "/" in skill:
                     raise ValueError("skill inválida")
-                return {"skill": skill, "callbackUrl": self._oauth_origin().rstrip("/") + "/oauth/skills/" + skill + "/callback"}
+                return {"skill": skill, "callbackUrl": self._oauth_origin().rstrip("/") + oauth_callback_path(skill)}
             broker = self._oauth_broker()
             if action == "oauth.info": return broker.info(str(params["skill"]), str(params["profile"]))
             if action == "oauth.active": return broker.active(str(params["skill"]), str(params["profile"]))
@@ -679,7 +679,10 @@ class MiniAppsGateway:
         try:
             broker = self._oauth_broker()
             query = {key: request.query.getall(key) for key in request.query.keys()}
-            identifier = await asyncio.to_thread(broker.callback, request.match_info["skill"], query)
+            integration = "mcp-btg" if request.path == "/oauth/mcp/btg/callback" else request.match_info["skill"]
+            if request.path != "/oauth/mcp/btg/callback" and integration == "mcp-btg":
+                raise OAuthError("Use a rota de callback MCP configurada")
+            identifier = await asyncio.to_thread(broker.callback, integration, query)
         except (ValueError, OSError, sqlite3.Error):
             return self._oauth_page("Retorno inválido, expirado ou já utilizado. Consulte o agente no chat.", 400)
         raise web.HTTPSeeOther("/oauth/result/" + identifier, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
@@ -714,6 +717,7 @@ class MiniAppsGateway:
         app.router.add_route("GET", "/internal/v1/tunnel", self.admin_tunnel)
         app.router.add_route("POST", "/internal/v1/tunnel/{action:configure|provision|start|stop|restart|install-cloudflared}", self.admin_tunnel)
         app.router.add_route("GET", "/oauth/skills/{skill}/callback", self.skill_oauth_callback)
+        app.router.add_route("GET", "/oauth/mcp/btg/callback", self.skill_oauth_callback)
         app.router.add_route("GET", "/oauth/result/{session_id}", self.skill_oauth_result)
         app.router.add_route("*", "/a/{app_id}/{tail:.*}", self.public_request)
         app.router.add_route("*", "/a/{app_id}", self.public_request)

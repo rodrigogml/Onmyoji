@@ -1,13 +1,16 @@
 """Acessa segredos de integrações MCP por perfis locais do KeePassXC.
 
-O resolvedor lê somente ``configs/mcp/credentials.toml`` e nunca persiste,
-registra nem devolve segredos ao chamador. A senha mestra é obtida do provedor
-de credenciais configurado para o sistema operacional e é usada apenas como
-entrada padrão do ``keepassxc-cli``. A escrita é restrita ao setup local.
+O resolvedor lê somente ``configs/mcp/credentials.toml``. Integrações internas
+recebem os campos necessários, nunca publicados como ferramentas MCP. A senha
+mestra vem do provedor do sistema operacional; consultas usam stdin do
+``keepassxc-cli``. O setup grava credenciais e o cliente OAuth pode atualizar
+notes diretamente no KDBX criptografado, sem tokens na linha de comando.
 """
 from __future__ import annotations
 
 import ctypes
+import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -212,6 +215,37 @@ class KeePassCredentialResolver:
         if not isinstance(defaults, dict):
             raise CredentialError("invalid_config", "Configuração padrão de credenciais inválida.")
         return defaults, profile, vault
+
+    def save_oauth_state(self, profile_name: str, entry_path: str, state: dict[str, Any]) -> None:
+        """Atualiza notes em entrada existente, sem tokens em argv ou arquivos claros."""
+        from .encrypted import save_notes
+        profile_id = _require_string(profile_name, "invalid_profile", "Perfil de credencial inválido.")
+        requested_entry = _require_string(entry_path, "invalid_entry", "Entrada de credencial inválida.")
+        if not isinstance(state, dict):
+            raise CredentialError("invalid_auth_state", "Estado OAuth deve ser um objeto JSON.")
+        defaults, profile, vault = self._settings(profile_id)
+        self._require_allowed_entry(profile, requested_entry)
+        if importlib.util.find_spec("pykeepass") is None:
+            self._save_oauth_via_runtime(profile_id, requested_entry, state)
+            return
+        _, database, _ = self._command_settings(vault, defaults)
+        password = self._master_password(profile)
+        try:
+            save_notes(Path(database), password, requested_entry, state)
+        finally:
+            del password
+
+    def _save_oauth_via_runtime(self, profile: str, entry: str, state: dict[str, Any]) -> None:
+        from ..runtime import mcp_runtime_python
+        executable = mcp_runtime_python(self.root)
+        environment = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[3]), "PYTHONUTF8": "1"}
+        try:
+            result = subprocess.run([str(executable), "-m", "onmyoji_daemon.mcp.credentials.oauth_writer", "--onmyoji-root", str(self.root)], input=json.dumps({"profile": profile, "entry": entry, "state": state}, ensure_ascii=False, allow_nan=False), text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=120, env=environment)
+            response = json.loads(result.stdout)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            raise CredentialError("vault_write_failed", "Prepare o runtime MCP para persistir o consentimento OAuth.") from error
+        if result.returncode != 0 or not isinstance(response, dict) or response.get("ok") is not True:
+            raise CredentialError("vault_write_failed", "Não foi possível persistir o consentimento no runtime MCP.")
 
     @staticmethod
     def _require_allowed_entry(profile: dict[str, Any], entry_path: str) -> None:

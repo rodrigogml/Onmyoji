@@ -2,13 +2,50 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
+from contextlib import contextmanager
 import json
+import os
+from pathlib import Path
 import re
+import time
 from typing import Any
 from urllib.parse import urlsplit
 
 
 DEFAULT_SCOPES = "openid empresas.btgpactual.com/accounts.readonly brn:btg:empresas:banking:payments brn:btg:empresas:banking:direct-debit"
+
+
+@contextmanager
+def configuration_lock(root: Path):
+    """Serializa gravações do menu e do callback com trava liberada pelo SO."""
+    path = root / "configs" / "mcp" / "btg-config.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as stream:
+        if stream.tell() == 0:
+            stream.write(b"0"); stream.flush()
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                stream.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise BtgConfigurationError("Outra operação está alterando os perfis BTG.")
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            stream.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(stream, fcntl.LOCK_UN)
 
 
 class BtgConfigurationError(ValueError):
