@@ -13,6 +13,8 @@ from typing import Any, Mapping
 
 from .management import daemon_python, runtime_ready
 from .mcp.codex import CodexMcpRegistration
+from .mcp.configuration import McpConfiguration
+from .mcp.memory import ManagedMemorySkill
 from .mcp.reconciliation import McpReconciliation
 
 
@@ -96,7 +98,16 @@ class CodexLaunch:
     def _reconcile_mcp(self) -> None:
         """Aplica uma pendência MCP sem exigir reinicialização do gateway."""
         try:
+            self.synchronize_memory_skill()
             McpReconciliation(self.root).reconcile_if_pending(CodexMcpRegistration(self.root, self.executable))
+        except Exception as error:
+            raise CodexExecutionError(str(error)) from error
+
+    def synchronize_memory_skill(self) -> bool:
+        """Materializa ou repara a skill local conforme o único estado MCP."""
+        try:
+            configuration = McpConfiguration(self.root)
+            return ManagedMemorySkill(self.root).synchronize(self.workspace, configuration.memory_tool_available())
         except Exception as error:
             raise CodexExecutionError(str(error)) from error
 

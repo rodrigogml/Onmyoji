@@ -22,8 +22,11 @@ Shikigami-<Nome> (CODEX_HOME e repositório da instância)
 └── estado gerenciado pelo Codex   # autenticação, sessões, logs e cache; ignorado pelo Git
 
 Shikigami-<Nome>-Work (workspace externo)
+├── .agents/skills/onmyoji-memory/ # cópia gerenciada do workflow, quando habilitado
 └── projeto e arquivos de trabalho
 ```
+
+A memória MCP é a exceção deliberada ao princípio de não materializar definições no workspace: o Codex descobre skills locais em `.agents/skills/`, portanto o launcher copia para esse local somente o workflow `onmyoji-memory`. A fonte versionada continua no Onmyōji; a cópia possui hash e registro de posse em `configs/mcp/memory/managed-skill.json`, é reparada antes das aberturas gerenciadas do Codex e não pode se tornar fonte de verdade. O banco permanece fora do workspace, em `configs/mcp/memory/instructions.sqlite3`.
 
 ## Configurações
 

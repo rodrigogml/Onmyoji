@@ -84,6 +84,26 @@ def test_gateway_recycles_only_the_idle_app_server_when_mcp_reconciliation_is_pe
     assert client.stops == 1 and client.starts == 1
 
 
+def test_gateway_recycles_context_when_managed_memory_skill_is_repaired(tmp_path, monkeypatch):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data))
+    gateway.database.execute("INSERT INTO conversations(chat_id, updated_at, last_interaction_at, codex_thread_id, instruction_baseline_hash) VALUES ('1', 1, 1, 'thread-old', 'hash-old')"); gateway.database.commit()
+
+    class Client:
+        def __init__(self): self.stops = 0; self.starts = 0
+        def running(self): return True
+        def stop(self): self.stops += 1
+        def start(self): self.starts += 1
+
+    client = Client(); gateway.app_server = client
+    monkeypatch.setattr("onmyoji_daemon.telegram.CodexLaunch.synchronize_memory_skill", lambda _self: True)
+    monkeypatch.setattr("onmyoji_daemon.telegram.mcp_reconciliation_pending", lambda _root: False)
+    assert gateway._app_client() is client
+    row = gateway.database.execute("SELECT codex_thread_id, instruction_baseline_hash FROM conversations WHERE chat_id='1'").fetchone()
+    assert client.stops == 1 and client.starts == 1
+    assert row == (None, None)
+
+
 def test_gateway_sandbox_includes_only_configured_activity_root(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
     staging = tmp_path / ".onmyoji" / "telegram" / "staging"

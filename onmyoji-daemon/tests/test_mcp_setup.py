@@ -184,6 +184,16 @@ def test_integrations_menu_opens_spotify_as_fourteenth_option(monkeypatch):
     module.integrations_menu(config); spotify_menu.assert_called_once_with(config)
 
 
+def test_integrations_menu_opens_memory_as_fifteenth_option(monkeypatch):
+    module = setup_module(); config = Mock()
+    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion", "aws", "mysql", "ssh", "bis2cmd", "bis10cmd", "google", "spotify"):
+        getattr(config, integration).return_value = {"profiles": {}}
+    config.memory_tool_available.return_value = False
+    answers = iter(["15", "x"]); monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
+    memory_menu = Mock(); monkeypatch.setattr(module, "memory_menu", memory_menu)
+    module.integrations_menu(config); memory_menu.assert_called_once_with(config)
+
+
 def test_spotify_removal_is_case_insensitive(monkeypatch, capsys):
     module = setup_module(); config = Mock()
     profile = {"enabled": True, "description": "Música.", "credential_profile": "vault", "credential_entry_path": "APIs/Spotify/music", "client_id_field": "username", "refresh_token_field": "password", "callback_port": 8888}

@@ -75,6 +75,11 @@ def empty_eccovox() -> dict[str, Any]:
     return {"schema_version": 1, "defaults": {"request_timeout_seconds": 120, "max_audio_bytes": 10485760, "max_text_characters": 4000}, "profiles": {}}
 
 
+def empty_memory() -> dict[str, Any]:
+    """Modelo simples da memória de instruções, sem perfis ou ciclo de vida."""
+    return {"schema_version": 1, "enabled": False, "max_results": 5}
+
+
 def _quote(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
@@ -160,6 +165,10 @@ class McpConfiguration:
     def eccovox_path(self) -> Path:
         return self.root / "configs" / "mcp" / "eccovox.toml"
 
+    @property
+    def memory_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "memory.toml"
+
     def credentials(self) -> dict[str, Any]:
         return self._load(self.credentials_path, empty_credentials())
 
@@ -204,6 +213,9 @@ class McpConfiguration:
 
     def eccovox(self) -> dict[str, Any]:
         return self._load(self.eccovox_path, empty_eccovox())
+
+    def memory(self) -> dict[str, Any]:
+        return self._load(self.memory_path, empty_memory())
 
     def save_credentials(self, data: dict[str, Any]) -> None:
         self._validate_credentials(data)
@@ -290,6 +302,11 @@ class McpConfiguration:
     def save_eccovox(self, data: dict[str, Any]) -> None:
         self._validate_eccovox(data)
         self._save(self.eccovox_path, self._render_eccovox(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def save_memory(self, data: dict[str, Any]) -> None:
+        self._validate_memory(data)
+        self._save(self.memory_path, self._render_memory(data))
         McpReconciliation(self.root).mark_pending()
 
     def update_btg_profile(self, name: str, updater) -> None:
@@ -389,6 +406,10 @@ class McpConfiguration:
             vault_profiles = self.credentials()["profiles"]
             return any(profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles for profile in self.spotify()["profiles"].values())
         except (KeyError, McpConfigurationError): return False
+
+    def memory_tool_available(self) -> bool:
+        try: return self.memory().get("enabled") is True
+        except McpConfigurationError: return False
 
     def enabled_todoist_profiles(self) -> list[dict[str, str]]:
         vault_profiles = self.credentials()["profiles"]
@@ -713,6 +734,13 @@ class McpConfiguration:
                     raise McpConfigurationError("Raízes de arquivos EccoVox inválidas.")
 
     @staticmethod
+    def _validate_memory(data: dict[str, Any]) -> None:
+        if data.get("schema_version") != 1 or type(data.get("enabled")) is not bool:
+            raise McpConfigurationError("Configuração da memória MCP inválida.")
+        if not isinstance(data.get("max_results"), int) or not 1 <= data["max_results"] <= 10:
+            raise McpConfigurationError("O limite de resultados da memória deve estar entre 1 e 10.")
+
+    @staticmethod
     def _render_credentials(data: dict[str, Any]) -> str:
         lines = ["schema_version = 1", "", "[defaults]", f"timeout_seconds = {data['defaults']['timeout_seconds']}"]
         for name, vault in sorted(data["vaults"].items()):
@@ -807,3 +835,7 @@ class McpConfiguration:
         for name, profile in sorted(data["profiles"].items()):
             lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"base_url = {_quote(profile['base_url'])}", f"readable_roots = {_array(profile['readable_roots'])}", f"writable_roots = {_array(profile['writable_roots'])}"]
         return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _render_memory(data: dict[str, Any]) -> str:
+        return "\n".join(["schema_version = 1", f"enabled = {'true' if data['enabled'] else 'false'}", f"max_results = {data['max_results']}", ""])

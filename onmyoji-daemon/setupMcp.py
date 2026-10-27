@@ -40,6 +40,7 @@ from onmyoji_daemon.mcp.google import GoogleError, GoogleService
 from onmyoji_daemon.mcp.google.oauth import authorize as authorize_google
 from onmyoji_daemon.mcp.spotify import SpotifyError, SpotifyService
 from onmyoji_daemon.mcp.spotify.oauth import authorize as authorize_spotify
+from onmyoji_daemon.mcp.memory import MemoryError, MemoryService
 from onmyoji_daemon.mcp.btg.configuration import BtgConfigurationError, DEFAULT_SCOPES, MONITOR_DEFAULTS, validate_profile as validate_btg_profile
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
 
@@ -1898,6 +1899,77 @@ def spotify_menu(config: McpConfiguration) -> None:
         else: result(False, "Opção inválida.")
 
 
+def manage_memory_instruction(config: McpConfiguration, identifier: str) -> None:
+    """Permite ao operador corrigir ou excluir uma regra sem criar ciclo de vida."""
+    service = MemoryService(config.root, max_results=config.memory()["max_results"])
+    while True:
+        try: entry = service.invoke("get_instruction", {"id": identifier})["instruction"]
+        except MemoryError as error: result(False, str(error)); return
+        screen("MCP · Memória · Instrução", str(entry["applies_when"]))
+        item("1.", "Quando aplicar", str(entry["applies_when"])); item("2.", "Instrução", str(entry["instruction"])); item("3.", "Palavras-chave", ", ".join(entry["keywords"])); item("4.", "Excluir definitivamente"); item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
+        if choice in {"x", "\x1b"}: return
+        if choice == "4":
+            confirmation = ask("Digite REMOVER para excluir definitivamente")
+            if confirmation is None or confirmation.casefold() != "remover": result(False, "Instrução não removida."); continue
+            try: service.invoke("delete_instruction", {"id": identifier, "confirm": True}); result(True, "Instrução removida definitivamente."); return
+            except MemoryError as error: result(False, str(error)); continue
+        if choice not in {"1", "2", "3"}: result(False, "Opção inválida."); continue
+        applies_when, instruction, keywords = str(entry["applies_when"]), str(entry["instruction"]), list(entry["keywords"])
+        if choice == "1":
+            value = ask("Nova condição de aplicação", applies_when, True)
+            if value is None: continue
+            applies_when = value
+        elif choice == "2":
+            value = ask("Nova instrução", instruction, True)
+            if value is None: continue
+            instruction = value
+        else:
+            value = ask("Palavras-chave separadas por vírgula", ", ".join(keywords), True)
+            if value is None: continue
+            keywords = [part.strip() for part in value.split(",") if part.strip()]
+        try:
+            service.invoke("revise_instruction", {"id": identifier, "applies_when": applies_when, "instruction": instruction, "keywords": keywords, "confirm": True}); result(True, "Instrução atualizada.")
+        except MemoryError as error: result(False, str(error))
+
+
+def memory_instructions_menu(config: McpConfiguration) -> None:
+    service = MemoryService(config.root, max_results=config.memory()["max_results"])
+    while True:
+        data = service.invoke("list_instructions", {"limit": 100, "offset": 0}); entries = data["instructions"]
+        screen("MCP · Memória · Instruções", f"{data['total']} instrução(ões) vigente(s)")
+        for index, entry in enumerate(entries, 1): item(f"{index}.", str(entry["applies_when"])[:70])
+        item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
+        if choice in {"x", "\x1b"}: return
+        if choice.isdigit() and 1 <= int(choice) <= len(entries): manage_memory_instruction(config, str(entries[int(choice) - 1]["id"]))
+        else: result(False, "Opção inválida.")
+
+
+def memory_menu(config: McpConfiguration) -> None:
+    """Configura o serviço único de memória e sua recuperação contextual."""
+    while True:
+        data = config.memory(); enabled = data["enabled"] is True
+        screen("MCP · Memória", "Livro de instruções atuais do Shikigami")
+        item("1.", "Desabilitar" if enabled else "Habilitar", "Remove ou materializa a skill gerenciada no próximo início do Codex")
+        item("2.", "Máximo de resultados", str(data["max_results"])); item("3.", "Gerenciar instruções"); item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
+        if choice in {"x", "\x1b"}: return
+        if choice == "1":
+            data["enabled"] = not enabled
+            try: config.save_memory(data); result(True, "Memória habilitada; a skill será materializada antes da próxima abertura do Codex." if not enabled else "Memória desabilitada; a skill gerenciada será removida antes da próxima abertura do Codex.")
+            except McpConfigurationError as error: result(False, str(error))
+        elif choice == "2":
+            value = ask("Quantidade máxima por busca (1 a 10)", str(data["max_results"]), True)
+            if value is None: continue
+            if not value.isdigit() or not 1 <= int(value) <= 10: result(False, "Informe um número entre 1 e 10."); continue
+            data["max_results"] = int(value)
+            try: config.save_memory(data); result(True, "Limite de busca atualizado.")
+            except McpConfigurationError as error: result(False, str(error))
+        elif choice == "3": memory_instructions_menu(config)
+        else: result(False, "Opção inválida.")
+
+
 def integrations_menu(config: McpConfiguration) -> None:
     """Lista integrações MCP e mantém cada configurador em seu próprio menu."""
     while True:
@@ -1915,6 +1987,7 @@ def integrations_menu(config: McpConfiguration) -> None:
         bis10cmd_profiles = config.bis10cmd()["profiles"]
         google_profiles = config.google()["profiles"]
         spotify_profiles = config.spotify()["profiles"]
+        memory_enabled = config.memory_tool_available()
         screen("MCP · Integrações", "Selecione uma integração para configurar")
         integration_item("1.", "Todoist", todoist_profiles)
         integration_item("2.", "Omie", omie_profiles)
@@ -1930,6 +2003,7 @@ def integrations_menu(config: McpConfiguration) -> None:
         integration_item("12.", "BIS10CMD", bis10cmd_profiles)
         integration_item("13.", "Google", google_profiles)
         integration_item("14.", "Spotify", spotify_profiles)
+        integration_item("15.", "Memória", {"ativa": {"enabled": True}} if memory_enabled else {})
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}:
@@ -1962,6 +2036,8 @@ def integrations_menu(config: McpConfiguration) -> None:
             google_menu(config)
         elif choice == "14":
             spotify_menu(config)
+        elif choice == "15":
+            memory_menu(config)
         else:
             result(False, "Opção inválida.")
 

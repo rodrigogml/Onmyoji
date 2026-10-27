@@ -23,6 +23,7 @@ from .bis2cmd.tools import Bis2CmdToolRegistry
 from .bis10cmd.tools import Bis10CmdToolRegistry
 from .google.tools import GoogleToolRegistry
 from .spotify.tools import SpotifyToolRegistry
+from .memory.tools import MemoryToolRegistry
 
 
 class McpApplication:
@@ -44,9 +45,14 @@ class McpApplication:
         self.bis10cmd = Bis10CmdToolRegistry(self.configuration)
         self.google = GoogleToolRegistry(self.configuration)
         self.spotify = SpotifyToolRegistry(self.configuration)
+        self.memory = MemoryToolRegistry(self.configuration)
 
     def definitions(self) -> list[dict[str, Any]]:
-        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions() + self.cloudflare.definitions() + self.eccovox.definitions() + self.forward_email.definitions() + self.notion.definitions() + self.aws.definitions() + self.mysql.definitions() + self.ssh.definitions() + self.bis2cmd.definitions() + self.bis10cmd.definitions() + self.google.definitions() + self.spotify.definitions()
+        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions() + self.cloudflare.definitions() + self.eccovox.definitions() + self.forward_email.definitions() + self.notion.definitions() + self.aws.definitions() + self.mysql.definitions() + self.ssh.definitions() + self.bis2cmd.definitions() + self.bis10cmd.definitions() + self.google.definitions() + self.spotify.definitions() + self.memory.definitions()
+
+    def instructions(self) -> str | None:
+        """Publica a obrigação de uso somente junto das tools de memória."""
+        return self.memory.instructions() if self.configuration.memory_tool_available() else None
 
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name.startswith("btg."):
@@ -75,6 +81,8 @@ class McpApplication:
             return self.google.call(name, arguments)
         if name.startswith("spotify."):
             return self.spotify.call(name, arguments)
+        if name.startswith("memory."):
+            return self.memory.call(name, arguments)
         return self.todoist.call(name, arguments)
 
 
@@ -97,7 +105,7 @@ def create_server(root: Path):
             # Erros de domínio já são sanitizados; nunca serialize exceções ou tracebacks.
             return CallToolResult(content=[TextContent(type="text", text=str(error))], is_error=True)
 
-    return Server("Onmyoji", version="0.1.0", on_list_tools=list_tools, on_call_tool=call_tool)
+    return Server("Onmyoji", version="0.1.0", instructions=application.instructions(), on_list_tools=list_tools, on_call_tool=call_tool)
 
 
 async def serve(root: Path) -> None:

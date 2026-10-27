@@ -415,6 +415,14 @@ class Gateway(TelegramChannels):
 
     def _app_client(self) -> CodexAppServer:
         with self.app_server_lock:
+            if not self.app_turns:
+                try: skill_changed = CodexLaunch.from_system(self.settings.root).synchronize_memory_skill()
+                except CodexExecutionError as error: raise CodexProtocolError(str(error)) from error
+                if skill_changed:
+                    if self.app_server and self.app_server.running(): self.app_server.stop()
+                    with self.database_lock:
+                        self.database.execute("UPDATE conversations SET codex_thread_id=NULL, instruction_baseline_hash=NULL")
+                        self.database.commit()
             # O App Server lê os MCPs ao iniciar. Quando o setup marca uma
             # pendência, recicle apenas este subprocesso antes do próximo
             # turno seguro; o gateway e suas filas permanecem em execução.

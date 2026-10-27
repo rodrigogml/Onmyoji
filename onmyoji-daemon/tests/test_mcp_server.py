@@ -1,4 +1,5 @@
-from onmyoji_daemon.mcp.server import McpApplication, main
+from onmyoji_daemon.mcp.configuration import McpConfiguration
+from onmyoji_daemon.mcp.server import McpApplication, create_server, main
 
 
 class Registry:
@@ -24,3 +25,11 @@ def test_main_starts_the_stdio_server_with_the_resolved_root(tmp_path, monkeypat
 
     assert main(["--onmyoji-root", str(tmp_path)]) == 0
     assert len(started) == 1
+
+
+def test_server_advertises_memory_workflow_only_when_memory_is_enabled(tmp_path):
+    assert create_server(tmp_path).create_initialization_options().instructions is None
+    McpConfiguration(tmp_path).save_memory({"schema_version": 1, "enabled": True, "max_results": 5})
+    instructions = create_server(tmp_path).create_initialization_options().instructions
+    assert instructions and "$onmyoji-memory" in instructions
+    assert "antes de responder" in instructions.casefold()
