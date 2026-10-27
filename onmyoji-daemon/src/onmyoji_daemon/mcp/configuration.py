@@ -80,6 +80,11 @@ def empty_memory() -> dict[str, Any]:
     return {"schema_version": 1, "enabled": False, "max_results": 5}
 
 
+def empty_data_tables() -> dict[str, Any]:
+    """Estado local dos schemas declarados pelas skills do Shikigami."""
+    return {"schema_version": 1, "schemas": {}}
+
+
 def _quote(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
@@ -169,6 +174,10 @@ class McpConfiguration:
     def memory_path(self) -> Path:
         return self.root / "configs" / "mcp" / "memory.toml"
 
+    @property
+    def data_tables_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "data-tables.toml"
+
     def credentials(self) -> dict[str, Any]:
         return self._load(self.credentials_path, empty_credentials())
 
@@ -216,6 +225,9 @@ class McpConfiguration:
 
     def memory(self) -> dict[str, Any]:
         return self._load(self.memory_path, empty_memory())
+
+    def data_tables(self) -> dict[str, Any]:
+        return self._load(self.data_tables_path, empty_data_tables())
 
     def save_credentials(self, data: dict[str, Any]) -> None:
         self._validate_credentials(data)
@@ -307,6 +319,11 @@ class McpConfiguration:
     def save_memory(self, data: dict[str, Any]) -> None:
         self._validate_memory(data)
         self._save(self.memory_path, self._render_memory(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def save_data_tables(self, data: dict[str, Any]) -> None:
+        self._validate_data_tables(data)
+        self._save(self.data_tables_path, self._render_data_tables(data))
         McpReconciliation(self.root).mark_pending()
 
     def update_btg_profile(self, name: str, updater) -> None:
@@ -410,6 +427,10 @@ class McpConfiguration:
     def memory_tool_available(self) -> bool:
         try: return self.memory().get("enabled") is True
         except McpConfigurationError: return False
+
+    def data_tables_tool_available(self) -> bool:
+        try: return any(state.get("enabled") is True for state in self.data_tables()["schemas"].values())
+        except (KeyError, McpConfigurationError): return False
 
     def enabled_todoist_profiles(self) -> list[dict[str, str]]:
         vault_profiles = self.credentials()["profiles"]
@@ -741,6 +762,15 @@ class McpConfiguration:
             raise McpConfigurationError("O limite de resultados da memória deve estar entre 1 e 10.")
 
     @staticmethod
+    def _validate_data_tables(data: dict[str, Any]) -> None:
+        if data.get("schema_version") != 1 or not isinstance(data.get("schemas"), dict):
+            raise McpConfigurationError("Configuração de tabelas de dados inválida.")
+        for identifier, state in data["schemas"].items():
+            _profile_name(identifier)
+            if not isinstance(state, dict) or type(state.get("enabled")) is not bool:
+                raise McpConfigurationError("Estado de schema inválido.")
+
+    @staticmethod
     def _render_credentials(data: dict[str, Any]) -> str:
         lines = ["schema_version = 1", "", "[defaults]", f"timeout_seconds = {data['defaults']['timeout_seconds']}"]
         for name, vault in sorted(data["vaults"].items()):
@@ -839,3 +869,10 @@ class McpConfiguration:
     @staticmethod
     def _render_memory(data: dict[str, Any]) -> str:
         return "\n".join(["schema_version = 1", f"enabled = {'true' if data['enabled'] else 'false'}", f"max_results = {data['max_results']}", ""])
+
+    @staticmethod
+    def _render_data_tables(data: dict[str, Any]) -> str:
+        lines = ["schema_version = 1"]
+        for identifier, state in sorted(data["schemas"].items()):
+            lines += ["", f"[schemas.{identifier}]", f"enabled = {'true' if state['enabled'] else 'false'}"]
+        return "\n".join(lines) + "\n"

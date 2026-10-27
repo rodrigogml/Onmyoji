@@ -41,6 +41,7 @@ from onmyoji_daemon.mcp.google.oauth import authorize as authorize_google
 from onmyoji_daemon.mcp.spotify import SpotifyError, SpotifyService
 from onmyoji_daemon.mcp.spotify.oauth import authorize as authorize_spotify
 from onmyoji_daemon.mcp.memory import MemoryError, MemoryService
+from onmyoji_daemon.mcp.data_tables import DataTablesError, SchemaCatalog
 from onmyoji_daemon.mcp.btg.configuration import BtgConfigurationError, DEFAULT_SCOPES, MONITOR_DEFAULTS, validate_profile as validate_btg_profile
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
 
@@ -1970,6 +1971,49 @@ def memory_menu(config: McpConfiguration) -> None:
         else: result(False, "Opção inválida.")
 
 
+def data_tables_menu(config: McpConfiguration) -> None:
+    """Instala schemas versionados sem expor migrations ao agente MCP."""
+    while True:
+        catalog = SchemaCatalog(config.root)
+        try: schemas = catalog.discover()
+        except DataTablesError as error: result(False, str(error)); return
+        state = config.data_tables(); enabled = [identifier for identifier, value in state["schemas"].items() if value.get("enabled")]
+        screen("MCP · Tabelas de dados", "Schemas versionados pelas skills do Shikigami")
+        item("1.", "Schemas disponíveis", f"{len(schemas)} encontrado(s)")
+        item("2.", "Instalar ou atualizar schema")
+        item("3.", "Habilitar ou desabilitar schema", f"{len(enabled)} habilitado(s)")
+        item("4.", "Validar integridade"); item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
+        if choice in {"x", "\x1b"}: return
+        if choice not in {"1", "2", "3", "4"}: result(False, "Opção inválida."); continue
+        if not schemas: result(False, "Nenhum schema encontrado em shikigami/skills/*/schemas/*/schema.toml."); continue
+        names = sorted(schemas)
+        if choice == "1":
+            for identifier in names:
+                plan = catalog.plan(schemas[identifier]); item("·", identifier, f"instaladas: {len(plan['installed'])}; pendentes: {len(plan['pending'])}")
+            continue
+        identifier = select("MCP · Tabelas de dados · Schema", names)
+        if not identifier: continue
+        if choice == "2":
+            try:
+                plan = catalog.plan(schemas[identifier])
+                if not plan["pending"]: result(True, "Schema já está atualizado."); continue
+                confirmation = ask(f"Digite APLICAR para instalar migrations {plan['pending']}")
+                if confirmation is None or confirmation.casefold() != "aplicar": result(False, "Migrations não aplicadas."); continue
+                catalog.apply(identifier); result(True, "Schema atualizado com sucesso.")
+            except DataTablesError as error: result(False, str(error))
+        elif choice == "3":
+            try:
+                if catalog.plan(schemas[identifier])["pending"]: result(False, "Instale todas as migrations antes de habilitar o schema."); continue
+                entry = state["schemas"].setdefault(identifier, {"enabled": False}); entry["enabled"] = not entry["enabled"]
+                config.save_data_tables(state); result(True, "Schema habilitado." if entry["enabled"] else "Schema desabilitado.")
+            except (DataTablesError, McpConfigurationError) as error: result(False, str(error))
+        else:
+            try:
+                plan = catalog.plan(schemas[identifier]); result(True, "Schema íntegro." if not plan["pending"] else f"Schema íntegro, com migrations pendentes: {plan['pending']}.")
+            except DataTablesError as error: result(False, str(error))
+
+
 def integrations_menu(config: McpConfiguration) -> None:
     """Lista integrações MCP e mantém cada configurador em seu próprio menu."""
     while True:
@@ -1988,6 +2032,7 @@ def integrations_menu(config: McpConfiguration) -> None:
         google_profiles = config.google()["profiles"]
         spotify_profiles = config.spotify()["profiles"]
         memory_enabled = config.memory_tool_available()
+        data_tables_enabled = config.data_tables_tool_available()
         screen("MCP · Integrações", "Selecione uma integração para configurar")
         integration_item("1.", "Todoist", todoist_profiles)
         integration_item("2.", "Omie", omie_profiles)
@@ -2004,6 +2049,7 @@ def integrations_menu(config: McpConfiguration) -> None:
         integration_item("13.", "Google", google_profiles)
         integration_item("14.", "Spotify", spotify_profiles)
         integration_item("15.", "Memória", {"ativa": {"enabled": True}} if memory_enabled else {})
+        integration_item("16.", "Tabelas de dados", {"ativa": {"enabled": True}} if data_tables_enabled else {})
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}:
@@ -2038,6 +2084,8 @@ def integrations_menu(config: McpConfiguration) -> None:
             spotify_menu(config)
         elif choice == "15":
             memory_menu(config)
+        elif choice == "16":
+            data_tables_menu(config)
         else:
             result(False, "Opção inválida.")
 
