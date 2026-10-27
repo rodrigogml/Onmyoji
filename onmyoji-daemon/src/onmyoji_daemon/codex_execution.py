@@ -14,6 +14,7 @@ from typing import Any, Mapping
 from .management import daemon_python, runtime_ready
 from .mcp.codex import CodexMcpRegistration
 from .mcp.configuration import McpConfiguration
+from .mcp.data_tables import ManagedDataTablesSkill
 from .mcp.memory import ManagedMemorySkill
 from .mcp.reconciliation import McpReconciliation
 
@@ -98,7 +99,7 @@ class CodexLaunch:
     def _reconcile_mcp(self) -> None:
         """Aplica uma pendência MCP sem exigir reinicialização do gateway."""
         try:
-            self.synchronize_memory_skill()
+            self.synchronize_managed_skills()
             McpReconciliation(self.root).reconcile_if_pending(CodexMcpRegistration(self.root, self.executable))
         except Exception as error:
             raise CodexExecutionError(str(error)) from error
@@ -108,6 +109,16 @@ class CodexLaunch:
         try:
             configuration = McpConfiguration(self.root)
             return ManagedMemorySkill(self.root).synchronize(self.workspace, configuration.memory_tool_available())
+        except Exception as error:
+            raise CodexExecutionError(str(error)) from error
+
+    def synchronize_managed_skills(self) -> bool:
+        """Mantém no workspace os workflows correspondentes aos serviços MCP ativos."""
+        try:
+            configuration = McpConfiguration(self.root)
+            memory_changed = ManagedMemorySkill(self.root).synchronize(self.workspace, configuration.memory_tool_available())
+            tables_changed = ManagedDataTablesSkill(self.root).synchronize(self.workspace, configuration.data_tables_tool_available())
+            return memory_changed or tables_changed
         except Exception as error:
             raise CodexExecutionError(str(error)) from error
 

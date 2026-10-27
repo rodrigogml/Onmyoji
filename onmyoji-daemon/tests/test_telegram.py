@@ -96,7 +96,7 @@ def test_gateway_recycles_context_when_managed_memory_skill_is_repaired(tmp_path
         def start(self): self.starts += 1
 
     client = Client(); gateway.app_server = client
-    monkeypatch.setattr("onmyoji_daemon.telegram.CodexLaunch.synchronize_memory_skill", lambda _self: True)
+    monkeypatch.setattr("onmyoji_daemon.telegram.CodexLaunch.synchronize_managed_skills", lambda _self: True)
     monkeypatch.setattr("onmyoji_daemon.telegram.mcp_reconciliation_pending", lambda _root: False)
     assert gateway._app_client() is client
     row = gateway.database.execute("SELECT codex_thread_id, instruction_baseline_hash FROM conversations WHERE chat_id='1'").fetchone()
