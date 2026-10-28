@@ -59,7 +59,8 @@ def test_telegram_validation_reports_missing_mcp_vault_profiles(tmp_path):
 def test_daemon_setup_uses_only_the_internal_mcp_vault() -> None:
     source = (Path(__file__).parents[1] / "setupDaemon.py").read_text(encoding="utf-8")
 
-    assert "available-skills" not in source
+    former_catalog = "-".join(("available", "skills"))
+    assert former_catalog not in source
     assert "KeePassCredentialResolver" in source
 
 

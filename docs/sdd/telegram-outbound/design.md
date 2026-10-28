@@ -1,5 +1,8 @@
 # SDD · Telegram outbound — desenho técnico
 
+> [!IMPORTANT]
+> Este documento registra o desenho original da entrega. A skill descrita foi substituída pelo módulo MCP `telegram`; os contratos atuais estão no servidor MCP e na documentação do daemon.
+
 **Fonte:** [requirements.md](requirements.md) e briefing aprovado. **Decisão arquitetural atual:** o módulo MCP `telegram` é cliente RPC **somente de saída**; gateway é dono do catálogo, contexto e Telegram API.
 
 ## Componentes

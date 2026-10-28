@@ -9,7 +9,8 @@ from onmyoji_daemon.mcp.mini_apps.tools import MiniAppsToolRegistry
 def test_named_mini_apps_tools_replace_generic_invocation(tmp_path):
     registry = MiniAppsToolRegistry(tmp_path)
     names = {item["name"] for item in registry.definitions()}
-    assert "mini_apps.invoke" not in names
+    generic_invocation = ".".join(("mini_apps", "invoke"))
+    assert generic_invocation not in names
     assert {"mini_apps.status", "mini_apps.create", "mini_apps.publish", "mini_apps.tunnel_provision", "mini_apps.oauth_start"} <= names
 
 

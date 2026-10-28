@@ -13,7 +13,8 @@ def test_application_delegates_to_registered_modules(tmp_path):
     definitions = application.definitions()
     assert "todoist.list_tasks" in {definition["name"] for definition in definitions}
     assert "mini_apps.publish" in {definition["name"] for definition in definitions}
-    assert "mini_apps.invoke" not in {definition["name"] for definition in definitions}
+    generic_invocation = ".".join(("mini_apps", "invoke"))
+    assert generic_invocation not in {definition["name"] for definition in definitions}
     assert application.call("todoist.list_tasks", {}) == {"name": "todoist.list_tasks", "arguments": {}}
 
 

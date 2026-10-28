@@ -159,7 +159,7 @@ python3 setupOnmyoji.py
 python3 setupOnmyoji.py --action list
 ```
 
-Para uma integração com credenciais, configure primeiro seu provedor de segredo, depois crie o perfil local da integração e execute o teste de acesso somente leitura oferecido pelo setup. Por exemplo, a skill Laveli pode exigir que a Omie possua um perfil lógico `laveli`; a associação desse nome às credenciais fica exclusivamente em `configs/omie.toml` e no KeePass.
+Para uma integração com credenciais, configure primeiro seu provedor de segredo, depois crie o perfil local da integração no MCP e execute o teste de acesso somente leitura oferecido pelo setup. Por exemplo, uma política própria do Shikigami pode exigir que a Omie possua um perfil lógico `laveli`; a associação desse nome às credenciais fica exclusivamente em `configs/mcp/omie.toml` e no KeePass.
 
 ### 6. Versionar a definição e atualizar a base
 

@@ -1,5 +1,8 @@
 # Briefing — Skill de integração Telegram
 
+> [!IMPORTANT]
+> Registro histórico do briefing original. A implementação atual usa o módulo MCP `telegram`, não uma skill de integração.
+
 **Data:** 2026-10-17  
 **Status:** Briefing funcional consolidado — P1 a P8 resolvidas; arquitetura e implementação ainda não iniciadas.  
 **Repositório responsável:** Onmyoji (upstream).  
