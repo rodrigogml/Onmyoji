@@ -1,9 +1,8 @@
 # Omie no MCP interno
 
-A integração oferece 72 operações de cadastros, financeiro e NF-e sem executar
-scripts ou consultar contratos da skill legada. O servidor stdio publica os
-parâmetros aceitos e o contexto de uso nas próprias tools; o código não depende
-de uma skill legada nem da skill KeePass Vault.
+A integração oferece 72 operações de cadastros, financeiro e NF-e. O servidor
+stdio publica os parâmetros aceitos e o contexto de uso nas próprias tools; o
+código não depende de scripts de integração nem expõe o cofre como ferramenta.
 
 ## Configuração e descoberta
 

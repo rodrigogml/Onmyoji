@@ -26,6 +26,6 @@ com a nova raiz e entrypoint válidos dentro do workspace.
 
 O Tunnel seleciona um perfil de vault MCP e uma entrada KeePass. O token é
 resolvido diretamente pelo serviço interno `KeePassCredentialResolver`, somente
-em memória, sem invocar a skill KeePass Vault, scripts intermediários, sessões
+em memória, sem expor uma ferramenta de vault, scripts intermediários, sessões
 ou arquivos temporários. A configuração do Tunnel persiste apenas
 `credential_profile`, `credential_entry_path` e o campo protegido utilizado.
