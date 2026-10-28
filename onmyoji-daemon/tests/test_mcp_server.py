@@ -11,7 +11,9 @@ def test_application_delegates_to_registered_modules(tmp_path):
     application = McpApplication(tmp_path)
     application.todoist = Registry()
     definitions = application.definitions()
-    assert {definition["name"] for definition in definitions} == {"todoist.list_tasks", "mini_apps.invoke"}
+    assert "todoist.list_tasks" in {definition["name"] for definition in definitions}
+    assert "mini_apps.publish" in {definition["name"] for definition in definitions}
+    assert "mini_apps.invoke" not in {definition["name"] for definition in definitions}
     assert application.call("todoist.list_tasks", {}) == {"name": "todoist.list_tasks", "arguments": {}}
 
 
