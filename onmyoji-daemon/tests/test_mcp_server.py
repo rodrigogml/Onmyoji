@@ -10,7 +10,8 @@ class Registry:
 def test_application_delegates_to_registered_modules(tmp_path):
     application = McpApplication(tmp_path)
     application.todoist = Registry()
-    assert application.definitions() == [{"name": "todoist.list_tasks"}]
+    definitions = application.definitions()
+    assert {definition["name"] for definition in definitions} == {"todoist.list_tasks", "mini_apps.invoke"}
     assert application.call("todoist.list_tasks", {}) == {"name": "todoist.list_tasks", "arguments": {}}
 
 

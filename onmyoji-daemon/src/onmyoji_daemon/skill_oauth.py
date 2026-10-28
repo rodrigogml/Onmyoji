@@ -99,7 +99,7 @@ class SkillOAuth:
         ensure(isinstance(skill, str) and bool(re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", skill)), "Skill OAuth inválida")
         ensure(isinstance(profile, str) and bool(re.fullmatch(r"[A-Za-z0-9_-]+", profile)), "Perfil OAuth inválido")
         ensure(action in {"describe", "start", "complete", "cancel"}, "Ação OAuth inválida")
-        candidates = [self.root / "available-skills" / skill / "scripts" / "oauth_adapter.py", self.root / "shikigami" / "skills" / skill / "scripts" / "oauth_adapter.py"]
+        candidates = [self.root / "shikigami" / "skills" / skill / "scripts" / "oauth_adapter.py"]
         script = next((p for p in candidates if p.is_file()), None)
         if skill == "mcp-btg":
             from .mcp.runtime import mcp_runtime_python

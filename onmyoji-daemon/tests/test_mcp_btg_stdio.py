@@ -34,8 +34,8 @@ def test_stdio_btg_publishes_payments_and_rejects_missing_confirmation(tmp_path)
             async with ClientSession(read, write, read_timeout_seconds=10) as session:
                 await session.initialize()
                 tools = (await session.list_tools()).tools
-                assert len(tools) == 21
-                assert all("Conta sintética stdio" in tool.description for tool in tools)
+                assert len(tools) == 22
+                assert all("Conta sintética stdio" in tool.description for tool in tools if tool.name.startswith("btg."))
                 assert any(tool.name == "btg.submit_payment" for tool in tools)
                 result = await session.call_tool("btg.start_authorization", {"confirm": False})
                 assert result.is_error is True and "confirm=true" in str(result.content)

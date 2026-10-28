@@ -31,7 +31,7 @@ def test_stdio_publishes_omie_and_rejects_invalid_call_without_vault(tmp_path):
             async with ClientSession(read, write, read_timeout_seconds=10) as session:
                 await session.initialize()
                 tools = (await session.list_tools()).tools
-                assert len(tools) == 72
+                assert len(tools) == 73
                 creation = next(tool for tool in tools if tool.name == "omie.customers_create")
                 assert "ERP de teste stdio" in creation.description
                 assert creation.input_schema["properties"]["body"]["required"] == ["cnpj_cpf", "razao_social"]

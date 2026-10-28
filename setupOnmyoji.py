@@ -33,7 +33,6 @@ MANAGED_BEGIN = "# BEGIN ONMYOJI MANAGED SKILLS"
 MANAGED_END = "# END ONMYOJI MANAGED SKILLS"
 SYSTEM_BEGIN = "# BEGIN ONMYOJI MANAGED CODEX SETTINGS"
 SYSTEM_END = "# END ONMYOJI MANAGED CODEX SETTINGS"
-CATALOG_DIRECTORY = "available-skills"
 INSTANCE_SKILLS_DIRECTORY = "shikigami/skills"
 SKILL_PROFILE_NAME = "onmyoji-skills"
 SKILL_PROFILE_FILE = f"{SKILL_PROFILE_NAME}.config.toml"
@@ -80,19 +79,18 @@ class Skill:
     source: Path
     description: str
     setup_script: Path | None = None
-    catalog_managed: bool = True
 
 
 def discover(root: Path = ROOT) -> list[Skill]:
     skills: list[Skill] = []
-    for directory, catalog_managed in ((root / CATALOG_DIRECTORY, True), (root / INSTANCE_SKILLS_DIRECTORY, False)):
-        for script in sorted(directory.glob("*/setupSkill.py")):
-            result = subprocess.run([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "describe", "--json"], text=True, encoding="utf-8", errors="replace", capture_output=True, env={**os.environ, "PYTHONUTF8": "1"})
-            try:
-                data = json.loads(result.stdout) if result.returncode == 0 else {}
-                skills.append(Skill(data["id"], data["title"], script.parent, data.get("description", ""), script, catalog_managed))
-            except (json.JSONDecodeError, KeyError):
-                continue
+    directory = root / INSTANCE_SKILLS_DIRECTORY
+    for script in sorted(directory.glob("*/setupSkill.py")):
+        result = subprocess.run([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "describe", "--json"], text=True, encoding="utf-8", errors="replace", capture_output=True, env={**os.environ, "PYTHONUTF8": "1"})
+        try:
+            data = json.loads(result.stdout) if result.returncode == 0 else {}
+            skills.append(Skill(data["id"], data["title"], script.parent, data.get("description", ""), script))
+        except (json.JSONDecodeError, KeyError):
+            continue
     instance_directory = root / INSTANCE_SKILLS_DIRECTORY
     for skill_file in sorted(instance_directory.glob("*/SKILL.md")):
         source = skill_file.parent
@@ -100,7 +98,7 @@ def discover(root: Path = ROOT) -> list[Skill]:
             continue
         identifier = source.name
         title = identifier.replace("-", " ").replace("_", " ").title()
-        skills.append(Skill(identifier, title, source, "Skill do Shikigami sem configuração.", None, False))
+        skills.append(Skill(identifier, title, source, "Skill do Shikigami sem configuração."))
     return skills
 
 
@@ -131,7 +129,7 @@ def ensure_shikigami_resources(root: Path) -> None:
     readme = directory / "README.md"
     if not readme.exists(): readme.write_text(f"# {identity}\n\nDefinição versionada deste Shikigami. Arquivos da base Onmyōji não são personalizados aqui; particularidades versionadas ficam nesta pasta. A identidade e o estado de execução são locais, em `../configs/`. O workspace externo é a única área para arquivos de trabalho do agente.\n", encoding="utf-8", newline="\n")
     agents = directory / "AGENTS.md"
-    if not agents.exists(): agents.write_text(f"# {identity}\n\nLeia este arquivo e `README.md` antes de trabalhar nesta instância. Não altere arquivos da base Onmyōji (`available-skills/`, `onmyoji-daemon/`, `setupOnmyoji.py` e `docs/`) para personalizar {identity}; registre personalizações em `shikigami/` ou proponha melhorias genéricas ao upstream.\n\nNão armazene segredos, tokens, chaves, bancos de conversa, logs, staging ou arquivos de trabalho nesta pasta. O workspace externo é a única área de escrita para a atividade do agente.\n", encoding="utf-8", newline="\n")
+    if not agents.exists(): agents.write_text(f"# {identity}\n\nLeia este arquivo e `README.md` antes de trabalhar nesta instância. Não altere arquivos da base Onmyōji (`onmyoji-daemon/`, `setupOnmyoji.py` e `docs/`) para personalizar {identity}; registre personalizações em `shikigami/` ou proponha melhorias genéricas ao upstream.\n\nNão armazene segredos, tokens, chaves, bancos de conversa, logs, staging ou arquivos de trabalho nesta pasta. O workspace externo é a única área de escrita para a atividade do agente.\n", encoding="utf-8", newline="\n")
     instructions = directory / "instructions.md"
     if not instructions.exists():
         model = root / "onmyoji-daemon" / "configs" / "shikigami.md.model"
@@ -2363,10 +2361,10 @@ def skill_menu(skill: Skill, root: Path, skills: list[Skill]) -> None:
         conflicted = skill.identifier in conflicting_skill_ids(skills)
         enabled = is_skill_enabled(root, skill, skills)
         state = "Desabilitar" if enabled else "Habilitar"
-        screen(skill.title, f"Skill de integração · {'CONFLITO' if conflicted else ('ATIVA' if enabled else 'INATIVA')}")
+        screen(skill.title, f"Skill do Shikigami · {'CONFLITO' if conflicted else ('ATIVA' if enabled else 'INATIVA')}")
         if skill.description: print(f"  {skill.description}\n")
         if conflicted:
-            note(f"O ID {skill.identifier} também existe no catálogo ou no Shikigami. Renomeie uma das skills antes de habilitá-la.")
+            note(f"O ID {skill.identifier} está duplicado entre as skills do Shikigami. Renomeie uma delas antes de habilitá-la.")
         else:
             item("1.", state)
             if skill.setup_script is not None: item("2.", "Configurar")
@@ -2393,8 +2391,6 @@ def menu(skills: list[Skill], root: Path) -> int:
         item("A.", "Codex-CLI", "Modelo, projeto, sandbox e permissões")
         item("D.", "Daemon", "Supervisor local e serviços da instância")
         item("M.", "MCP", "Perfis de vault e integrações MCP")
-        integration = [skill for skill in skills if skill.catalog_managed]
-        domain = [skill for skill in skills if not skill.catalog_managed]
         conflicts = conflicting_skill_ids(skills)
         enabled = enabled_ids(root, skills)
         def rendered(index: int, skill: Skill, width: int = 50) -> str:
@@ -2402,20 +2398,9 @@ def menu(skills: list[Skill], root: Path) -> int:
             else:
                 state = Ui.badge("ATIVA", "active") if skill.identifier in enabled else Ui.badge("inativa", "inactive")
             return skill_item(index, skill, state, width)
-        wide = len(domain) > 0 and shutil.get_terminal_size((78, 24)).columns >= 96
-        if wide:
-            print("\n" + "  SKILLS DE INTEGRAÇÃO".ljust(51) + "SKILLS DE DOMÍNIO")
-            rows = max(len(integration), len(domain))
-            for row in range(rows):
-                left = rendered(row + 1, integration[row]) if row < len(integration) else " " * 50
-                right = rendered(len(integration) + row + 1, domain[row]) if row < len(domain) else ""
-                print(left + right)
-        else:
-            print("\n  SKILLS DE INTEGRAÇÃO")
-            for index, skill in enumerate(integration, 1): print(rendered(index, skill))
-            if domain:
-                print("\n  SKILLS DE DOMÍNIO")
-                for index, skill in enumerate(domain, len(integration) + 1): print(rendered(index, skill))
+        if skills:
+            print("\n  SKILLS DO SHIKIGAMI")
+            for index, skill in enumerate(skills, 1): print(rendered(index, skill))
         print()
         item("X.", "Sair")
         choice = prompt("Selecione uma opção: ").strip().casefold()

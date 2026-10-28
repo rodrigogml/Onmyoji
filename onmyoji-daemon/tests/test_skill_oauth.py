@@ -177,7 +177,7 @@ def test_adapter_is_fixed_local_script_and_secrets_use_stdin(tmp_path, monkeypat
     root, workspace = tmp_path / "code", tmp_path / "work"
     root.mkdir(); workspace.mkdir()
     service = SkillOAuth(root, workspace, lambda: "https://apps.example.com")
-    script = root / "available-skills" / "test" / "scripts" / "oauth_adapter.py"
+    script = root / "shikigami" / "skills" / "test" / "scripts" / "oauth_adapter.py"
     script.parent.mkdir(parents=True); script.write_text("", encoding="utf-8")
     calls = []
     def run(command, **kwargs):
@@ -314,7 +314,7 @@ def test_adapter_subprocess_failure_is_sanitized(tmp_path, monkeypatch):
     root, workspace = tmp_path / "code", tmp_path / "work"
     root.mkdir(); workspace.mkdir()
     service = SkillOAuth(root, workspace, lambda: "https://apps.example.com")
-    script = root / "available-skills" / "test" / "scripts" / "oauth_adapter.py"
+    script = root / "shikigami" / "skills" / "test" / "scripts" / "oauth_adapter.py"
     script.parent.mkdir(parents=True); script.write_text("", encoding="utf-8")
     monkeypatch.setattr("onmyoji_daemon.skill_oauth.subprocess.run", lambda *a,**kw: (_ for _ in ()).throw(subprocess.TimeoutExpired("private-command", 180)))
     with pytest.raises(OAuthError) as caught:

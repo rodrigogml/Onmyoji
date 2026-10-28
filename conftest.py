@@ -16,7 +16,9 @@ ROOT = Path(__file__).resolve().parent
 
 def pytest_configure() -> None:
     paths = [ROOT / "onmyoji-daemon" / "src"]
-    paths.extend(skill / "scripts" for skill in (ROOT / "available-skills").iterdir() if (skill / "scripts").is_dir())
+    skill_root = ROOT / "shikigami" / "skills"
+    if skill_root.is_dir():
+        paths.extend(skill / "scripts" for skill in skill_root.iterdir() if (skill / "scripts").is_dir())
     for path in reversed(paths):
         value = str(path)
         if value not in sys.path:

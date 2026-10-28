@@ -11,8 +11,6 @@
 !/shikigami/
 !/docs/
 !/docs/**
-!/available-skills/
-!/available-skills/**
 !/onmyoji-daemon/
 !/onmyoji-daemon/**
 !/tests/
