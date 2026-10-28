@@ -1644,7 +1644,7 @@ def daemon_menu(root: Path) -> None:
                 listed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "profiles"], quiet=True)
                 try: values = json.loads(listed.stdout)
                 except json.JSONDecodeError: values = []
-                if not values: result(False, "Nenhum perfil KeePass disponível. Configure e habilite primeiro a skill KeePass."); continue
+                if not values: result(False, "Nenhum perfil de vault disponível. Configure-o primeiro em MCP > Perfis de vault."); continue
                 print()
                 for index, profile in enumerate(values, 1): item(f"{index}.", profile)
                 item("X.", "Voltar")
@@ -2055,13 +2055,13 @@ def daemon_menu(root: Path) -> None:
         if not isinstance(apps, list): result(False, (completed.stdout or completed.stderr).strip()); return
         screen("Publicações Mini App", "Os arquivos permanecem no workspace; o Gateway mantém somente o registro")
         if not apps:
-            print("  i  Nenhuma Mini App publicada. Crie o código no workspace e publique-o pela skill Mini Apps.")
+            print("  i  Nenhuma Mini App publicada. Crie o código no workspace e publique-o pelo MCP Mini Apps.")
             return
         for app in apps:
             if not isinstance(app, dict): continue
             item(str(app.get("id", ""))[:8] + ".", str(app.get("alias") or "Sem nome"), f"{app.get('state')} · {app.get('health')}")
             print(f"     URL: {app.get('url')}")
-            if app.get("last_error"): print("     Atenção: a publicação registrou um erro; consulte os eventos pela skill Mini Apps.")
+            if app.get("last_error"): print("     Atenção: a publicação registrou um erro; consulte os eventos pelo MCP Mini Apps.")
 
     def miniapps_wizard() -> None:
         screen("Assistente Mini Apps", "O acesso público é opcional; comece pelo objetivo de uso")
@@ -2083,7 +2083,7 @@ def daemon_menu(root: Path) -> None:
             if completed.returncode == 0: result(True, (completed.stdout or completed.stderr).strip())
             else: result(False, "A confiança local não foi confirmada. Isso não bloqueia o uso público; tente novamente em 'Gateway HTTPS e confiança local'. " + (completed.stdout or completed.stderr).strip())
         apps = diagnosis.get("apps", {}) if isinstance(diagnosis.get("apps"), dict) else {}
-        if int(apps.get("total", 0)) == 0: print("\n  Próximo passo local: crie a Mini App dentro do workspace e publique-a pela skill Mini Apps.")
+        if int(apps.get("total", 0)) == 0: print("\n  Próximo passo local: crie a Mini App dentro do workspace e publique-a pelo MCP Mini Apps.")
         if choice == "p":
             print("\n  Agora você verá os pré-requisitos do domínio. Se ainda não tiver domínio, token ou IDs Cloudflare, escolha voltar: nenhuma configuração pública é obrigatória neste momento.")
             miniapps_public_menu()

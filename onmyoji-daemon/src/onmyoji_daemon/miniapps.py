@@ -305,7 +305,7 @@ class MiniAppsGateway:
             "state": "ok" if apps and not unhealthy else "info",
             "label": "Mini Apps publicadas",
             "detail": f"{len(apps)} publicada(s); {len(unhealthy)} com atenção." if apps else "Nenhuma Mini App foi publicada ainda.",
-            "action": "Crie a Mini App no workspace e publique-a pela skill Mini Apps." if not apps else "Use 'Publicações Mini App' para consultar URLs e estado.",
+            "action": "Crie a Mini App no workspace e publique-a pelo MCP Mini Apps." if not apps else "Use 'Publicações Mini App' para consultar URLs e estado.",
         })
         tunnel = self.tunnel.status()
         if not tunnel["configured"]:
