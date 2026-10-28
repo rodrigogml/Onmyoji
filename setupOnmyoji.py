@@ -29,18 +29,13 @@ if str(DAEMON_SOURCE) not in sys.path:
 from onmyoji_daemon.codex_execution import CodexExecutionError, CodexLaunch
 from onmyoji_daemon.mcp.configuration import McpConfiguration
 from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialResolver
-MANAGED_BEGIN = "# BEGIN ONMYOJI MANAGED SKILLS"
-MANAGED_END = "# END ONMYOJI MANAGED SKILLS"
 SYSTEM_BEGIN = "# BEGIN ONMYOJI MANAGED CODEX SETTINGS"
 SYSTEM_END = "# END ONMYOJI MANAGED CODEX SETTINGS"
 INSTANCE_SKILLS_DIRECTORY = "shikigami/skills"
 SKILL_PROFILE_NAME = "onmyoji-skills"
 SKILL_PROFILE_FILE = f"{SKILL_PROFILE_NAME}.config.toml"
-LEGACY_ACTIVE_SKILLS_DIRECTORY = "skills"
-LEGACY_SKILL_STATE_FILE = "onmyoji-skills.toml"
 SANDBOXES = ["read-only", "workspace-write", "danger-full-access"]
 APPROVALS = ["on-request", "never"]
-LEGACY_APPROVAL_POLICY = "untrusted"
 
 
 class Ui:
@@ -105,8 +100,6 @@ def discover(root: Path = ROOT) -> list[Skill]:
 def config_path(root: Path) -> Path: return root / "config.toml"
 def system_path(root: Path) -> Path: return root / "configs" / "onmyoji-system.toml"
 def skill_profile_path(root: Path) -> Path: return root / SKILL_PROFILE_FILE
-def skill_state_path(root: Path) -> Path: return root / "configs" / LEGACY_SKILL_STATE_FILE
-def active_skills_path(root: Path) -> Path: return root / LEGACY_ACTIVE_SKILLS_DIRECTORY
 
 
 def instance_identity(root: Path) -> str:
@@ -400,8 +393,6 @@ def load_system(root: Path) -> dict[str, object]:
     for key, value in raw.get("codex", {}).items():
         if key in values and isinstance(value, str): values[key] = value
         if key == "additional_writable_directories" and isinstance(value, list) and all(isinstance(item, str) for item in value): values[key] = value
-    if values["approval_policy"] == LEGACY_APPROVAL_POLICY:
-        values["approval_policy"] = "on-request"
     return values
 
 
@@ -521,38 +512,17 @@ def save_system(root: Path, data: dict[str, object], validate: bool = True) -> t
     return True, message if valid else "Configuração inicial salva."
 
 
-def legacy_instance_identity(root: Path) -> str:
-    try:
-        data = tomllib.loads((root / "shikigami" / "instance.toml").read_text(encoding="utf-8"))
-        value = data.get("shikigami", {}).get("identity", "")
-        return " ".join(value.split()) if isinstance(value, str) else ""
-    except (OSError, tomllib.TOMLDecodeError, AttributeError):
-        return ""
-
-
-def remove_legacy_instance_file(root: Path) -> None:
-    """Remove a definição legada somente depois de persistir a configuração local."""
-    legacy = root / "shikigami" / "instance.toml"
-    if legacy.is_file() and not legacy.is_symlink(): legacy.unlink()
-
-
 def ensure_shikigami_configuration(root: Path) -> tuple[dict[str, object] | None, str]:
-    """Inicializa ou migra a seção local do Shikigami sem perder a configuração Codex."""
-    data, legacy = load_system(root), legacy_instance_identity(root)
+    """Inicializa a seção local do Shikigami sem alterar artefatos antigos."""
+    data = load_system(root)
     path = system_path(root)
     try: raw = tomllib.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     except tomllib.TOMLDecodeError: raw = {}
     section = raw.get("shikigami", {}) if isinstance(raw, dict) else {}
     needs_save = not isinstance(section, dict) or not isinstance(section.get("identity"), str) or not isinstance(section.get("installed"), bool)
-    codex = raw.get("codex", {}) if isinstance(raw, dict) else {}
-    if isinstance(codex, dict) and codex.get("approval_policy") == LEGACY_APPROVAL_POLICY:
-        needs_save = True
-    if legacy and not str(data["shikigami_identity"]):
-        data["shikigami_identity"], data["shikigami_installed"], needs_save = legacy, True, True
     if needs_save:
         ok, message = save_system(root, data, validate=False)
         if not ok: return None, message
-    if bool(data["shikigami_installed"]) and str(data["shikigami_identity"]): remove_legacy_instance_file(root)
     return data, "Configuração inicial pronta."
 
 
@@ -713,41 +683,8 @@ def initial_installation_wizard(root: Path, data: dict[str, object]) -> dict[str
         candidate["shikigami_installed"] = True
         ok, message = save_system(root, candidate)
         if ok:
-            remove_legacy_instance_file(root)
             return candidate
         result(False, message)
-
-
-def legacy_enabled_ids(root: Path) -> set[str]:
-    """Lê os dois formatos anteriores de estado sem alterar a instância."""
-    state = skill_state_path(root)
-    if state.exists():
-        try:
-            values = tomllib.loads(state.read_text(encoding="utf-8")).get("skills", {}).get("enabled", [])
-            if isinstance(values, list) and all(isinstance(value, str) for value in values): return set(values)
-        except (OSError, tomllib.TOMLDecodeError, AttributeError):
-            pass
-    path = config_path(root)
-    if not path.exists(): return set()
-    try: text = path.read_text(encoding="utf-8")
-    except OSError: return set()
-    if MANAGED_BEGIN not in text or MANAGED_END not in text: return set()
-    block = text.split(MANAGED_BEGIN, 1)[1].split(MANAGED_END, 1)[0]
-    return {Path(line.split('"', 2)[1]).name for line in block.splitlines() if line.strip().startswith("path =") and '"' in line}
-
-
-def legacy_linked_ids(root: Path, skills: list[Skill]) -> set[str]:
-    """Recupera a habilitação quando uma instância antiga só conservou os links."""
-    active = active_skills_path(root)
-    if not active.is_dir() or is_managed_link(active): return set()
-    by_source = {skill.source.resolve(): skill.identifier for skill in skills}
-    identifiers: set[str] = set()
-    for item in active.iterdir():
-        if not is_managed_link(item): continue
-        try: identifier = by_source.get(item.resolve())
-        except OSError: identifier = None
-        if identifier is not None: identifiers.add(identifier)
-    return identifiers
 
 
 def skill_manifest_path(skill: Skill) -> Path:
@@ -780,8 +717,7 @@ def profile_skill_states(root: Path, skills: list[Skill]) -> dict[str, bool] | N
 def enabled_ids(root: Path, skills: list[Skill] | None = None) -> set[str]:
     discovered = skills if skills is not None else discover(root)
     states = profile_skill_states(root, discovered)
-    if states is not None: return {identifier for identifier, enabled in states.items() if enabled}
-    return legacy_enabled_ids(root)
+    return {identifier for identifier, enabled in (states or {}).items() if enabled}
 
 
 def render_skill_profile(identifiers: set[str], skills: list[Skill]) -> str:
@@ -792,116 +728,10 @@ def render_skill_profile(identifiers: set[str], skills: list[Skill]) -> str:
     return "\n".join(lines)
 
 
-def profile_uses_legacy_skill_paths(root: Path, skills: list[Skill]) -> bool:
-    """Reconhece o profile transitório que registrava a pasta em vez do SKILL.md."""
-    path = skill_profile_path(root)
-    try: entries = tomllib.loads(path.read_text(encoding="utf-8")).get("skills", {}).get("config", [])
-    except (OSError, tomllib.TOMLDecodeError, AttributeError): return False
-    if not isinstance(entries, list): return False
-    source_directories = {skill.source.resolve() for skill in skills}
-    for entry in entries:
-        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str): continue
-        candidate = Path(entry["path"]).expanduser()
-        resolved = (path.parent / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
-        if resolved in source_directories: return True
-    return False
-
-
-def profile_has_retired_skill_paths(root: Path, skills: list[Skill]) -> bool:
-    """Detecta manifests removidos do catálogo no perfil gerado pelo setup."""
-    path = skill_profile_path(root)
-    try: entries = tomllib.loads(path.read_text(encoding="utf-8")).get("skills", {}).get("config", [])
-    except (OSError, tomllib.TOMLDecodeError, AttributeError): return False
-    if not isinstance(entries, list): return False
-    known = {skill_manifest_path(skill) for skill in skills}
-    for entry in entries:
-        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str): continue
-        candidate = Path(entry["path"]).expanduser()
-        resolved = (path.parent / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
-        if resolved not in known: return True
-    return False
-
-
-def remove_legacy_skill_block(root: Path) -> None:
-    path = config_path(root)
-    if not path.exists(): return
-    text = path.read_text(encoding="utf-8")
-    if MANAGED_BEGIN not in text or MANAGED_END not in text: return
-    before, remainder = text.split(MANAGED_BEGIN, 1); _, after = remainder.split(MANAGED_END, 1)
-    path.write_text((before.rstrip() + "\n" + after.lstrip()).rstrip() + "\n", encoding="utf-8", newline="\n")
-    tomllib.loads(path.read_text(encoding="utf-8"))
-
-
-def is_managed_link(path: Path) -> bool:
-    if path.is_symlink(): return True
-    if os.name != "nt" or not path.exists(): return False
-    return bool(getattr(os.lstat(path), "st_file_attributes", 0) & 0x400)
-
-
-def create_skill_link(source: Path, destination: Path) -> None:
-    try:
-        os.symlink(source, destination, target_is_directory=True)
-        return
-    except OSError as first_error:
-        if os.name != "nt": raise first_error
-    command = ["cmd.exe", "/d", "/c", "mklink", "/J", str(destination), str(source)]
-    created = subprocess.run(command, text=True, capture_output=True, check=False)
-    if created.returncode != 0: raise OSError(created.stderr.strip() or created.stdout.strip() or "Não foi possível criar o junction da skill.")
-
-
-def remove_skill_link(path: Path) -> None:
-    if not is_managed_link(path): raise OSError(f"{path} existe e não é um link gerenciado pelo Onmyōji.")
-    if path.is_symlink(): path.unlink()
-    else: os.rmdir(path)
-
-
-def is_stale_runtime_cache(path: Path) -> bool:
-    """Reconhece somente os caches .pyc que um git mv pode deixar em skills/."""
-    if not path.is_dir() or is_managed_link(path): return False
-    for item in path.rglob("*"):
-        if item.is_dir(): continue
-        if item.is_file() and item.suffix == ".pyc" and item.parent.name == "__pycache__": continue
-        return False
-    return True
-
-
 def conflicting_skill_ids(skills: list[Skill]) -> set[str]:
-    """IDs devem ser únicos porque catálogo e Shikigami compartilham skills/<id>."""
+    """IDs devem ser únicos no profile nativo do Codex."""
     identifiers = [skill.identifier for skill in skills]
     return {identifier for identifier in identifiers if identifiers.count(identifier) > 1}
-
-
-def remove_legacy_skill_artifacts(root: Path, skills: list[Skill]) -> tuple[bool, str]:
-    """Remove somente links e caches reconhecidamente criados pelo modelo antigo."""
-    active = active_skills_path(root)
-    agents = root / ".agents"
-    desktop = agents / "skills"
-    known_sources = {skill.source.resolve() for skill in skills}
-    preserved: list[str] = []
-    try:
-        if (desktop.exists() or desktop.is_symlink()) and is_managed_link(desktop):
-            target = desktop.resolve()
-            if target == active.resolve(): remove_skill_link(desktop)
-            else: preserved.append(".agents/skills")
-        elif desktop.exists() or desktop.is_symlink():
-            preserved.append(".agents/skills")
-        if agents.exists() and agents.is_dir() and not is_managed_link(agents):
-            try: agents.rmdir()
-            except OSError: pass
-        if active.is_symlink():
-            if active.resolve() in known_sources: remove_skill_link(active)
-            else: preserved.append("skills")
-        elif active.exists() and active.is_dir():
-            for item in list(active.iterdir()):
-                if is_stale_runtime_cache(item): shutil.rmtree(item)
-                elif is_managed_link(item) and item.resolve() in known_sources: remove_skill_link(item)
-                else: preserved.append(str(item.relative_to(root)))
-            try: active.rmdir()
-            except OSError: pass
-    except OSError as error:
-        return False, f"Não foi possível remover os artefatos legados de skills: {error}"
-    detail = "" if not preserved else f" Itens não gerenciados foram preservados: {', '.join(sorted(set(preserved)))}."
-    return True, "Artefatos legados de skills removidos." + detail
 
 
 def is_skill_enabled(root: Path, skill: Skill, skills: list[Skill] | None = None) -> bool:
@@ -919,28 +749,19 @@ def save_enabled(root: Path, identifiers: set[str], skills: list[Skill]) -> tupl
     try:
         path.write_text(render_skill_profile(identifiers, skills), encoding="utf-8", newline="\n")
         tomllib.loads(path.read_text(encoding="utf-8"))
-        remove_legacy_skill_block(root)
-        skill_state_path(root).unlink(missing_ok=True)
-        cleaned, cleanup_message = remove_legacy_skill_artifacts(root, skills)
-        if not cleaned: return False, cleanup_message
     except (OSError, tomllib.TOMLDecodeError) as error:
         if old is None: path.unlink(missing_ok=True)
         else: path.write_text(old, encoding="utf-8", newline="\n")
         return False, f"Não foi possível salvar o perfil de skills: {error}"
-    return True, "Perfil de skills atualizado." + (f" {cleanup_message}" if cleanup_message else "")
+    return True, "Perfil de skills atualizado."
 
 
 def ensure_skill_state(root: Path, skills: list[Skill]) -> tuple[bool, str]:
     if skill_profile_path(root).exists():
         try: tomllib.loads(skill_profile_path(root).read_text(encoding="utf-8"))
         except (OSError, tomllib.TOMLDecodeError) as error: return False, f"O perfil de skills é inválido: {error}"
-        if profile_uses_legacy_skill_paths(root, skills) or profile_has_retired_skill_paths(root, skills):
-            return save_enabled(root, enabled_ids(root, skills), skills)
-        remove_legacy_skill_block(root)
-        skill_state_path(root).unlink(missing_ok=True)
-        cleaned, message = remove_legacy_skill_artifacts(root, skills)
-        return (cleaned, message) if cleaned else (False, message)
-    return save_enabled(root, legacy_enabled_ids(root) | legacy_linked_ids(root, skills), skills)
+        return True, "Perfil de skills válido."
+    return save_enabled(root, set(), skills)
 
 
 def invoke(skill: Skill, root: Path) -> tuple[bool, str]:

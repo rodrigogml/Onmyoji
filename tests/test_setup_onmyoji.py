@@ -211,27 +211,6 @@ class SystemSetupTests(unittest.TestCase):
             self.assertEqual(diagnostics[0]["state"], "pending")
             self.assertIn(str((workspace / "exports").resolve()), diagnostics[0]["detail"])
 
-    def test_legacy_untrusted_approval_policy_is_migrated_to_on_request(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            data = MODULE.default_system() | {"executable": sys.executable, "project_directory": temporary, "approval_policy": "untrusted"}
-            MODULE.system_path(root).parent.mkdir()
-            MODULE.system_path(root).write_text(MODULE.render_system(data), encoding="utf-8")
-            configured, message = MODULE.ensure_shikigami_configuration(root)
-            self.assertIsNotNone(configured, message)
-            self.assertEqual(configured["approval_policy"], "on-request")
-            self.assertIn('approval_policy = "on-request"', MODULE.system_path(root).read_text(encoding="utf-8"))
-
-    def test_legacy_instance_identity_is_migrated_before_file_removal(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); legacy = root / "shikigami" / "instance.toml"; legacy.parent.mkdir()
-            legacy.write_text('[shikigami]\nidentity = "  Legado   Nome "\nworkspace_directory_name = "unused"\n', encoding="utf-8")
-            data, message = MODULE.ensure_shikigami_configuration(root)
-            self.assertIsNotNone(data, message)
-            self.assertEqual(data["shikigami_identity"], "Legado Nome")
-            self.assertTrue(data["shikigami_installed"])
-            self.assertFalse(legacy.exists())
-
     def test_noninteractive_actions_report_pending_initial_installation_without_prompting(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "ROOT", Path(temporary)), patch.object(sys, "argv", [str(SCRIPT), "--action", "status", "--json"]), patch.object(MODULE.sys, "stdout", io.StringIO()) as output:
             self.assertEqual(MODULE.main(), 2)
@@ -426,49 +405,6 @@ class SystemSetupTests(unittest.TestCase):
             self.assertEqual(len(active), 50)
             self.assertEqual(len(inactive), 50)
             self.assertEqual(len(conflict), 50)
-
-    def test_profile_migration_removes_old_skill_links_and_agents_link(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); skill = self.fake_skill(root)
-            active = MODULE.active_skills_path(root); active.mkdir()
-            MODULE.create_skill_link(skill.source, active / skill.identifier)
-            agents = root / ".agents"; agents.mkdir(); MODULE.create_skill_link(active, agents / "skills")
-            MODULE.skill_state_path(root).parent.mkdir(exist_ok=True)
-            MODULE.skill_state_path(root).write_text('[skills]\nenabled = ["omie"]\n', encoding="utf-8")
-            self.assertTrue(MODULE.ensure_skill_state(root, [skill])[0])
-            self.assertTrue(MODULE.skill_profile_path(root).is_file())
-            self.assertFalse(active.exists() or active.is_symlink())
-            self.assertFalse(agents.exists())
-            self.assertFalse(MODULE.skill_state_path(root).exists())
-
-    def test_profile_with_legacy_directory_path_is_migrated_to_skill_manifest(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); skill = self.fake_skill(root)
-            (skill.source / "SKILL.md").write_text("---\nname: omie\ndescription: Teste\n---\n", encoding="utf-8")
-            MODULE.skill_profile_path(root).write_text(f'[[skills.config]]\npath = "{skill.source.as_posix()}"\nenabled = true\n', encoding="utf-8")
-            self.assertTrue(MODULE.ensure_skill_state(root, [skill])[0])
-            profile = tomllib.loads(MODULE.skill_profile_path(root).read_text(encoding="utf-8"))
-            self.assertEqual(profile["skills"]["config"], [{"path": str((skill.source / "SKILL.md").resolve()), "enabled": True}])
-
-    def test_profile_with_retired_skill_is_rebuilt_without_its_entry(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); skill = self.fake_skill(root)
-            (skill.source / "SKILL.md").write_text("---\nname: omie\ndescription: Teste\n---\n", encoding="utf-8")
-            retired = root / "retired-skills" / "todoist" / "SKILL.md"
-            manifest = (skill.source / "SKILL.md").as_posix()
-            MODULE.skill_profile_path(root).write_text(f'[[skills.config]]\npath = "{manifest}"\nenabled = true\n\n[[skills.config]]\npath = "{retired.as_posix()}"\nenabled = false\n', encoding="utf-8")
-            self.assertTrue(MODULE.ensure_skill_state(root, [skill])[0])
-            profile = tomllib.loads(MODULE.skill_profile_path(root).read_text(encoding="utf-8"))
-            self.assertEqual(profile["skills"]["config"], [{"path": str((skill.source / "SKILL.md").resolve()), "enabled": True}])
-
-    def test_legacy_skill_config_is_migrated_to_native_profile(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); skill = self.fake_skill(root)
-            MODULE.config_path(root).write_text(f'{MODULE.MANAGED_BEGIN}\n[[skills.config]]\npath = "{skill.source.as_posix()}"\nenabled = true\n{MODULE.MANAGED_END}\n', encoding="utf-8")
-            self.assertTrue(MODULE.ensure_skill_state(root, [skill])[0])
-            self.assertEqual(MODULE.enabled_ids(root, [skill]), {"omie"})
-            self.assertNotIn(MODULE.MANAGED_BEGIN, MODULE.config_path(root).read_text(encoding="utf-8"))
-            self.assertTrue(MODULE.skill_profile_path(root).is_file())
 
 
 if __name__ == "__main__":
