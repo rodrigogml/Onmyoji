@@ -20,7 +20,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install testing dependencies
-        run: python -m pip install --disable-pip-version-check -e 'onmyoji-daemon[test]' -r available-skills/keepass-vault/requirements.txt -r available-skills/ssh/requirements.txt
+        run: python -m pip install --disable-pip-version-check -e 'onmyoji-daemon[test]'
       - name: Compile changed Python modules
         run: |
           python -m py_compile onmyoji-daemon/src/onmyoji_daemon/telegram.py

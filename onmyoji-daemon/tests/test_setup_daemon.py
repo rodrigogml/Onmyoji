@@ -56,6 +56,13 @@ def test_telegram_validation_reports_missing_mcp_vault_profiles(tmp_path):
     assert profiles["state"] == "error"
 
 
+def test_daemon_setup_uses_only_the_internal_mcp_vault() -> None:
+    source = (Path(__file__).parents[1] / "setupDaemon.py").read_text(encoding="utf-8")
+
+    assert "available-skills" not in source
+    assert "KeePassCredentialResolver" in source
+
+
 def test_daemon_bootstrap_prepares_only_the_platform(tmp_path):
     module = setup_module()
     manifest = tmp_path / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True)
