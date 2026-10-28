@@ -26,6 +26,7 @@ from .spotify.tools import SpotifyToolRegistry
 from .memory.tools import MemoryToolRegistry
 from .data_tables.tools import DataTablesToolRegistry
 from .telegram.tools import TelegramToolRegistry
+from .mini_apps.tools import MiniAppsToolRegistry
 
 
 class McpApplication:
@@ -50,9 +51,10 @@ class McpApplication:
         self.memory = MemoryToolRegistry(self.configuration)
         self.data_tables = DataTablesToolRegistry(self.configuration)
         self.telegram = TelegramToolRegistry(self.configuration.root)
+        self.mini_apps = MiniAppsToolRegistry(self.configuration.root)
 
     def definitions(self) -> list[dict[str, Any]]:
-        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions() + self.cloudflare.definitions() + self.eccovox.definitions() + self.forward_email.definitions() + self.notion.definitions() + self.aws.definitions() + self.mysql.definitions() + self.ssh.definitions() + self.bis2cmd.definitions() + self.bis10cmd.definitions() + self.google.definitions() + self.spotify.definitions() + self.memory.definitions() + self.data_tables.definitions() + self.telegram.definitions()
+        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions() + self.cloudflare.definitions() + self.eccovox.definitions() + self.forward_email.definitions() + self.notion.definitions() + self.aws.definitions() + self.mysql.definitions() + self.ssh.definitions() + self.bis2cmd.definitions() + self.bis10cmd.definitions() + self.google.definitions() + self.spotify.definitions() + self.memory.definitions() + self.data_tables.definitions() + self.telegram.definitions() + self.mini_apps.definitions()
 
     def instructions(self) -> str | None:
         """Publica a obrigação de uso somente junto das tools de memória."""
@@ -91,6 +93,8 @@ class McpApplication:
             return self.data_tables.call(name, arguments)
         if name.startswith("telegram."):
             return self.telegram.call(name, arguments)
+        if name.startswith("mini_apps."):
+            return self.mini_apps.call(name, arguments)
         return self.todoist.call(name, arguments)
 
 
