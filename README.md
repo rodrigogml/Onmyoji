@@ -23,7 +23,7 @@ O Onmyōji é um projeto centralizado para criar, configurar e operar agentes de
 
 | Conceito | Papel no projeto |
 | --- | --- |
-| Onmyōji | Base reutilizável: catálogo de integrações, setup, daemon e documentação. |
+| Onmyōji | Base reutilizável: serviços MCP de integração, setup, daemon e documentação. |
 | Shikigami | Repositório e `CODEX_HOME` de uma instância específica, como um Shikigami de exemplo. Recebe a base como `upstream` e mantém suas próprias definições. |
 
 ## Como funciona
@@ -42,7 +42,6 @@ O repositório do Onmyōji concentra os componentes reutilizáveis. Ele não arm
 
 ```text
 Onmyōji/
-├── available-skills/       # Fontes das skills e integrações compartilhadas
 ├── docs/                   # Documentação da base
 ├── etc/                    # Documentos e elementos adicionais do projeto
 ├── onmyoji-daemon/         # Serviço de supervisão local
@@ -52,7 +51,6 @@ Onmyōji/
 
 | Diretório ou arquivo | Papel |
 | --- | --- |
-| `available-skills/` | Mantém as fontes versionadas das skills e integrações que podem ser ativadas pelas instâncias. |
 | `docs/` | Reúne a documentação de arquitetura, instalação, setup e decisões da base. |
 | `etc/` | Armazena documentos e elementos adicionais diversos relacionados ao projeto, incluindo seus recursos de identidade visual. |
 | `onmyoji-daemon/` | Contém o daemon que supervisiona serviços locais de uma instância. |
@@ -101,42 +99,13 @@ Uma instância utiliza duas áreas distintas: a pasta do repositório, onde o On
 
 Em resumo, a pasta do repositório define **quem é e como funciona** o Shikigami; a pasta `-Work` é o local onde ele pode **executar o trabalho**. A configuração da instância determina se o agente pode usar esse workspace e sob quais limites.
 
-## Skills
+## Serviços MCP e skills
 
-### Skills do Onmyōji
+As integrações compartilhadas do Onmyōji são implementadas e publicadas pelo servidor MCP interno. A disponibilidade de cada integração depende de sua configuração local em `configs/mcp/`; o Codex CLI e o App Server recebem o mesmo servidor MCP na abertura centralizada.
 
-As skills oferecidas pelo Onmyōji fornecem a infraestrutura comum para as instâncias. Elas abrangem integrações com sistemas e aplicações externas, além de capacidades úteis a serviços recorrentes de agentes de IA, como configuração, comunicação, automação e acesso controlado a recursos. Essas skills são reutilizáveis e podem ser ativadas ou desativadas conforme as necessidades de cada Shikigami.
+As skills pertencem exclusivamente ao Shikigami. Suas fontes ficam em `shikigami/skills/<nome>/`, podem conter um `SKILL.md` e, opcionalmente, um `setupSkill.py`. O setup descobre apenas essa pasta, permite habilitar cada skill no profile nativo `onmyoji-skills.config.toml` e não copia nem cria links em `skills/`.
 
-### Skills do Shikigami
-
-As skills do Shikigami são criadas e mantidas pela própria instância. Em geral, concentram conhecimento de domínio, procedimentos e rotinas relacionados ao seu propósito específico. Elas permitem que o Shikigami aplique sua identidade e especialização sem alterar as skills de infraestrutura compartilhadas pelo Onmyōji.
-
-### Habilitação de Skills
-
-#### Codex CLI
-
-As fontes das skills do Onmyōji permanecem em `available-skills/`, enquanto as fontes próprias do Shikigami ficam em `shikigami/skills/`. Ao habilitar ou desabilitar uma skill, somente o setup atualiza `onmyoji-skills.config.toml`, o profile nativo do Codex. Esse arquivo declara individualmente o caminho absoluto do `SKILL.md` de cada skill e o respectivo estado de habilitação.
-
-Sempre que inicia o Codex CLI ou o App Server, o Onmyōji informa esse profile com `--profile onmyoji-skills`. Assim, ambos descobrem apenas as skills selecionadas, sem cópias, links simbólicos ou alterações no workspace `-Work`.
-
----
-
-> [!NOTE]
-> Conteúdo a revisar abaixo.
-
-## Skills ativas
-
-### Codex CLI
-
-O Codex CLI da instância lê as skills a partir de `skills/` no `CODEX_HOME`. As integrações fornecidas pela base ficam em `available-skills/` e são ativadas pelo `setupOnmyoji.py`, que cria links locais em `skills/` e registra essa ativação em `configs/onmyoji-skills.toml`.
-
-Uma skill específica da instância deve ter a fonte em `shikigami/skills/<nome>/` e um link de ativação em `skills/<nome>/`. Esse link não é gerenciado pelo catálogo nem precisa aparecer em `configs/onmyoji-skills.toml`; ele apenas permite que o Codex encontre uma definição que permanece versionada no repositório do Shikigami. Não coloque na fonte ou no link segredos, perfis efetivos, caminhos dependentes da máquina, logs ou estado operacional.
-
-### Codex Desktop
-
-O Codex Desktop lê as skills em `.agents/skills/` no diretório da instância do Shikigami. Para manter os ambientes sempre sincronizados, use `B. Codex Desktop` no setup. Ao habilitar, o setup cria `<CODEX_HOME>/.agents/skills` como um link para `<CODEX_HOME>/skills`; assim, o Desktop usa exatamente o conjunto de skills já ativo no CLI, sem cópias ou configuração duplicada.
-
-`.agents/` é local: mantenha-a ignorada pelo Git no projeto configurado. Não aponte `.agents/skills` diretamente para `shikigami/skills/`: `skills/` é o destino canônico porque reúne as integrações ativas e as skills de domínio habilitadas.
+O workflow de memória é uma exceção intencional: quando a memória MCP estiver habilitada, o launcher copia sua definição gerenciada para `.agents/skills/onmyoji-memory/` no workspace. Essa cópia não é fonte de verdade e é restaurada automaticamente quando necessário.
 
 ## Criar e configurar um Shikigami
 
@@ -179,17 +148,11 @@ Crie ou escolha um workspace externo, como `Shikigami-<Nome>-Work/`, e configure
 
 ### 4. Instalar uma skill própria da instância
 
-Crie a fonte versionada em `shikigami/skills/<nome>/` com `SKILL.md` e recursos opcionais. Uma skill própria também pode incluir `setupSkill.py`, que será descoberta pelo setup e exibida no grupo de skills de domínio. Depois, crie o link de ativação:
+Crie a fonte versionada em `shikigami/skills/<nome>/` com `SKILL.md` e recursos opcionais. Uma skill própria também pode incluir `setupSkill.py`, que será descoberta pelo setup e exibida em **Skills do Shikigami**. Habilite-a pelo menu central; o setup a registra no profile nativo do Codex. Use a fonte versionada para conhecimento e playbooks próprios, sem segredos, caminhos dependentes da máquina, logs ou estado operacional.
 
-```bash
-ln -s ../shikigami/skills/<nome> skills/<nome>
-```
+### 5. Configurar integrações MCP
 
-Use a fonte versionada para conhecimento e playbooks próprios. Dependências como a Omie devem referir perfis lógicos — por exemplo, `laveli` — sem conter credenciais, caminhos de vault ou detalhes da máquina.
-
-### 5. Habilitar e configurar integrações da base
-
-Use o menu para configurar o Codex e as integrações disponíveis. O setup cria os links das integrações habilitadas em `skills/`, guarda o estado em `configs/` e mantém segredos nos provedores seguros apropriados.
+Use **MCP** no menu para configurar perfis de vault e integrações disponíveis. O setup guarda o estado em `configs/mcp/` e mantém segredos no cofre configurado; o servidor MCP só publica as ferramentas cuja integração tenha perfil habilitado.
 
 ```bash
 python3 setupOnmyoji.py
@@ -218,7 +181,7 @@ git push origin main
 
 ## Fluxo Git obrigatório
 
-Melhorias gerais — daemon, setup, documentação e skills de integração — são implementadas exclusivamente no repositório Onmyōji:
+Melhorias gerais — daemon, servidor MCP, setup e documentação — são implementadas exclusivamente no repositório Onmyōji:
 
 ```bash
 cd Onmyoji

@@ -6,12 +6,12 @@ O setup é executado diretamente com Python. Não há wrappers PowerShell ou she
 
 ```text
 python setupOnmyoji.py
-python available-skills/<nome-da-skill>/setupSkill.py
+python shikigami/skills/<nome-da-skill>/setupSkill.py
 ```
 
-`setupOnmyoji.py` é o configurador geral da instância. Ele descobre dinamicamente as skills procurando por `setupSkill.py` dentro de `available-skills/`; nenhum nome de skill é codificado no menu central. O menu principal usa `X` para sair. Ao escolher uma skill, o submenu oferece somente habilitar/desabilitar conforme o estado atual, configurar e `X` para voltar. A habilitação é registrada localmente em `configs/onmyoji-skills.toml` e cria ou remove links em `skills/`, que é o único diretório de skills varrido pelo Codex.
+`setupOnmyoji.py` é o configurador geral da instância. Ele descobre dinamicamente somente as skills próprias procurando por `setupSkill.py` dentro de `shikigami/skills/`; nenhum nome de skill é codificado no menu central. O menu principal usa `X` para sair. Ao escolher uma skill, o submenu oferece somente habilitar/desabilitar conforme o estado atual, configurar e `X` para voltar. A habilitação é registrada no profile nativo `onmyoji-skills.config.toml`, sem links locais em `skills/`.
 
-Na primeira execução sem `--action`, o setup abre o wizard de instalação inicial e solicita o nome do Shikigami. Ao concluir, ele grava a identidade e o estado de instalação em `configs/onmyoji-system.toml`, cria os recursos versionáveis em `shikigami/` e inicializa o estado local das skills quando necessário. Ações não interativas, como `--action list` e `--action status`, retornam que a instalação está pendente até que o wizard seja concluído. Os arquivos de `shikigami/` pertencem ao repositório da instância e devem ser revisados e versionados pelo operador; `configs/onmyoji-system.toml`, `configs/onmyoji-skills.toml` e os links em `skills/` são locais e ignorados pelo Git. Consulte o [guia de instalação](installation.md) e o [README](../README.md#camadas-da-instância) para a classificação completa de cada área.
+Na primeira execução sem `--action`, o setup abre o wizard de instalação inicial e solicita o nome do Shikigami. Ao concluir, ele grava a identidade e o estado de instalação em `configs/onmyoji-system.toml`, cria os recursos versionáveis em `shikigami/` e inicializa o profile local das skills quando necessário. Ações não interativas, como `--action list` e `--action status`, retornam que a instalação está pendente até que o wizard seja concluído. Os arquivos de `shikigami/` pertencem ao repositório da instância e devem ser revisados e versionados pelo operador; `configs/onmyoji-system.toml` e `onmyoji-skills.config.toml` são locais e ignorados pelo Git. Consulte o [guia de instalação](installation.md) e o [README](../README.md#camadas-da-instância) para a classificação completa de cada área.
 
 O menu `A. Configurar Codex-CLI` administra o sistema da instância nesta ordem: executável, login, modelo, esforço de raciocínio, pasta do projeto, sandbox, política de aprovação, diretórios adicionais de escrita e início interativo do Codex. Ao configurar o executável, o menu procura instalações visíveis no `PATH` e oferece os caminhos encontrados; a última opção aceita um caminho completo informado manualmente. Seus dados locais ficam em `configs/onmyoji-system.toml`; os campos compatíveis são aplicados ao `config.toml` do `CODEX_HOME`.
 
@@ -33,7 +33,7 @@ O wizard e a opção Sandbox do menu Codex-CLI mostram os caminhos reais da inst
 
 O wizard e a opção Política de aprovação explicam as duas políticas aceitas pelo Codex-CLI. `on-request` (recomendada) faz o CLI pausar e apresentar localmente uma solicitação quando uma ação ultrapassa os limites do sandbox; `never` não amplia o acesso e faz o Codex continuar apenas com ações já permitidas pelo sandbox, recusando ou bloqueando as que exigiriam aprovação. A política não substitui nem amplia o sandbox.
 
-Cada `setupSkill.py` é responsável exclusivamente pela configuração da sua skill. Ele recebe a pasta da instância do Onmyōji, apresenta seu próprio menu e preserva perfis existentes até haver confirmação explícita. Todo novo ou alterado fluxo de gravação deve validar o resultado, manter backup temporário quando substituir dados e restaurar a configuração anterior em caso de falha. Wizards aceitam `X` ou `Esc` (quando o terminal o transmite, normalmente seguido de Enter) para cancelar sem gravar alterações parciais.
+Cada `setupSkill.py` de `shikigami/skills/` é responsável exclusivamente pela configuração da sua skill. Ele recebe a pasta da instância do Onmyōji, apresenta seu próprio menu e preserva perfis existentes até haver confirmação explícita. Todo novo ou alterado fluxo de gravação deve validar o resultado, manter backup temporário quando substituir dados e restaurar a configuração anterior em caso de falha. Wizards aceitam `X` ou `Esc` (quando o terminal o transmite, normalmente seguido de Enter) para cancelar sem gravar alterações parciais.
 
 Quando uma skill precisa da referência `vault_profile`, o configurador lê os perfis em `configs/mcp/credentials.toml` e oferece um seletor numérico. Não solicite esse identificador como texto livre; se ainda não houver perfis de vault MCP, informe que o operador deve criar um no menu `MCP > Perfis de vault`.
 
@@ -43,20 +43,15 @@ Quando uma skill oferecer teste de perfil, ele deve selecionar um perfil existen
 
 ## Protocolo de discovery e perfis
 
-Todo `setupSkill.py`, seja de `available-skills/` ou de `shikigami/skills/`, aceita `--action describe --json` e retorna, no mínimo, os campos `id`, `title` e `description`. O configurador geral usa somente esses campos para descobrir e exibir a skill. Campos adicionais são opcionais e não fazem parte do contrato consumido pelo setup central.
+Todo `setupSkill.py` em `shikigami/skills/` aceita `--action describe --json` e retorna, no mínimo, os campos `id`, `title` e `description`. O configurador geral usa somente esses campos para descobrir e exibir a skill. Campos adicionais são opcionais e não fazem parte do contrato consumido pelo setup central.
 
-Todas as skills do catálogo também aceitam estas ações:
+Uma skill própria pode também aceitar estas ações:
 
 - `status`: faz um diagnóstico sem gravar a configuração da skill; retorna ao menos `configured` e `valid` em JSON.
 - `configure`: abre o menu interativo da própria skill. Ele cria ou altera arquivos somente após a confirmação e a validação apropriadas.
 
 Todoist, Omie, BTG Empresas, EccoVox, Cloudflare, Forward Email, Notion, AWS, MySQL, SSH, BIS2CMD, BIS10CMD, Google e Spotify são configurados exclusivamente pelo menu MCP e consumidos pelo servidor MCP interno. Consulte a documentação específica em `onmyoji-daemon/docs/mcp-*.md`, incluindo a [integração Google MCP](../onmyoji-daemon/docs/mcp-google.md) e a [integração Spotify MCP](../onmyoji-daemon/docs/mcp-spotify.md).
 
-Há duas variações deliberadas:
-
-- Memory Store não possui perfil nem credencial: seu `status` apenas verifica o SQLite com FTS5.
-- Onmyōji Control não possui configuração própria: seu `configure` orienta a habilitação, e a administração efetiva é delegada ao setup central.
-
 ## Funções do setup geral
 
-Além de encaminhar chamadas ao setup de cada skill, `setupOnmyoji.py` permite listar o estado, habilitar ou desabilitar skills em `configs/onmyoji-skills.toml` e abrir um menu interativo. O estado é aplicado por links locais em `skills/`. O arquivo `config.toml` contém somente o bloco gerenciado de configurações nativas do Codex; a gravação preserva opções não gerenciadas e cria backup temporário antes da validação.
+Além de encaminhar chamadas ao setup de cada skill própria, `setupOnmyoji.py` permite listar o estado, habilitar ou desabilitar skills no profile `onmyoji-skills.config.toml` e abrir um menu interativo. As integrações compartilhadas são configuradas no menu MCP e publicadas pelo servidor MCP interno. O arquivo `config.toml` contém somente o bloco gerenciado de configurações nativas do Codex; a gravação preserva opções não gerenciadas e cria backup temporário antes da validação.

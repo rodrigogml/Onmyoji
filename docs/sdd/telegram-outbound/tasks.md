@@ -8,7 +8,7 @@
 - [x] **T2** — Menus `/channel`; owner registra/remove; terceiros só solicitam registro de DM simples, com aprovação/rejeição explícita por owner. Não-owner é bloqueado em grupo/tópico. Tokens com expiração, identidade, vínculo ao menu do owner e deduplicação.
 - [x] **T3** — Novos métodos RPC `telegram.channels.list`, `telegram.channels.remove`, `telegram.outbound.send` com checagem de catálogo, envio de texto/foto/documento/áudio/voz, tópico novo sem cadastro automático e timeout de mídia. `telegram.send` legado preservado.
 - [x] **T4** — Histórico `external_outbound` persistido por conversa/geração, anexos retidos no contexto de destino, apresentados no próximo turno com tag de conteúdo externo; turnos e threads existentes preservados. Identificação do bot para replies de grupo. Falha de pós-envio reportada como aviso sem esconder entrega confirmada.
-- [x] **T5** — Skill `available-skills/telegram`: definição, wrapper CLI somente outbound, `setupSkill.py`, metadados OpenAI. Sem credenciais próprias; usa RPC local. `GATEWAY_INSTRUCTIONS` diferencia resposta atual de envio externo autorizado.
+- [x] **T5** — A antiga skill Telegram foi migrada para o módulo MCP `telegram`, sem credenciais próprias e usando RPC local. `GATEWAY_INSTRUCTIONS` diferencia resposta atual de envio externo autorizado.
 - [x] **T6** — Testes offline de gateway (`test_telegram.py`, `test_telegram_channels.py`) e wrapper (`test_telegram.py` da skill), com API simulada e casos de cadastro, aprovações, callbacks, anexos, tópicos, geração e recibo.
 - [x] **T7** — Compilação Python e testes segmentados em CI GitHub Actions, além de relatório não bloqueante da suíte integrada. Revisão de segurança no âmbito da skill; dependência de autenticação do daemon documentada no desenho.
 

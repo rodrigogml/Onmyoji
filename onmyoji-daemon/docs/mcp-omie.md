@@ -3,7 +3,7 @@
 A integração oferece 72 operações de cadastros, financeiro e NF-e sem executar
 scripts ou consultar contratos da skill legada. O servidor stdio publica os
 parâmetros aceitos e o contexto de uso nas próprias tools; o código não depende
-de `available-skills/omie` nem da skill KeePass Vault.
+de uma skill legada nem da skill KeePass Vault.
 
 ## Configuração e descoberta
 

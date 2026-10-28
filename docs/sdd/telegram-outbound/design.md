@@ -1,9 +1,9 @@
 # SDD · Telegram outbound — desenho técnico
 
-**Fonte:** [requirements.md](requirements.md) e briefing aprovado. **Decisão arquitetural:** skill é cliente RPC **somente de saída**; gateway é dono do catálogo, contexto e Telegram API.
+**Fonte:** [requirements.md](requirements.md) e briefing aprovado. **Decisão arquitetural atual:** o módulo MCP `telegram` é cliente RPC **somente de saída**; gateway é dono do catálogo, contexto e Telegram API.
 
 ## Componentes
-- `available-skills/telegram`: `SKILL.md`, wrapper CLI Python, `setupSkill.py`. Não lê token Telegram, não acessa base de estado do gateway.
+- `onmyoji-daemon/.../mcp/telegram`: módulo MCP que não lê token Telegram nem acessa a base de estado do gateway diretamente.
 - `onmyoji-daemon/.../telegram.py`: comando e callbacks nativos /channel; persistência em SQLite dentro da instância; novos métodos RPC `telegram.channels.list`, `telegram.channels.remove`, `telegram.outbound.send`. `telegram.send` legado fica intacto para compatibilidade e não é usado pela skill.
 - Módulo de canais isolado: catalogar por `conversation_id` (`chat_id`, `private:chat:topic`, `direct:chat:topic`, `group:chat:topic`), com controle de identidade de remetente e tokens de callback com expiração.
 - `external_outbound`: persistência de envios entregues, indexada por `conversation_id` e geração de conversa, com controle de reapresentação no próximo turno do gateway. Mensagem do bot não é prompt de comando.

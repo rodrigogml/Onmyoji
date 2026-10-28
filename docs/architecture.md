@@ -2,9 +2,9 @@
 
 ## Papéis
 
-Uma instalação do Onmyōji é o `CODEX_HOME` dedicado a um Shikigami e é um repositório Git próprio, derivado do upstream `Onmyoji`. Ela contém o catálogo de skills de integração, seus modelos de configuração, scripts de setup, a definição versionada da identidade e o estado local gerenciado pelo Codex. A base reutilizável e `shikigami/` são versionados; autenticação, caches, logs, bancos de estado, links ativos e demais dados operacionais permanecem ignorados pelo Git.
+Uma instalação do Onmyōji é o `CODEX_HOME` dedicado a um Shikigami e é um repositório Git próprio, derivado do upstream `Onmyoji`. Ela contém o servidor MCP de integrações, seus modelos de configuração, scripts de setup, a definição versionada da identidade e o estado local gerenciado pelo Codex. A base reutilizável e `shikigami/` são versionados; autenticação, caches, logs, bancos de estado e demais dados operacionais permanecem ignorados pelo Git.
 
-O workspace do Shikigami é externo ao `CODEX_HOME`, não é versionado por este projeto e é exclusivo para o trabalho do agente. A organização canônica das camadas — inclusive fontes versionadas de skills próprias em `shikigami/skills/` e links ativos em `skills/` — está no [README](../README.md#camadas-da-instância). Esta arquitetura não a replica para evitar duas fontes de verdade.
+O workspace do Shikigami é externo ao `CODEX_HOME`, não é versionado por este projeto e é exclusivo para o trabalho do agente. A organização canônica das camadas — inclusive fontes versionadas de skills próprias em `shikigami/skills/` — está no [README](../README.md#camadas-da-instância). Esta arquitetura não a replica para evitar duas fontes de verdade.
 
 ## Arquivos de atividade do agente
 
@@ -12,9 +12,6 @@ O workspace do Shikigami é externo ao `CODEX_HOME`, não é versionado por este
 
 ```text
 Shikigami-<Nome> (CODEX_HOME e repositório da instância)
-├── available-skills/             # catálogo versionado de skills de integração
-├── skills/                       # links locais apenas das skills habilitadas; varrido pelo Codex
-│   └── .system/                  # skills de sistema instaladas pelo Codex
 ├── shikigami/                    # identidade, instruções e definição versionada sem segredos
 ├── configs/                      # perfis e estado locais; ignorados pelo Git
 ├── configs/daemon/               # endpoint, estado e dados dos serviços locais; ignorados pelo Git
@@ -30,9 +27,9 @@ A memória MCP é a exceção deliberada ao princípio de não materializar defi
 
 ## Configurações
 
-Cada skill de integração mantém seu modelo versionado, com extensão `.model`, dentro da própria pasta no Onmyōji. O setup da skill materializa sua configuração efetiva em `configs/`. A definição versionada da instância fica em `shikigami/`: hoje inclui identidade, instruções e a política do gateway em `shikigami/daemon/telegram.toml`. Arquivos reais nunca contêm segredos em texto; eles guardam somente parâmetros, perfis, caminhos e referências a provedores de segredo.
+Cada módulo MCP mantém seus contratos e modelos versionados no daemon. O setup MCP materializa a configuração efetiva em `configs/mcp/`. A definição versionada da instância fica em `shikigami/`: hoje inclui identidade, instruções e a política do gateway em `shikigami/daemon/telegram.toml`. Arquivos reais nunca contêm segredos em texto; eles guardam somente parâmetros, perfis, caminhos e referências a provedores de segredo.
 
-Cada instância possui seu próprio `origin`, seu próprio `CODEX_HOME`, seus perfis locais e suas skills habilitadas, sem compartilhar estado com outras. O setup registra a habilitação em `configs/onmyoji-skills.toml` e cria junctions no Windows ou links simbólicos no Linux de `skills/<nome>` para `available-skills/<nome>`. Atualizações da base são recebidas com `git fetch upstream` e `git merge upstream/main`; uma instância nunca faz `git push upstream`.
+Cada instância possui seu próprio `origin`, seu próprio `CODEX_HOME`, seus perfis locais, integrações MCP e skills próprias habilitadas, sem compartilhar estado com outras. O setup registra as skills do Shikigami no profile nativo `onmyoji-skills.config.toml`; os perfis MCP ficam em `configs/mcp/`. Atualizações da base são recebidas com `git fetch upstream` e `git merge upstream/main`; uma instância nunca faz `git push upstream`.
 
 O workspace não é a definição versionada da instância. Para manter ou reconstruir um Shikigami, use seu repositório e `shikigami/`; trate o workspace como área de trabalho descartável ou administrada por uma política de backup independente.
 
