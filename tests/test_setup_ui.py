@@ -24,8 +24,8 @@ class KeePassProfileChooserTests(unittest.TestCase):
     def test_selects_a_numbered_keepass_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            config = root / "configs" / "keepass.toml"
-            config.parent.mkdir()
+            config = root / "configs" / "mcp" / "credentials.toml"
+            config.parent.mkdir(parents=True)
             config.write_text("[profiles.beta]\n[profiles.alpha]\n", encoding="utf-8")
             with patch.object(MODULE, "prompt", return_value="2"):
                 self.assertEqual(MODULE.choose_keepass_profile(root), "beta")
@@ -33,7 +33,7 @@ class KeePassProfileChooserTests(unittest.TestCase):
     def test_requires_a_configured_keepass_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "result") as result:
             self.assertIsNone(MODULE.choose_keepass_profile(Path(temporary)))
-        result.assert_called_once_with(False, "Nenhum perfil KeePass foi configurado. Configure primeiro a skill KeePass Vault.")
+        result.assert_called_once_with(False, "Nenhum perfil de vault MCP foi configurado. Configure-o primeiro no menu MCP.")
 
 
 if __name__ == "__main__":

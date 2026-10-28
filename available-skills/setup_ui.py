@@ -59,18 +59,18 @@ def note(message: str) -> None:
 
 
 def choose_keepass_profile(root: Path, current: str = "") -> str | None:
-    """Permite selecionar um perfil configurado no vault local da instância."""
-    path = root / "configs" / "keepass.toml"
+    """Permite selecionar um perfil configurado no vault compartilhado MCP."""
+    path = root / "configs" / "mcp" / "credentials.toml"
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
         profiles = sorted(name for name, value in data.get("profiles", {}).items() if isinstance(name, str) and isinstance(value, dict))
     except (OSError, tomllib.TOMLDecodeError) as error:
-        result(False, f"Não foi possível ler a configuração do KeePass: {error}")
+        result(False, f"Não foi possível ler a configuração do vault MCP: {error}")
         return None
     if not profiles:
-        result(False, "Nenhum perfil KeePass foi configurado. Configure primeiro a skill KeePass Vault.")
+        result(False, "Nenhum perfil de vault MCP foi configurado. Configure-o primeiro no menu MCP.")
         return None
-    screen("KeePass Vault", "Selecionar perfil", "Escolha o perfil que fornecerá as credenciais")
+    screen("Vault MCP", "Selecionar perfil", "Escolha o perfil que fornecerá as credenciais")
     for index, name in enumerate(profiles, 1):
         item(f"{index}.", name, "atual" if name == current else "")
     item("X.", "Cancelar")

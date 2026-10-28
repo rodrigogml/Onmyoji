@@ -1478,7 +1478,7 @@ def daemon_menu(root: Path) -> None:
     def show_validation() -> bool:
         checks = validation(); print()
         print_checks(checks)
-        required = {"Daemon da instância", "Estrutura da configuração Telegram", "Perfil KeePass", "Referência do token", "Executável Codex para serviço", "Workspace do Shikigami", "Execução do agente Codex", "Conexão Telegram"}
+        required = {"Daemon da instância", "Estrutura da configuração Telegram", "Perfil de vault MCP", "Referência do token", "Executável Codex para serviço", "Workspace do Shikigami", "Execução do agente Codex", "Conexão Telegram"}
         return bool(checks) and all(check.get("state") == "ok" for check in checks if check.get("label") in required)
 
     def show_daemon_diagnosis() -> bool:
@@ -1492,14 +1492,14 @@ def daemon_menu(root: Path) -> None:
 
     def show_telegram_diagnosis() -> bool:
         """Exibe dependências da plataforma antes das verificações do gateway."""
-        screen("Diagnóstico do Telegram", "Plataforma, KeePass Vault e estado do gateway")
+        screen("Diagnóstico do Telegram", "Plataforma, vault MCP e estado do gateway")
         print("\n  Diagnóstico principal do Shikigami")
         main_checks = shikigami_diagnostics(root, lambda message: print("    → " + message)); print_checks(main_checks)
         print("\n  Diagnóstico da plataforma do daemon")
         daemon_checks = validation("daemon-validation-json"); print_checks(daemon_checks)
         print("\n  Diagnóstico específico do Telegram")
         telegram_checks = validation(); print_checks(telegram_checks)
-        required = {"Skill KeePass Vault", "Configuração KeePass Vault", "Perfis KeePass Vault", "Perfil KeePass", "Referência do token", "Conta do serviço e KeePass", "Codex App Server", "Execução do agente Codex", "Conexão Telegram"}
+        required = {"Perfis de vault MCP", "Perfil de vault MCP", "Referência do token", "Codex App Server", "Execução do agente Codex", "Conexão Telegram"}
         return all(check.get("state") == "ok" for check in telegram_checks if check.get("label") in required)
 
     def installed() -> bool: return (root / "configs" / "daemon" / "daemon.toml").is_file()
@@ -1786,7 +1786,7 @@ def daemon_menu(root: Path) -> None:
                 item("1.", "Desabilitar Telegram" if enabled else "Habilitar Telegram")
                 item("2.", "Testar conexão com Telegram")
             elif section == "credential":
-                item("1.", "Configurar credencial do bot", "Perfil KeePass e referência da entrada")
+                item("1.", "Configurar credencial do bot", "Perfil de vault MCP e referência da entrada")
                 item("2.", "Testar conexão com Telegram")
             elif section == "app-server":
                 item("1.", "Testar agente Codex", "Execução controlada, sem mensagem ao bot")
@@ -1829,7 +1829,7 @@ def daemon_menu(root: Path) -> None:
                 print()
                 for index, profile in enumerate(values, 1): item(f"{index}.", profile)
                 item("X.", "Voltar")
-                selected = prompt("Perfil KeePass: ").strip().casefold()
+                selected = prompt("Perfil de vault MCP: ").strip().casefold()
                 if selected in {"x", "\x1b"}: continue
                 if not selected.isdigit() or not 1 <= int(selected) <= len(values): result(False, "Perfil inválido."); continue
                 instance = "".join(part[:1].upper() + part[1:] for part in instance_identity(root).split()) or "Shikigami"
@@ -1970,19 +1970,19 @@ def daemon_menu(root: Path) -> None:
         path = root / "shikigami" / "daemon" / "telegram.toml"
         try:
             settings = tomllib.loads(path.read_text(encoding="utf-8")); telegram = settings.get("telegram", {})
-            current_profile, current_entry = str(telegram.get("keepass_profile") or ""), str(telegram.get("token_entry") or "")
+            current_profile, current_entry = str(telegram.get("vault_profile") or telegram.get("keepass_profile") or ""), str(telegram.get("token_entry") or "")
         except (OSError, tomllib.TOMLDecodeError, AttributeError):
             current_profile, current_entry = "", ""
         listed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "profiles"], quiet=True)
         try: profiles = json.loads(listed.stdout)
         except json.JSONDecodeError: profiles = []
-        if not profiles: result(False, "Nenhum perfil KeePass disponível."); return False
+        if not profiles: result(False, "Nenhum perfil de vault MCP disponível."); return False
         default_profile = current_profile if current_profile in profiles else str(profiles[0])
-        print("    Perfis KeePass disponíveis: " + ", ".join(str(profile) for profile in profiles))
-        profile = prompt(f"Perfil KeePass [{default_profile}]: ").strip() or default_profile
-        if profile not in profiles: result(False, "Perfil KeePass inválido."); return False
+        print("    Perfis de vault MCP disponíveis: " + ", ".join(str(profile) for profile in profiles))
+        profile = prompt(f"Perfil de vault MCP [{default_profile}]: ").strip() or default_profile
+        if profile not in profiles: result(False, "Perfil de vault MCP inválido."); return False
         default_entry = current_entry or f"APIs/Telegram:{''.join(part[:1].upper() + part[1:] for part in instance_identity(root).split()) or 'Shikigami'}"
-        entry = prompt(f"Entrada KeePass [{default_entry}]: ").strip() or default_entry
+        entry = prompt(f"Entrada do vault [{default_entry}]: ").strip() or default_entry
         saved = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-credential", "--profile", profile, "--entry", entry], quiet=True)
         if saved.returncode != 0: result(False, (saved.stdout or saved.stderr).strip()); return False
         checked = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "check-entry", "--profile", profile, "--entry", entry], quiet=True)
@@ -2012,10 +2012,10 @@ def daemon_menu(root: Path) -> None:
         if any(check.get("state") == "error" for check in [*main_checks, *daemon_checks]) or not daemon_running():
             result(False, "Corrija os pré-requisitos e inicie o daemon antes de configurar o Telegram."); return
 
-        print("\n  2. Skill KeePass Vault")
+        print("\n  2. Perfis de vault MCP")
         keepass_checks = validation("keepass-validation-json"); print_checks(keepass_checks)
         if any(check.get("state") != "ok" for check in keepass_checks):
-            result(False, "Instale, habilite e configure a skill KeePass Vault antes de continuar."); return
+            result(False, "Configure ao menos um perfil de vault MCP antes de continuar."); return
 
         print("\n  3. Preparar a configuração do Telegram")
         prepared = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "bootstrap"], quiet=True)
@@ -2093,7 +2093,7 @@ def daemon_menu(root: Path) -> None:
             item("W.", "Wizard de configuração do Telegram", "Configura o gateway e o primeiro owner")
             print()
             item("1.", "Gateway Telegram", "Ativação e teste da conexão")
-            item("2.", "Credencial do bot", "Perfil KeePass e referência do token")
+            item("2.", "Credencial do bot", "Perfil de vault MCP e referência do token")
             item("3.", "Codex App Server", "Conversa persistente e teste do agente")
             item("4.", "Owners e comandos", "Pareamento e preferências de execução")
             print()
