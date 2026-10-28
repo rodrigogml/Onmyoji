@@ -35,9 +35,9 @@ O wizard e a opção Política de aprovação explicam as duas políticas aceita
 
 Cada `setupSkill.py` é responsável exclusivamente pela configuração da sua skill. Ele recebe a pasta da instância do Onmyōji, apresenta seu próprio menu e preserva perfis existentes até haver confirmação explícita. Todo novo ou alterado fluxo de gravação deve validar o resultado, manter backup temporário quando substituir dados e restaurar a configuração anterior em caso de falha. Wizards aceitam `X` ou `Esc` (quando o terminal o transmite, normalmente seguido de Enter) para cancelar sem gravar alterações parciais.
 
-Quando uma skill precisa da referência `vault_profile`, o configurador lê os perfis já definidos em `configs/keepass.toml` e oferece um seletor numérico. Não solicite esse identificador como texto livre; se ainda não houver perfis KeePass, informe que a skill KeePass Vault deve ser configurada primeiro.
+Quando uma skill precisa da referência `vault_profile`, o configurador lê os perfis em `configs/mcp/credentials.toml` e oferece um seletor numérico. Não solicite esse identificador como texto livre; se ainda não houver perfis de vault MCP, informe que o operador deve criar um no menu `MCP > Perfis de vault`.
 
-Após a escolha do perfil KeePass, sugira a entrada de credencial no formato `APIs/<Integração>:<perfil-da-skill-em-CamelCase>`, por exemplo `APIs/Notion:Laveli` para o perfil local `laveli`. O usuário pode ajustar a sugestão ao criar uma configuração; não substitua uma entrada já configurada durante edição.
+Após a escolha do perfil de vault MCP, sugira a entrada de credencial no formato `APIs/<Integração>:<perfil-da-skill-em-CamelCase>`, por exemplo `APIs/Notion:Laveli` para o perfil local `laveli`. O usuário pode ajustar a sugestão ao criar uma configuração; não substitua uma entrada já configurada durante edição.
 
 Quando uma skill oferecer teste de perfil, ele deve selecionar um perfil existente e executar somente uma operação de leitura mínima. O resultado deve confirmar a autenticação ou descrever a falha sem imprimir credenciais, tokens nem a resposta completa da API.
 
@@ -52,9 +52,8 @@ Todas as skills do catálogo também aceitam estas ações:
 
 Todoist, Omie, BTG Empresas, EccoVox, Cloudflare, Forward Email, Notion, AWS, MySQL, SSH, BIS2CMD, BIS10CMD, Google e Spotify são configurados exclusivamente pelo menu MCP e consumidos pelo servidor MCP interno. Consulte a documentação específica em `onmyoji-daemon/docs/mcp-*.md`, incluindo a [integração Google MCP](../onmyoji-daemon/docs/mcp-google.md) e a [integração Spotify MCP](../onmyoji-daemon/docs/mcp-spotify.md).
 
-Há três variações deliberadas:
+Há duas variações deliberadas:
 
-- KeePass Vault expõe somente `profile-schema` e `profile-list`; criar, editar ou remover um perfil exige o menu interativo do operador.
 - Memory Store não possui perfil nem credencial: seu `status` apenas verifica o SQLite com FTS5.
 - Onmyōji Control não possui configuração própria: seu `configure` orienta a habilitação, e a administração efetiva é delegada ao setup central.
 
