@@ -263,7 +263,7 @@ class Client:
         try:
             from onmyoji_daemon.supervisor import endpoint
             from onmyoji_daemon.rpc import RpcError, call
-            params = {"skill": "mcp-btg", "profile": self.profile["_profile"], "confirm": confirm}
+            params = {"profile": self.profile["_profile"], "confirm": confirm}
             if session_id:
                 params["session_id"] = session_id
             host, port, token = endpoint(root)

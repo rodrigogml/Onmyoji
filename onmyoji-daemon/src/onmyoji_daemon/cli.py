@@ -38,7 +38,6 @@ def main(argv: list[str] | None = None) -> int:
     oauth = miniapps_sub.add_parser("oauth"); oauth_sub = oauth.add_subparsers(dest="oauth_action", required=True)
     for action in ("callback-url", "info", "active", "start", "status", "cancel", "cancel-active"):
         command = oauth_sub.add_parser(action)
-        command.add_argument("--skill", required=action in {"callback-url", "info", "active", "start", "cancel-active"})
         command.add_argument("--profile", required=action in {"info", "active", "start", "cancel-active"})
         command.add_argument("--session-id", required=action in {"status", "cancel"})
         command.add_argument("--confirm", action="store_true")
@@ -93,7 +92,6 @@ def main(argv: list[str] | None = None) -> int:
         if action == "oauth":
             method = "mini-apps.oauth." + args.oauth_action
             params = {"confirm": args.confirm}
-            if args.skill: params["skill"] = args.skill
             if args.profile: params["profile"] = args.profile
             if args.session_id: params["session_id"] = args.session_id
         elif action == "tunnel":

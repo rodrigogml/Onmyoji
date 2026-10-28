@@ -1,10 +1,9 @@
-"""Sessões OAuth de skills, com callback estável e adaptadores locais fechados."""
+"""Sessões OAuth das integrações MCP com callback estável e adaptador fechado."""
 from __future__ import annotations
 
 import hashlib
 import os
 import json
-import contextlib
 import re
 import secrets
 import sqlite3
@@ -35,78 +34,43 @@ def hash_value(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def oauth_callback_path(integration: str) -> str:
-    """Mantém callbacks MCP e legados separados, incluindo a identidade da sessão."""
-    return "/oauth/mcp/btg/callback" if integration == "mcp-btg" else "/oauth/skills/" + integration + "/callback"
+BTG_INTEGRATION = "btg"
+BTG_CALLBACK_PATH = "/oauth/mcp/btg/callback"
 
 
-class SkillOAuth:
-    def __init__(self, root: Path, workspace: Path | None, public_origin: Callable[[], str]):
+class McpOAuthBroker:
+    def __init__(self, root: Path, public_origin: Callable[[], str]):
         self.root = root.resolve()
-        self.workspace = workspace.resolve() if workspace is not None else None
-        if self.workspace is not None:
-            ensure(not self.workspace.is_relative_to(self.root), "Workspace OAuth deve ser externo ao CODEX_HOME")
         self.public_origin = public_origin
         directory = self.root / "configs" / "daemon" / "services" / "mini-apps" / "oauth"
         ensure(directory.resolve().is_relative_to(self.root / "configs"), "Estado OAuth deve permanecer em configs.")
         directory.mkdir(parents=True, exist_ok=True)
         self.path = directory / "sessions.sqlite3"
         self.lock = threading.RLock()
-        self._migrate_legacy_sessions()
         with self.connection() as con:
             con.executescript("""
             CREATE TABLE IF NOT EXISTS authorization (
-              id TEXT PRIMARY KEY, skill TEXT NOT NULL, profile TEXT NOT NULL,
+              id TEXT PRIMARY KEY, integration TEXT NOT NULL, profile TEXT NOT NULL,
               stateHash TEXT NOT NULL UNIQUE, binding TEXT NOT NULL,
               issuer TEXT NOT NULL, redirectUri TEXT NOT NULL,
               status TEXT NOT NULL, createdAt REAL NOT NULL, expiresAt REAL NOT NULL,
               processingAt REAL, completedAt REAL, errorCode TEXT, issuerRequired INTEGER NOT NULL DEFAULT 0
             );
-            CREATE UNIQUE INDEX IF NOT EXISTS authorization_active ON authorization(skill,profile)
+            CREATE UNIQUE INDEX IF NOT EXISTS authorization_active ON authorization(integration,profile)
               WHERE status IN ('creating','awaiting','processing');
             """)
-
-    def _migrate_legacy_sessions(self) -> None:
-        """Copia sessões antigas antes de trocar a localização, sem apagar a origem."""
-        if self.path.exists() or self.workspace is None:
-            return
-        source = self.workspace / ".onmyoji" / "skill-oauth" / "sessions.sqlite3"
-        if not source.is_file() or source.is_symlink() or not source.resolve().is_relative_to(self.workspace):
-            return
-        temporary: Path | None = None
-        try:
-            import tempfile
-            with tempfile.NamedTemporaryFile(dir=self.path.parent, prefix="sessions.", suffix=".sqlite3", delete=False) as stream:
-                temporary = Path(stream.name)
-            with contextlib.closing(sqlite3.connect(f"{source.as_uri()}?mode=ro", uri=True)) as origin, contextlib.closing(sqlite3.connect(temporary)) as destination:
-                origin.backup(destination)
-                ensure(destination.execute("PRAGMA integrity_check").fetchone()[0] == "ok", "Sessões OAuth antigas inválidas; origem preservada")
-            if not self.path.exists():
-                os.replace(temporary, self.path)
-                temporary = None
-        except (OSError, sqlite3.Error) as error:
-            raise OAuthError("Não foi possível copiar sessões OAuth antigas; origem preservada") from error
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
 
     def connection(self) -> sqlite3.Connection:
         con = sqlite3.connect(self.path, timeout=30)
         con.row_factory = sqlite3.Row
         return con
 
-    def adapter(self, skill: str, profile: str, action: str, **values: Any) -> dict[str, Any]:
-        ensure(isinstance(skill, str) and bool(re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", skill)), "Skill OAuth inválida")
+    def adapter(self, integration: str, profile: str, action: str, **values: Any) -> dict[str, Any]:
+        ensure(integration == BTG_INTEGRATION, "Integração OAuth MCP inválida")
         ensure(isinstance(profile, str) and bool(re.fullmatch(r"[A-Za-z0-9_-]+", profile)), "Perfil OAuth inválido")
         ensure(action in {"describe", "start", "complete", "cancel"}, "Ação OAuth inválida")
-        candidates = [self.root / "shikigami" / "skills" / skill / "scripts" / "oauth_adapter.py"]
-        script = next((p for p in candidates if p.is_file()), None)
-        if skill == "mcp-btg":
-            from .mcp.runtime import mcp_runtime_python
-            command = [str(mcp_runtime_python(self.root)), "-m", "onmyoji_daemon.mcp.btg.oauth_adapter", "--onmyoji-root", str(self.root)]
-        else:
-            ensure(script is not None and script.resolve().is_relative_to(self.root), "Skill não possui adaptador OAuth local")
-            command = [sys.executable, str(script), "--onmyoji-root", str(self.root)]
+        from .runtime import mcp_runtime_python
+        command = [str(mcp_runtime_python(self.root)), "-m", "onmyoji_daemon.mcp.btg.oauth_adapter", "--onmyoji-root", str(self.root)]
         request = {"version": 1, "action": action, "profile": profile, **values}
         try:
             environment = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parent.parent), "PYTHONUTF8": "1"}
@@ -120,13 +84,14 @@ class SkillOAuth:
             raise OAuthError("Adaptador OAuth recusou a operação" + (" (" + str(code) + ")" if isinstance(code, str) and re.fullmatch(r"[a-z0-9_]+", code) else ""), code if isinstance(code, str) and re.fullmatch(r"[a-z0-9_]+", code) else None)
         return payload["data"]
 
-    def describe(self, skill: str, profile: str) -> dict[str, Any]:
+    def describe(self, integration: str, profile: str) -> dict[str, Any]:
+        ensure(integration == BTG_INTEGRATION, "Integração OAuth MCP inválida")
         origin = self.public_origin()
         parsed = urllib.parse.urlsplit(origin)
         ensure(parsed.scheme == "https" and bool(parsed.hostname) and not parsed.username and not parsed.password and parsed.path in {"", "/"} and not parsed.query and not parsed.fragment, "Origem OAuth pública inválida")
-        metadata = self.adapter(skill, profile, "describe")
+        metadata = self.adapter(integration, profile, "describe")
         fields = {"issuer", "authorizationEndpoint", "redirectUri", "binding"}
-        location = "storage_root" if skill == "mcp-btg" else "workspace"
+        location = "storage_root"
         required = fields | {location}
         ensure(required <= set(metadata) <= required | {"requireIssuer"}, "Metadados do adaptador OAuth inválidos")
         ensure(all(isinstance(metadata[k], str) and bool(metadata[k]) for k in required) and type(metadata.get("requireIssuer", False)) is bool, "Metadados OAuth incompletos")
@@ -134,12 +99,9 @@ class SkillOAuth:
             value = urllib.parse.urlsplit(metadata[field])
             ensure(value.scheme == "https" and bool(value.hostname) and not value.username and not value.password and not value.fragment, "URI OAuth inválida")
         declared = Path(metadata[location]).resolve()
-        if skill == "mcp-btg":
-            expected = self.root / "configs" / "mcp" / "btg-empresas"
-            ensure(declared == expected.resolve(), "Estado OAuth BTG MCP inválido")
-        else:
-            ensure(self.workspace is not None and declared.is_relative_to(self.workspace), "Workspace OAuth deve pertencer à instância")
-        callback = origin.rstrip("/") + oauth_callback_path(skill)
+        expected = self.root / "configs" / "mcp" / "btg-empresas"
+        ensure(declared == expected.resolve(), "Estado OAuth BTG MCP inválido")
+        callback = origin.rstrip("/") + BTG_CALLBACK_PATH
         return {**metadata, "callbackUrl": callback, "redirectMatches": callback == metadata["redirectUri"]}
 
     @staticmethod
@@ -148,23 +110,23 @@ class SkillOAuth:
         con.execute("UPDATE authorization SET status='expired',completedAt=? WHERE status IN ('creating','awaiting') AND expiresAt<=?", (stamp, stamp))
         con.execute("UPDATE authorization SET status='interrupted',completedAt=?,errorCode='interrupted' WHERE status='processing' AND processingAt<?", (stamp, stamp - 300))
 
-    def info(self, skill: str, profile: str) -> dict[str, Any]:
-        data = self.describe(skill, profile)
-        return {"skill": skill, "profile": profile, "callbackUrl": data["callbackUrl"], "configuredRedirectUri": data["redirectUri"], "redirectMatches": data["redirectMatches"]}
+    def info(self, integration: str, profile: str) -> dict[str, Any]:
+        data = self.describe(integration, profile)
+        return {"integration": integration, "profile": profile, "callbackUrl": data["callbackUrl"], "configuredRedirectUri": data["redirectUri"], "redirectMatches": data["redirectMatches"]}
 
-    def start(self, skill: str, profile: str, confirm: bool) -> dict[str, Any]:
+    def start(self, integration: str, profile: str, confirm: bool) -> dict[str, Any]:
         ensure(confirm is True, "Autorização explícita exigida para iniciar OAuth")
-        data = self.describe(skill, profile)
+        data = self.describe(integration, profile)
         ensure(data["redirectMatches"], "Cadastre a URL de callback no provedor e no perfil antes de iniciar")
         identifier, state, stamp = uuid.uuid4().hex, secrets.token_urlsafe(32), time.time()
         with self.lock, self.connection() as con:
             self.expire(con)
             try:
-                con.execute("INSERT INTO authorization(id,skill,profile,stateHash,binding,issuer,redirectUri,status,createdAt,expiresAt,issuerRequired) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (identifier, skill, profile, hash_value(state), data["binding"], data["issuer"], data["redirectUri"], "creating", stamp, stamp + 600, int(data.get("requireIssuer", False))))
+                con.execute("INSERT INTO authorization(id,integration,profile,stateHash,binding,issuer,redirectUri,status,createdAt,expiresAt,issuerRequired) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (identifier, integration, profile, hash_value(state), data["binding"], data["issuer"], data["redirectUri"], "creating", stamp, stamp + 600, int(data.get("requireIssuer", False))))
             except sqlite3.IntegrityError as error:
                 raise OAuthError("Existe autorização ativa para este perfil; conclua ou cancele") from error
         try:
-            result = self.adapter(skill, profile, "start", state=state, sessionId=identifier, redirectUri=data["redirectUri"])
+            result = self.adapter(integration, profile, "start", state=state, sessionId=identifier, redirectUri=data["redirectUri"])
             url = result.get("authorizationUrl")
             ensure(isinstance(url, str) and len(url) <= 16000, "URL de autorização inválida")
             parsed = urllib.parse.urlsplit(url)
@@ -181,7 +143,7 @@ class SkillOAuth:
             return {"sessionId": identifier, "authorizationUrl": url, "callbackUrl": data["callbackUrl"], "expiresIn": ttl, "status": "awaiting"}
         except Exception as error:
             try:
-                self.adapter(skill, profile, "cancel", sessionId=identifier)
+                self.adapter(integration, profile, "cancel", sessionId=identifier)
             except Exception:
                 pass
             self.finish(identifier, "failed", "start_failed")
@@ -191,51 +153,51 @@ class SkillOAuth:
         with self.lock, self.connection() as con:
             con.execute("UPDATE authorization SET status=?,errorCode=?,completedAt=? WHERE id=?", (status, error, time.time(), identifier))
 
-    def status(self, identifier: str, skill: str | None = None, profile: str | None = None) -> dict[str, Any]:
+    def status(self, identifier: str, integration: str | None = None, profile: str | None = None) -> dict[str, Any]:
         with self.lock, self.connection() as con:
             self.expire(con)
             row = con.execute("SELECT * FROM authorization WHERE id=?", (identifier,)).fetchone()
-            ensure(row is not None and (skill is None or row["skill"] == skill) and (profile is None or row["profile"] == profile), "Sessão OAuth não encontrada neste contexto")
-            return {key: row[key] for key in ("id", "skill", "profile", "status", "createdAt", "expiresAt", "completedAt", "errorCode")}
+            ensure(row is not None and (integration is None or row["integration"] == integration) and (profile is None or row["profile"] == profile), "Sessão OAuth não encontrada neste contexto")
+            return {key: row[key] for key in ("id", "integration", "profile", "status", "createdAt", "expiresAt", "completedAt", "errorCode")}
 
-    def active(self, skill: str, profile: str) -> dict[str, Any] | None:
+    def active(self, integration: str, profile: str) -> dict[str, Any] | None:
         """Retorne a autorização ativa para que o setup possa oferecer substituição."""
         with self.lock, self.connection() as con:
             self.expire(con)
-            row = con.execute("SELECT * FROM authorization WHERE skill=? AND profile=? AND status IN ('creating','awaiting','processing') ORDER BY createdAt DESC LIMIT 1", (skill, profile)).fetchone()
+            row = con.execute("SELECT * FROM authorization WHERE integration=? AND profile=? AND status IN ('creating','awaiting','processing') ORDER BY createdAt DESC LIMIT 1", (integration, profile)).fetchone()
             if row is None:
                 return None
-            return {key: row[key] for key in ("id", "skill", "profile", "status", "createdAt", "expiresAt")}
+            return {key: row[key] for key in ("id", "integration", "profile", "status", "createdAt", "expiresAt")}
 
-    def cancel_active(self, skill: str, profile: str, confirm: bool) -> dict[str, Any]:
+    def cancel_active(self, integration: str, profile: str, confirm: bool) -> dict[str, Any]:
         """Cancele a autorização ativa do perfil após confirmação explícita."""
-        active = self.active(skill, profile)
+        active = self.active(integration, profile)
         ensure(active is not None, "Não existe autorização ativa para este perfil")
-        return self.cancel(active["id"], confirm, skill, profile)
+        return self.cancel(active["id"], confirm, integration, profile)
 
-    def cancel(self, identifier: str, confirm: bool, skill: str | None = None, profile: str | None = None) -> dict[str, Any]:
+    def cancel(self, identifier: str, confirm: bool, integration: str | None = None, profile: str | None = None) -> dict[str, Any]:
         ensure(confirm is True, "Confirme o cancelamento OAuth")
         with self.lock, self.connection() as con:
             self.expire(con)
             row = con.execute("SELECT * FROM authorization WHERE id=?", (identifier,)).fetchone()
-            ensure(row is not None and (skill is None or row["skill"] == skill) and (profile is None or row["profile"] == profile), "Sessão OAuth não encontrada neste contexto")
+            ensure(row is not None and (integration is None or row["integration"] == integration) and (profile is None or row["profile"] == profile), "Sessão OAuth não encontrada neste contexto")
             ensure(row["status"] == "awaiting", "Sessão não pode ser cancelada nesta situação")
             changed = con.execute("UPDATE authorization SET status='cancelled',completedAt=? WHERE id=? AND status='awaiting'", (time.time(), identifier)).rowcount
             ensure(changed == 1, "Sessão mudou durante o cancelamento")
         try:
-            self.adapter(row["skill"], row["profile"], "cancel", sessionId=identifier)
+            self.adapter(row["integration"], row["profile"], "cancel", sessionId=identifier)
         except Exception:
             self.finish(identifier, "cancelled", "cancellation_cleanup_failed")
             raise
-        return self.status(identifier, skill, profile)
+        return self.status(identifier, integration, profile)
 
-    def callback(self, skill: str, query: dict[str, list[str]]) -> str:
+    def callback(self, integration: str, query: dict[str, list[str]]) -> str:
         ensure(len(query.get("state", [])) == 1, "Callback OAuth sem state único")
         state = query["state"][0]
         ensure(isinstance(state, str) and 20 <= len(state) <= 200, "State OAuth inválido")
         with self.lock, self.connection() as con:
             self.expire(con)
-            row = con.execute("SELECT * FROM authorization WHERE stateHash=? AND skill=?", (hash_value(state), skill)).fetchone()
+            row = con.execute("SELECT * FROM authorization WHERE stateHash=? AND integration=?", (hash_value(state), integration)).fetchone()
             ensure(row is not None and row["status"] == "awaiting", "Callback OAuth expirado, consumido ou desconhecido")
             code, error, issuer = query.get("code", []), query.get("error", []), query.get("iss", [])
             ensure(len(issuer) <= 1 and (not issuer or issuer == [row["issuer"]]), "Emissor OAuth divergente")
@@ -244,18 +206,18 @@ class SkillOAuth:
             changed = con.execute("UPDATE authorization SET status='processing',processingAt=? WHERE id=? AND status='awaiting'", (time.time(), row["id"])).rowcount
             ensure(changed == 1, "Callback OAuth já foi consumido")
         try:
-            data = self.describe(row["skill"], row["profile"])
+            data = self.describe(row["integration"], row["profile"])
             ensure(data["binding"] == row["binding"] and data["redirectUri"] == row["redirectUri"] and data["redirectMatches"] and data["issuer"] == row["issuer"], "Perfil OAuth mudou durante a autorização")
             if error:
-                self.adapter(row["skill"], row["profile"], "cancel", sessionId=row["id"])
+                self.adapter(row["integration"], row["profile"], "cancel", sessionId=row["id"])
                 self.finish(row["id"], "denied" if error[0] == "access_denied" else "failed", "provider_denied" if error[0] == "access_denied" else "provider_error")
             else:
-                result = self.adapter(row["skill"], row["profile"], "complete", code=code[0], state=state, sessionId=row["id"], redirectUri=row["redirectUri"])
+                result = self.adapter(row["integration"], row["profile"], "complete", code=code[0], state=state, sessionId=row["id"], redirectUri=row["redirectUri"])
                 ensure(result.get("authenticated") is True, "Adaptador não confirmou autorização")
                 self.finish(row["id"], "completed")
         except Exception as error:
             try:
-                self.adapter(row["skill"], row["profile"], "cancel", sessionId=row["id"])
+                self.adapter(row["integration"], row["profile"], "cancel", sessionId=row["id"])
             except Exception:
                 pass
             code = getattr(error, "code", None)

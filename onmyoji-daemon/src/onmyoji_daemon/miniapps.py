@@ -31,7 +31,7 @@ from aiohttp import web
 from .rpc import RpcServer
 from .miniapps_pki import ensure_material, install_trust, server_context
 from .miniapps_tunnel import TunnelController, TunnelError
-from .skill_oauth import OAuthError, SkillOAuth, oauth_callback_path
+from .mcp.oauth_broker import BTG_CALLBACK_PATH, BTG_INTEGRATION, McpOAuthBroker, OAuthError
 
 
 STATES = {"CREATED", "PUBLISHED_UNCLAIMED", "ACTIVE", "UNPUBLISHED", "EXPIRED", "ERROR", "DELETED"}
@@ -139,7 +139,7 @@ class MiniAppsGateway:
         self.http_loop: asyncio.AbstractEventLoop | None = None; self.http_thread: threading.Thread | None = None
         self.http_runner: web.AppRunner | None = None; self.last_error: str | None = None
         self.tunnel = TunnelController(self.root, self.data_dir, f"https://localhost:{self.http_port}")
-        self.skill_oauth: SkillOAuth | None = None
+        self.oauth_broker: McpOAuthBroker | None = None
         self.oauth_callback_hits: dict[str, list[float]] = {}
         self._migrate()
         self._restore_publications()
@@ -588,17 +588,14 @@ class MiniAppsGateway:
         action = method.removeprefix("mini-apps.")
         if action.startswith("oauth."):
             if action == "oauth.callback-url":
-                skill = str(params.get("skill", "")).strip()
-                if not skill or "/" in skill:
-                    raise ValueError("skill inválida")
-                return {"skill": skill, "callbackUrl": self._oauth_origin().rstrip("/") + oauth_callback_path(skill)}
+                return {"integration": BTG_INTEGRATION, "callbackUrl": self._oauth_origin().rstrip("/") + BTG_CALLBACK_PATH}
             broker = self._oauth_broker()
-            if action == "oauth.info": return broker.info(str(params["skill"]), str(params["profile"]))
-            if action == "oauth.active": return broker.active(str(params["skill"]), str(params["profile"]))
-            if action == "oauth.cancel-active": return broker.cancel_active(str(params["skill"]), str(params["profile"]), params.get("confirm") is True)
-            if action == "oauth.start": return broker.start(str(params["skill"]), str(params["profile"]), params.get("confirm") is True)
-            if action == "oauth.status": return broker.status(str(params["session_id"]), params.get("skill"), params.get("profile"))
-            if action == "oauth.cancel": return broker.cancel(str(params["session_id"]), params.get("confirm") is True, params.get("skill"), params.get("profile"))
+            if action == "oauth.info": return broker.info(BTG_INTEGRATION, str(params["profile"]))
+            if action == "oauth.active": return broker.active(BTG_INTEGRATION, str(params["profile"]))
+            if action == "oauth.cancel-active": return broker.cancel_active(BTG_INTEGRATION, str(params["profile"]), params.get("confirm") is True)
+            if action == "oauth.start": return broker.start(BTG_INTEGRATION, str(params["profile"]), params.get("confirm") is True)
+            if action == "oauth.status": return broker.status(str(params["session_id"]), BTG_INTEGRATION, params.get("profile"))
+            if action == "oauth.cancel": return broker.cancel(str(params["session_id"]), params.get("confirm") is True, BTG_INTEGRATION, params.get("profile"))
             raise ValueError("unknown OAuth method")
         if action == "status": return {"state": "running", "http_port": self.http_port, "apps": len(self.list()), "last_error": self.last_error}
         if action == "diagnose": return self.diagnose()
@@ -674,15 +671,11 @@ class MiniAppsGateway:
             raise OAuthError("Inicie o Gateway e o Tunnel provisionado para OAuth remoto")
         return "https://" + str(tunnel["hostname"])
 
-    def _oauth_broker(self) -> SkillOAuth:
+    def _oauth_broker(self) -> McpOAuthBroker:
         with self.lock:
-            if self.skill_oauth is None:
-                try:
-                    workspace = self._workspace()
-                except ValueError:
-                    workspace = None
-                self.skill_oauth = SkillOAuth(self.root, workspace, self._oauth_origin)
-            return self.skill_oauth
+            if self.oauth_broker is None:
+                self.oauth_broker = McpOAuthBroker(self.root, self._oauth_origin)
+            return self.oauth_broker
 
     @staticmethod
     def _oauth_page(message: str, status: int = 200) -> web.Response:
@@ -690,7 +683,7 @@ class MiniAppsGateway:
         body = '<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Autorização da integração</title><main><h1>Autorização da integração</h1><p>' + html.escape(message) + '</p></main></html>'
         return web.Response(text=body, content_type="text/html", status=status, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'", "X-Content-Type-Options": "nosniff"})
 
-    async def skill_oauth_callback(self, request: web.Request) -> web.StreamResponse:
+    async def mcp_oauth_callback(self, request: web.Request) -> web.StreamResponse:
         peer, stamp = request.remote or "unknown", time.time()
         hits = [value for value in self.oauth_callback_hits.get(peer, []) if value > stamp - 60]
         if len(hits) >= 30:
@@ -699,15 +692,12 @@ class MiniAppsGateway:
         try:
             broker = self._oauth_broker()
             query = {key: request.query.getall(key) for key in request.query.keys()}
-            integration = "mcp-btg" if request.path == "/oauth/mcp/btg/callback" else request.match_info["skill"]
-            if request.path != "/oauth/mcp/btg/callback" and integration == "mcp-btg":
-                raise OAuthError("Use a rota de callback MCP configurada")
-            identifier = await asyncio.to_thread(broker.callback, integration, query)
+            identifier = await asyncio.to_thread(broker.callback, BTG_INTEGRATION, query)
         except (ValueError, OSError, sqlite3.Error):
             return self._oauth_page("Retorno inválido, expirado ou já utilizado. Consulte o agente no chat.", 400)
         raise web.HTTPSeeOther("/oauth/result/" + identifier, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
 
-    async def skill_oauth_result(self, request: web.Request) -> web.Response:
+    async def mcp_oauth_result(self, request: web.Request) -> web.Response:
         try:
             message = self._oauth_broker().result(request.match_info["session_id"])
         except (ValueError, OSError, sqlite3.Error):
@@ -736,9 +726,8 @@ class MiniAppsGateway:
         app.router.add_route("GET", "/internal/v1/status", self.admin_status)
         app.router.add_route("GET", "/internal/v1/tunnel", self.admin_tunnel)
         app.router.add_route("POST", "/internal/v1/tunnel/{action:configure|provision|start|stop|restart|install-cloudflared}", self.admin_tunnel)
-        app.router.add_route("GET", "/oauth/skills/{skill}/callback", self.skill_oauth_callback)
-        app.router.add_route("GET", "/oauth/mcp/btg/callback", self.skill_oauth_callback)
-        app.router.add_route("GET", "/oauth/result/{session_id}", self.skill_oauth_result)
+        app.router.add_route("GET", BTG_CALLBACK_PATH, self.mcp_oauth_callback)
+        app.router.add_route("GET", "/oauth/result/{session_id}", self.mcp_oauth_result)
         app.router.add_route("*", "/a/{app_id}/{tail:.*}", self.public_request)
         app.router.add_route("*", "/a/{app_id}", self.public_request)
         tls_dir = self.data_dir / "tls"; ensure_material(tls_dir)

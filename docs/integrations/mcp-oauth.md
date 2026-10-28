@@ -14,7 +14,7 @@ Requisitos para iniciar:
 
 - Gateway HTTPS e Tunnel provisionado em execução, com hostname estável.
 - Perfil MCP BTG configurado.
-- Callback completo cadastrado no aplicativo do provedor e no perfil da skill, com correspondência exata.
+- Callback completo cadastrado no aplicativo do provedor e no perfil MCP, com correspondência exata.
 - Execução do gateway/adapter sob identidade capaz de acessar o provedor de segredos do perfil.
 - Rota pública OAuth acessível pelo navegador externo; políticas Cloudflare Access/WAF adicionais não podem impedir esse retorno.
 
@@ -23,21 +23,21 @@ O setup do Tunnel não cadastra aplicativos ou redirect URIs nos provedores. Mud
 ## Comandos para o agente
 
 ```powershell
-python -m onmyoji_daemon.cli --onmyoji-root <CODEX_HOME> mini-apps oauth info --skill mcp-btg --profile <perfil>
-python -m onmyoji_daemon.cli --onmyoji-root <CODEX_HOME> mini-apps oauth start --skill mcp-btg --profile <perfil> --confirm
-python -m onmyoji_daemon.cli --onmyoji-root <CODEX_HOME> mini-apps oauth status --skill mcp-btg --profile <perfil> --session-id <id>
-python -m onmyoji_daemon.cli --onmyoji-root <CODEX_HOME> mini-apps oauth cancel --skill mcp-btg --profile <perfil> --session-id <id> --confirm
+python -m onmyoji_daemon.cli --onmyoji-root <CODEX_HOME> mini-apps oauth info --profile <perfil>
+python -m onmyoji_daemon.cli --onmyoji-root <CODEX_HOME> mini-apps oauth start --profile <perfil> --confirm
+python -m onmyoji_daemon.cli --onmyoji-root <CODEX_HOME> mini-apps oauth status --session-id <id>
+python -m onmyoji_daemon.cli --onmyoji-root <CODEX_HOME> mini-apps oauth cancel --session-id <id> --confirm
 ```
 
-O CLI administrativo oferece as mesmas ações com `oauth`, `--skill`, `--profile`, `--session-id` e `--confirm`.
+O CLI administrativo oferece as mesmas ações com `oauth`, `--profile`, `--session-id` e `--confirm`.
 
 `info` retorna callback esperado, URI configurada e `redirectMatches`. `start` exige autorização explícita, devolve sessionId, authorizationUrl, callbackUrl, expiresIn e status. Apresente authorizationUrl no canal atual sem abrir navegador no servidor. A infraestrutura não envia mensagens externas nem notificações sozinha.
 
-`status` e `cancel` usam o ID local. Informe skill/perfil para conferir o contexto. A consulta administrativa usa RPC autenticado do daemon; não há endpoint público que retorne perfil, token ou credenciais.
+`status` e `cancel` usam o ID local; `profile` é opcional para conferir o contexto. A consulta administrativa usa RPC autenticado do daemon; não há endpoint público que retorne perfil, token ou credenciais.
 
 ## Sessão e retorno
 
-Estados: creating, awaiting, processing, completed, denied, cancelled, expired, failed e interrupted. Sessões duram no máximo 10 minutos antes do retorno, conforme o adaptador. Apenas uma sessão ativa por skill/perfil é permitida; perfis distintos podem autorizar simultaneamente.
+Estados: creating, awaiting, processing, completed, denied, cancelled, expired, failed e interrupted. Sessões duram no máximo 10 minutos antes do retorno, conforme o adaptador. Apenas uma sessão ativa por integração MCP/perfil é permitida; perfis distintos podem autorizar simultaneamente.
 
 O callback aceita GET com exatamente um state e um code, ou um error do provedor. access_denied encerra como denied; outros erros encerram como failed sem expor a mensagem externa. Um issuer `iss` recebido precisa coincidir com o esperado; adaptadores que declarem `requireIssuer=true` exigem sua presença antes de trocar um código. Uma resposta de erro com state válido pode encerrar a sessão sem issuer, pois não realiza troca de tokens. O state é aleatório e vincula a resposta ao perfil, à URI, à configuração e à sessão. A reivindicação da sessão é atômica; um código recebido nunca é reexecutado após retorno repetido ou reinício.
 
@@ -45,11 +45,11 @@ A URI/issuer/binding do adaptador são conferidos novamente antes da troca. Se o
 
 Após o processamento, o gateway redireciona para `/oauth/result/<sessionId>`, removendo code/state da URL da página final. A página informa apenas o resultado e orienta voltar ao chat. Usa no-store, no-referrer, CSP sem recursos externos e bloqueio de enquadramento. Access logs HTTP do gateway ficam desligados para não registrar query strings OAuth; os eventos funcionais dos Mini Apps permanecem disponíveis. Políticas de logs na borda Cloudflare devem receber a mesma atenção.
 
-Callbacks inválidos não consomem uma sessão válida. Sessões em processamento interrompidas por mais de 5 minutos ficam interrupted; não retomam a troca automaticamente. Falha após o provedor consumir o código ou gravar o token exige conferir a situação pelo adaptador/skill, sem repetir o callback. Cancelamento bloqueia o retorno primeiro; se a limpeza do estado da skill falhar, status informa cancellation_cleanup_failed.
+Callbacks inválidos não consomem uma sessão válida. Sessões em processamento interrompidas por mais de 5 minutos ficam interrupted; não retomam a troca automaticamente. Falha após o provedor consumir o código ou gravar o token exige conferir a situação pelo adaptador MCP, sem repetir o callback. Cancelamento bloqueia o retorno primeiro; se a limpeza de estado falhar, status informa cancellation_cleanup_failed.
 
 ## Adaptador MCP BTG
 
-Fonte: `onmyoji_daemon.mcp.btg.oauth_adapter`, executada no runtime privado do MCP. O Gateway aceita apenas a identidade interna `mcp-btg`; perfil e módulo são restritos pelo código.
+Fonte: `onmyoji_daemon.mcp.btg.oauth_adapter`, executada no runtime privado do MCP. O Gateway aceita apenas a integração interna `btg`; perfil e módulo são restritos pelo código.
 
 O gateway executa o módulo com o Python privado do MCP e `--onmyoji-root <CODEX_HOME>`. Um objeto JSON v1 chega pelo stdin. A saída deve ser exatamente `{ "ok": true, "data": {...} }` ou um erro sanitizado. Operações:
 
@@ -74,10 +74,10 @@ Para Banking, o aplicativo BTG precisa ser confidencial. PKCE adicional no aplic
 
 ## Validação
 
-Os testes usam dois provedores fictícios e perfis separados, retorno HTTPS sem cookie/cabeçalho secreto, expiração, recusa, duplicidade, concorrência, reinício, issuer divergente, configuração alterada e troca recusada. O BTG é testado com tokens/contas simulados, incluindo proteção de tokens antigos e persistência após conferir a conta.
+Os testes usam o adaptador BTG simulado, retorno HTTPS sem cookie/cabeçalho secreto, expiração, recusa, duplicidade, concorrência, issuer divergente, configuração alterada e troca recusada. O BTG é testado com tokens/contas simulados, incluindo proteção de tokens antigos e persistência após conferir a conta.
 
 ```powershell
-python -m pytest onmyoji-daemon/tests/test_skill_oauth.py onmyoji-daemon/tests/test_mcp_btg_oauth.py -q
+python -m pytest onmyoji-daemon/tests/test_mcp_oauth_broker.py onmyoji-daemon/tests/test_mcp_btg_oauth.py -q
 ```
 
 O teste local HTTPS simula a chegada pelo Tunnel; não provisiona Cloudflare nem concede autorização bancária real. A validação externa exige Tunnel/aplicativo/credenciais configurados na instância. [Diretrizes OAuth](https://www.rfc-editor.org/rfc/rfc9700.html).

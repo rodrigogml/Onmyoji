@@ -33,7 +33,7 @@ class BtgService:
         client = self.client(name)
         try:
             host, port, token = endpoint(self.root)
-            result = call(host, port, token, "mini-apps.oauth.callback-url", {"skill": "mcp-btg"}, timeout=10)
+            result = call(host, port, token, "mini-apps.oauth.callback-url", {}, timeout=10)
         except (OSError, ValueError, KeyError, RuntimeError, RpcError) as error:
             raise BtgError("remote_oauth_unavailable", "Inicie o Gateway e o Tunnel para calcular o callback BTG MCP.") from error
         return {"callbackUrl": result["callbackUrl"], "configuredRedirectUri": client.profile["redirect_uri"], "redirectMatches": result["callbackUrl"] == client.profile["redirect_uri"]}
