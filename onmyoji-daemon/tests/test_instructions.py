@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from onmyoji_daemon.instructions import InstructionComposer, InstructionError
+from onmyoji_daemon.mcp.configuration import McpConfiguration
 
 
 def test_composition_has_order_and_overlay(tmp_path):
@@ -23,6 +24,15 @@ def test_missing_shikigami_instruction_file_is_optional(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"
     bundle = InstructionComposer(tmp_path, data, "instructions.md").compose(identity="Exemplo", telegram=False)
     assert "[SHIKIGAMI — INSTRUÇÕES PARTICULARES]" not in bundle.text
+
+
+def test_composer_injects_only_available_workflow_routes(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"
+    disabled = InstructionComposer(tmp_path, data, "instructions.md").compose(identity="Exemplo", telegram=False)
+    assert "[ONMYŌJI — WORKFLOWS MCP]" not in disabled.text
+    McpConfiguration(tmp_path).save_memory({"schema_version": 1, "enabled": True, "max_results": 5})
+    enabled = InstructionComposer(tmp_path, data, "instructions.md").compose(identity="Exemplo", telegram=False)
+    assert "memory-decision" in enabled.text and "workflows.read" in enabled.text
 
 
 def test_channel_capability_restarts_baseline_but_reply_mode_is_overlay_only(tmp_path):

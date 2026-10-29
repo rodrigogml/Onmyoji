@@ -15,7 +15,6 @@ from .management import daemon_python, runtime_ready
 from .mcp.codex import CodexMcpRegistration
 from .mcp.configuration import McpConfiguration
 from .mcp.data_tables import ManagedDataTablesSkill
-from .mcp.memory import ManagedMemorySkill
 from .mcp.reconciliation import McpReconciliation
 from .shikigami_skills import ShikigamiSkillMaterializer
 
@@ -105,22 +104,13 @@ class CodexLaunch:
         except Exception as error:
             raise CodexExecutionError(str(error)) from error
 
-    def synchronize_memory_skill(self) -> bool:
-        """Materializa ou repara a skill local conforme o único estado MCP."""
-        try:
-            configuration = McpConfiguration(self.root)
-            return ManagedMemorySkill(self.root).synchronize(self.workspace, configuration.memory_tool_available())
-        except Exception as error:
-            raise CodexExecutionError(str(error)) from error
-
     def synchronize_managed_skills(self) -> bool:
-        """Mantém no workspace todos os workflows canônicos habilitados."""
+        """Mantém no workspace somente as skills próprias do Shikigami."""
         try:
             configuration = McpConfiguration(self.root)
-            memory_changed = ManagedMemorySkill(self.root).synchronize(self.workspace, configuration.memory_tool_available())
             tables_changed = ManagedDataTablesSkill(self.root).synchronize(self.workspace, configuration.data_tables_tool_available())
             shikigami_changed = ShikigamiSkillMaterializer(self.root).synchronize(self.workspace)
-            return memory_changed or tables_changed or shikigami_changed
+            return tables_changed or shikigami_changed
         except Exception as error:
             raise CodexExecutionError(str(error)) from error
 

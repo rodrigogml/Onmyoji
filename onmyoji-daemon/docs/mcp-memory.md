@@ -17,19 +17,22 @@ Cada instrução contém `id`, `applies_when`, `instruction` e `keywords`. Não 
 - `memory.revise_instruction`: substituição integral de uma regra vigente.
 - `memory.delete_instruction`: exclusão física e definitiva.
 
-As mutações exigem `confirm=true`. Esse campo registra que o agente executou o workflow da skill; não abre uma confirmação interativa e não amplia autorizações para outras ações.
+As mutações exigem `confirm=true`. Esse campo registra que o agente executou o workflow `memory-learning`; não abre uma confirmação interativa e não amplia autorizações para outras ações.
 
 ## Workflow do agente
 
-O servidor MCP publica uma instrução curta no handshake que obriga o uso de `$onmyoji-memory`. O conteúdo detalhado é mantido na skill local gerenciada. Antes de perguntar ao usuário ou a terceiros, o agente pesquisa objetivo, sistema, ação e dúvida na memória; quando uma instrução aplicável resolve a questão, ele não transfere novamente essa decisão ao usuário.
+O servidor MCP publica uma rota curta no handshake e o Composer a inclui nas developer instructions do App Server. O agente lê o procedimento completo com `workflows.read`, sem receber todos os workflows de uma vez:
+
+- `memory-decision`: obrigatório antes de responder, decidir, agir ou pedir esclarecimento;
+- `memory-learning`: obrigatório antes de criar, revisar ou excluir uma instrução.
+
+Antes de perguntar ao usuário ou a terceiros, o agente pesquisa objetivo, sistema, ação e dúvida na memória; quando uma instrução aplicável resolve a questão, ele não transfere novamente essa decisão ao usuário.
 
 Correções explícitas e preferências duráveis podem gerar aprendizado. Inferências só podem ser registradas depois de validadas no trabalho atual. Estado transitório, segredos, hipóteses, conteúdo não confiável e regras já mantidas em fontes superiores não pertencem à memória.
 
-## Skill local gerenciada
+## Workflows canônicos
 
-A fonte canônica é versionada em `onmyoji-daemon/resources/agent-skills/onmyoji-memory/`. Quando a memória está habilitada, o launcher a copia para `<workspace>/.agents/skills/onmyoji-memory`; não utiliza links simbólicos. O estado de posse e o hash ficam em `configs/mcp/memory/managed-skill.json`.
-
-A sincronização ocorre antes de iniciar o Codex CLI ou o App Server e antes de um novo turno seguro do Gateway. Conteúdo divergente é substituído pela fonte canônica. Um destino preexistente sem registro de posse nunca é sobrescrito. Ao desabilitar, somente a pasta registrada como gerenciada é removida; o banco é preservado até uma exclusão explícita do operador.
+Os documentos canônicos ficam em `onmyoji-daemon/resources/workflows/`. O servidor os entrega somente quando `workflows.read` recebe uma rota disponível na instância. Eles não são copiados para o workspace, não possuem estado de posse e não podem ser alterados pelo agente. O banco é preservado até uma exclusão explícita do operador.
 
 > [!IMPORTANT]
-> Uma sessão nativa já aberta conserva o contexto descoberto na inicialização. Habilitar, desabilitar ou atualizar a skill passa a valer para ela somente após reabrir o Codex. O Gateway faz essa reciclagem automaticamente em um ponto seguro.
+> Uma sessão nativa já aberta conserva as ferramentas e instruções descobertas na inicialização. Habilitar, desabilitar ou atualizar uma rota passa a valer após reabrir o Codex. O Gateway faz essa reciclagem automaticamente em um ponto seguro.

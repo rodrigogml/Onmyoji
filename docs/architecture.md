@@ -20,12 +20,11 @@ Shikigami-<Nome> (CODEX_HOME e repositório da instância)
 
 Shikigami-<Nome>-Work (workspace externo)
 ├── .agents/skills/<skill>/         # cópia gerenciada de skill própria habilitada
-├── .agents/skills/onmyoji-memory/  # workflow MCP, quando a memória está habilitada
 ├── .agents/skills/onmyoji-data-tables/ # workflow MCP, quando há schemas habilitados
 └── projeto e arquivos de trabalho
 ```
 
-O Codex descobre skills locais em `.agents/skills/`. Por isso, antes de cada abertura gerenciada, o launcher projeta nesse local cópias de todas as skills próprias habilitadas. A fonte continua em `shikigami-skills/`; `configs/shikigami/skills.toml` controla a habilitação e `configs/shikigami/skills-runtime.json` registra a posse e o hash da cópia. Uma divergência no workspace é reparada e jamais retorna para a fonte versionada. O launcher também projeta workflows MCP com registros independentes: memória e tabelas de dados. O banco de memória permanece fora do workspace, em `configs/mcp/memory/instructions.sqlite3`.
+O Codex descobre skills locais em `.agents/skills/`. Por isso, antes de cada abertura gerenciada, o launcher projeta nesse local cópias de todas as skills próprias habilitadas. A fonte continua em `shikigami-skills/`; `configs/shikigami/skills.toml` controla a habilitação e `configs/shikigami/skills-runtime.json` registra a posse e o hash da cópia. Uma divergência no workspace é reparada e jamais retorna para a fonte versionada. Workflows MCP extensos não são projetados: o Composer e o handshake MCP publicam somente rotas curtas, e `workflows.read` devolve o procedimento canônico sob demanda. O banco de memória permanece fora do workspace, em `configs/mcp/memory/instructions.sqlite3`.
 
 ## Configurações
 
