@@ -1,0 +1,35 @@
+from __future__ import annotations
+
+import importlib.util
+import sys
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+
+SCRIPT = Path(__file__).resolve().parents[1] / "onmyoji-daemon" / "setupMcp.py"
+SPEC = importlib.util.spec_from_file_location("onmyoji_mcp_setup", SCRIPT)
+assert SPEC and SPEC.loader
+MODULE = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = MODULE
+SPEC.loader.exec_module(MODULE)
+
+
+class McpSetupTests(unittest.TestCase):
+    def test_new_profile_suggests_default_only_when_available(self) -> None:
+        with patch.object(MODULE, "ask", return_value="default") as ask:
+            self.assertEqual(MODULE.ask_new_profile_name("Nome", {}), "default")
+        ask.assert_called_once_with("Nome", "default", required=True)
+
+        with patch.object(MODULE, "ask", return_value="outro") as ask:
+            self.assertEqual(MODULE.ask_new_profile_name("Nome", {"default": {}}), "outro")
+        ask.assert_called_once_with("Nome", "", required=True)
+
+    def test_vault_credential_targets_are_scoped_to_the_shikigami(self) -> None:
+        with patch.object(MODULE, "instance_identity", return_value="Lavelinha"), patch.object(MODULE, "ask", return_value="Lavelinha/MCP/KeePass/default") as ask, patch.object(MODULE, "os", SimpleNamespace(name="nt")):
+            auth = MODULE.profile_auth("default", Path("C:/instancia"))
+        ask.assert_called_once_with("Destino no Windows Credential Manager", "Lavelinha/MCP/KeePass/default", True)
+        self.assertEqual(auth["windows"]["target"], "Lavelinha/MCP/KeePass/default")
+        self.assertEqual(auth["linux"]["command"], ["secret-tool", "lookup", "service", "shikigami-mcp", "shikigami", "Lavelinha", "profile", "default"])
+

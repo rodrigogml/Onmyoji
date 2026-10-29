@@ -31,11 +31,11 @@ allowed_entry_roots = ["APIs/Todoist"]
 
 [profiles.example.auth.windows]
 mode = "windows_credential_manager"
-target = "Onmyoji/MCP/KeePass/example"
+target = "Teste/MCP/KeePass/example"
 
 [profiles.example.auth.linux]
 mode = "command"
-command = ["secret-tool", "lookup", "service", "onmyoji-mcp", "profile", "example"]
+command = ["secret-tool", "lookup", "service", "shikigami-mcp", "shikigami", "Teste", "profile", "example"]
 """ + extra,
         encoding="utf-8",
     )
@@ -80,7 +80,7 @@ def test_linux_uses_configured_secret_provider_then_keepass(tmp_path, monkeypatc
     monkeypatch.setattr("onmyoji_daemon.mcp.credentials.keepass.subprocess.run", run)
 
     assert resolver.resolve("example", "APIs/Todoist/example", "notes") == "todoist-token"
-    assert calls[0][0] == ["secret-tool", "lookup", "service", "onmyoji-mcp", "profile", "example"]
+    assert calls[0][0] == ["secret-tool", "lookup", "service", "shikigami-mcp", "shikigami", "Teste", "profile", "example"]
     assert calls[1][1]["input"] == "master-password\n"
 
 

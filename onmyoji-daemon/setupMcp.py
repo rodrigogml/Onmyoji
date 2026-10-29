@@ -18,7 +18,7 @@ if hasattr(sys.stderr, "reconfigure"):
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from setupOnmyoji import Ui, choose, item, note, prompt, result, screen
+from setupOnmyoji import Ui, choose, instance_identity, item, note, prompt, result, screen
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
@@ -51,6 +51,11 @@ def ask(label: str, current: str = "", required: bool = False) -> str | None:
     if value.casefold() in {"x", "\x1b"}: return None
     if value: return value
     return current if current or not required else None
+
+
+def ask_new_profile_name(label: str, profiles: dict[str, object]) -> str | None:
+    """Sugere ``default`` apenas enquanto esse nome ainda estiver disponível."""
+    return ask(label, "default" if "default" not in profiles else "", required=True)
 
 
 def select(title: str, names: list[str]) -> str | None:
@@ -103,27 +108,32 @@ def store_windows_password(target: str, password: str) -> None:
     if not ctypes.windll.advapi32.CredWriteW(ctypes.byref(credential), 0): raise OSError("Não foi possível salvar a credencial Windows.")
 
 
-def profile_auth(name: str) -> dict:
+def profile_auth(name: str, root: Path = ROOT) -> dict:
+    identity = instance_identity(root)
+    target = f"{identity}/MCP/KeePass/{name}"
+    linux_command = ["secret-tool", "lookup", "service", "shikigami-mcp", "shikigami", identity, "profile", name]
     if os.name == "nt":
-        target = ask("Destino no Windows Credential Manager", f"Onmyoji/MCP/KeePass/{name}", True)
-        return {"windows": {"mode": "windows_credential_manager", "target": target or ""}, "linux": {"mode": "command", "command": ["secret-tool", "lookup", "service", "onmyoji-mcp", "profile", name]}}
-    return {"windows": {"mode": "windows_credential_manager", "target": f"Onmyoji/MCP/KeePass/{name}"}, "linux": {"mode": "command", "command": ["secret-tool", "lookup", "service", "onmyoji-mcp", "profile", name]}}
+        target = ask("Destino no Windows Credential Manager", target, True)
+        return {"windows": {"mode": "windows_credential_manager", "target": target or ""}, "linux": {"mode": "command", "command": linux_command}}
+    return {"windows": {"mode": "windows_credential_manager", "target": target}, "linux": {"mode": "command", "command": linux_command}}
 
 
-def save_password(name: str, auth: dict) -> None:
+def save_password(name: str, auth: dict, root: Path = ROOT) -> None:
     password = getpass.getpass(Ui.text("› Senha mestra KeePass (não será exibida): ", Ui.violet, Ui.bold))
     if not password: return
     try:
         if os.name == "nt": store_windows_password(auth["windows"]["target"], password)
-        else: subprocess.run(["secret-tool", "store", f"--label=Onmyoji MCP KeePass {name}", "service", "onmyoji-mcp", "profile", name], input=password + "\n", text=True, check=True, timeout=20, capture_output=True)
+        else:
+            identity = instance_identity(root)
+            subprocess.run(["secret-tool", "store", f"--label={identity} MCP KeePass {name}", "service", "shikigami-mcp", "shikigami", identity, "profile", name], input=password + "\n", text=True, check=True, timeout=20, capture_output=True)
         result(True, "Senha mestra salva no provedor do sistema operacional.")
     except (OSError, subprocess.SubprocessError): result(False, "Não foi possível salvar a senha no provedor do sistema operacional.")
 
 
 def create_vault_profile(config: McpConfiguration) -> None:
-    name = ask("Nome do perfil de vault", required=True)
-    if not name: return
     data = config.credentials()
+    name = ask_new_profile_name("Nome do perfil de vault", data["profiles"])
+    if not name: return
     if name in data["profiles"]: result(False, "Já existe um perfil com esse nome."); return
     origin = choose("Cofre KeePassXC", ["Associar arquivo KDBX existente", "Criar cofre KDBX local"], "Associar arquivo KDBX existente")
     if origin is None: return
@@ -131,7 +141,7 @@ def create_vault_profile(config: McpConfiguration) -> None:
     platform = "windows" if os.name == "nt" else "linux"
     database = str(config.root / "configs" / "mcp" / "vaults" / f"{name}.kdbx") if origin.startswith("Criar") else ask(f"Arquivo KDBX no {platform}", required=True)
     if not executable or not database: return
-    auth = profile_auth(name)
+    auth = profile_auth(name, config.root)
     roots = ask("Raízes de entradas permitidas, separadas por ; (vazio = todas)", "")
     data["vaults"][name] = {"cli_command": [executable], "database": {"windows": database if platform == "windows" else "", "linux": database if platform == "linux" else ""}}
     data["profiles"][name] = {"vault": name, "allowed_entry_roots": [item.strip() for item in (roots or "").split(";") if item.strip()], "auth": auth}
@@ -144,7 +154,7 @@ def create_vault_profile(config: McpConfiguration) -> None:
             made = subprocess.run([executable, "db-create", "--set-password", database], input=password + "\n" + password + "\n", text=True, timeout=60, capture_output=True)
             if made.returncode or not Path(database).is_file(): result(False, "KeePassXC não criou o cofre."); return
         except (OSError, subprocess.SubprocessError): result(False, "Não foi possível criar o cofre."); return
-        config.save_credentials(data); save_password(name, auth)
+        config.save_credentials(data); save_password(name, auth, config.root)
     else: config.save_credentials(data)
     result(True, "Perfil de vault salvo.")
 
@@ -171,10 +181,10 @@ def manage_vault_profile(config: McpConfiguration, name: str) -> None:
             return
         if action == "1": vault["database"]["windows" if os.name == "nt" else "linux"] = ask("Arquivo KDBX", vault["database"]["windows" if os.name == "nt" else "linux"], True) or vault["database"]["windows" if os.name == "nt" else "linux"]
         elif action == "2": vault["cli_command"] = [ask("Executável", vault["cli_command"][0], True) or vault["cli_command"][0]]
-        elif action == "3": profile["auth"] = profile_auth(name)
+        elif action == "3": profile["auth"] = profile_auth(name, config.root)
         elif action == "4": profile["allowed_entry_roots"] = [item.strip() for item in (ask("Raízes separadas por ;", ";".join(profile["allowed_entry_roots"])) or "").split(";") if item.strip()]
         elif action == "5":
-            save_password(name, profile["auth"])
+            save_password(name, profile["auth"], config.root)
             continue
         elif action == "6":
             try: KeePassCredentialResolver(config.root).test_profile_access(name); result(True, "Acesso ao cofre confirmado.")
@@ -458,7 +468,7 @@ def todoist_menu(config: McpConfiguration) -> None:
         choice = prompt("Opção: ").strip().casefold()
         if choice == "x": return
         if choice == "1":
-            name = ask("Nome do perfil Todoist", required=True); vault = select("Escolha o perfil de vault", config.vault_profile_names())
+            name = ask_new_profile_name("Nome do perfil Todoist", data["profiles"]); vault = select("Escolha o perfil de vault", config.vault_profile_names())
             if not name or not vault or name in data["profiles"]: result(False, "Nome inválido, repetido ou retorno solicitado."); continue
             entry = ask("Entrada KeePass da chave", f"APIs/Todoist/{name}", True)
             if not entry: result(False, "Perfil Todoist inválido."); continue
@@ -562,7 +572,7 @@ def omie_menu(config: McpConfiguration) -> None:
         if choice in {"x", "\x1b"}:
             return
         if choice == "1":
-            name = ask("Nome do perfil Omie", required=True); vault = select("Escolha o perfil de vault", config.vault_profile_names())
+            name = ask_new_profile_name("Nome do perfil Omie", data["profiles"]); vault = select("Escolha o perfil de vault", config.vault_profile_names())
             if not name or not vault or name in data["profiles"]:
                 result(False, "Nome inválido, repetido ou retorno solicitado.")
                 continue
@@ -679,7 +689,7 @@ def cloudflare_menu(config: McpConfiguration) -> None:
         if choice in {"x", "\x1b"}:
             return
         if choice == "1":
-            name = ask("Nome do perfil Cloudflare", required=True); vault = select("Escolha o perfil de vault", config.vault_profile_names())
+            name = ask_new_profile_name("Nome do perfil Cloudflare", data["profiles"]); vault = select("Escolha o perfil de vault", config.vault_profile_names())
             if not name or not vault or name in data["profiles"]:
                 result(False, "Nome inválido, repetido ou retorno solicitado.")
                 continue
@@ -802,7 +812,7 @@ def forward_email_menu(config: McpConfiguration) -> None:
         if choice in {"x", "\x1b"}:
             return
         if choice == "1":
-            name = ask("Nome do perfil Forward Email", required=True); vault = select("Escolha o perfil de vault", config.vault_profile_names())
+            name = ask_new_profile_name("Nome do perfil Forward Email", data["profiles"]); vault = select("Escolha o perfil de vault", config.vault_profile_names())
             if not name or not vault or name in data["profiles"]:
                 result(False, "Nome inválido, repetido ou retorno solicitado.")
                 continue
@@ -925,7 +935,7 @@ def notion_menu(config: McpConfiguration) -> None:
         if choice in {"x", "\x1b"}:
             return
         if choice == "1":
-            name = ask("Nome do perfil Notion", required=True); vault = select("Escolha o perfil de vault", config.vault_profile_names())
+            name = ask_new_profile_name("Nome do perfil Notion", data["profiles"]); vault = select("Escolha o perfil de vault", config.vault_profile_names())
             if not name or not vault or name in data["profiles"]:
                 result(False, "Nome inválido, repetido ou retorno solicitado.")
                 continue
@@ -1033,7 +1043,7 @@ def aws_menu(config: McpConfiguration) -> None:
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
         if choice == "1":
-            name = ask("Nome do perfil AWS", required=True); vault = select("Escolha o perfil de vault", config.vault_profile_names())
+            name = ask_new_profile_name("Nome do perfil AWS", data["profiles"]); vault = select("Escolha o perfil de vault", config.vault_profile_names())
             if not name or not vault or name in data["profiles"]: result(False, "Nome inválido, repetido ou retorno solicitado."); continue
             entry = ask("Entrada KeePass das credenciais", f"APIs/AWS/{name}", True)
             if not entry: result(False, "Perfil AWS inválido."); continue
@@ -1117,7 +1127,7 @@ def mysql_menu(config: McpConfiguration) -> None:
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
         if choice == "1":
-            name = ask("Nome do perfil MySQL", required=True); vault = select("Escolha o perfil de vault", config.vault_profile_names())
+            name = ask_new_profile_name("Nome do perfil MySQL", data["profiles"]); vault = select("Escolha o perfil de vault", config.vault_profile_names())
             if not name or not vault or name in data["profiles"]: result(False, "Nome inválido, repetido ou retorno solicitado."); continue
             entry = ask("Entrada KeePass das credenciais", f"APIs/MySQL/{name}", True)
             if not entry: continue
@@ -1218,7 +1228,7 @@ def ssh_menu(config: McpConfiguration) -> None:
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
         if choice == "1":
-            name = ask("Nome do perfil SSH", required=True); vault = select("Escolha o perfil de vault", config.vault_profile_names())
+            name = ask_new_profile_name("Nome do perfil SSH", data["profiles"]); vault = select("Escolha o perfil de vault", config.vault_profile_names())
             if not name or not vault or name in data["profiles"]: result(False, "Nome inválido, repetido ou retorno solicitado."); continue
             host = ask("Host", required=True); port = ask("Porta", "22", True); username = ask("Usuário", required=True)
             mode_label = choose("Autenticação SSH", ["Senha", "Chave privada"], "Chave privada")
@@ -1302,7 +1312,7 @@ def bis2cmd_menu(config: McpConfiguration) -> None:
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
         if choice == "1":
-            name = ask("Nome do perfil BIS2CMD", required=True); vault = select("Escolha o perfil de vault", config.vault_profile_names())
+            name = ask_new_profile_name("Nome do perfil BIS2CMD", data["profiles"]); vault = select("Escolha o perfil de vault", config.vault_profile_names())
             if not name or not vault or name in data["profiles"]: result(False, "Nome inválido, repetido ou retorno solicitado."); continue
             entry = ask("Entrada KeePass", f"APIs/BIS2CMD/{name}", True)
             if not entry: continue
@@ -1380,7 +1390,7 @@ def bis10cmd_menu(config: McpConfiguration) -> None:
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
         if choice == "1":
-            name = ask("Nome do perfil BIS10CMD", required=True)
+            name = ask_new_profile_name("Nome do perfil BIS10CMD", data["profiles"])
             if not name or name in data["profiles"]: result(False, "Nome inválido, repetido ou retorno solicitado."); continue
             jndi_vault = select("Escolha o perfil de vault JNDI", config.vault_profile_names())
             if not jndi_vault: continue
@@ -1627,7 +1637,7 @@ def btg_menu(config: McpConfiguration) -> None:
         if choice != "1":
             result(False, "Opção inválida.")
             continue
-        name = ask("Nome do perfil BTG", required=True)
+        name = ask_new_profile_name("Nome do perfil BTG", data["profiles"])
         if not name or name in data["profiles"]:
             result(False, "Nome inválido, repetido ou retorno solicitado.")
             continue
@@ -1721,7 +1731,7 @@ def eccovox_menu(config: McpConfiguration) -> None:
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
         if choice == "1":
-            name = ask("Nome do perfil", required=True)
+            name = ask_new_profile_name("Nome do perfil", data["profiles"])
             if not name or name in data["profiles"]: result(False, "Nome inválido ou perfil já existente."); continue
             description = ask("Descrição de quando utilizar este perfil", required=True)
             endpoint = ask("Endpoint HTTP local", "http://127.0.0.1:8870", True)
@@ -1807,7 +1817,7 @@ def google_menu(config: McpConfiguration) -> None:
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
         if choice == "1":
-            name = ask("Nome do perfil Google", required=True); vault = select("Escolha o perfil de vault", config.vault_profile_names())
+            name = ask_new_profile_name("Nome do perfil Google", data["profiles"]); vault = select("Escolha o perfil de vault", config.vault_profile_names())
             if not name or not vault or name in data["profiles"]: result(False, "Nome inválido, repetido ou retorno solicitado."); continue
             entry = ask("Entrada KeePass", f"APIs/Google/{name}", True)
             if not entry: continue
@@ -1885,7 +1895,7 @@ def spotify_menu(config: McpConfiguration) -> None:
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
         if choice == "1":
-            name = ask("Nome do perfil Spotify", required=True); vault = select("Escolha o perfil de vault", config.vault_profile_names())
+            name = ask_new_profile_name("Nome do perfil Spotify", data["profiles"]); vault = select("Escolha o perfil de vault", config.vault_profile_names())
             if not name or not vault or name in data["profiles"]: result(False, "Nome inválido, repetido ou retorno solicitado."); continue
             entry = ask("Entrada KeePass", f"APIs/Spotify/{name}", True)
             if not entry: continue

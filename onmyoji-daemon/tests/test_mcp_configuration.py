@@ -5,7 +5,7 @@ from onmyoji_daemon.mcp.configuration import McpConfiguration
 
 
 def vault_profile() -> dict:
-    return {"vault": "vault-a", "allowed_entry_roots": ["APIs"], "auth": {"windows": {"mode": "windows_credential_manager", "target": "Onmyoji/MCP/KeePass/vault-a"}, "linux": {"mode": "command", "command": ["secret-tool", "lookup", "service", "onmyoji-mcp", "profile", "vault-a"]}}}
+    return {"vault": "vault-a", "allowed_entry_roots": ["APIs"], "auth": {"windows": {"mode": "windows_credential_manager", "target": "Teste/MCP/KeePass/vault-a"}, "linux": {"mode": "command", "command": ["secret-tool", "lookup", "service", "shikigami-mcp", "shikigami", "Teste", "profile", "vault-a"]}}}
 
 
 def test_todoist_tool_depends_on_enabled_profile_and_existing_vault_profile(tmp_path):
