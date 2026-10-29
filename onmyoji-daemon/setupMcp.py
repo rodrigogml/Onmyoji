@@ -1959,13 +1959,13 @@ def memory_menu(config: McpConfiguration) -> None:
     while True:
         data = config.memory(); enabled = data["enabled"] is True
         screen("MCP · Memória", "Livro de instruções atuais do Shikigami")
-        item("1.", "Desabilitar" if enabled else "Habilitar", "Remove ou materializa a skill gerenciada no próximo início do Codex")
+        item("1.", "Desabilitar" if enabled else "Habilitar", "Publica ou remove as ferramentas e workflows MCP na próxima sessão do Codex")
         item("2.", "Máximo de resultados", str(data["max_results"])); item("3.", "Gerenciar instruções"); item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
         if choice == "1":
             data["enabled"] = not enabled
-            try: config.save_memory(data); result(True, "Memória habilitada; a skill será materializada antes da próxima abertura do Codex." if not enabled else "Memória desabilitada; a skill gerenciada será removida antes da próxima abertura do Codex.")
+            try: config.save_memory(data); result(True, "Memória habilitada; ferramentas e workflows MCP estarão disponíveis na próxima sessão do Codex." if not enabled else "Memória desabilitada; suas ferramentas e workflows MCP não serão publicados na próxima sessão do Codex.")
             except McpConfigurationError as error: result(False, str(error))
         elif choice == "2":
             value = ask("Quantidade máxima por busca (1 a 10)", str(data["max_results"]), True)

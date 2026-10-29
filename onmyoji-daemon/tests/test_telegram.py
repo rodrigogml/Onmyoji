@@ -96,7 +96,7 @@ def test_gateway_recycles_only_the_idle_app_server_when_mcp_reconciliation_is_pe
     assert client.stops == 1 and client.starts == 1
 
 
-def test_gateway_recycles_context_when_managed_memory_skill_is_repaired(tmp_path, monkeypatch):
+def test_gateway_recycles_context_when_shikigami_skills_are_synchronized(tmp_path, monkeypatch):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
     gateway = Gateway(Settings.load(tmp_path, data))
     gateway.database.execute("INSERT INTO conversations(chat_id, updated_at, last_interaction_at, codex_thread_id, instruction_baseline_hash) VALUES ('1', 1, 1, 'thread-old', 'hash-old')"); gateway.database.commit()
