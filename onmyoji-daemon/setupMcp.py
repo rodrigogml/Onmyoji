@@ -118,8 +118,10 @@ def profile_auth(name: str, root: Path = ROOT) -> dict:
     return {"windows": {"mode": "windows_credential_manager", "target": target}, "linux": {"mode": "command", "command": linux_command}}
 
 
-def save_password(name: str, auth: dict, root: Path = ROOT) -> None:
-    password = getpass.getpass(Ui.text("› Senha mestra KeePass (não será exibida): ", Ui.violet, Ui.bold))
+def save_password(name: str, auth: dict, root: Path = ROOT, password: str | None = None) -> None:
+    """Grava a senha no cofre do sistema, solicitando-a somente se necessário."""
+    if password is None:
+        password = getpass.getpass(Ui.text("› Senha mestra KeePass (não será exibida): ", Ui.violet, Ui.bold))
     if not password: return
     try:
         if os.name == "nt": store_windows_password(auth["windows"]["target"], password)
@@ -154,7 +156,7 @@ def create_vault_profile(config: McpConfiguration) -> None:
             made = subprocess.run([executable, "db-create", "--set-password", database], input=password + "\n" + password + "\n", text=True, timeout=60, capture_output=True)
             if made.returncode or not Path(database).is_file(): result(False, "KeePassXC não criou o cofre."); return
         except (OSError, subprocess.SubprocessError): result(False, "Não foi possível criar o cofre."); return
-        config.save_credentials(data); save_password(name, auth, config.root)
+        config.save_credentials(data); save_password(name, auth, config.root, password)
     else: config.save_credentials(data)
     result(True, "Perfil de vault salvo.")
 

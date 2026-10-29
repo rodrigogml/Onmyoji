@@ -33,3 +33,10 @@ class McpSetupTests(unittest.TestCase):
         self.assertEqual(auth["windows"]["target"], "Lavelinha/MCP/KeePass/default")
         self.assertEqual(auth["linux"]["command"], ["secret-tool", "lookup", "service", "shikigami-mcp", "shikigami", "Lavelinha", "profile", "default"])
 
+    def test_new_vault_password_is_reused_without_a_third_prompt(self) -> None:
+        auth = {"windows": {"target": "Lavelinha/MCP/KeePass/default"}}
+        with patch.object(MODULE, "os", SimpleNamespace(name="nt")), patch.object(MODULE.getpass, "getpass") as getpass, patch.object(MODULE, "store_windows_password") as store, patch.object(MODULE, "result"):
+            MODULE.save_password("default", auth, password="senha-confirmada")
+        getpass.assert_not_called()
+        store.assert_called_once_with("Lavelinha/MCP/KeePass/default", "senha-confirmada")
+
