@@ -8,9 +8,9 @@ import threading
 import tomllib
 from pathlib import Path
 
-from .instructions import InstructionComposer
 from .instance import telegram_configuration_path
 from .telegram import CodexAppServer, CodexProtocolError, Settings
+from .codex_execution import CodexLaunch
 
 
 def _bootstrap(root: Path, data_dir: Path) -> None:
@@ -108,9 +108,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__); parser.add_argument("--onmyoji-root", type=Path, required=True); args = parser.parse_args(argv)
     root = args.onmyoji_root.resolve(); data_dir = root / "configs" / "daemon" / "services" / "telegram"; _bootstrap(root, data_dir)
     settings = Settings.load(root, data_dir)
-    composer = InstructionComposer(root, data_dir, settings.instructions_file, settings.instructions_enabled)
     from .instance import identity
-    bundle = composer.compose(identity=identity(root), telegram=False)
+    bundle = CodexLaunch.from_system(root).developer_instructions()
     client = CodexAppServer(settings); completed, final, active_thread = threading.Event(), {"text": ""}, {"id": ""}
     terminal_lock = threading.Lock()
     def notification(method: str, params: dict) -> None:
@@ -124,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
             return _approval_response(method, params, active_thread["id"])
     client.request_handler = request_handler
     try:
-        parameters = {"cwd": str(settings.project), "approvalPolicy": _approval_policy(settings), "sandboxPolicy": _sandbox_policy(settings), "developerInstructions": bundle.text, "serviceName": "onmyoji_interactive"}
+        parameters = {"cwd": str(settings.project), "approvalPolicy": _approval_policy(settings), "sandboxPolicy": _sandbox_policy(settings), "developerInstructions": bundle, "serviceName": "onmyoji_interactive"}
         if settings.model: parameters["model"] = settings.model
         started = client.request("thread/start", parameters)
         thread = started.get("thread") if isinstance(started.get("thread"), dict) else started; thread_id = str(thread.get("id") or "")

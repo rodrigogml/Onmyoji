@@ -7,6 +7,7 @@ registro MCP. Nenhum consumidor deve montar esses valores isoladamente.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 from typing import Any, Mapping
@@ -17,6 +18,8 @@ from .mcp.configuration import McpConfiguration
 from .mcp.data_tables import ManagedDataTablesSkill
 from .mcp.reconciliation import McpReconciliation
 from .shikigami_skills import ShikigamiSkillMaterializer
+from .instructions import InstructionComposer, InstructionError
+from .instance import identity
 
 
 class CodexExecutionError(RuntimeError):
@@ -80,11 +83,36 @@ class CodexLaunch:
         return environment
 
     def direct_command(self) -> list[str]:
-        """Monta o cliente interativo nativo com as mesmas raízes declaradas."""
-        command = [self.executable]
+        """Monta o cliente nativo com a composição comum de instruções."""
+        command = [self.executable, "--config", self._developer_instruction_override()]
         for directory in self.writable_directories:
             command.extend(["--add-dir", directory])
         return command
+
+    def developer_instructions(self) -> str:
+        """Compõe as instruções comuns a todo ponto de entrada não Telegram."""
+        instructions: Mapping[str, object] = {}
+        try:
+            import tomllib
+            platform = tomllib.loads((self.root / "configs" / "daemon" / "daemon.toml").read_text(encoding="utf-8"))
+            if isinstance(platform.get("instructions"), dict):
+                instructions = platform["instructions"]
+        except (OSError, ValueError, AttributeError):
+            pass
+        try:
+            bundle = InstructionComposer(
+                self.root,
+                self.root / "configs" / "daemon" / "services" / "telegram",
+                str(instructions.get("shikigami_file") or "instructions.md"),
+                bool(instructions.get("enabled", True)),
+            ).compose(identity=identity(self.root), telegram=False)
+        except InstructionError as error:
+            raise CodexExecutionError(str(error)) from error
+        return bundle.text
+
+    def _developer_instruction_override(self) -> str:
+        """Codifica a composição como valor TOML aceito por ``codex --config``."""
+        return "developer_instructions=" + json.dumps(self.developer_instructions(), ensure_ascii=False)
 
     def direct_launch(self) -> tuple[list[str], Path, dict[str, str]]:
         """Prepara o cliente direto e reconcilia o MCP quando houver pendência."""

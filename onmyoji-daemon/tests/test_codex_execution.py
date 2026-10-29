@@ -1,6 +1,7 @@
 """Contrato comum de inicialização do Codex."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -29,7 +30,9 @@ def test_direct_cli_and_app_server_share_instance_context(tmp_path: Path, monkey
     direct, direct_cwd, direct_environment = launch.direct_launch()
     command, cwd, environment = launch.app_server_launch()
 
-    assert direct == ["codex", "--add-dir", "reports"]
+    assert direct[:2] == ["codex", "--config"] and direct[-2:] == ["--add-dir", "reports"]
+    key, value = direct[2].split("=", 1)
+    assert key == "developer_instructions" and "[ONMYŌJI — INSTRUÇÕES GERAIS]" in json.loads(value)
     assert direct_cwd == cwd and direct_environment["CODEX_HOME"] == environment["CODEX_HOME"]
     assert command == ["codex", "app-server", "--stdio"]
     assert cwd == workspace.resolve()
