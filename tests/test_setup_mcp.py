@@ -26,6 +26,13 @@ class McpSetupTests(unittest.TestCase):
             self.assertEqual(MODULE.ask_new_profile_name("Nome", {"default": {}}), "outro")
         ask.assert_called_once_with("Nome", "", required=True)
 
+    def test_profile_selection_is_a_flow_step_not_a_new_screen(self) -> None:
+        with patch.object(MODULE, "flow_choice", return_value="principal") as choice, patch.object(MODULE, "screen") as screen:
+            selected = MODULE.select("Escolha o perfil de vault", ["principal"])
+        self.assertEqual(selected, "principal")
+        choice.assert_called_once_with("Escolha o perfil de vault", ["principal"], "")
+        screen.assert_not_called()
+
     def test_vault_credential_targets_are_scoped_to_the_shikigami(self) -> None:
         with patch.object(MODULE, "instance_identity", return_value="Lavelinha"), patch.object(MODULE, "ask", return_value="Lavelinha/MCP/KeePass/default") as ask, patch.object(MODULE, "os", SimpleNamespace(name="nt")):
             auth = MODULE.profile_auth("default", Path("C:/instancia"))

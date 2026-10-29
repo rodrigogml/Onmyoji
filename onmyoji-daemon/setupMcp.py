@@ -18,7 +18,7 @@ if hasattr(sys.stderr, "reconfigure"):
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from setupOnmyoji import Ui, choose, instance_identity, item, note, prompt, result, screen
+from setupOnmyoji import Ui, flow_choice, instance_identity, item, note, prompt, result, screen
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
@@ -58,17 +58,12 @@ def ask_new_profile_name(label: str, profiles: dict[str, object]) -> str | None:
     return ask(label, "default" if "default" not in profiles else "", required=True)
 
 
-def select(title: str, names: list[str]) -> str | None:
-    screen(title, "Selecione um perfil ou pressione X para voltar")
+def select(title: str, names: list[str], current: str = "") -> str | None:
+    """Seleciona um perfil como etapa do fluxo atual, sem abrir um submenu."""
     if not names:
-        note("Nenhum perfil está configurado.")
-    for index, name in enumerate(names, 1): item(f"{index}.", name)
-    item("X.", "Voltar")
-    while True:
-        choice = prompt("Opção: ").strip().casefold()
-        if choice in {"x", "\x1b"}: return None
-        if choice.isdigit() and 1 <= int(choice) <= len(names): return names[int(choice) - 1]
-        result(False, "Opção inválida.")
+        result(False, "Nenhum perfil está configurado.")
+        return None
+    return flow_choice(title, names, current)
 
 
 def menu_width() -> int:
@@ -137,7 +132,7 @@ def create_vault_profile(config: McpConfiguration) -> None:
     name = ask_new_profile_name("Nome do perfil de vault", data["profiles"])
     if not name: return
     if name in data["profiles"]: result(False, "Já existe um perfil com esse nome."); return
-    origin = choose("Cofre KeePassXC", ["Associar arquivo KDBX existente", "Criar cofre KDBX local"], "Associar arquivo KDBX existente")
+    origin = flow_choice("Cofre KeePassXC", ["Associar arquivo KDBX existente", "Criar cofre KDBX local"], "Associar arquivo KDBX existente")
     if origin is None: return
     executable = ask("Executável KeePassXC", "keepassxc-cli", True)
     platform = "windows" if os.name == "nt" else "linux"
@@ -264,7 +259,7 @@ def configure_vault_password_entry(config: McpConfiguration, vault_profile: str,
                 result(False, str(error))
                 return None
             if not has_password:
-                decision = choose(
+                decision = flow_choice(
                     f"Credencial · {integration_name}",
                     ["Informar a chave e salvar nesta entrada", "Reinformar entrada KeePass"],
                     "Informar a chave e salvar nesta entrada",
@@ -286,7 +281,7 @@ def configure_vault_password_entry(config: McpConfiguration, vault_profile: str,
                     result(False, str(error))
                     return None
                 return entry, "password"
-            decision = choose(
+            decision = flow_choice(
                 f"Credencial · {integration_name}",
                 ["Usar a chave já salva", "Informar uma nova chave e substituir a salva", "Reinformar entrada KeePass"],
                 "Usar a chave já salva",
@@ -310,7 +305,7 @@ def configure_vault_password_entry(config: McpConfiguration, vault_profile: str,
                 result(False, str(error))
                 return None
             return entry, "password"
-        decision = choose(
+        decision = flow_choice(
             f"Credencial · {integration_name}",
             ["Informar a chave e criar esta entrada", "Reinformar entrada KeePass"],
             "Informar a chave e criar esta entrada",
@@ -354,7 +349,7 @@ def configure_vault_entry_fields(config: McpConfiguration, vault_profile: str, e
                 return None
             if has_value:
                 options = [f"Usar {label} já salvo", f"Informar novo {label} e substituir o salvo", "Reinformar entrada KeePass"]
-                decision = choose(f"Credencial · {integration_name}", options, options[0])
+                decision = flow_choice(f"Credencial · {integration_name}", options, options[0])
                 if decision is None:
                     return None
                 if decision.startswith("Reinformar"):
@@ -365,7 +360,7 @@ def configure_vault_entry_fields(config: McpConfiguration, vault_profile: str, e
                     continue
             else:
                 options = [f"Informar {label} e salvar nesta entrada", "Reinformar entrada KeePass"]
-                decision = choose(f"Credencial · {integration_name}", options, options[0])
+                decision = flow_choice(f"Credencial · {integration_name}", options, options[0])
                 if decision is None:
                     return None
                 if decision.startswith("Reinformar"):
@@ -1148,7 +1143,7 @@ def trust_ssh_host(host: str, port: int, known_hosts: str) -> bool:
     """Exibe a fingerprint antes de persistir a chave apresentada pelo host."""
     try:
         key, fingerprint = fetch_host_key(host, port)
-        screen("MCP · SSH", "Confirmar identidade do servidor")
+        print("\n  " + Ui.text("Confirmar identidade do servidor SSH", Ui.bold, Ui.violet))
         note(f"Servidor: {host if port == 22 else f'[{host}]:{port}'}"); note(f"Chave: {key.get_name()} · {fingerprint}"); note(f"Arquivo: {known_hosts}")
         confirmation = ask("Digite CONFIAR para gravar esta chave", required=True)
         if confirmation is None or confirmation.casefold() != "confiar": result(False, "Chave SSH não gravada."); return False
@@ -1188,7 +1183,7 @@ def manage_ssh_profile(config: McpConfiguration, name: str) -> None:
         elif action == "2":
             vault = select("Escolha o perfil de vault", config.vault_profile_names())
             if not vault: continue
-            mode_label = choose("Autenticação SSH", ["Senha", "Chave privada"], "Senha" if profile["auth_mode"] == "password" else "Chave privada")
+            mode_label = flow_choice("Autenticação SSH", ["Senha", "Chave privada"], "Senha" if profile["auth_mode"] == "password" else "Chave privada")
             if mode_label is None: continue
             mode = "password" if mode_label == "Senha" else "key"; entry = ask("Entrada KeePass", profile["credential_entry_path"], True)
             if not entry: continue
@@ -1233,7 +1228,7 @@ def ssh_menu(config: McpConfiguration) -> None:
             name = ask_new_profile_name("Nome do perfil SSH", data["profiles"]); vault = select("Escolha o perfil de vault", config.vault_profile_names())
             if not name or not vault or name in data["profiles"]: result(False, "Nome inválido, repetido ou retorno solicitado."); continue
             host = ask("Host", required=True); port = ask("Porta", "22", True); username = ask("Usuário", required=True)
-            mode_label = choose("Autenticação SSH", ["Senha", "Chave privada"], "Chave privada")
+            mode_label = flow_choice("Autenticação SSH", ["Senha", "Chave privada"], "Chave privada")
             if not host or not port or not port.isdigit() or not username or mode_label is None: result(False, "Perfil SSH inválido."); continue
             mode = "password" if mode_label == "Senha" else "key"; entry = ask("Entrada KeePass", f"APIs/SSH/{name}", True)
             if not entry: continue
@@ -1443,7 +1438,7 @@ def btg_payment_settings(config: McpConfiguration, name: str) -> None:
                 continue
             profile["max_amount"] = value
         elif action == "2":
-            selection = choose("Monitor deste perfil", ["Habilitado", "Desabilitado"], "Habilitado" if profile.get("monitor_enabled") else "Desabilitado")
+            selection = flow_choice("Monitor deste perfil", ["Habilitado", "Desabilitado"], "Habilitado" if profile.get("monitor_enabled") else "Desabilitado")
             if selection is None:
                 continue
             if selection == "Habilitado":
@@ -1566,7 +1561,7 @@ def manage_btg_profile(config: McpConfiguration, name: str) -> None:
             btg_payment_settings(config, name)
             continue
         elif action == "8":
-            origin = choose("URI de retorno BTG", ["Calcular pelo Gateway/Tunnel", "Informar manualmente"], "Calcular pelo Gateway/Tunnel")
+            origin = flow_choice("URI de retorno BTG", ["Calcular pelo Gateway/Tunnel", "Informar manualmente"], "Calcular pelo Gateway/Tunnel")
             if origin is None:
                 continue
             if origin.startswith("Calcular"):
@@ -1643,7 +1638,7 @@ def btg_menu(config: McpConfiguration) -> None:
         if not name or name in data["profiles"]:
             result(False, "Nome inválido, repetido ou retorno solicitado.")
             continue
-        environment = choose("Ambiente BTG", ["sandbox", "production"], "sandbox")
+        environment = flow_choice("Ambiente BTG", ["sandbox", "production"], "sandbox")
         if environment is None:
             continue
         company = ask("CNPJ da empresa (14 dígitos)", required=True)

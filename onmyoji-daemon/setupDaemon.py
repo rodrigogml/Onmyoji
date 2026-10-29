@@ -562,4 +562,11 @@ def main() -> int:
     ok, message = test_agent(root) if args.action == "test-agent" else test_telegram(root); print(message); return 0 if ok else 2
 
 
-if __name__ == "__main__": raise SystemExit(main())
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        # setupOnmyoji.py exibe esta saída como resultado da ação; traceback não
+        # é uma interface operacional e ainda confunde o roteiro do operador.
+        print(f"Falha na operação: {error}", file=sys.stderr)
+        raise SystemExit(2) from None

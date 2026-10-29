@@ -4,7 +4,6 @@ from __future__ import annotations
 import re
 import os
 import json
-import shutil
 import subprocess
 import sys
 import unicodedata
@@ -176,20 +175,11 @@ def prompt_directory_name(message: str, default: str, base: Path, ask: Callable[
     return base / directory_name_for(value, message)
 
 
-def screen(title: str, subtitle: str) -> None:
-    """Renderiza o cabeçalho com as mesmas dimensões e cores do setup."""
-    width = max(56, min(shutil.get_terminal_size((78, 24)).columns, 96))
-    print("\n" + Ui.text("╭" + "─" * (width - 2) + "╮", Ui.violet))
-    heading = f" ONMYŌJI  /  {title.upper()}"
-    print("│" + Ui.text(heading.ljust(width - 2), Ui.bold, Ui.violet) + "│")
-    print("│ " + Ui.text(subtitle[:width - 4].ljust(width - 4), Ui.slate) + " │")
-    print(Ui.text("╰" + "─" * (width - 2) + "╯", Ui.violet))
-
-
 def interactive(ask: Callable[[str], str] = input, output: Callable[[str], None] = print) -> int:
     """Conduz a criação interativa de uma instância de Shikigami."""
     if output is print:
-        screen("Instalador de Shikigami", "Cria uma instância, seu workspace e a identidade local")
+        print("\n  " + Ui.text("ONMYŌJI / INSTALADOR DE SHIKIGAMI", Ui.bold, Ui.violet))
+        print("  " + Ui.text("Cria uma instância, seu workspace e a identidade local", Ui.slate))
     else:
         output("ONMYŌJI / INSTALADOR DE SHIKIGAMI")
     try:

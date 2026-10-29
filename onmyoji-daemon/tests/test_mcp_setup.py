@@ -331,7 +331,7 @@ def test_btg_payment_limit_and_monitor_settings_do_not_start_daemon(monkeypatch)
     config.save_btg.side_effect = save
     answers = iter(["1", "50.00", "2", "x"])
     monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
-    monkeypatch.setattr(module, "choose", lambda *_args: "Habilitado")
+    monkeypatch.setattr(module, "flow_choice", lambda *_args: "Habilitado")
     runtime = Mock(return_value="Runtime pronto")
     monkeypatch.setattr(module, "ensure_mcp_runtime", runtime)
     run = Mock(side_effect=AssertionError("Não iniciar serviço automaticamente"))

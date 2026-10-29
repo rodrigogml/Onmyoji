@@ -167,13 +167,14 @@ def discover_codex_executables() -> list[str]:
     return candidates
 
 
-def choose_codex_executable(current: str) -> str | None:
+def choose_codex_executable(current: str, flow: bool = False) -> str | None:
     """Oferece executáveis encontrados e permite informar somente um caminho completo."""
     found = discover_codex_executables()
     manual = "Informar caminho completo"
     if not found:
         note("Nenhum executável Codex foi encontrado no PATH atual.")
-    selected = choose("Executável Codex", [*found, manual], current or "(não configurado)")
+    chooser = flow_choice if flow else choose
+    selected = chooser("Executável Codex", [*found, manual], current if current in found else "")
     if selected is None:
         return None
     if selected != manual:
@@ -218,18 +219,18 @@ def catalog_model(catalog: list[dict[str, object]], identifier: str) -> dict[str
     return next((model for model in catalog if model_identifier(model) == identifier), None)
 
 
-def choose_codex_model(catalog: list[dict[str, object]], current: str) -> dict[str, object] | None:
+def choose_codex_model(catalog: list[dict[str, object]], current: str, flow: bool = False) -> dict[str, object] | None:
     """Permite selecionar exclusivamente modelos disponíveis para a conta atual."""
     options = [model_identifier(model) for model in catalog]
-    selected = choose("Modelo", options, current if current in options else "")
+    selected = (flow_choice if flow else choose)("Modelo", options, current if current in options else "")
     return catalog_model(catalog, selected) if selected else None
 
 
-def choose_reasoning_effort(model: dict[str, object], current: str, reset_to_model_default: bool = False) -> str | None:
+def choose_reasoning_effort(model: dict[str, object], current: str, reset_to_model_default: bool = False, flow: bool = False) -> str | None:
     """Seleciona somente esforços declarados pelo catálogo para o modelo escolhido."""
     values = reasoning_efforts_for_model(model)
     selected = preferred_reasoning_effort(model) if reset_to_model_default or current not in values else current
-    return choose("Esforço de raciocínio", values, selected) if values else None
+    return (flow_choice if flow else choose)("Esforço de raciocínio", values, selected) if values else None
 
 
 def diagnostic_detail(completed: subprocess.CompletedProcess[str]) -> str:
@@ -559,10 +560,10 @@ def choose_project_directory(root: Path, current: str) -> str | None:
     return str(directory.resolve())
 
 
-def choose_sandbox(root: Path, workspace: Path, current: str) -> str | None:
+def choose_sandbox(root: Path, workspace: Path, current: str, flow: bool = False) -> str | None:
     """Explica os limites de cada sandbox antes de permitir sua seleção."""
     root, workspace = root.resolve(), workspace.resolve()
-    screen("Sandbox", "Limites técnicos dos comandos gerados pelo Codex")
+    (flow_heading if flow else screen)("Sandbox", "Limites técnicos dos comandos gerados pelo Codex")
     note("O sistema operacional continua sendo a autoridade final sobre permissões.")
     print(f"\n  Instância / CODEX_HOME: {root}")
     print(f"  Workspace de trabalho:  {workspace}\n")
@@ -577,18 +578,19 @@ def choose_sandbox(root: Path, workspace: Path, current: str) -> str | None:
     print("    recursos permitidos ao usuário do sistema, inclusive rede. Use somente em ambiente controlado.\n")
     for index, value in enumerate(SANDBOXES, 1): item(f"{index}.", value)
     item("X.", "Voltar")
+    default_index = SANDBOXES.index(current) + 1 if current in SANDBOXES else 1
     while True:
-        choice = prompt(f"Opção [{current}]: ").strip().casefold()
+        choice = prompt(f"Opção [{default_index}]: ").strip().casefold()
         if choice in {"x", "\x1b"}: return None
-        if not choice: return current
+        if not choice: return SANDBOXES[default_index - 1]
         if choice.isdigit() and 1 <= int(choice) <= len(SANDBOXES): return SANDBOXES[int(choice) - 1]
         result(False, "Opção inválida.")
 
 
-def choose_approval_policy(root: Path, workspace: Path, sandbox: str, current: str) -> str | None:
+def choose_approval_policy(root: Path, workspace: Path, sandbox: str, current: str, flow: bool = False) -> str | None:
     """Explica quando o Codex interrompe a execução para pedir autorização local."""
     root, workspace = root.resolve(), workspace.resolve()
-    screen("Política de aprovação", "Quando o Codex-CLI deve interromper a execução para pedir confirmação")
+    (flow_heading if flow else screen)("Política de aprovação", "Quando o Codex-CLI deve interromper a execução para pedir confirmação")
     note("A política não amplia o sandbox; ela apenas define como tratar ações que exigem aprovação.")
     print(f"\n  Instância / CODEX_HOME: {root}")
     print(f"  Workspace de trabalho:  {workspace}")
@@ -603,10 +605,11 @@ def choose_approval_policy(root: Path, workspace: Path, sandbox: str, current: s
     print("    Use em automações sem operador acompanhando a execução.\n")
     for index, value in enumerate(APPROVALS, 1): item(f"{index}.", value)
     item("X.", "Voltar")
+    default_index = APPROVALS.index(current) + 1 if current in APPROVALS else 1
     while True:
-        choice = prompt(f"Opção [{current}]: ").strip().casefold()
+        choice = prompt(f"Opção [{default_index}]: ").strip().casefold()
         if choice in {"x", "\x1b"}: return None
-        if not choice: return current
+        if not choice: return APPROVALS[default_index - 1]
         if choice.isdigit() and 1 <= int(choice) <= len(APPROVALS): return APPROVALS[int(choice) - 1]
         result(False, "Opção inválida.")
 
@@ -614,9 +617,9 @@ def choose_approval_policy(root: Path, workspace: Path, sandbox: str, current: s
 def configure_initial_codex(root: Path, data: dict[str, object]) -> dict[str, object] | None:
     """Configura executável, login e seleção dinâmica de modelo antes da instalação."""
     while True:
-        screen("Instalação inicial", "Codex-CLI")
+        flow_heading("Instalação inicial", "Codex-CLI")
         note("Primeiro confirme o executável e o login; depois escolha um modelo da conta autenticada.")
-        executable = choose_codex_executable(str(data["executable"]))
+        executable = choose_codex_executable(str(data["executable"]), flow=True)
         if executable is None:
             return None
         executable_ok, executable_detail = validate_codex_executable(executable)
@@ -627,7 +630,7 @@ def configure_initial_codex(root: Path, data: dict[str, object]) -> dict[str, ob
         logged_in, login_detail = validate_codex_login(root, candidate)
         result(logged_in, login_detail)
         if not logged_in:
-            if not configure_codex_login(root, candidate):
+            if not configure_codex_login(root, candidate, flow=True):
                 return None
             logged_in, login_detail = validate_codex_login(root, candidate)
             result(logged_in, login_detail)
@@ -637,11 +640,11 @@ def configure_initial_codex(root: Path, data: dict[str, object]) -> dict[str, ob
         result(catalog is not None, catalog_detail)
         if catalog is None:
             continue
-        model = choose_codex_model(catalog, str(candidate["model"]))
+        model = choose_codex_model(catalog, str(candidate["model"]), flow=True)
         if model is None:
             return None
         candidate["model"] = model_identifier(model)
-        effort = choose_reasoning_effort(model, str(candidate["model_reasoning_effort"]), reset_to_model_default=True)
+        effort = choose_reasoning_effort(model, str(candidate["model_reasoning_effort"]), reset_to_model_default=True, flow=True)
         if effort is None:
             result(False, "O catálogo não informou esforços compatíveis para o modelo selecionado.")
             continue
@@ -655,7 +658,7 @@ def configure_initial_codex(root: Path, data: dict[str, object]) -> dict[str, ob
 def initial_installation_wizard(root: Path, data: dict[str, object]) -> dict[str, object] | None:
     """Coleta a identidade e confirma um Codex-CLI funcional antes de instalar o Shikigami."""
     while True:
-        screen("Instalação inicial", "Identidade do Shikigami")
+        flow_heading("Instalação inicial", "Identidade do Shikigami")
         note("Informe o nome exibido pelo Shikigami. Digite X para cancelar.")
         suggested = " ".join(str(data.get("shikigami_identity") or "").split())
         label = f"Nome do Shikigami [{suggested}]: " if suggested else "Nome do Shikigami: "
@@ -673,11 +676,11 @@ def initial_installation_wizard(root: Path, data: dict[str, object]) -> dict[str
         if project_directory is None:
             return None
         candidate["project_directory"] = project_directory
-        sandbox = choose_sandbox(root, Path(project_directory), str(candidate["sandbox_mode"]))
+        sandbox = choose_sandbox(root, Path(project_directory), str(candidate["sandbox_mode"]), flow=True)
         if sandbox is None:
             return None
         candidate["sandbox_mode"] = sandbox
-        approval = choose_approval_policy(root, Path(project_directory), sandbox, str(candidate["approval_policy"]))
+        approval = choose_approval_policy(root, Path(project_directory), sandbox, str(candidate["approval_policy"]), flow=True)
         if approval is None:
             return None
         candidate["approval_policy"] = approval
@@ -768,6 +771,13 @@ def screen(title: str, subtitle: str = "") -> None:
     print(Ui.text("╰" + "─" * (width - 2) + "╯", Ui.violet))
 
 
+def flow_heading(title: str, subtitle: str = "") -> None:
+    """Identifica um roteiro sem simular uma tela navegável."""
+    print("\n  " + Ui.text(f"ONMYŌJI / {title.upper()}", Ui.bold, Ui.violet))
+    if subtitle:
+        print("  " + Ui.text(subtitle, Ui.slate))
+
+
 def item(key: str, label: str, value: str = "") -> None:
     shortcut = Ui.text(f"{key:>4}", Ui.bold, Ui.cyan)
     print(f"  {shortcut}  {label:<30}" + (f"   {Ui.text(value, Ui.slate)}" if value else ""))
@@ -785,13 +795,36 @@ def skill_item(index: int, skill: Skill, state: str, width: int = 50) -> str:
 
 
 def choose(label: str, values: list[str], current: str) -> str | None:
+    """Abre um submenu navegável de opções enumeradas."""
     screen(label, "Escolha uma opção ou pressione X para voltar")
     for index, value in enumerate(values, 1): item(f"{index}.", value)
     item("X.", "Voltar")
+    default_index = values.index(current) + 1 if current in values else 1
     while True:
-        choice = prompt(f"Opção [{current}]: ").strip().casefold()
+        choice = prompt(f"Opção [{default_index}]: ").strip().casefold()
         if choice in {"x", "\x1b"}: return None
-        if not choice: return current
+        if not choice: return values[default_index - 1]
+        if choice.isdigit() and 1 <= int(choice) <= len(values): return values[int(choice) - 1]
+        result(False, "Opção inválida.")
+
+
+def flow_choice(label: str, values: list[str], current: str = "", cancel_label: str = "Cancelar") -> str | None:
+    """Coleta uma opção de um roteiro sem abrir um novo menu visual.
+
+    A opção padrão sempre é apresentada pelo número que a seleciona, nunca
+    pelo texto descritivo. ``X`` interrompe somente a etapa atual.
+    """
+    if not values:
+        result(False, "Não há opções disponíveis.")
+        return None
+    print(f"\n  {label}")
+    for index, value in enumerate(values, 1): item(f"{index}.", value)
+    item("X.", cancel_label)
+    default_index = values.index(current) + 1 if current in values else 1
+    while True:
+        choice = prompt(f"Opção [{default_index}]: ").strip().casefold()
+        if choice in {"x", "\x1b"}: return None
+        if not choice: return values[default_index - 1]
         if choice.isdigit() and 1 <= int(choice) <= len(values): return values[int(choice) - 1]
         result(False, "Opção inválida.")
 
@@ -803,7 +836,7 @@ def configure_mcp_password_reference(root: Path, integration: str, default_entry
         result(False, "Nenhum perfil de vault MCP disponível. Configure-o primeiro no menu MCP.")
         return None
     selected = current_profile if current_profile in profiles else profiles[0]
-    profile = choose(f"{integration} · Perfil de vault MCP", profiles, selected)
+    profile = flow_choice(f"{integration} · Perfil de vault MCP", profiles, selected)
     if profile is None:
         return None
     resolver = KeePassCredentialResolver(root)
@@ -820,13 +853,13 @@ def configure_mcp_password_reference(root: Path, integration: str, default_entry
             result(False, str(error))
             return None
         if has_password:
-            action = choose(f"Credencial · {integration}", ["Usar a chave já salva", "Informar nova chave e substituir", "Reinformar entrada KeePass"], "Usar a chave já salva")
+            action = flow_choice(f"Credencial · {integration}", ["Usar a chave já salva", "Informar nova chave e substituir", "Reinformar entrada KeePass"], "Usar a chave já salva")
             if action is None: return None
             if action.startswith("Usar"): return profile, entry
             if action.startswith("Reinformar"): continue
         else:
             verb = "salvar nesta entrada" if exists else "criar esta entrada"
-            action = choose(f"Credencial · {integration}", [f"Informar a chave e {verb}", "Reinformar entrada KeePass"], f"Informar a chave e {verb}")
+            action = flow_choice(f"Credencial · {integration}", [f"Informar a chave e {verb}", "Reinformar entrada KeePass"], f"Informar a chave e {verb}")
             if action is None: return None
             if action.startswith("Reinformar"): continue
         secret = getpass.getpass(Ui.text(f"› Chave de autenticação {integration} (não será exibida): ", Ui.violet, Ui.bold)).strip()
@@ -923,10 +956,10 @@ def manage_writable_directories(root: Path, data: dict[str, object]) -> dict[str
         else: result(False, "Opção inválida.")
 
 
-def configure_codex_login(root: Path, data: dict[str, object], device_auth: bool | None = None) -> bool:
+def configure_codex_login(root: Path, data: dict[str, object], device_auth: bool | None = None, flow: bool = False) -> bool:
     """Abre o fluxo local de login e confirma seu resultado antes de prosseguir."""
     if device_auth is None:
-        method = choose("Login no Codex-CLI", ["Autenticação por dispositivo (recomendado para SSH/headless)", "Navegador local (callback em localhost)"], "Autenticação por dispositivo (recomendado para SSH/headless)")
+        method = (flow_choice if flow else choose)("Login no Codex-CLI", ["Autenticação por dispositivo (recomendado para SSH/headless)", "Navegador local (callback em localhost)"], "Autenticação por dispositivo (recomendado para SSH/headless)")
         if method is None:
             return False
         device_auth = method.startswith("Autenticação por dispositivo")
@@ -1093,7 +1126,7 @@ def shikigami_diagnostics(root: Path, progress=None) -> list[dict[str, str]]:
 
 def diagnostics_menu(root: Path) -> None:
     """Exibe os resultados detalhados do diagnóstico básico da instância."""
-    screen("Diagnóstico", "Estado da instalação e do Codex-CLI")
+    flow_heading("Diagnóstico", "Estado da instalação e do Codex-CLI")
     diagnostics = shikigami_diagnostics(root, lambda message: print("  → " + message))
     print()
     for diagnostic in diagnostics:
@@ -1300,7 +1333,7 @@ def daemon_menu(root: Path) -> None:
 
     def show_daemon_diagnosis() -> bool:
         """Mostra primeiro os pré-requisitos do Shikigami e depois a plataforma."""
-        screen("Diagnóstico do Daemon", "Pré-requisitos do Shikigami e estado da plataforma; serviços não são avaliados aqui")
+        flow_heading("Diagnóstico do Daemon", "Pré-requisitos do Shikigami e estado da plataforma; serviços não são avaliados aqui")
         print("\n  Diagnóstico principal do Shikigami")
         main_checks = shikigami_diagnostics(root, lambda message: print("    → " + message)); print_checks(main_checks)
         print("\n  Diagnóstico da plataforma do daemon")
@@ -1309,7 +1342,7 @@ def daemon_menu(root: Path) -> None:
 
     def show_telegram_diagnosis() -> bool:
         """Exibe dependências da plataforma antes das verificações do gateway."""
-        screen("Diagnóstico do Telegram", "Plataforma, vault MCP e estado do gateway")
+        flow_heading("Diagnóstico do Telegram", "Plataforma, vault MCP e estado do gateway")
         print("\n  Diagnóstico principal do Shikigami")
         main_checks = shikigami_diagnostics(root, lambda message: print("    → " + message)); print_checks(main_checks)
         print("\n  Diagnóstico da plataforma do daemon")
@@ -1368,7 +1401,7 @@ def daemon_menu(root: Path) -> None:
 
     def daemon_wizard() -> None:
         """Configura e valida exclusivamente a plataforma local do daemon."""
-        screen("Wizard do Daemon", "Configuração e validação da plataforma local")
+        flow_heading("Wizard do Daemon", "Configuração e validação da plataforma local")
         note("Cada etapa confirmada é salva imediatamente. Valores já válidos permanecem disponíveis quando o wizard for executado novamente.")
         main_checks = shikigami_diagnostics(root, lambda message: print("    → " + message))
         print("\n  1. Pré-requisitos do Shikigami")
@@ -1671,19 +1704,23 @@ def daemon_menu(root: Path) -> None:
                     except (json.JSONDecodeError, KeyError): exists, detail = False, "Não foi possível verificar a entrada no KeePass."
                     if exists:
                         result(True, detail)
-                        action = prompt("Utilizar a entrada existente [U], substituir seu token [S] ou corrigir a chave [C]? [U]: ").strip().casefold() or "u"
-                        if action == "u":
+                        action = flow_choice("Credencial do bot", ["Usar a entrada existente", "Substituir o token", "Reinformar a entrada KeePass"], "Usar a entrada existente")
+                        if action is None:
+                            continue
+                        if action.startswith("Usar"):
                             result(True, "Credencial configurada com a entrada existente.")
                             if reference_changed: offer_restart("A referência da credencial do bot")
                             break
-                        if action == "c": continue
-                        if action != "s": result(False, "Escolha U, S ou C."); continue
+                        if action.startswith("Reinformar"):
+                            continue
                     else:
                         result(False, f"A entrada não foi encontrada ou não pôde ser lida: {detail}")
-                        action = prompt("Corrigir chave [C], criar token no KeePass [N] ou configurar e incluir depois [A]? [A]: ").strip().casefold() or "a"
-                        if action == "c": continue
-                        if action == "a": result(True, "Referência salva; inclua o token no KeePass antes de habilitar o gateway."); break
-                        if action != "n": result(False, "Escolha C, N ou A."); continue
+                        action = flow_choice("Credencial do bot", ["Criar o token nesta entrada", "Reinformar a entrada KeePass", "Configurar a referência e incluir o token depois"], "Configurar a referência e incluir o token depois")
+                        if action is None or action.startswith("Reinformar"):
+                            continue
+                        if action.startswith("Configurar"):
+                            result(True, "Referência salva; inclua o token no KeePass antes de habilitar o gateway.")
+                            break
                     token = getpass.getpass(Ui.text("› Token do bot (não será exibido): ", Ui.violet, Ui.bold)).strip()
                     written = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "write-token", "--profile", profile, "--entry", entry], quiet=True, input_value=token)
                     result(written.returncode == 0, (written.stdout or written.stderr).strip())
@@ -1744,7 +1781,7 @@ def daemon_menu(root: Path) -> None:
                     if not profiles:
                         result(False, "Nenhum perfil EccoVox habilitado. Configure-o primeiro em MCP > Integrações MCP > EccoVox.")
                         continue
-                    profile = choose("Perfil MCP EccoVox", profiles, voice_profile if voice_profile in profiles else profiles[0])
+                    profile = flow_choice("Perfil MCP EccoVox", profiles, voice_profile if voice_profile in profiles else profiles[0])
                     if profile is None:
                         continue
                 raw = prompt(f"Desligar áudio após minutos sem interação [{voice_auto_off}]: ").strip()
@@ -1832,11 +1869,9 @@ def daemon_menu(root: Path) -> None:
             if not replace_token(): return False
         else:
             result(True, detail)
-            action = prompt("Utilizar o token salvo [U] ou substituí-lo [S]? [U]: ").strip().casefold() or "u"
-            if action == "s" and not replace_token(): return False
-            if action not in {"u", "s"}:
-                result(False, "Escolha U ou S.")
-                return False
+            action = flow_choice("Credencial do bot", ["Usar o token salvo", "Substituir o token"], "Usar o token salvo")
+            if action is None: return False
+            if action.startswith("Substituir") and not replace_token(): return False
         while True:
             tested = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-telegram"], quiet=True)
             result(tested.returncode == 0, (tested.stdout or tested.stderr).strip())
@@ -1848,7 +1883,7 @@ def daemon_menu(root: Path) -> None:
         """Conduz a configuração mínima do gateway, preservando cada etapa válida."""
         nonlocal telegram_token_changed
         telegram_token_changed = False
-        screen("Wizard do Telegram", "Configuração guiada do gateway e do primeiro owner")
+        flow_heading("Wizard do Telegram", "Configuração guiada do gateway e do primeiro owner")
         note("Cada etapa válida é mantida. O pareamento exige uma ação externa no Telegram e pode ser retomado depois.")
         print("\n  1. Pré-requisitos do Shikigami e daemon")
         main_checks = shikigami_diagnostics(root, lambda message: print("    → " + message)); print_checks(main_checks)
@@ -1991,7 +2026,7 @@ def daemon_menu(root: Path) -> None:
         if diagnosis is None: return None
         local = "PRONTO" if diagnosis.get("local_ready") else "AÇÃO NECESSÁRIA"
         public = "PRONTO" if diagnosis.get("public_ready") else "OPCIONAL / PENDENTE"
-        screen("Diagnóstico Mini Apps", f"Local: {local} · Público: {public}")
+        flow_heading("Diagnóstico Mini Apps", f"Local: {local} · Público: {public}")
         symbols = {"ok": "✓", "action": "!", "info": "i"}
         for check in diagnosis.get("checks", []):
             if not isinstance(check, dict): continue
@@ -2038,7 +2073,7 @@ def daemon_menu(root: Path) -> None:
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
             if choice == "1":
-                screen("Preparar acesso público", "Reúna estes dados antes de criar qualquer recurso na Cloudflare")
+                flow_heading("Preparar acesso público", "Reúna estes dados antes de criar qualquer recurso na Cloudflare")
                 print("  1. Um domínio já adicionado à Cloudflare.")
                 print("  2. Um token Cloudflare guardado em um perfil de vault MCP, com permissão Account > Cloudflare Tunnel > Edit e Zone > DNS > Edit.")
                 print("  3. Account ID e Zone ID, encontrados no painel Overview da conta e da zona.")
@@ -2082,7 +2117,7 @@ def daemon_menu(root: Path) -> None:
         try: apps = json.loads(completed.stdout) if completed.returncode == 0 else None
         except json.JSONDecodeError: apps = None
         if not isinstance(apps, list): result(False, (completed.stdout or completed.stderr).strip()); return
-        screen("Publicações Mini App", "Os arquivos permanecem no workspace; o Gateway mantém somente o registro")
+        flow_heading("Publicações Mini App", "Os arquivos permanecem no workspace; o Gateway mantém somente o registro")
         if not apps:
             print("  i  Nenhuma Mini App publicada. Crie o código no workspace e publique-o pelo MCP Mini Apps.")
             return
@@ -2093,7 +2128,7 @@ def daemon_menu(root: Path) -> None:
             if app.get("last_error"): print("     Atenção: a publicação registrou um erro; consulte os eventos pelo MCP Mini Apps.")
 
     def miniapps_wizard() -> None:
-        screen("Assistente Mini Apps", "O acesso público é opcional; comece pelo objetivo de uso")
+        flow_heading("Assistente Mini Apps", "O acesso público é opcional; comece pelo objetivo de uso")
         item("L.", "Somente neste computador", "Gateway HTTPS local e publicação no workspace")
         item("P.", "Também em domínio público", "Cloudflare Tunnel, DNS e proteção da Mini App")
         item("X.", "Voltar")

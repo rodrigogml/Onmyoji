@@ -33,14 +33,33 @@ class SystemSetupTests(unittest.TestCase):
             self.assertEqual(MODULE.prompt("Opção: "), "x")
         input_mock.assert_called_once_with("› Opção: ")
 
+    def test_flow_choice_uses_numeric_default_without_opening_a_screen(self) -> None:
+        with patch.object(MODULE, "prompt", return_value="") as prompt_mock, patch.object(MODULE, "screen") as screen_mock:
+            selected = MODULE.flow_choice("Escolha a credencial", ["Criar", "Reutilizar"], "Reutilizar")
+        self.assertEqual(selected, "Reutilizar")
+        prompt_mock.assert_called_once_with("Opção [2]: ")
+        screen_mock.assert_not_called()
+
+    def test_navigable_choice_uses_the_numeric_default(self) -> None:
+        with patch.object(MODULE, "prompt", return_value="") as prompt_mock, patch.object(MODULE, "screen"):
+            selected = MODULE.choose("Menu de teste", ["Primeira", "Segunda"], "Segunda")
+        self.assertEqual(selected, "Segunda")
+        prompt_mock.assert_called_once_with("Opção [2]: ")
+
     def test_miniapps_credential_reference_reuses_existing_mcp_secret(self) -> None:
         configuration = MagicMock(); configuration.vault_profile_names.return_value = ["principal"]
         resolver = MagicMock(); resolver.entry_exists.return_value = True; resolver.password_exists.return_value = True
-        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "McpConfiguration", return_value=configuration), patch.object(MODULE, "KeePassCredentialResolver", return_value=resolver), patch.object(MODULE, "choose", side_effect=["principal", "Usar a chave já salva"]), patch.object(MODULE, "prompt", return_value=""):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "McpConfiguration", return_value=configuration), patch.object(MODULE, "KeePassCredentialResolver", return_value=resolver), patch.object(MODULE, "flow_choice", side_effect=["principal", "Usar a chave já salva"]), patch.object(MODULE, "prompt", return_value=""):
             selected = MODULE.configure_mcp_password_reference(Path(temporary), "Cloudflare Tunnel", "APIs/Cloudflare/MiniApps")
         self.assertEqual(selected, ("principal", "APIs/Cloudflare/MiniApps"))
         resolver.password_exists.assert_called_once_with("principal", "APIs/Cloudflare/MiniApps")
         resolver.save_password.assert_not_called()
+
+    def test_diagnostics_are_a_flow_view_not_a_navigable_menu(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "flow_heading") as heading, patch.object(MODULE, "screen") as screen, patch.object(MODULE, "shikigami_diagnostics", return_value=[]), patch.object(MODULE, "prompt", return_value=""):
+            MODULE.diagnostics_menu(Path(temporary))
+        heading.assert_called_once_with("Diagnóstico", "Estado da instalação e do Codex-CLI")
+        screen.assert_not_called()
 
     def test_initial_configuration_starts_uninstalled_without_instance_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
