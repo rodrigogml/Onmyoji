@@ -79,17 +79,17 @@ class CodexLaunch:
             environment["PYTHONPATH"] = source + (os.pathsep + inherited if inherited else "")
         return environment
 
-    def direct_command(self, profile: str) -> list[str]:
+    def direct_command(self) -> list[str]:
         """Monta o cliente interativo nativo com as mesmas raízes declaradas."""
-        command = [self.executable, "--profile", profile]
+        command = [self.executable]
         for directory in self.writable_directories:
             command.extend(["--add-dir", directory])
         return command
 
-    def direct_launch(self, profile: str) -> tuple[list[str], Path, dict[str, str]]:
+    def direct_launch(self) -> tuple[list[str], Path, dict[str, str]]:
         """Prepara o cliente direto e reconcilia o MCP quando houver pendência."""
         self._reconcile_mcp()
-        return self.direct_command(profile), self.workspace, self.environment()
+        return self.direct_command(), self.workspace, self.environment()
 
     def app_server_launch(self) -> tuple[list[str], Path, dict[str, str]]:
         """Prepara o App Server e reconcilia o MCP antes de iniciá-lo."""

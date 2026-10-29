@@ -24,10 +24,10 @@ def test_direct_cli_and_app_server_share_instance_context(tmp_path: Path, monkey
     reconciled = []
     monkeypatch.setattr(codex_execution.McpReconciliation, "reconcile_if_pending", lambda _self, registration: reconciled.append(registration) or True)
 
-    direct, direct_cwd, direct_environment = launch.direct_launch("onmyoji-skills")
+    direct, direct_cwd, direct_environment = launch.direct_launch()
     command, cwd, environment = launch.app_server_launch()
 
-    assert direct == ["codex", "--profile", "onmyoji-skills", "--add-dir", "reports"]
+    assert direct == ["codex", "--add-dir", "reports"]
     assert direct_cwd == cwd and direct_environment["CODEX_HOME"] == environment["CODEX_HOME"]
     assert command == ["codex", "app-server", "--stdio"]
     assert cwd == workspace.resolve()

@@ -313,7 +313,7 @@ class SystemSetupTests(unittest.TestCase):
             with patch.object(MODULE, "validate_system", return_value=(True, "pronto")), patch("onmyoji_daemon.codex_execution.McpReconciliation.reconcile_if_pending", return_value=False), patch.object(MODULE.subprocess, "run") as run:
                 MODULE.launch_codex(root, data)
             command = run.call_args.args[0]
-            self.assertEqual(command, [sys.executable, "--profile", MODULE.SKILL_PROFILE_NAME, "--add-dir", str(extra)])
+            self.assertEqual(command, [sys.executable, "--add-dir", str(extra)])
             self.assertEqual(run.call_args.kwargs["cwd"], str(project))
             environment = run.call_args.kwargs["env"]
             self.assertEqual(environment["CODEX_HOME"], str(root))
@@ -337,17 +337,33 @@ class SystemSetupTests(unittest.TestCase):
             self.assertEqual(command[:5], [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root)])
             self.assertEqual(command[5], "interactive")
 
-    def test_enabled_skills_are_written_to_the_native_codex_profile(self) -> None:
+    def test_enabled_skills_are_written_to_the_local_publication_state(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); skill = self.fake_skill(root)
             self.assertTrue(MODULE.save_enabled(root, {"omie"}, [skill])[0])
-            profile = MODULE.skill_profile_path(root)
-            self.assertTrue(profile.is_file())
-            state = tomllib.loads(profile.read_text(encoding="utf-8"))
-            self.assertEqual(state["skills"]["config"], [{"path": str((skill.source / "SKILL.md").resolve()), "enabled": True}])
+            state_path = MODULE.skill_state_path(root)
+            self.assertTrue(state_path.is_file())
+            state = tomllib.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(state, {"schema_version": 1, "skills": {"omie": {"enabled": True, "mode": "managed_copy"}}})
             self.assertEqual(MODULE.enabled_ids(root, [skill]), {"omie"})
             self.assertTrue(MODULE.save_enabled(root, set(), [skill])[0])
-            self.assertFalse(tomllib.loads(profile.read_text(encoding="utf-8"))["skills"]["config"][0]["enabled"])
+            self.assertFalse(tomllib.loads(state_path.read_text(encoding="utf-8"))["skills"]["omie"]["enabled"])
+
+    def test_missing_skill_state_is_initialized_with_managed_copy_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); skill = self.fake_skill(root)
+            self.assertTrue(MODULE.ensure_skill_state(root, [skill])[0])
+            state = tomllib.loads(MODULE.skill_state_path(root).read_text(encoding="utf-8"))
+            self.assertEqual(state["skills"]["omie"], {"enabled": False, "mode": "managed_copy"})
+
+    def test_invalid_skill_state_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); skill = self.fake_skill(root)
+            path = MODULE.skill_state_path(root); path.parent.mkdir(parents=True)
+            path.write_text('[skills.omie]\nenabled = true\nmode = "link"\n', encoding="utf-8")
+            ok, message = MODULE.ensure_skill_state(root, [skill])
+            self.assertFalse(ok)
+            self.assertIn("inválido", message)
 
     def test_discovers_instance_setup_scripts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

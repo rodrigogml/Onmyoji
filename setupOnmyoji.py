@@ -32,8 +32,7 @@ from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialRes
 SYSTEM_BEGIN = "# BEGIN ONMYOJI MANAGED CODEX SETTINGS"
 SYSTEM_END = "# END ONMYOJI MANAGED CODEX SETTINGS"
 INSTANCE_SKILLS_DIRECTORY = "shikigami/skills"
-SKILL_PROFILE_NAME = "onmyoji-skills"
-SKILL_PROFILE_FILE = f"{SKILL_PROFILE_NAME}.config.toml"
+SHIKIGAMI_SKILLS_STATE = "configs/shikigami/skills.toml"
 SANDBOXES = ["read-only", "workspace-write", "danger-full-access"]
 APPROVALS = ["on-request", "never"]
 
@@ -99,7 +98,7 @@ def discover(root: Path = ROOT) -> list[Skill]:
 
 def config_path(root: Path) -> Path: return root / "config.toml"
 def system_path(root: Path) -> Path: return root / "configs" / "onmyoji-system.toml"
-def skill_profile_path(root: Path) -> Path: return root / SKILL_PROFILE_FILE
+def skill_state_path(root: Path) -> Path: return root / SHIKIGAMI_SKILLS_STATE
 
 
 def instance_identity(root: Path) -> str:
@@ -687,49 +686,30 @@ def initial_installation_wizard(root: Path, data: dict[str, object]) -> dict[str
         result(False, message)
 
 
-def skill_manifest_path(skill: Skill) -> Path:
-    """Retorna o manifesto que o Codex usa para registrar uma skill."""
-    return (skill.source / "SKILL.md").resolve()
-
-
-def profile_skill_states(root: Path, skills: list[Skill]) -> dict[str, bool] | None:
-    """Retorna o estado nativo do Codex, ou None quando o perfil ainda não existe."""
-    path = skill_profile_path(root)
-    if not path.exists(): return None
-    try: entries = tomllib.loads(path.read_text(encoding="utf-8")).get("skills", {}).get("config", [])
-    except (OSError, tomllib.TOMLDecodeError, AttributeError): return {}
-    if not isinstance(entries, list): return {}
-    by_source = {
-        candidate: skill.identifier
-        for skill in skills
-        for candidate in (skill_manifest_path(skill), skill.source.resolve())
-    }
-    states: dict[str, bool] = {}
-    for entry in entries:
-        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str) or not isinstance(entry.get("enabled"), bool): continue
-        candidate = Path(entry["path"]).expanduser()
-        source = (path.parent / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
-        identifier = by_source.get(source)
-        if identifier is not None: states[identifier] = entry["enabled"]
-    return states
-
-
 def enabled_ids(root: Path, skills: list[Skill] | None = None) -> set[str]:
     discovered = skills if skills is not None else discover(root)
-    states = profile_skill_states(root, discovered)
-    return {identifier for identifier, enabled in (states or {}).items() if enabled}
+    path = skill_state_path(root)
+    if not path.exists(): return set()
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return set()
+    states = data.get("skills", {})
+    if not isinstance(states, dict): return set()
+    known = {skill.identifier for skill in discovered}
+    return {identifier for identifier, state in states.items() if identifier in known and isinstance(state, dict) and state.get("enabled") is True}
 
 
-def render_skill_profile(identifiers: set[str], skills: list[Skill]) -> str:
-    """Gera o perfil nativo consumido igualmente pelo CLI e pelo App Server."""
-    lines = ["# Gerado pelo setup do Onmyōji. Não edite manualmente.", "# Use: codex --profile onmyoji-skills", ""]
+def render_skill_state(identifiers: set[str], skills: list[Skill]) -> str:
+    """Gera o estado local de publicação das skills próprias do Shikigami."""
+    lines = ["schema_version = 1", ""]
     for skill in sorted(skills, key=lambda item: item.identifier):
-        lines.extend(["[[skills.config]]", f"path = {json.dumps(str(skill_manifest_path(skill)), ensure_ascii=False)}", f"enabled = {'true' if skill.identifier in identifiers else 'false'}", ""])
+        lines.extend([f"[skills.{json.dumps(skill.identifier, ensure_ascii=False)}]", f"enabled = {'true' if skill.identifier in identifiers else 'false'}", 'mode = "managed_copy"', ""])
     return "\n".join(lines)
 
 
 def conflicting_skill_ids(skills: list[Skill]) -> set[str]:
-    """IDs devem ser únicos no profile nativo do Codex."""
+    """IDs devem ser únicos no estado local de publicação."""
     identifiers = [skill.identifier for skill in skills]
     return {identifier for identifier in identifiers if identifiers.count(identifier) > 1}
 
@@ -740,27 +720,33 @@ def is_skill_enabled(root: Path, skill: Skill, skills: list[Skill] | None = None
 
 def save_enabled(root: Path, identifiers: set[str], skills: list[Skill]) -> tuple[bool, str]:
     conflicts = identifiers & conflicting_skill_ids(skills)
-    if conflicts: return False, f"IDs de skills em conflito entre catálogo e Shikigami: {', '.join(sorted(conflicts))}. Renomeie uma delas antes de habilitá-la."
+    if conflicts: return False, f"IDs de skills do Shikigami em conflito: {', '.join(sorted(conflicts))}. Renomeie uma delas antes de habilitá-la."
     known = {skill.identifier for skill in skills}
     unknown = identifiers - known
     if unknown: return False, f"Skills não encontradas: {', '.join(sorted(unknown))}."
-    path = skill_profile_path(root)
+    path = skill_state_path(root)
     old = path.read_text(encoding="utf-8") if path.exists() else None
     try:
-        path.write_text(render_skill_profile(identifiers, skills), encoding="utf-8", newline="\n")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(render_skill_state(identifiers, skills), encoding="utf-8", newline="\n")
         tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as error:
         if old is None: path.unlink(missing_ok=True)
         else: path.write_text(old, encoding="utf-8", newline="\n")
-        return False, f"Não foi possível salvar o perfil de skills: {error}"
-    return True, "Perfil de skills atualizado."
+        return False, f"Não foi possível salvar o estado das skills: {error}"
+    return True, "Estado das skills atualizado."
 
 
 def ensure_skill_state(root: Path, skills: list[Skill]) -> tuple[bool, str]:
-    if skill_profile_path(root).exists():
-        try: tomllib.loads(skill_profile_path(root).read_text(encoding="utf-8"))
-        except (OSError, tomllib.TOMLDecodeError) as error: return False, f"O perfil de skills é inválido: {error}"
-        return True, "Perfil de skills válido."
+    if skill_state_path(root).exists():
+        try:
+            data = tomllib.loads(skill_state_path(root).read_text(encoding="utf-8"))
+            records = data.get("skills", {})
+            if data.get("schema_version") != 1 or not isinstance(records, dict): raise ValueError("estrutura inválida")
+            for identifier, state in records.items():
+                if not isinstance(identifier, str) or not isinstance(state, dict) or type(state.get("enabled")) is not bool or state.get("mode") != "managed_copy": raise ValueError("registro inválido")
+        except (OSError, tomllib.TOMLDecodeError, ValueError) as error: return False, f"O estado das skills é inválido: {error}"
+        return True, "Estado das skills válido."
     return save_enabled(root, set(), skills)
 
 
@@ -960,7 +946,7 @@ def launch_codex(root: Path, data: dict[str, object], login: bool = False, devic
         return
     try:
         launch = CodexLaunch.from_data(root, data)
-        command, workspace, environment = launch.direct_launch(SKILL_PROFILE_NAME)
+        command, workspace, environment = launch.direct_launch()
         subprocess.run(command, cwd=str(workspace), env=environment, check=False)
     except CodexExecutionError as error:
         result(False, str(error))
