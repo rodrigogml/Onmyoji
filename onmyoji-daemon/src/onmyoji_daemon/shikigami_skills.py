@@ -11,6 +11,8 @@ import tempfile
 import tomllib
 from typing import Any
 
+from .instance import shikigami_skills_path
+
 
 STATE_SCHEMA_VERSION = 1
 RUNTIME_SCHEMA_VERSION = 1
@@ -27,7 +29,7 @@ class ShikigamiSkillMaterializer:
 
     def __init__(self, root: Path):
         self.root = root.resolve()
-        self.source_root = self.root / "shikigami" / "skills"
+        self.source_root = shikigami_skills_path(self.root)
         self.skills_state_path = self.root / SKILLS_STATE_PATH
         self.runtime_state_path = self.root / RUNTIME_STATE_PATH
 

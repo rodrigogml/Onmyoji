@@ -11,6 +11,8 @@ import sqlite3
 import tomllib
 from typing import Any
 
+from ...instance import shikigami_skills_path
+
 
 NAME = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 MIGRATION = re.compile(r"^(\d{4,})-([a-z0-9]+(?:-[a-z0-9]+)*)\.toml$")
@@ -48,7 +50,7 @@ class SchemaCatalog:
 
     def __init__(self, root: Path):
         self.root = root.resolve()
-        self.source = self.root / "shikigami" / "skills"
+        self.source = shikigami_skills_path(self.root)
         self.storage = self.root / "configs" / "mcp" / "data-tables"
 
     def discover(self) -> dict[str, Schema]:

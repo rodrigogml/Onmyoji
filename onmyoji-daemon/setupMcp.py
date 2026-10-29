@@ -1993,7 +1993,7 @@ def data_tables_menu(config: McpConfiguration) -> None:
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
         if choice not in {"1", "2", "3", "4"}: result(False, "Opção inválida."); continue
-        if not schemas: result(False, "Nenhum schema encontrado em shikigami/skills/*/schemas/*/schema.toml."); continue
+        if not schemas: result(False, "Nenhum schema encontrado em shikigami-skills/*/schemas/*/schema.toml."); continue
         names = sorted(schemas)
         if choice == "1":
             for identifier in names:

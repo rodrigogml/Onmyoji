@@ -15,7 +15,7 @@ def configure(root: Path, enabled: bool = True, source: str = "workflow") -> Non
 
 
 def source(root: Path, name: str = "workflow") -> Path:
-    directory = root / "shikigami" / "skills" / name; (directory / "references").mkdir(parents=True)
+    directory = root / "shikigami-skills" / name; (directory / "references").mkdir(parents=True)
     (directory / "SKILL.md").write_text("---\nname: workflow\ndescription: Workflow de teste.\n---\n\nSiga o procedimento.\n", encoding="utf-8")
     (directory / "references" / "steps.md").write_text("Etapa 1.\n", encoding="utf-8")
     return directory

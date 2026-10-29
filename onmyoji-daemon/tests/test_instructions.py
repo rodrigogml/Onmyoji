@@ -8,7 +8,7 @@ from onmyoji_daemon.instructions import InstructionComposer, InstructionError
 
 
 def test_composition_has_order_and_overlay(tmp_path):
-    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; path = tmp_path / "shikigami" / "instructions.md"; path.parent.mkdir(parents=True); path.write_text("Regra local.", encoding="utf-8")
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; path = tmp_path / "instructions.md"; path.write_text("Regra local.", encoding="utf-8")
     bundle = InstructionComposer(tmp_path, data, "instructions.md").compose(identity="Exemplo", telegram=True, reply_mode="audio")
     assert bundle.text.index("[ONMYŌJI") < bundle.text.index("[SHIKIGAMI — IDENTIDADE]") < bundle.text.index("[SHIKIGAMI — INSTRUÇÕES PARTICULARES]") < bundle.text.index("[TELEGRAM — CONTRATO")
     assert "Regra local." in bundle.text and "Resposta final: audio" in bundle.text

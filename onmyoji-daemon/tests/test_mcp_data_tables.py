@@ -12,7 +12,7 @@ from onmyoji_daemon.mcp.data_tables.tools import DataTablesToolRegistry
 
 
 def source(root: Path, second: bool = False) -> None:
-    schema = root / "shikigami" / "skills" / "crm" / "schemas" / "crm_leads"; migrations = schema / "migrations"; migrations.mkdir(parents=True, exist_ok=True)
+    schema = root / "shikigami-skills" / "crm" / "schemas" / "crm_leads"; migrations = schema / "migrations"; migrations.mkdir(parents=True, exist_ok=True)
     (schema / "schema.toml").write_text('schema_format = 1\nid = "crm_leads"\ntitle = "CRM"\ndescription = "Leads comerciais."\n', encoding="utf-8")
     migration = 'schema_id = "crm_leads"\nmigration_version = 1\n[[operations]]\ntype = "create_table"\ntable = "leads"\noperations = ["create", "get", "list", "update", "delete"]\n[[operations.columns]]\nname = "id"\ntype = "text"\nprimary_key = true\ngenerated = "uuid"\n[[operations.columns]]\nname = "name"\ntype = "text"\nrequired = true\nmax_length = 80\n[[operations.columns]]\nname = "status"\ntype = "text"\nrequired = true\nenum = ["new", "won"]\n'
     (migrations / "0001-inicial.toml").write_text(migration, encoding="utf-8")
@@ -36,7 +36,7 @@ def test_setup_catalog_applies_only_numbered_pending_migrations(tmp_path: Path) 
 
 def test_changed_applied_migration_is_blocked(tmp_path: Path) -> None:
     source(tmp_path); catalog = SchemaCatalog(tmp_path); catalog.apply("crm_leads")
-    path = tmp_path / "shikigami" / "skills" / "crm" / "schemas" / "crm_leads" / "migrations" / "0001-inicial.toml"
+    path = tmp_path / "shikigami-skills" / "crm" / "schemas" / "crm_leads" / "migrations" / "0001-inicial.toml"
     path.write_text(path.read_text(encoding="utf-8") + "\n# alterada\n", encoding="utf-8")
     with pytest.raises(DataTablesError, match="alterada"):
         catalog.plan(catalog.get("crm_leads"))

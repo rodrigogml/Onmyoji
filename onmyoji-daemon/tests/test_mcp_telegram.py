@@ -10,7 +10,7 @@ from onmyoji_daemon.mcp.telegram.tools import TelegramToolRegistry
 
 
 def enabled(root: Path) -> None:
-    path = root / "shikigami" / "daemon" / "telegram.toml"; path.parent.mkdir(parents=True)
+    path = root / "configs" / "daemon" / "services" / "telegram" / "config.toml"; path.parent.mkdir(parents=True)
     path.write_text("enabled = true\n", encoding="utf-8")
 
 

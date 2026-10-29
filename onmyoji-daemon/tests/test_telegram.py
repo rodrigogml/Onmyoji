@@ -12,7 +12,7 @@ from onmyoji_daemon.launcher import _approval_policy, _sandbox_policy
 
 def write_settings(root: Path, data_dir: Path) -> None:
     (root / "configs").mkdir(parents=True); (root / "configs" / "onmyoji-system.toml").write_text('[codex]\nexecutable = "codex"\nmodel = "gpt-5.6-terra"\nmodel_reasoning_effort = "medium"\nproject_directory = "' + root.as_posix() + '"\nsandbox_mode = "workspace-write"\napproval_policy = "never"\n', encoding="utf-8")
-    data_dir.mkdir(parents=True); config = root / "shikigami" / "daemon" / "telegram.toml"; config.parent.mkdir(parents=True); config.write_text('schema_version = 1\n[telegram]\nvault_profile = "telegram"\ntoken_entry = "APIs/Telegram:Example"\n', encoding="utf-8")
+    data_dir.mkdir(parents=True); config = data_dir / "config.toml"; config.write_text('schema_version = 1\n[telegram]\nvault_profile = "telegram"\ntoken_entry = "APIs/Telegram:Example"\n', encoding="utf-8")
 
 
 def test_settings_bind_to_instance_codex_home_and_workspace(tmp_path):
@@ -25,14 +25,14 @@ def test_app_server_settings_default_to_disabled_and_enforce_idle_minimum(tmp_pa
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
     settings = Settings.load(tmp_path, data)
     assert not settings.app_server_enabled and settings.app_server_idle_seconds == 1800
-    config = tmp_path / "shikigami" / "daemon" / "telegram.toml"; config.write_text(config.read_text(encoding="utf-8") + "\n[app_server]\nenabled = true\nidle_timeout_seconds = 120\n", encoding="utf-8")
+    config = tmp_path / "configs" / "daemon" / "services" / "telegram" / "config.toml"; config.write_text(config.read_text(encoding="utf-8") + "\n[app_server]\nenabled = true\nidle_timeout_seconds = 120\n", encoding="utf-8")
     settings = Settings.load(tmp_path, data)
     assert settings.app_server_enabled and settings.app_server_idle_seconds == 120
 
 
 def test_app_server_settings_prefer_daemon_platform_configuration(tmp_path):
-    data = tmp_path / "data"; write_settings(tmp_path, data)
-    manifest = tmp_path / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True)
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    manifest = tmp_path / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text('[app_server]\nenabled = true\nidle_timeout_seconds = 120\n\n[instructions]\nenabled = true\nshikigami_file = "instructions.md"\n', encoding="utf-8")
 
     settings = Settings.load(tmp_path, data)
@@ -124,7 +124,7 @@ def test_interactive_console_translates_policy_and_relative_writable_directories
 
 def test_tts_uses_internal_mcp_eccovox_service(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
-    config = tmp_path / "shikigami" / "daemon" / "telegram.toml"; config.write_text(config.read_text(encoding="utf-8") + "\n[voice_reply]\nenabled = true\neccovox_profile = \"eccovox\"\n", encoding="utf-8")
+    config = tmp_path / "configs" / "daemon" / "services" / "telegram" / "config.toml"; config.write_text(config.read_text(encoding="utf-8") + "\n[voice_reply]\nenabled = true\neccovox_profile = \"eccovox\"\n", encoding="utf-8")
     gateway = Gateway(Settings.load(tmp_path, data)); output = tmp_path / "voice.opus"; captured = {}
     def synthesize(_self, profile, text, output_path, response_format, **kwargs):
         captured.update({"profile": profile, "text": text, "output": output_path, "format": response_format, **kwargs})

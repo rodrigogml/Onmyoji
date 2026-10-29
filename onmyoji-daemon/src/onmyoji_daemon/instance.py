@@ -5,6 +5,21 @@ import tomllib
 from pathlib import Path
 
 
+def telegram_configuration_path(root: Path) -> Path:
+    """Retorna a configuração local do gateway Telegram desta instância."""
+    return root.resolve() / "configs" / "daemon" / "services" / "telegram" / "config.toml"
+
+
+def instructions_path(root: Path) -> Path:
+    """Retorna o overlay opcional de instruções da instância."""
+    return root.resolve() / "instructions.md"
+
+
+def shikigami_skills_path(root: Path) -> Path:
+    """Retorna a fonte versionável de skills próprias da instância."""
+    return root.resolve() / "shikigami-skills"
+
+
 def identity(root: Path) -> str:
     """Retorna a identidade configurada localmente ou um fallback seguro."""
     try:

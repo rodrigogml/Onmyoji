@@ -63,4 +63,4 @@ Set-Location C:\opt\MeuShikigami
 py -3 setupOnmyoji.py
 ```
 
-Em seguida, personalize e versione os arquivos portáveis em `shikigami/`. Não versione `configs/`, `skills/`, sessões, logs ou o workspace.
+Em seguida, personalize e versione as fontes portáveis em `shikigami-skills/` e, quando necessário, o arquivo opcional `instructions.md` na raiz. Não versione `configs/`, `skills/`, sessões, logs ou o workspace.

@@ -7,14 +7,14 @@
 Cada schema pertence a uma skill do Shikigami:
 
 ```text
-shikigami/skills/<skill>/schemas/<schema>/
+shikigami-skills/<skill>/schemas/<schema>/
 ├── schema.toml
 └── migrations/
     ├── 0001-inicial.toml
     └── 0002-descricao-em-kebab-case.toml
 ```
 
-O Setup descobre somente `shikigami/skills/*/schemas/*/schema.toml`. O descritor contém `schema_format = 1`, `id`, `title` e `description`. O diretório deve ter o mesmo nome do `id`.
+O Setup descobre somente `shikigami-skills/*/schemas/*/schema.toml`. O descritor contém `schema_format = 1`, `id`, `title` e `description`. O diretório deve ter o mesmo nome do `id`.
 
 Cada migration usa o nome `NNNN-descricao.toml`, começa em `0001`, não possui lacunas e repete `schema_id` e `migration_version`. A versão do nome e do conteúdo deve coincidir. Uma migration já aplicada não pode ser alterada, removida ou renomeada: o Setup registra seu nome e SHA-256 no SQLite e bloqueia divergências.
 

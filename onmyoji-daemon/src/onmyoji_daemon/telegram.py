@@ -23,7 +23,7 @@ from urllib.request import Request, urlopen
 from .rpc import RpcServer
 from .telegram_channels import TelegramChannels
 from .instructions import InstructionComposer
-from .instance import identity
+from .instance import identity, telegram_configuration_path
 from .codex_execution import CodexExecutionError, CodexLaunch
 from .mcp.credentials import CredentialError, KeePassCredentialResolver
 from .mcp.eccovox import EccoVoxError, EccoVoxService
@@ -97,7 +97,7 @@ class Settings:
 
     @classmethod
     def load(cls, root: Path, data_dir: Path) -> "Settings":
-        path = root / "shikigami" / "daemon" / "telegram.toml"
+        path = telegram_configuration_path(root)
         data = tomllib.loads(path.read_text(encoding="utf-8"))
         if data.get("schema_version") != 1: raise ValueError("unsupported telegram schema")
         telegram, agent, legacy_app_server, limits, voice, legacy_instructions = data.get("telegram", {}), data.get("agent", {}), data.get("app_server", {}), data.get("limits", {}), data.get("voice_reply", {}), data.get("instructions", {})
@@ -1080,7 +1080,7 @@ class Gateway(TelegramChannels):
     def _start_totp(self, chat_id: int, message: dict[str, Any], query: str) -> None:
         assert self.api
         try:
-            profile = tomllib.loads((self.settings.root / "shikigami" / "daemon" / "telegram.toml").read_text(encoding="utf-8")).get("totp", {})
+            profile = tomllib.loads(telegram_configuration_path(self.settings.root).read_text(encoding="utf-8")).get("totp", {})
             if not str(profile.get("real_password_entry") or "") or not str(profile.get("fake_password_entry") or ""):
                 self._ephemeral(chat_id, "TOTP está habilitado, mas as entradas de senha real e falsa não foram configuradas."); return
             self._clear_totp_session(chat_id)
@@ -1110,7 +1110,7 @@ class Gateway(TelegramChannels):
                 typing_stop.wait(4)
         typing_thread = threading.Thread(target=renew_typing, daemon=True); typing_thread.start()
         try:
-            data = tomllib.loads((self.settings.root / "shikigami" / "daemon" / "telegram.toml").read_text(encoding="utf-8")); profile = data.get("totp", {})
+            data = tomllib.loads(telegram_configuration_path(self.settings.root).read_text(encoding="utf-8")); profile = data.get("totp", {})
             real, fake = McpVault(self.settings).read(str(profile.get("real_password_entry") or "")), McpVault(self.settings).read(str(profile.get("fake_password_entry") or ""))
             supplied = str(message.get("text") or "")
             if secrets.compare_digest(supplied, fake): self._ephemeral(chat_id, "Não existe TOTP cadastrado."); return

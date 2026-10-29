@@ -115,8 +115,8 @@ def test_daemon_bootstrap_prepares_only_the_platform(tmp_path):
     data = tomllib.loads(configured.read_text(encoding="utf-8"))
     assert data["app_server"]["enabled"] is False
     assert data["instructions"]["shikigami_file"] == "instructions.md"
-    assert not (tmp_path / "shikigami" / "instructions.md").exists()
-    assert not (tmp_path / "shikigami" / "daemon" / "telegram.toml").exists()
+    assert not (tmp_path / "instructions.md").exists()
+    assert not (tmp_path / "configs" / "daemon" / "services" / "telegram" / "config.toml").exists()
 
 
 def test_daemon_configuration_preserves_unknown_sections(tmp_path):
@@ -152,7 +152,7 @@ def test_app_server_configuration_does_not_create_telegram_configuration(tmp_pat
     module.bootstrap_daemon(tmp_path)
     module.save_app_server(tmp_path, True, 120)
 
-    assert not (tmp_path / "shikigami" / "daemon" / "telegram.toml").exists()
+    assert not (tmp_path / "configs" / "daemon" / "services" / "telegram" / "config.toml").exists()
     assert tomllib.loads(manifest.read_text(encoding="utf-8"))["app_server"]["idle_timeout_seconds"] == 120
 
 

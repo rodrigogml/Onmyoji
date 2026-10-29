@@ -11,6 +11,8 @@
 !/conftest.py
 !/shikigami-template/
 !/shikigami-template/**
+!/shikigami-skills/
+!/shikigami-skills/**
 !/docs/
 !/docs/**
 !/etc/
@@ -24,9 +26,6 @@
 # A superfície legada de skills não faz parte da arquitetura atual. Skills gerenciadas
 # são materializadas somente no workspace do Shikigami.
 /skills/
-
-# Definições de uma instância pertencem ao repositório particular do Shikigami.
-/shikigami/
 
 # Configuração local de uma instância do Onmyōji (CODEX_HOME)
 /config.toml

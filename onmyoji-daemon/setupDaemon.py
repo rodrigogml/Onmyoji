@@ -21,7 +21,7 @@ if hasattr(sys.stderr, "reconfigure"):
 PROJECT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT / "src"))
 from onmyoji_daemon.management import applied_configuration_revision, configuration_revision, daemon_python, daemon_reachable, is_installed, runtime_ready, service_info
-from onmyoji_daemon.instance import identity
+from onmyoji_daemon.instance import identity, instructions_path, telegram_configuration_path
 from onmyoji_daemon.mcp.configuration import McpConfiguration
 from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialResolver
 
@@ -29,7 +29,7 @@ ROOT = PROJECT.parent
 MODEL = PROJECT / "configs" / "telegram.toml.model"
 
 
-def target(root: Path) -> Path: return root / "shikigami" / "daemon" / "telegram.toml"
+def target(root: Path) -> Path: return telegram_configuration_path(root)
 
 
 def daemon_target(root: Path) -> Path: return root / "configs" / "daemon" / "daemon.toml"
@@ -349,7 +349,7 @@ def instruction_status(root: Path) -> dict[str, object]:
     data = daemon_data(root); section = data.get("instructions", {})
     composer = InstructionComposer(root.resolve(), root / "configs" / "daemon", str(section.get("shikigami_file") or "instructions.md"), bool(section.get("enabled", True)))
     bundle = composer.compose(identity=identity(root), telegram=False)
-    return {"ok": True, "sources": list(bundle.sources), "baseline_hash": bundle.baseline_hash[:12], "local_file": str(root / "shikigami" / "instructions.md")}
+    return {"ok": True, "sources": list(bundle.sources), "baseline_hash": bundle.baseline_hash[:12], "local_file": str(instructions_path(root))}
 
 
 def validation(root: Path) -> list[dict[str, str]]:

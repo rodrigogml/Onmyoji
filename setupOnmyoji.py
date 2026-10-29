@@ -27,11 +27,12 @@ DAEMON_SOURCE = ROOT / "onmyoji-daemon" / "src"
 if str(DAEMON_SOURCE) not in sys.path:
     sys.path.insert(0, str(DAEMON_SOURCE))
 from onmyoji_daemon.codex_execution import CodexExecutionError, CodexLaunch
+from onmyoji_daemon.instance import telegram_configuration_path
 from onmyoji_daemon.mcp.configuration import McpConfiguration
 from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialResolver
 SYSTEM_BEGIN = "# BEGIN ONMYOJI MANAGED CODEX SETTINGS"
 SYSTEM_END = "# END ONMYOJI MANAGED CODEX SETTINGS"
-INSTANCE_SKILLS_DIRECTORY = "shikigami/skills"
+INSTANCE_SKILLS_DIRECTORY = "shikigami-skills"
 SHIKIGAMI_SKILLS_STATE = "configs/shikigami/skills.toml"
 SANDBOXES = ["read-only", "workspace-write", "danger-full-access"]
 APPROVALS = ["on-request", "never"]
@@ -1592,7 +1593,7 @@ def daemon_menu(root: Path) -> None:
 
     def telegram_section_menu(section: str) -> None:
         while True:
-            telegram_path = root / "shikigami" / "daemon" / "telegram.toml"
+            telegram_path = telegram_configuration_path(root)
             command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "bootstrap"], quiet=True)
             try:
                 enabled = bool(json.loads((root / "configs" / "daemon" / "services.json").read_text(encoding="utf-8")).get("telegram", {}).get("enabled", False))
@@ -1815,7 +1816,7 @@ def daemon_menu(root: Path) -> None:
     def configure_wizard_telegram_credential() -> bool:
         """Configura a credencial com os valores existentes, sem desviar ao menu manual."""
         nonlocal telegram_token_changed
-        path = root / "shikigami" / "daemon" / "telegram.toml"
+        path = telegram_configuration_path(root)
         try:
             settings = tomllib.loads(path.read_text(encoding="utf-8")); telegram = settings.get("telegram", {})
             current_profile, current_entry = str(telegram.get("vault_profile") or telegram.get("keepass_profile") or ""), str(telegram.get("token_entry") or "")

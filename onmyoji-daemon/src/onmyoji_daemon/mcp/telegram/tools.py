@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .service import TelegramMcpError, TelegramMcpService
+from ...instance import telegram_configuration_path
 
 
 class TelegramToolRegistry:
@@ -14,7 +15,7 @@ class TelegramToolRegistry:
     def __init__(self, root: Path): self.root = root.resolve()
 
     def available(self) -> bool:
-        path = self.root / "shikigami" / "daemon" / "telegram.toml"
+        path = telegram_configuration_path(self.root)
         try:
             return bool(tomllib.loads(path.read_text(encoding="utf-8")).get("enabled") is True)
         except (OSError, tomllib.TOMLDecodeError):

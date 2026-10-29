@@ -27,7 +27,7 @@ def pytest_configure() -> None:
     tempfile.tempdir = str(TEST_TEMPORARY_ROOT)
     sys.pycache_prefix = str(TEST_PYCACHE_ROOT)
     paths = [ROOT / "onmyoji-daemon" / "src"]
-    skill_root = ROOT / "shikigami" / "skills"
+    skill_root = ROOT / "shikigami-skills"
     if skill_root.is_dir():
         paths.extend(skill / "scripts" for skill in skill_root.iterdir() if (skill / "scripts").is_dir())
     for path in reversed(paths):

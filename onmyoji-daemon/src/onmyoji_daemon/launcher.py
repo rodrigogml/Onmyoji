@@ -9,19 +9,16 @@ import tomllib
 from pathlib import Path
 
 from .instructions import InstructionComposer
+from .instance import telegram_configuration_path
 from .telegram import CodexAppServer, CodexProtocolError, Settings
 
 
 def _bootstrap(root: Path, data_dir: Path) -> None:
     """Permite iniciar a sessão local antes de configurar o Telegram."""
-    config = root / "shikigami" / "daemon" / "telegram.toml"
+    config = telegram_configuration_path(root)
     if not config.exists():
         config.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(Path(__file__).resolve().parents[2] / "configs" / "telegram.toml.model", config)
-    instructions = root / "shikigami" / "instructions.md"
-    if not instructions.exists():
-        instructions.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(Path(__file__).resolve().parents[2] / "configs" / "shikigami.md.model", instructions)
 
 
 def _approval_policy(settings: Settings) -> str:

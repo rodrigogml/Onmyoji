@@ -22,7 +22,7 @@ SPEC.loader.exec_module(MODULE)
 
 class SystemSetupTests(unittest.TestCase):
     def fake_skill(self, root: Path, identifier: str = "omie") -> object:
-        script = root / "shikigami" / "skills" / identifier / "setupSkill.py"
+        script = root / "shikigami-skills" / identifier / "setupSkill.py"
         script.parent.mkdir(parents=True)
         script.write_text("", encoding="utf-8")
         (script.parent / "SKILL.md").write_text(f"---\nname: {identifier}\ndescription: Teste\n---\n", encoding="utf-8")
@@ -111,10 +111,10 @@ class SystemSetupTests(unittest.TestCase):
             self.assertIsNotNone(installed)
             self.assertEqual(installed["shikigami_identity"], "Exemplo da Silva")
             self.assertTrue(installed["shikigami_installed"])
-            self.assertFalse((root / "shikigami" / "README.md").exists())
-            self.assertFalse((root / "shikigami" / "AGENTS.md").exists())
-            self.assertFalse((root / "shikigami" / "instructions.md").exists())
-            self.assertFalse((root / "shikigami" / "instance.toml").exists())
+            self.assertFalse((root / "README.md").exists())
+            self.assertFalse((root / "AGENTS.md").exists())
+            self.assertFalse((root / "instructions.md").exists())
+            self.assertFalse((root / "shikigami").exists())
 
     def test_wizard_accepts_the_identity_previously_recorded_by_bootstrap(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, patch("builtins.input", return_value=""), patch.object(MODULE, "configure_initial_codex", side_effect=lambda _root, data: data | {"executable": sys.executable}), patch.object(MODULE, "choose_project_directory", side_effect=lambda root, _current: str(root)), patch.object(MODULE, "choose_sandbox", return_value="workspace-write"), patch.object(MODULE, "choose_approval_policy", return_value="on-request"):
@@ -410,7 +410,7 @@ class SystemSetupTests(unittest.TestCase):
     def test_discovers_instance_setup_scripts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            script = root / "shikigami" / "skills" / "barinella" / "setupSkill.py"
+            script = root / "shikigami-skills" / "barinella" / "setupSkill.py"
             script.parent.mkdir(parents=True); script.write_text("", encoding="utf-8")
             def describe(command, **_kwargs):
                 identifier = Path(command[1]).parent.name
@@ -422,7 +422,7 @@ class SystemSetupTests(unittest.TestCase):
     def test_discovers_instance_skill_markdown_without_setup_script(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            source = root / "shikigami" / "skills" / "domain-knowledge"; source.mkdir(parents=True)
+            source = root / "shikigami-skills" / "domain-knowledge"; source.mkdir(parents=True)
             (source / "SKILL.md").write_text("# Domain knowledge\n", encoding="utf-8")
             skills = MODULE.discover(root)
             self.assertEqual(len(skills), 1)
@@ -436,8 +436,8 @@ class SystemSetupTests(unittest.TestCase):
     def test_conflicting_instance_ids_cannot_be_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            first_source = root / "shikigami" / "skills" / "omie"; first_source.mkdir(parents=True)
-            second_source = root / "shikigami" / "skills" / "omie-copy"; second_source.mkdir(parents=True)
+            first_source = root / "shikigami-skills" / "omie"; first_source.mkdir(parents=True)
+            second_source = root / "shikigami-skills" / "omie-copy"; second_source.mkdir(parents=True)
             first_skill = MODULE.Skill("omie", "Omie", first_source, "")
             second_skill = MODULE.Skill("omie", "Omie", second_source, "")
             ok, message = MODULE.save_enabled(root, {"omie"}, [first_skill, second_skill])
@@ -447,7 +447,7 @@ class SystemSetupTests(unittest.TestCase):
     def test_menu_lists_only_shikigami_skills(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            skill = MODULE.Skill("barinella", "Barinella", root / "shikigami" / "skills" / "barinella", "")
+            skill = MODULE.Skill("barinella", "Barinella", root / "shikigami-skills" / "barinella", "")
             output = io.StringIO()
             with patch("builtins.input", return_value="x"), patch.object(MODULE, "discover", side_effect=AssertionError("o menu não deve redescobrir skills")), patch.object(MODULE.sys, "stdout", output):
                 self.assertEqual(MODULE.menu([skill], root), 0)
@@ -456,7 +456,7 @@ class SystemSetupTests(unittest.TestCase):
     def test_skill_status_badges_keep_the_menu_column_width(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE.Ui, "enabled", False):
             root = Path(temporary)
-            skill = MODULE.Skill("omie", "Omie", root / "shikigami" / "skills" / "omie", "")
+            skill = MODULE.Skill("omie", "Omie", root / "shikigami-skills" / "omie", "")
             active = MODULE.skill_item(1, skill, MODULE.Ui.badge("ATIVA", "active"))
             inactive = MODULE.skill_item(1, skill, MODULE.Ui.badge("inativa", "inactive"))
             conflict = MODULE.skill_item(1, skill, MODULE.Ui.badge("CONFLITO", "warning"))
