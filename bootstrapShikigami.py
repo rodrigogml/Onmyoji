@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import os
 import shutil
 import subprocess
 import sys
@@ -9,6 +10,10 @@ import unicodedata
 from pathlib import Path
 from typing import Callable
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 DEFAULT_UPSTREAM_URL = "https://github.com/rodrigogml/Onmyoji.git"
 TEMPLATE_DIRECTORY = Path("shikigami-template")
@@ -20,6 +25,17 @@ class BootstrapError(RuntimeError):
     """Indica que não foi possível criar uma instância com segurança."""
 
 
+class Ui:
+    """Camada visual compartilhada com o setup, sem dependências externas."""
+    enabled = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+    reset = "\x1b[0m"; bold = "\x1b[1m"
+    violet = "\x1b[38;5;141m"; cyan = "\x1b[38;5;80m"; green = "\x1b[38;5;78m"; red = "\x1b[38;5;203m"; slate = "\x1b[38;5;245m"
+
+    @classmethod
+    def text(cls, value: str, *styles: str) -> str:
+        return "".join(styles) + value + cls.reset if cls.enabled and styles else value
+
+
 def identifier_for(name: str) -> str:
     """Normaliza o nome exibido em um identificador seguro para diretórios."""
     normalized = unicodedata.normalize("NFKD", name.strip())
@@ -28,6 +44,14 @@ def identifier_for(name: str) -> str:
     if not identifier or identifier in {".", ".."} or identifier.upper() in WINDOWS_RESERVED_NAMES:
         raise BootstrapError("Informe um nome de Shikigami válido.")
     return identifier
+
+
+def directory_name_for(value: str, label: str) -> str:
+    """Aceita somente o nome de uma pasta filha da base selecionada."""
+    name = value.strip()
+    if not name or name in {".", ".."} or "/" in name or "\\" in name or Path(name).name != name or name.rstrip(". ").upper() in WINDOWS_RESERVED_NAMES:
+        raise BootstrapError(f"{label} deve conter somente o nome de uma pasta válida.")
+    return name
 
 
 def git(arguments: list[str], *, cwd: Path | None = None, capture: bool = False, allow_failure: bool = False) -> subprocess.CompletedProcess[str]:
@@ -124,33 +148,49 @@ def create_instance(name: str, instance_directory: Path, workspace_directory: Pa
 
 def prompt_path(message: str, default: Path, ask: Callable[[str], str]) -> Path:
     """Lê um caminho, usando o destino sugerido quando a resposta é vazia."""
-    value = ask(f"{message} [{default}]: ").strip()
+    value = ask(Ui.text(f"› {message} [{default}]: ", Ui.violet, Ui.bold)).strip()
     return Path(value).expanduser().resolve() if value else default.resolve()
+
+
+def prompt_directory_name(message: str, default: str, base: Path, ask: Callable[[str], str]) -> Path:
+    """Lê o nome de uma pasta a ser criada diretamente na pasta-base."""
+    value = ask(Ui.text(f"› {message} [{default}]: ", Ui.violet, Ui.bold)).strip() or default
+    return base / directory_name_for(value, message)
+
+
+def screen(title: str, subtitle: str) -> None:
+    """Renderiza o cabeçalho com as mesmas dimensões e cores do setup."""
+    width = max(56, min(shutil.get_terminal_size((78, 24)).columns, 96))
+    print("\n" + Ui.text("╭" + "─" * (width - 2) + "╮", Ui.violet))
+    heading = f" ONMYŌJI  /  {title.upper()}"
+    print("│" + Ui.text(heading.ljust(width - 2), Ui.bold, Ui.violet) + "│")
+    print("│ " + Ui.text(subtitle[:width - 4].ljust(width - 4), Ui.slate) + " │")
+    print(Ui.text("╰" + "─" * (width - 2) + "╯", Ui.violet))
 
 
 def interactive(ask: Callable[[str], str] = input, output: Callable[[str], None] = print) -> int:
     """Conduz a criação interativa de uma instância de Shikigami."""
-    output("\n╭──────────────────────────────────────────────────────────────╮")
-    output("│ ONMYŌJI  /  INSTALADOR DE SHIKIGAMI                           │")
-    output("│ Cria uma instância, seu workspace e a identidade local        │")
-    output("╰──────────────────────────────────────────────────────────────╯")
+    if output is print:
+        screen("Instalador de Shikigami", "Cria uma instância, seu workspace e a identidade local")
+    else:
+        output("ONMYŌJI / INSTALADOR DE SHIKIGAMI")
     try:
-        name = ask("› Nome do Shikigami: ").strip()
+        name = ask(Ui.text("› Nome do Shikigami: ", Ui.violet, Ui.bold)).strip()
         identifier = identifier_for(name)
         base = prompt_path("Pasta base", Path.cwd(), ask)
-        instance = prompt_path("Pasta da instância", base / f"Shikigami-{identifier}", ask)
-        workspace = prompt_path("Pasta de trabalho", base / f"Shikigami-{identifier}-Work", ask)
-        upstream = ask(f"› Repositório do Onmyōji [{DEFAULT_UPSTREAM_URL}]: ").strip() or DEFAULT_UPSTREAM_URL
-        origin = ask("› Repositório remoto próprio (vazio, opcional): ").strip() or None
-        output(f"\n  Instância: {instance}\n  Workspace: {workspace}\n  Upstream:  {upstream}\n  Origin:    {origin or '(não configurado)'}")
-        if ask("› Confirmar criação? [s/N]: ").strip().lower() not in {"s", "sim"}:
+        instance = prompt_directory_name("Nome da pasta da instância", f"Shikigami-{identifier}", base, ask)
+        workspace = prompt_directory_name("Nome da pasta de trabalho", f"Shikigami-{identifier}-Work", base, ask)
+        upstream = ask(Ui.text(f"› Repositório do Onmyōji [{DEFAULT_UPSTREAM_URL}]: ", Ui.violet, Ui.bold)).strip() or DEFAULT_UPSTREAM_URL
+        origin = ask(Ui.text("› Repositório remoto próprio (vazio, opcional): ", Ui.violet, Ui.bold)).strip() or None
+        output("\n  " + Ui.text("Instância:", Ui.cyan, Ui.bold) + f" {instance}\n  " + Ui.text("Workspace:", Ui.cyan, Ui.bold) + f" {workspace}\n  " + Ui.text("Upstream:", Ui.cyan, Ui.bold) + f"  {upstream}\n  " + Ui.text("Origin:", Ui.cyan, Ui.bold) + f"    {origin or '(não configurado)'}")
+        if ask(Ui.text("› Confirmar criação? [s/N]: ", Ui.violet, Ui.bold)).strip().lower() not in {"s", "sim"}:
             output("\n  Instalação cancelada.")
             return 0
         create_instance(name, instance, workspace, upstream, origin, ask)
-        output(f"\n  ✓ Shikigami {name} criado em {instance}.")
+        output("\n  " + Ui.text("✓", Ui.green, Ui.bold) + f" Shikigami {name} criado em {instance}.")
         return 0
     except BootstrapError as error:
-        output(f"\n  ! {error}")
+        output("\n  " + Ui.text("!", Ui.red, Ui.bold) + f" {error}")
         return 1
 
 

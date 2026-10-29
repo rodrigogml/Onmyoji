@@ -23,6 +23,12 @@ class BootstrapShikigamiTests(unittest.TestCase):
         with self.assertRaises(MODULE.BootstrapError):
             MODULE.identifier_for("CON")
 
+    def test_directory_name_is_limited_to_a_child_of_the_base_directory(self) -> None:
+        self.assertEqual(MODULE.directory_name_for("Shikigami-Akuma", "Nome da pasta"), "Shikigami-Akuma")
+        for value in ("C:\\opt\\Akuma", "../Akuma", "Akuma/Work"):
+            with self.subTest(value=value), self.assertRaises(MODULE.BootstrapError):
+                MODULE.directory_name_for(value, "Nome da pasta")
+
     def test_copy_template_projects_files_and_replaces_placeholders(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); template = root / "template"; destination = root / "instance"
