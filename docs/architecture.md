@@ -19,17 +19,19 @@ Shikigami-<Nome> (CODEX_HOME e repositório da instância)
 └── estado gerenciado pelo Codex   # autenticação, sessões, logs e cache; ignorado pelo Git
 
 Shikigami-<Nome>-Work (workspace externo)
-├── .agents/skills/onmyoji-memory/ # cópia gerenciada do workflow, quando habilitado
+├── .agents/skills/<skill>/         # cópia gerenciada de skill própria habilitada
+├── .agents/skills/onmyoji-memory/  # workflow MCP, quando a memória está habilitada
+├── .agents/skills/onmyoji-data-tables/ # workflow MCP, quando há schemas habilitados
 └── projeto e arquivos de trabalho
 ```
 
-A memória MCP é a exceção deliberada ao princípio de não materializar definições no workspace: o Codex descobre skills locais em `.agents/skills/`, portanto o launcher copia para esse local somente o workflow `onmyoji-memory`. A fonte versionada continua no Onmyōji; a cópia possui hash e registro de posse em `configs/mcp/memory/managed-skill.json`, é reparada antes das aberturas gerenciadas do Codex e não pode se tornar fonte de verdade. O banco permanece fora do workspace, em `configs/mcp/memory/instructions.sqlite3`.
+O Codex descobre skills locais em `.agents/skills/`. Por isso, antes de cada abertura gerenciada, o launcher projeta nesse local cópias de todas as skills próprias habilitadas. A fonte continua em `shikigami/skills/`; `configs/shikigami/skills.toml` controla a habilitação e `configs/shikigami/skills-runtime.json` registra a posse e o hash da cópia. Uma divergência no workspace é reparada e jamais retorna para a fonte versionada. O launcher também projeta workflows MCP com registros independentes: memória e tabelas de dados. O banco de memória permanece fora do workspace, em `configs/mcp/memory/instructions.sqlite3`.
 
 ## Configurações
 
 Cada módulo MCP mantém seus contratos e modelos versionados no daemon. O setup MCP materializa a configuração efetiva em `configs/mcp/`. A definição versionada da instância fica em `shikigami/`: hoje inclui identidade, instruções e a política do gateway em `shikigami/daemon/telegram.toml`. Arquivos reais nunca contêm segredos em texto; eles guardam somente parâmetros, perfis, caminhos e referências a provedores de segredo.
 
-Cada instância possui seu próprio `origin`, seu próprio `CODEX_HOME`, seus perfis locais, integrações MCP e skills próprias habilitadas, sem compartilhar estado com outras. O setup registra as skills do Shikigami no profile nativo `onmyoji-skills.config.toml`; os perfis MCP ficam em `configs/mcp/`. Atualizações da base são recebidas com `git fetch upstream` e `git merge upstream/main`; uma instância nunca faz `git push upstream`.
+Cada instância possui seu próprio `origin`, seu próprio `CODEX_HOME`, seus perfis locais, integrações MCP e skills próprias habilitadas, sem compartilhar estado com outras. O setup registra a habilitação das skills do Shikigami em `configs/shikigami/skills.toml`; os perfis MCP ficam em `configs/mcp/`. Atualizações da base são recebidas com `git fetch upstream` e `git merge upstream/main`; uma instância nunca faz `git push upstream`.
 
 O workspace não é a definição versionada da instância. Para manter ou reconstruir um Shikigami, use seu repositório e `shikigami/`; trate o workspace como área de trabalho descartável ou administrada por uma política de backup independente.
 

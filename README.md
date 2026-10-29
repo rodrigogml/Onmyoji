@@ -74,8 +74,10 @@ Shikigami-<Nome>/       # Repositório e CODEX_HOME da instância
 │   ├── instructions.md # Objetivos, tom e limites
 │   └── skills/         # Fontes das skills próprias
 ├── configs/            # Estado e segredos locais (ignorado pelo Git)
-└── onmyoji-skills.config.toml # Perfil local de skills do Codex (ignorado pelo Git)
+│   └── shikigami/skills.toml # Habilitação local das skills próprias
+└── config.toml         # Defaults locais do Codex (ignorado pelo Git)
 Shikigami-<Nome>-Work/  # Workspace externo e não versionado
+└── .agents/skills/     # Cópias gerenciadas das skills habilitadas
 ```
 
 | Diretório | Papel |
@@ -83,7 +85,8 @@ Shikigami-<Nome>-Work/  # Workspace externo e não versionado
 | `shikigami/` | Contém a identidade, as instruções, a documentação e as skills próprias da instância; seu conteúdo pode ser versionado no repositório particular do Shikigami. |
 | `shikigami/skills/` | Mantém as fontes de skills criadas especificamente para a instância. |
 | `configs/` | Guarda referências locais, perfis efetivos, estado operacional e segredos; nunca deve ser enviado ao Git. |
-| `onmyoji-skills.config.toml` | Perfil local do Codex gerado pelo setup. Registra, para cada skill disponível, seu caminho de origem e se está habilitada. |
+| `configs/shikigami/skills.toml` | Registra localmente quais skills próprias estão habilitadas para projeção no workspace. |
+| `Shikigami-<Nome>-Work/.agents/skills/` | Contém cópias reparáveis das skills habilitadas; não é fonte de verdade nem deve ser versionado. |
 
 > [!WARNING]
 > Nenhuma pasta herdada do Onmyōji deve receber conteúdo específico de uma instância de Shikigami. Manter essa distinção é essencial para que o repositório da base permaneça reutilizável e o repositório do Shikigami possa evoluir sem introduzir conflitos.
@@ -103,9 +106,9 @@ Em resumo, a pasta do repositório define **quem é e como funciona** o Shikigam
 
 As integrações compartilhadas do Onmyōji são implementadas e publicadas pelo servidor MCP interno. A disponibilidade de cada integração depende de sua configuração local em `configs/mcp/`; o Codex CLI e o App Server recebem o mesmo servidor MCP na abertura centralizada.
 
-As skills pertencem exclusivamente ao Shikigami. Suas fontes ficam em `shikigami/skills/<nome>/`, podem conter um `SKILL.md` e, opcionalmente, um `setupSkill.py`. O setup descobre apenas essa pasta, permite habilitar cada skill no profile nativo `onmyoji-skills.config.toml` e não copia nem cria links em `skills/`.
+As skills pertencem exclusivamente ao Shikigami. Suas fontes ficam em `shikigami/skills/<nome>/`, podem conter um `SKILL.md` e, opcionalmente, um `setupSkill.py`. O setup descobre apenas essa pasta e grava a habilitação em `configs/shikigami/skills.toml`. Antes de cada abertura gerenciada do Codex, o Onmyōji copia as skills habilitadas para `<workspace>/.agents/skills/<nome>/`; nunca usa links simbólicos. A cópia é reparada quando divergir da fonte e não pode alterar a definição versionada.
 
-O workflow de memória é uma exceção intencional: quando a memória MCP estiver habilitada, o launcher copia sua definição gerenciada para `.agents/skills/onmyoji-memory/` no workspace. Essa cópia não é fonte de verdade e é restaurada automaticamente quando necessário.
+Workflows fornecidos por serviços MCP, como memória e tabelas de dados, usam a mesma superfície do workspace com controle próprio de habilitação. Eles coexistem com as skills do Shikigami, mas suas fontes canônicas permanecem no servidor MCP.
 
 ## Criar e configurar um Shikigami
 
@@ -148,7 +151,7 @@ Crie ou escolha um workspace externo, como `Shikigami-<Nome>-Work/`, e configure
 
 ### 4. Instalar uma skill própria da instância
 
-Crie a fonte versionada em `shikigami/skills/<nome>/` com `SKILL.md` e recursos opcionais. Uma skill própria também pode incluir `setupSkill.py`, que será descoberta pelo setup e exibida em **Skills do Shikigami**. Habilite-a pelo menu central; o setup a registra no profile nativo do Codex. Use a fonte versionada para conhecimento e playbooks próprios, sem segredos, caminhos dependentes da máquina, logs ou estado operacional.
+Crie a fonte versionada em `shikigami/skills/<nome>/` com `SKILL.md` e recursos opcionais. Uma skill própria também pode incluir `setupSkill.py`, que será descoberta pelo setup e exibida em **Skills do Shikigami**. Habilite-a pelo menu central; na próxima abertura gerenciada do Codex, ela será copiada para `<workspace>/.agents/skills/<nome>/`. Use a fonte versionada para conhecimento e playbooks próprios, sem segredos, caminhos dependentes da máquina, logs ou estado operacional.
 
 ### 5. Configurar integrações MCP
 
