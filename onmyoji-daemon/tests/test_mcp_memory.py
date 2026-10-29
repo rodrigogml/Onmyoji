@@ -64,6 +64,48 @@ def test_registry_publishes_memory_tools_only_when_enabled(tmp_path: Path) -> No
     assert "antes de" in search["description"].casefold() and "usuário" in search["description"].casefold()
 
 
+def test_workflow_search_variants_match_words_without_filtering_by_domain(tmp_path: Path) -> None:
+    """Valida os limites lexicais que exigem reformulação e avaliação do escopo."""
+    service = MemoryService(tmp_path)
+    todoist = service.invoke("learn_instruction", {
+        "applies_when": "Quando apresentar tarefas na revisão diária do Todoist.",
+        "instruction": "Agrupe as tarefas por projeto e preserve as tarefas sem prazo.",
+        "keywords": ["todoist", "tarefa", "projeto", "agrupar"], "confirm": True,
+    })["instruction"]
+    ssh = service.invoke("learn_instruction", {
+        "applies_when": "Quando executar uma sessão SSH para manutenção.",
+        "instruction": "Confirme o host antes de iniciar a conexão.",
+        "keywords": ["ssh", "host", "conexao"], "confirm": True,
+    })["instruction"]
+
+    assert service.invoke("search_instructions", {"query": "organização"})["count"] == 0
+    assert service.invoke("search_instructions", {"query": "agrupar projeto"})["instructions"] == [todoist]
+    assert service.invoke("search_instructions", {"query": "REVISÃO"})["instructions"] == [todoist]
+    mixed = service.invoke("search_instructions", {"query": "ssh projeto"})
+    assert {row["id"] for row in mixed["instructions"]} == {todoist["id"], ssh["id"]}
+
+
+def test_keyword_normalization_and_revision_keep_the_current_rule_identity(tmp_path: Path) -> None:
+    """Confirma os campos retornados para o procedimento de revisão integral."""
+    service = MemoryService(tmp_path)
+    created = service.invoke("learn_instruction", {
+        "applies_when": "Quando preparar a revisão diária do Todoist.",
+        "instruction": "Agrupe as tarefas por projeto e preserve as tarefas sem prazo.",
+        "keywords": [" TODOIST ", "TAREFA", " Revisão   Diária ", "todoist"], "confirm": True,
+    })["instruction"]
+    assert created["keywords"] == ["todoist", "tarefa", "revisão diária"]
+    recovered = service.invoke("search_instructions", {"query": "revisao diaria"})["instructions"][0]
+    current = service.invoke("get_instruction", {"id": recovered["id"]})["instruction"]
+    revised = service.invoke("revise_instruction", {
+        "id": current["id"], "applies_when": current["applies_when"],
+        "instruction": "Agrupe as tarefas por prazo e preserve as tarefas sem prazo.",
+        "keywords": [*current["keywords"], "prazo"], "confirm": True,
+    })["instruction"]
+    assert revised["id"] == created["id"]
+    assert service.invoke("list_instructions", {})["total"] == 1
+    assert service.invoke("get_instruction", {"id": created["id"]})["instruction"] == revised
+
+
 def test_workflows_are_published_and_read_only_when_memory_is_enabled(tmp_path: Path) -> None:
     configuration = McpConfiguration(tmp_path); workflows = WorkflowRegistry(configuration)
     assert workflows.definitions() == [] and workflows.developer_instructions() is None
@@ -74,5 +116,7 @@ def test_workflows_are_published_and_read_only_when_memory_is_enabled(tmp_path: 
     assert definition["input_schema"]["properties"]["id"]["enum"] == ["memory-decision", "memory-learning"]
     instructions = workflows.developer_instructions()
     assert instructions and "memory-decision" in instructions and "workflows.read" in instructions
-    content = workflows.call("workflows.read", {"id": "memory-learning"})
-    assert content["module"] == "memory" and "confirm=true" in content["content"]
+    for identifier in ("memory-decision", "memory-learning"):
+        content = workflows.call("workflows.read", {"id": identifier})
+        expected = (workflows.resources / f"{identifier}.md").read_text(encoding="utf-8").strip()
+        assert content == {"id": identifier, "module": "memory", "content": expected}

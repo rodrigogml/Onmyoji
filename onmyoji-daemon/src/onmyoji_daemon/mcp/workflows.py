@@ -33,15 +33,15 @@ class WorkflowRegistry:
         if not self.configuration.memory_tool_available():
             return ()
         return (
-            Workflow("memory-decision", "memory", "Antes de responder, decidir, planejar, agir ou pedir esclarecimento, leia este workflow e pesquise a memória.", "memory-decision.md"),
-            Workflow("memory-learning", "memory", "Após correção explícita, preferência durável ou aprendizado reutilizável, leia este workflow antes de alterar a memória.", "memory-learning.md"),
+            Workflow("memory-decision", "memory", "Antes de responder a uma solicitação substantiva, decidir, planejar, agir ou perguntar ao usuário ou a terceiros, aplique este procedimento de pesquisa.", "memory-decision.md"),
+            Workflow("memory-learning", "memory", "Após correção, preferência durável ou aprendizado validado, avalie este procedimento antes de encerrar; aplique-o antes de criar, revisar ou excluir memória.", "memory-learning.md"),
         )
 
     def developer_instructions(self) -> str | None:
         routes = self.available()
         if not routes:
             return None
-        lines = ["[ONMYŌJI — WORKFLOWS MCP]", "Os workflows abaixo são obrigatórios quando o gatilho ocorrer. Leia o conteúdo completo com workflows.read antes de continuar."]
+        lines = ["[ONMYŌJI — WORKFLOWS MCP]", "Os workflows abaixo são obrigatórios quando o gatilho ocorrer. Leia o conteúdo completo com workflows.read usando o id indicado, se ainda não estiver no contexto atual, e siga todas as etapas antes de continuar."]
         lines.extend(f"- `{item.identifier}`: {item.trigger}" for item in routes)
         return "\n".join(lines)
 
