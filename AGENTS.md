@@ -12,6 +12,10 @@ Os arquivos da base — `onmyoji-daemon/`, `setupOnmyoji.py`, `docs/` e os recur
 
 O workspace do agente é externo ao `CODEX_HOME`. Arquivos de trabalho, saídas, anexos temporários e dados de atividade devem permanecer no workspace configurado, nunca em `configs/` nem em `shikigami/`.
 
+## Artefatos temporários
+
+Não crie arquivos transitórios, saídas de compilação, caches ou bancos de teste na raiz do repositório. Testes devem usar o diretório temporário fornecido pelo framework (`tmp_path` ou `TemporaryDirectory`), que é isolado e removido ao fim da execução. Quando uma operação local precisar manter arquivos temporários inspecionáveis durante sua execução, use exclusivamente `tmp/`, que é ignorado pelo Git e pode ser removido integralmente. Estado operacional persistente pertence a `configs/` ou ao workspace do Shikigami, conforme sua finalidade; nunca a diretórios improvisados na raiz.
+
 ## Alteração de instruções e skills
 
 Ao alterar arquivos `README.md`, `AGENTS.md`, `SKILL.md` ou qualquer arquivo `.md` de definição de skill (não se aplica a arquivos de scripts, wrappers e outros códigos):
