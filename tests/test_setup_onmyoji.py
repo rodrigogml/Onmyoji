@@ -363,6 +363,11 @@ class SystemSetupTests(unittest.TestCase):
             environment = run.call_args.kwargs["env"]
             self.assertEqual(environment["CODEX_HOME"], str(root))
 
+    def test_telegram_setup_uses_only_the_mcp_vault_profile(self) -> None:
+        source = Path(MODULE.__file__).read_text(encoding="utf-8")
+
+        self.assertNotIn("keepass_profile", source)
+
     def test_launches_device_login_without_a_local_callback(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

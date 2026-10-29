@@ -1689,7 +1689,7 @@ def daemon_menu(root: Path) -> None:
                     entry = prompt(f"Entrada KeePass [{default_entry}]: ").strip() or default_entry
                     try:
                         current = tomllib.loads(telegram_path.read_text(encoding="utf-8")).get("telegram", {})
-                        reference_changed = (str(current.get("keepass_profile") or ""), str(current.get("token_entry") or "")) != (profile, entry)
+                        reference_changed = (str(current.get("vault_profile") or ""), str(current.get("token_entry") or "")) != (profile, entry)
                     except (OSError, tomllib.TOMLDecodeError, AttributeError): reference_changed = True
                     saved = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-credential", "--profile", profile, "--entry", entry], quiet=True)
                     if saved.returncode != 0: result(False, (saved.stdout or saved.stderr).strip()); break
@@ -1826,7 +1826,7 @@ def daemon_menu(root: Path) -> None:
         path = telegram_configuration_path(root)
         try:
             settings = tomllib.loads(path.read_text(encoding="utf-8")); telegram = settings.get("telegram", {})
-            current_profile, current_entry = str(telegram.get("vault_profile") or telegram.get("keepass_profile") or ""), str(telegram.get("token_entry") or "")
+            current_profile, current_entry = str(telegram.get("vault_profile") or ""), str(telegram.get("token_entry") or "")
         except (OSError, tomllib.TOMLDecodeError, AttributeError):
             current_profile, current_entry = "", ""
         listed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "profiles"], quiet=True)
