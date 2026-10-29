@@ -4,21 +4,25 @@ Esta é a base comum e versionada do Onmyōji. Ela fornece o daemon, os scripts 
 
 ## Hierarquia da instância
 
-Quando a pasta `shikigami/` existir, leia `shikigami/README.md` e `shikigami/AGENTS.md` antes de trabalhar. Eles definem a identidade, as instruções particulares e as regras daquele Shikigami. Suas instruções complementam este arquivo para aquela instância.
+Os arquivos da base — `onmyoji-daemon/`, `setupOnmyoji.py`, `docs/` e os recursos na raiz — pertencem ao upstream `Onmyoji`. Melhorias reutilizáveis da base devem ser feitas e publicadas no upstream. As fontes de skills específicas da instância ficam em `shikigami-skills/` e podem ser versionadas pelo repositório próprio do Shikigami.
 
-Os arquivos da base — `onmyoji-daemon/`, `setupOnmyoji.py`, `docs/` e os recursos na raiz — pertencem ao upstream `Onmyoji`. Não os altere como personalização de um Shikigami: crie ou altere arquivos em `shikigami/`. Melhorias reutilizáveis da base devem ser feitas e publicadas no upstream.
+`configs/`, `skills/`, `sessions/`, `state/`, `log/`, `tmp/` e diretórios equivalentes são locais e não versionados. Nunca coloque segredos, tokens, credenciais, bancos de conversas, logs ou staging em fontes versionáveis.
 
-`configs/`, `skills/`, `sessions/`, `state/`, `log/`, `tmp/` e diretórios equivalentes são locais e não versionados. Nunca coloque segredos, tokens, credenciais, bancos de conversas, logs ou staging em `shikigami/`.
-
-O workspace do agente é externo ao `CODEX_HOME`. Arquivos de trabalho, saídas, anexos temporários e dados de atividade devem permanecer no workspace configurado, nunca em `configs/` nem em `shikigami/`.
+O workspace do agente é externo ao `CODEX_HOME`. Arquivos de trabalho, saídas, anexos temporários e dados de atividade devem permanecer no workspace configurado, nunca em `configs/` nem em `shikigami-skills/`.
 
 ## Artefatos temporários
 
-`tmp/` é o único local temporário do repositório. Todo arquivo transitório, saída de compilação, cache ou banco de teste criado durante desenvolvimento, testes ou execução local deve ficar dentro dele; nunca crie diretórios temporários na raiz, em `configs/`, em `shikigami/` ou em qualquer outra pasta do repositório. Testes devem usar `tmp_path` ou `TemporaryDirectory` já configurados para `tmp/`; não devem escolher o diretório temporário padrão do sistema nem criar caminhos próprios. Execute a suíte com `python -B -m pytest` para que o interpretador não grave bytecode fora de `tmp/`. Estado operacional persistente pertence a `configs/` ou ao workspace do Shikigami, conforme sua finalidade. `tmp/` é ignorado pelo Git e pode ser removido integralmente.
+`tmp/` é o único local temporário do repositório. Todo arquivo transitório, saída de compilação, cache ou banco de teste criado durante desenvolvimento, testes ou execução local deve ficar dentro dele; nunca crie diretórios temporários na raiz, em `configs/`, em `shikigami-skills/` ou em qualquer outra pasta do repositório. Testes devem usar `tmp_path` ou `TemporaryDirectory` já configurados para `tmp/`; não devem escolher o diretório temporário padrão do sistema nem criar caminhos próprios. Execute a suíte com `python -B -m pytest` para que o interpretador não grave bytecode fora de `tmp/`. Estado operacional persistente pertence a `configs/` ou ao workspace do Shikigami, conforme sua finalidade. `tmp/` é ignorado pelo Git e pode ser removido integralmente.
 
 ## GitHub
 
 GitHub é exclusivamente o repositório remoto de versionamento. Não crie nem mantenha workflows, automações, verificações de qualidade ou qualquer dependência operacional em `.github/`; testes, validações e decisões de qualidade pertencem ao código e à execução local do projeto.
+
+## Interface dos scripts de setup
+
+Consulte `docs/setup-interface.md` antes de criar ou alterar uma interação dos scripts de setup. A moldura `screen()` é exclusiva de menus navegáveis com opção explícita de voltar. Assistentes, perguntas internas, diagnósticos, listagens e resultados usam apresentação em fluxo, sem uma nova moldura.
+
+Escolhas enumeradas dentro de um roteiro devem usar identificadores numéricos e apresentar no prompt o número da alternativa que Enter adotará, como `Opção [2]:`. Entradas livres mostram o valor efetivo adotado por Enter; exceções semânticas devem deixar o efeito explícito, como `[vazio = todas]`. Confirmações binárias usam `S/n` ou `s/N`, com a alternativa padrão em maiúscula. `X` sempre cancela ou volta do contexto atual.
 
 ## Alteração de instruções e skills
 

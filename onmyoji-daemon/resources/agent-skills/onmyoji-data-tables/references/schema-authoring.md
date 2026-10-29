@@ -5,7 +5,7 @@ Use este documento somente ao criar ou evoluir uma skill do Shikigami que exija 
 ## Estrutura obrigatória
 
 ```text
-shikigami/skills/<skill>/schemas/<schema>/
+shikigami-skills/<skill>/schemas/<schema>/
 ├── schema.toml
 └── migrations/NNNN-descricao.toml
 ```
