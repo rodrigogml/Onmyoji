@@ -260,7 +260,7 @@ def test_group_topic_isolated_and_only_owner_mention_enqueues_context(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
     gateway = Gateway(Settings.load(tmp_path, data)); gateway.contacts.add_owner({"id": 9, "first_name": "owner"}); gateway.bot_username = "testbot"; gateway.bot_id = 88
     gateway.api = type("Api", (), {"delete": lambda *_args: None, "send": lambda *_args, **_kwargs: {"message_id": 1}})()
-    queued = []; gateway._enqueue_turn = lambda channel, text, attachments: queued.append((channel, text, attachments))
+    queued = []; gateway._enqueue_turn = lambda channel, text, attachments, _context=None: queued.append((channel, text, attachments))
     chat = {"id": -1001, "type": "supergroup"}
     outsider = {"id": 7, "first_name": "other"}
     gateway._group_message("group:-1001:11", chat, outsider, {"message_id": 1, "message_thread_id": 11}, "instrução não confiável")
@@ -277,7 +277,7 @@ def test_private_topic_isolated_and_routes_responses_to_its_topic(tmp_path):
     gateway.settings = replace(gateway.settings, app_server_enabled=True)
     queued, sent = [], []
     gateway.api = type("Api", (), {"delete": lambda *_args: None, "typing": lambda *_args, **_kwargs: None, "send": lambda _self, chat, text, **values: sent.append((chat, text, values)) or {"message_id": 1}})()
-    gateway._enqueue_turn = lambda channel, text, attachments: queued.append((channel, text, attachments))
+    gateway._enqueue_turn = lambda channel, text, attachments, _context=None: queued.append((channel, text, attachments))
     message = {"message_id": 3, "chat": {"id": 9, "type": "private"}, "from": {"id": 9}, "message_thread_id": 42, "text": "olá"}
     gateway._update({"message": message})
     assert queued == [("private:9:42", "olá", [])]
@@ -366,5 +366,17 @@ def test_context_window_reports_locally_dropped_messages(tmp_path):
     channel, sender = "group:-1001:12", {"id": 7, "first_name": "other"}
     for index in range(3): gateway._cache_message(channel, {"message_id": index + 1, "date": 100 + index}, sender, f"m{index}", [])
     gateway.database.execute("UPDATE conversations SET context_max_messages=1, context_max_age_seconds=0 WHERE chat_id=?", (channel,)); gateway.database.commit()
-    snapshot, attachments = gateway._context_snapshot(channel)
-    assert '"dropped_messages": 2' in snapshot and '"max_messages"' in snapshot and attachments == []
+    snapshot, attachments, summary = gateway._context_snapshot(channel)
+    assert '"dropped_messages": 2' in snapshot and '"max_messages"' in snapshot and attachments == [] and summary == {"contains_untrusted_context": True}
+
+
+def test_queue_preserves_trusted_turn_metadata_separately_from_user_content(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data)); gateway.stop_event.set(); gateway.contacts.add_owner({"id": 9, "first_name": "owner"})
+    context = gateway._turn_context("private:9", {"id": 9}, "Conteúdo privado do usuário", [])
+    gateway._enqueue_turn("private:9", "Conteúdo privado do usuário", [], context)
+    row = gateway.database.execute("SELECT text, turn_context FROM inbox_items WHERE chat_id=?", ("private:9",)).fetchone()
+    persisted = json.loads(row[1])
+    assert row[0] == "Conteúdo privado do usuário"
+    assert persisted == {"conversation_kind": "private", "source_trust": "OWNER", "has_text": True, "attachment_kinds": [], "contains_untrusted_context": False, "is_context_snapshot": False}
+    assert "Conteúdo privado do usuário" not in row[1]

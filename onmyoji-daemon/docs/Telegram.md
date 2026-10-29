@@ -21,6 +21,20 @@ Em contraste, o estado privado do serviço — configuração, credenciais,
 sessões, logs e metadados operacionais — pertence a
 `configs/daemon/services/telegram/` e não é versionado.
 
+## Contexto e procedência
+
+O Gateway separa o contexto confiável do conteúdo enviado ao agente. Para cada
+turno, as developer instructions recebem apenas metadados locais: tipo de
+conversa, rótulo de confiança da origem, presença de anexos e se o histórico
+inclui conteúdo de terceiros não confiável. Esses metadados ficam na fila do
+Gateway para sobreviver à execução assíncrona do turno.
+
+Texto, legendas, nomes de arquivos e transcrições não são inseridos nas
+developer instructions. Eles seguem como conteúdo de entrada, identificado
+por procedência. Uma transcrição de voz informa que é automática e pode conter
+erros de reconhecimento; nomes próprios, siglas e termos incomuns exigem
+confirmação antes de orientar uma ação relevante.
+
 ## Voz
 
 Transcrição e síntese usam diretamente o serviço interno MCP EccoVox. O perfil

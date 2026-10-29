@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from onmyoji_daemon.instructions import InstructionComposer, InstructionError
+from onmyoji_daemon.instructions import InstructionComposer, InstructionError, TelegramTurnContext
 from onmyoji_daemon.mcp.configuration import McpConfiguration
 from onmyoji_daemon.mcp.instructions import McpInstructionRegistry
 
@@ -61,3 +61,15 @@ def test_telegram_fixed_policy_is_kept_in_the_versioned_contract(tmp_path):
     assert "[TELEGRAM — CONTRATO DE CANAL]" in bundle.text
     assert "UNTRUSTED_USER" in bundle.text
     assert "[TELEGRAM GROUP CONTEXT]" not in bundle.text
+
+
+def test_telegram_turn_metadata_is_an_overlay_without_user_content(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"
+    bundle = InstructionComposer(tmp_path, data, "instructions.md").compose(
+        identity="Exemplo", telegram=True,
+        telegram_context=TelegramTurnContext("group", "OWNER", False, ("voice", "document"), True, True),
+    )
+    assert "Origem do turno: OWNER." in bundle.text
+    assert "Tipos de anexo recebidos: voice, document." in bundle.text
+    assert "Contexto de terceiros não confiável: presente." in bundle.text
+    assert "Conteúdo confidencial do usuário" not in bundle.text
