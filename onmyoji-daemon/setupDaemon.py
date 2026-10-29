@@ -11,6 +11,7 @@ import time
 import tomllib
 from types import SimpleNamespace
 from pathlib import Path
+from urllib.error import HTTPError
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -154,7 +155,10 @@ def save_telegram(root: Path, profile: str, entry: str, data: dict | None = None
 
 def entry_exists(root: Path, profile: str, entry: str) -> tuple[bool, str]:
     try:
-        found = KeePassCredentialResolver(root).password_exists(profile, entry)
+        resolver = KeePassCredentialResolver(root)
+        if not resolver.entry_exists(profile, entry):
+            return False, "A entrada ainda não existe no cofre MCP."
+        found = resolver.password_exists(profile, entry)
         return (True, "A entrada e o token foram encontrados no cofre MCP.") if found else (False, "A entrada existe, mas não contém um token utilizável.")
     except CredentialError as error:
         return False, str(error)
@@ -497,6 +501,8 @@ def test_telegram(root: Path) -> tuple[bool, str]:
     except Exception as error:
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(json.dumps({"tested_at": time.time(), "failed": True, "detail": str(error)[-500:]}), encoding="utf-8")
+        if isinstance(error, HTTPError) and error.code == 401:
+            return False, "Telegram recusou o token do bot (HTTP 401). Confira o token criado no BotFather."
         return False, f"Não foi possível autenticar o bot: {error}"
 
 
@@ -529,7 +535,7 @@ def main() -> int:
         exists, message = entry_exists(root, args.profile, args.entry); print(json.dumps({"exists": exists, "message": message}, ensure_ascii=False)); return 0
     if args.action == "write-token":
         if not args.profile or not args.entry: parser.error("--profile e --entry são obrigatórios")
-        token = sys.stdin.read().rstrip("\r\n")
+        token = sys.stdin.read().strip()
         if not token: print("Token não informado."); return 2
         exists, _message = entry_exists(root, args.profile, args.entry)
         ok, message = write_token(root, args.profile, args.entry, token, exists); print(message); return 0 if ok else 2

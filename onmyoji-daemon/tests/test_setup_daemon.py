@@ -4,6 +4,7 @@ import importlib.util
 import json
 import tomllib
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 
 def setup_module():
@@ -54,6 +55,17 @@ def test_telegram_validation_reports_missing_mcp_vault_profiles(tmp_path):
 
     profiles = next(item for item in checks if item["label"] == "Perfis de vault MCP")
     assert profiles["state"] == "error"
+
+
+def test_missing_telegram_token_entry_is_not_reported_as_a_vault_failure(tmp_path):
+    module = setup_module(); resolver = MagicMock(); resolver.entry_exists.return_value = False
+
+    with patch.object(module, "KeePassCredentialResolver", return_value=resolver):
+        exists, detail = module.entry_exists(tmp_path, "default", "APIs/Telegram:Lavelinha")
+
+    assert exists is False
+    assert detail == "A entrada ainda não existe no cofre MCP."
+    resolver.password_exists.assert_not_called()
 
 
 def test_daemon_setup_uses_only_the_internal_mcp_vault() -> None:

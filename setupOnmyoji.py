@@ -842,6 +842,11 @@ def configure_mcp_password_reference(root: Path, integration: str, default_entry
         return profile, entry
 
 
+def telegram_token_entry(root: Path) -> str:
+    """Retorna a entrada padrão do token vinculada à identidade da instância."""
+    return f"APIs/Telegram:{instance_identity(root)}"
+
+
 def update_system(root: Path, data: dict[str, object], key: str, value: object) -> dict[str, object]:
     candidate = dict(data); candidate[key] = value
     ok, message = save_system(root, candidate)
@@ -1639,8 +1644,7 @@ def daemon_menu(root: Path) -> None:
                 selected = prompt("Perfil de vault MCP: ").strip().casefold()
                 if selected in {"x", "\x1b"}: continue
                 if not selected.isdigit() or not 1 <= int(selected) <= len(values): result(False, "Perfil inválido."); continue
-                instance = "".join(part[:1].upper() + part[1:] for part in instance_identity(root).split()) or "Shikigami"
-                default_entry = f"APIs/Telegram:{instance}"
+                default_entry = telegram_token_entry(root)
                 profile = values[int(selected)-1]
                 while True:
                     entry = prompt(f"Entrada KeePass [{default_entry}]: ").strip() or default_entry
@@ -1668,7 +1672,7 @@ def daemon_menu(root: Path) -> None:
                         if action == "c": continue
                         if action == "a": result(True, "Referência salva; inclua o token no KeePass antes de habilitar o gateway."); break
                         if action != "n": result(False, "Escolha C, N ou A."); continue
-                    token = getpass.getpass(Ui.text("› Token do bot (não será exibido): ", Ui.violet, Ui.bold))
+                    token = getpass.getpass(Ui.text("› Token do bot (não será exibido): ", Ui.violet, Ui.bold)).strip()
                     written = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "write-token", "--profile", profile, "--entry", entry], quiet=True, input_value=token)
                     result(written.returncode == 0, (written.stdout or written.stderr).strip())
                     if written.returncode == 0:
@@ -1788,7 +1792,7 @@ def daemon_menu(root: Path) -> None:
         print("    Perfis de vault MCP disponíveis: " + ", ".join(str(profile) for profile in profiles))
         profile = prompt(f"Perfil de vault MCP [{default_profile}]: ").strip() or default_profile
         if profile not in profiles: result(False, "Perfil de vault MCP inválido."); return False
-        default_entry = current_entry or f"APIs/Telegram:{''.join(part[:1].upper() + part[1:] for part in instance_identity(root).split()) or 'Shikigami'}"
+        default_entry = current_entry or telegram_token_entry(root)
         entry = prompt(f"Entrada do vault [{default_entry}]: ").strip() or default_entry
         saved = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-credential", "--profile", profile, "--entry", entry], quiet=True)
         if saved.returncode != 0: result(False, (saved.stdout or saved.stderr).strip()); return False
@@ -1798,9 +1802,10 @@ def daemon_menu(root: Path) -> None:
         if not exists:
             result(False, detail)
             if prompt("Cadastrar o token do bot nesta entrada agora? [S/n]: ").strip().casefold() not in {"", "s", "sim"}: return False
-            token = getpass.getpass(Ui.text("› Token do bot (não será exibido): ", Ui.violet, Ui.bold))
+            token = getpass.getpass(Ui.text("› Token do bot (não será exibido): ", Ui.violet, Ui.bold)).strip()
             written = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "write-token", "--profile", profile, "--entry", entry], quiet=True, input_value=token)
             if written.returncode != 0: result(False, (written.stdout or written.stderr).strip()); return False
+            result(True, "Token gravado com segurança no cofre MCP.")
             telegram_token_changed = True
         else: result(True, detail)
         tested = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-telegram"], quiet=True)

@@ -104,6 +104,13 @@ class SystemSetupTests(unittest.TestCase):
         self.assertIsNotNone(installed)
         self.assertEqual(installed["shikigami_identity"], "Lavelinha")
 
+    def test_telegram_token_entry_uses_the_configured_shikigami_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "configs" / "onmyoji-system.toml"; path.parent.mkdir()
+            path.write_text('[shikigami]\nidentity = "Lavelinha"\n', encoding="utf-8")
+            self.assertEqual(MODULE.telegram_token_entry(root), "APIs/Telegram:Lavelinha")
+
     def test_workspace_suggestion_is_a_sibling_with_work_suffix(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "MeuShikigami"; root.mkdir()
