@@ -1799,18 +1799,36 @@ def daemon_menu(root: Path) -> None:
         checked = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "check-entry", "--profile", profile, "--entry", entry], quiet=True)
         try: probe = json.loads(checked.stdout); exists, detail = bool(probe["exists"]), str(probe["message"])
         except (json.JSONDecodeError, KeyError): exists, detail = False, "Não foi possível verificar a entrada no KeePass."
+        def replace_token() -> bool:
+            nonlocal telegram_token_changed
+            token = getpass.getpass(Ui.text("› Token do bot (não será exibido): ", Ui.violet, Ui.bold)).strip()
+            if not token:
+                result(False, "O token do bot é obrigatório.")
+                return False
+            written = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "write-token", "--profile", profile, "--entry", entry], quiet=True, input_value=token)
+            if written.returncode != 0:
+                result(False, (written.stdout or written.stderr).strip())
+                return False
+            result(True, "Token gravado com segurança no cofre MCP.")
+            telegram_token_changed = True
+            return True
         if not exists:
             result(False, detail)
             if prompt("Cadastrar o token do bot nesta entrada agora? [S/n]: ").strip().casefold() not in {"", "s", "sim"}: return False
-            token = getpass.getpass(Ui.text("› Token do bot (não será exibido): ", Ui.violet, Ui.bold)).strip()
-            written = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "write-token", "--profile", profile, "--entry", entry], quiet=True, input_value=token)
-            if written.returncode != 0: result(False, (written.stdout or written.stderr).strip()); return False
-            result(True, "Token gravado com segurança no cofre MCP.")
-            telegram_token_changed = True
-        else: result(True, detail)
-        tested = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-telegram"], quiet=True)
-        result(tested.returncode == 0, (tested.stdout or tested.stderr).strip())
-        return tested.returncode == 0
+            if not replace_token(): return False
+        else:
+            result(True, detail)
+            action = prompt("Utilizar o token salvo [U] ou substituí-lo [S]? [U]: ").strip().casefold() or "u"
+            if action == "s" and not replace_token(): return False
+            if action not in {"u", "s"}:
+                result(False, "Escolha U ou S.")
+                return False
+        while True:
+            tested = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-telegram"], quiet=True)
+            result(tested.returncode == 0, (tested.stdout or tested.stderr).strip())
+            if tested.returncode == 0: return True
+            if prompt("Substituir o token do bot e testar novamente? [S/n]: ").strip().casefold() not in {"", "s", "sim"}: return False
+            if not replace_token(): return False
 
     def telegram_wizard() -> None:
         """Conduz a configuração mínima do gateway, preservando cada etapa válida."""
