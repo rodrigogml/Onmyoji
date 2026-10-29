@@ -13,6 +13,7 @@ from onmyoji_daemon.telegram_formatting import MAX_MESSAGE_LENGTH, plain_text, r
 
 def write_settings(root: Path, data_dir: Path) -> None:
     (root / "configs").mkdir(parents=True); (root / "configs" / "onmyoji-system.toml").write_text('[codex]\nexecutable = "codex"\nmodel = "gpt-5.6-terra"\nmodel_reasoning_effort = "medium"\nproject_directory = "' + root.as_posix() + '"\nsandbox_mode = "workspace-write"\napproval_policy = "never"\n', encoding="utf-8")
+    daemon = root / "configs" / "daemon" / "daemon.toml"; daemon.parent.mkdir(parents=True); daemon.write_text('[app_server]\nenabled = false\nidle_timeout_seconds = 1800\n\n[instructions]\nenabled = true\nshikigami_file = "instructions.md"\n', encoding="utf-8")
     data_dir.mkdir(parents=True); config = data_dir / "config.toml"; config.write_text('schema_version = 1\n[telegram]\nvault_profile = "telegram"\ntoken_entry = "APIs/Telegram:Example"\n', encoding="utf-8")
 
 
@@ -22,13 +23,13 @@ def test_settings_bind_to_instance_codex_home_and_workspace(tmp_path):
     assert settings.root == tmp_path.resolve() and settings.project == tmp_path.resolve()
 
 
-def test_app_server_settings_default_to_disabled_and_enforce_idle_minimum(tmp_path):
+def test_app_server_settings_come_only_from_daemon_platform_configuration(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
     settings = Settings.load(tmp_path, data)
     assert not settings.app_server_enabled and settings.app_server_idle_seconds == 1800
     config = tmp_path / "configs" / "daemon" / "services" / "telegram" / "config.toml"; config.write_text(config.read_text(encoding="utf-8") + "\n[app_server]\nenabled = true\nidle_timeout_seconds = 120\n", encoding="utf-8")
     settings = Settings.load(tmp_path, data)
-    assert settings.app_server_enabled and settings.app_server_idle_seconds == 120
+    assert not settings.app_server_enabled and settings.app_server_idle_seconds == 1800
 
 
 def test_app_server_settings_prefer_daemon_platform_configuration(tmp_path):
@@ -39,6 +40,16 @@ def test_app_server_settings_prefer_daemon_platform_configuration(tmp_path):
     settings = Settings.load(tmp_path, data)
 
     assert settings.app_server_enabled and settings.app_server_idle_seconds == 120
+
+
+def test_totp_enabled_comes_from_telegram_service_configuration(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    config = data / "config.toml"
+    config.write_text(config.read_text(encoding="utf-8") + '\n[totp]\nenabled = true\nreal_password_entry = "APIs/TOTP:real"\nfake_password_entry = "APIs/TOTP:fake"\n', encoding="utf-8")
+
+    gateway = Gateway(Settings.load(tmp_path, data))
+
+    assert gateway._totp_enabled()
 
 
 def test_app_server_does_not_pass_profiles_to_the_codex_subcommand(tmp_path):

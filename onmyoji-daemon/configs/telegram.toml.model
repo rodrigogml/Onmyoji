@@ -2,8 +2,8 @@ schema_version = 1
 enabled = false
 
 [telegram]
-# Perfil KeePass local que contém o token do bot.
-keepass_profile = "telegram"
+# Perfil do cofre MCP que contém o token do bot.
+vault_profile = ""
 token_entry = "APIs/Telegram:Shikigami"
 poll_timeout_seconds = 30
 agent_outbound_media = false
@@ -17,18 +17,6 @@ turn_timeout_seconds = 900
 owner_execution_preferences = true
 owner_allowed_models = []
 owner_allowed_reasoning_efforts = []
-
-[instructions]
-# Caminho relativo a shikigami/.
-enabled = true
-shikigami_file = "instructions.md"
-
-[app_server]
-# Mantém um Codex App Server exclusivo desta instância para reutilizar a conversa.
-# Deve ser habilitado antes do gateway Telegram; mantém contexto e developer instructions consistentes.
-enabled = false
-# Encerra o processo quando não houver turnos ativos por este período. As threads persistem.
-idle_timeout_seconds = 1800
 
 [limits]
 max_attachment_bytes = 20971520

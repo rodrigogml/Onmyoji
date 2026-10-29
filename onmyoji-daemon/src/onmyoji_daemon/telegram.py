@@ -89,27 +89,27 @@ class Settings:
     voice_auto_off_minutes: int
     voice_fallback_to_text: bool
     agent_outbound_media: bool
+    totp_enabled: bool
 
     @classmethod
     def load(cls, root: Path, data_dir: Path) -> "Settings":
         path = telegram_configuration_path(root)
         data = tomllib.loads(path.read_text(encoding="utf-8"))
         if data.get("schema_version") != 1: raise ValueError("unsupported telegram schema")
-        telegram, agent, legacy_app_server, limits, voice, legacy_instructions = data.get("telegram", {}), data.get("agent", {}), data.get("app_server", {}), data.get("limits", {}), data.get("voice_reply", {}), data.get("instructions", {})
-        # App Server e instruções pertencem à plataforma do daemon. As seções
-        # antigas no arquivo Telegram são lidas apenas para compatibilidade.
+        telegram, agent, limits, voice, totp = data.get("telegram", {}), data.get("agent", {}), data.get("limits", {}), data.get("voice_reply", {}), data.get("totp", {})
         try:
             platform = tomllib.loads((root / "configs" / "daemon" / "daemon.toml").read_text(encoding="utf-8"))
-        except (OSError, tomllib.TOMLDecodeError):
-            platform = {}
-        app_server = platform.get("app_server", legacy_app_server) if isinstance(platform, dict) else legacy_app_server
-        instructions = platform.get("instructions", legacy_instructions) if isinstance(platform, dict) else legacy_instructions
-        if not isinstance(app_server, dict): app_server = legacy_app_server
-        if not isinstance(instructions, dict): instructions = legacy_instructions
+        except FileNotFoundError as error:
+            raise ValueError("Instale e configure o daemon antes de iniciar o Gateway Telegram.") from error
+        except tomllib.TOMLDecodeError as error:
+            raise ValueError(f"A configuração da plataforma do daemon é inválida: {error}") from error
+        app_server, instructions = platform.get("app_server", {}), platform.get("instructions", {})
+        if not isinstance(app_server, dict) or not isinstance(instructions, dict):
+            raise ValueError("A configuração da plataforma do daemon é inválida.")
         system = tomllib.loads((root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8")).get("codex", {})
         project = Path(str(system.get("project_directory") or "")).resolve()
         if not project.is_dir(): raise ValueError("configured Shikigami workspace does not exist")
-        profile = str(telegram.get("vault_profile") or telegram.get("keepass_profile") or "")
+        profile = str(telegram.get("vault_profile") or "")
         entry = str(telegram.get("token_entry") or "")
         if not profile or not entry: raise ValueError("Perfil de vault MCP e entrada do token são obrigatórios")
         idle = int(app_server.get("idle_timeout_seconds") or 1800)
@@ -129,7 +129,7 @@ class Settings:
         # runtime e pelo Telegram; preservamos configurações já criadas.
         voice_format = "mp3" if requested_format == "opus" else requested_format
         if enabled and (not voice_profile or voice_format not in {"mp3", "wav", "flac"} or not 1 <= voice_text <= 4000 or not 1 <= auto_off <= 1440): raise ValueError("Telegram voice reply configuration is invalid")
-        return cls(root, data_dir, profile, entry, project, str(system.get("executable") or "codex"), str(system.get("model") or ""), str(system.get("model_reasoning_effort") or "medium"), str(system.get("sandbox_mode") or "workspace-write"), str(system.get("approval_policy") or "never"), int(telegram.get("poll_timeout_seconds") or 30), int(agent.get("turn_timeout_seconds") or 900), max(1, int(agent.get("max_parallel_conversations") or 1)), str(instructions.get("shikigami_file") or "instructions.md"), bool(instructions.get("enabled", True)), bool(agent.get("owner_execution_preferences", True)), permitted_models, permitted_efforts, bool(app_server.get("enabled", False)), idle, per_file, batch, max(1, pending), retained, output_bytes, output_count, context_messages, context_age, enabled, voice_profile, str(voice.get("language") or "pt-BR"), str(voice.get("voice") or ""), float(voice.get("speed") or 1.0), voice_format, voice_text, auto_off, bool(voice.get("fallback_to_text", True)), outbound_media)
+        return cls(root, data_dir, profile, entry, project, str(system.get("executable") or "codex"), str(system.get("model") or ""), str(system.get("model_reasoning_effort") or "medium"), str(system.get("sandbox_mode") or "workspace-write"), str(system.get("approval_policy") or "never"), int(telegram.get("poll_timeout_seconds") or 30), int(agent.get("turn_timeout_seconds") or 900), max(1, int(agent.get("max_parallel_conversations") or 1)), str(instructions.get("shikigami_file") or "instructions.md"), bool(instructions.get("enabled", True)), bool(agent.get("owner_execution_preferences", True)), permitted_models, permitted_efforts, bool(app_server.get("enabled", False)), idle, per_file, batch, max(1, pending), retained, output_bytes, output_count, context_messages, context_age, enabled, voice_profile, str(voice.get("language") or "pt-BR"), str(voice.get("voice") or ""), float(voice.get("speed") or 1.0), voice_format, voice_text, auto_off, bool(voice.get("fallback_to_text", True)), outbound_media, bool(totp.get("enabled", False)))
 
 
 class CodexProtocolError(RuntimeError): pass
@@ -371,8 +371,7 @@ class Gateway(TelegramChannels):
     def _trust(self, sender: dict[str, Any]) -> str:
         return "OWNER" if isinstance(sender.get("id"), int) and sender["id"] in self.contacts.owners() else "UNTRUSTED_USER"
     def _totp_enabled(self) -> bool:
-        try: return bool(tomllib.loads((self.settings.data_dir / "telegram.toml").read_text(encoding="utf-8")).get("totp", {}).get("enabled", False))
-        except (OSError, tomllib.TOMLDecodeError): return False
+        return self.settings.totp_enabled
     def _record_error(self, error: Exception | str) -> None:
         message = str(error).replace("\n", " ")[-800:]
         self.last_error = __import__("re").sub(r"(?i)(token|password|secret)\s*[=:]\s*\S+", r"\1=[redacted]", message)

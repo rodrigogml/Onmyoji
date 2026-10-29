@@ -105,6 +105,21 @@ def test_daemon_setup_uses_only_the_internal_mcp_vault() -> None:
     assert "KeePassCredentialResolver" in source
 
 
+def test_telegram_configuration_does_not_persist_platform_or_legacy_vault_sections(tmp_path):
+    module = setup_module(); module.bootstrap(tmp_path)
+    data = module.telegram_data(tmp_path)
+    data["telegram"]["keepass_profile"] = "old-profile"
+    data["app_server"] = {"enabled": True}
+    data["instructions"] = {"enabled": False}
+
+    module.save_telegram(tmp_path, "vault", "APIs/Telegram:Bot", data)
+
+    saved = tomllib.loads(module.target(tmp_path).read_text(encoding="utf-8"))
+    assert saved["telegram"]["vault_profile"] == "vault"
+    assert "keepass_profile" not in saved["telegram"]
+    assert "app_server" not in saved and "instructions" not in saved
+
+
 def test_daemon_bootstrap_prepares_only_the_platform(tmp_path):
     module = setup_module()
     manifest = tmp_path / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True)
