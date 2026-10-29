@@ -16,6 +16,10 @@ O workspace do agente é externo ao `CODEX_HOME`. Arquivos de trabalho, saídas,
 
 `tmp/` é o único local temporário do repositório. Todo arquivo transitório, saída de compilação, cache ou banco de teste criado durante desenvolvimento, testes ou execução local deve ficar dentro dele; nunca crie diretórios temporários na raiz, em `configs/`, em `shikigami/` ou em qualquer outra pasta do repositório. Testes devem usar `tmp_path` ou `TemporaryDirectory` já configurados para `tmp/`; não devem escolher o diretório temporário padrão do sistema nem criar caminhos próprios. Execute a suíte com `python -B -m pytest` para que o interpretador não grave bytecode fora de `tmp/`. Estado operacional persistente pertence a `configs/` ou ao workspace do Shikigami, conforme sua finalidade. `tmp/` é ignorado pelo Git e pode ser removido integralmente.
 
+## GitHub
+
+GitHub é exclusivamente o repositório remoto de versionamento. Não crie nem mantenha workflows, automações, verificações de qualidade ou qualquer dependência operacional em `.github/`; testes, validações e decisões de qualidade pertencem ao código e à execução local do projeto.
+
 ## Alteração de instruções e skills
 
 Ao alterar arquivos `README.md`, `AGENTS.md`, `SKILL.md` ou qualquer arquivo `.md` de definição de skill (não se aplica a arquivos de scripts, wrappers e outros códigos):

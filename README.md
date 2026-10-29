@@ -5,6 +5,9 @@
   <img src="etc/ID%20Visual/logo.png" alt="Logotipo do Onmyōji" width="320">
 </p>
 
+> [!CAUTION]
+> Este README não deve ser atualizado por agentes sem solicitação explícita do usuário.
+
 ## Sobre o projeto
 
 ### Origem dos Nomes
@@ -42,25 +45,29 @@ O repositório do Onmyōji concentra os componentes reutilizáveis. Ele não arm
 
 ```text
 Onmyōji/
+├── configs/                # Configuração local efetiva da instância
 ├── docs/                   # Documentação da base
 ├── etc/                    # Documentos e elementos adicionais do projeto
-├── onmyoji-daemon/         # Serviço de supervisão local
+├── onmyoji-daemon/         # Daemon e servidor MCP interno
+│   └── src/onmyoji_daemon/
+│       └── mcp/            # Módulos das integrações MCP
 ├── setupOnmyoji.py         # Assistente de instalação e configuração
 └── tests/                  # Testes automatizados da base
 ```
 
 | Diretório ou arquivo | Papel |
 | --- | --- |
+| `configs/` | Armazena a configuração local efetiva da instância, incluindo Codex CLI, perfis MCP e estado dos serviços. Seu conteúdo não é versionado. |
 | `docs/` | Reúne a documentação de arquitetura, instalação, setup e decisões da base. |
 | `etc/` | Armazena documentos e elementos adicionais diversos relacionados ao projeto, incluindo seus recursos de identidade visual. |
-| `onmyoji-daemon/` | Contém o daemon que supervisiona serviços locais de uma instância. |
-| `setupOnmyoji.py` | Executa o setup inicial e administra a ativação de integrações e skills. |
+| `onmyoji-daemon/` | Contém o daemon, o servidor MCP interno e os módulos das integrações disponíveis para uma instância. |
+| `setupOnmyoji.py` | Executa o setup inicial e administra a configuração do Codex CLI, do MCP, do cofre e dos serviços locais. |
 | `tests/` | Verifica o comportamento dos componentes versionados da base. |
 
 > [!WARNING]
-> **Conteúdo local ignorado nos dois repositórios:** `configs/`, `sessions/`, `state/`, `log/`, `tmp/`, `plugins/`, `cache/` e `thread-writer-locks/`, além de arquivos locais `*.config.toml`. Esses itens guardam configuração efetiva, autenticação, estado operacional, logs e caches. Como o `.gitignore` da base é herdado por cada Shikigami, eles não devem ser versionados nem no Onmyōji nem no repositório particular da instância.
+> **Conteúdo local da instância:** configuração efetiva, credenciais e dados operacionais devem permanecer locais e nunca ser versionados.
 >
-> **Conteúdo exclusivo do Shikigami, permitido pelo Git:** `shikigami/`. Essa pasta guarda a identidade, as instruções, a documentação e as skills próprias da instância, podendo ser versionada somente no repositório daquele Shikigami. Ela jamais deve ser criada ou versionada no repositório padrão do Onmyōji, para não misturar a base compartilhada com uma personalização específica.
+> **Conteúdo exclusivo do Shikigami:** `shikigami/` existe somente no repositório particular de uma instância. Ela nunca deve ser criada ou versionada no repositório padrão do Onmyōji, para não misturar a base compartilhada com uma personalização específica.
 
 ### Estrutura do Shikigami
 
