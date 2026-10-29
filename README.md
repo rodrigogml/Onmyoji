@@ -67,19 +67,18 @@ Onmyōji/
 > [!WARNING]
 > **Conteúdo local da instância:** configuração efetiva, credenciais e dados operacionais devem permanecer locais e nunca ser versionados.
 >
-> **Conteúdo exclusivo do Shikigami:** `shikigami/` existe somente no repositório particular de uma instância. Ela nunca deve ser criada ou versionada no repositório padrão do Onmyōji, para não misturar a base compartilhada com uma personalização específica.
+> **Conteúdo exclusivo do Shikigami:** `shikigami-skills/` contém as fontes próprias da instância. Ela existe somente no repositório particular de um Shikigami e nunca deve ser criada ou versionada no repositório padrão do Onmyōji, para não misturar a base compartilhada com uma personalização específica.
 
 ### Estrutura do Shikigami
 
-Cada Shikigami é uma instância derivada da base, com repositório e `CODEX_HOME` próprios. Sua definição versionada fica em `shikigami/`; já informações dependentes da máquina, credenciais, logs e artefatos de trabalho permanecem fora dessa definição.
+Cada Shikigami é uma instância derivada da base, com repositório e `CODEX_HOME` próprios. As fontes de suas skills ficam em `shikigami-skills/`; já informações dependentes da máquina, credenciais, logs e artefatos de trabalho permanecem fora das fontes versionadas.
 
 ```text
 Shikigami-<Nome>/       # Repositório e CODEX_HOME da instância
-├── shikigami/          # Identidade e definições da instância
-│   ├── AGENTS.md       # Regras específicas do Shikigami
-│   ├── README.md       # Documentação da instância
-│   ├── instructions.md # Objetivos, tom e limites
-│   └── skills/         # Fontes das skills próprias
+├── AGENTS.md           # Regras específicas do Shikigami
+├── README.md           # Documentação da instância
+├── instructions.md     # Objetivos, tom e limites
+├── shikigami-skills/   # Fontes das skills próprias
 ├── configs/            # Estado e segredos locais (ignorado pelo Git)
 │   └── shikigami/skills.toml # Habilitação local das skills próprias
 └── config.toml         # Defaults locais do Codex (ignorado pelo Git)
@@ -89,8 +88,8 @@ Shikigami-<Nome>-Work/  # Workspace externo e não versionado
 
 | Diretório | Papel |
 | --- | --- |
-| `shikigami/` | Contém a identidade, as instruções, a documentação e as skills próprias da instância; seu conteúdo pode ser versionado no repositório particular do Shikigami. |
-| `shikigami/skills/` | Mantém as fontes de skills criadas especificamente para a instância. |
+| `AGENTS.md`, `README.md` e `instructions.md` | Definem, respectivamente, regras, documentação e instruções próprias da instância; são versionados pelo repositório particular do Shikigami. |
+| `shikigami-skills/` | Mantém as fontes de skills criadas especificamente para a instância. |
 | `configs/` | Guarda referências locais, perfis efetivos, estado operacional e segredos; nunca deve ser enviado ao Git. |
 | `configs/shikigami/skills.toml` | Registra localmente quais skills próprias estão habilitadas para projeção no workspace. |
 | `Shikigami-<Nome>-Work/.agents/skills/` | Contém cópias reparáveis das skills habilitadas; não é fonte de verdade nem deve ser versionado. |
@@ -104,7 +103,7 @@ Uma instância utiliza duas áreas distintas: a pasta do repositório, onde o On
 
 | Local | Finalidade |
 | --- | --- |
-| `Shikigami-<Nome>/` | É a pasta do repositório da instância e seu `CODEX_HOME`. Ela reúne a base recebida do Onmyōji, a definição versionável em `shikigami/` e as superfícies locais necessárias para operar o agente. Não deve ser usada como área de produção de arquivos do trabalho cotidiano. |
+| `Shikigami-<Nome>/` | É a pasta do repositório da instância e seu `CODEX_HOME`. Ela reúne a base recebida do Onmyōji, os arquivos versionáveis da instância e as superfícies locais necessárias para operar o agente. Não deve ser usada como área de produção de arquivos do trabalho cotidiano. |
 | `Shikigami-<Nome>-Work/` | É o workspace externo do agente. Nele, o Shikigami pode criar, editar e organizar os arquivos dos projetos em que trabalha, quando essa capacidade estiver habilitada por suas configurações. Essa pasta não pertence ao repositório nem ao `CODEX_HOME`. |
 
 Em resumo, a pasta do repositório define **quem é e como funciona** o Shikigami; a pasta `-Work` é o local onde ele pode **executar o trabalho**. A configuração da instância determina se o agente pode usar esse workspace e sob quais limites.
@@ -113,7 +112,7 @@ Em resumo, a pasta do repositório define **quem é e como funciona** o Shikigam
 
 As integrações compartilhadas do Onmyōji são implementadas e publicadas pelo servidor MCP interno. A disponibilidade de cada integração depende de sua configuração local em `configs/mcp/`; o Codex CLI e o App Server recebem o mesmo servidor MCP na abertura centralizada.
 
-As skills pertencem exclusivamente ao Shikigami. Suas fontes ficam em `shikigami/skills/<nome>/`, podem conter um `SKILL.md` e, opcionalmente, um `setupSkill.py`. O setup descobre apenas essa pasta e grava a habilitação em `configs/shikigami/skills.toml`. Antes de cada abertura gerenciada do Codex, o Onmyōji copia as skills habilitadas para `<workspace>/.agents/skills/<nome>/`; nunca usa links simbólicos. A cópia é reparada quando divergir da fonte e não pode alterar a definição versionada.
+As skills pertencem exclusivamente ao Shikigami. Suas fontes ficam em `shikigami-skills/<nome>/`, podem conter um `SKILL.md` e, opcionalmente, um `setupSkill.py`. O setup descobre apenas essa pasta e grava a habilitação em `configs/shikigami/skills.toml`. Antes de cada abertura gerenciada do Codex, o Onmyōji copia as skills habilitadas para `<workspace>/.agents/skills/<nome>/`; nunca usa links simbólicos. A cópia é reparada quando divergir da fonte e não pode alterar a definição versionada.
 
 Workflows fornecidos por serviços MCP, como memória e tabelas de dados, usam a mesma superfície do workspace com controle próprio de habilitação. Eles coexistem com as skills do Shikigami, mas suas fontes canônicas permanecem no servidor MCP.
 
@@ -148,7 +147,7 @@ git push -u origin main
 
 ### 3. Instalação inicial e workspace
 
-Execute o setup uma vez para concluir o wizard inicial e definir a identidade local do Shikigami em `configs/onmyoji-system.toml`. Em seguida, preencha `shikigami/instructions.md` com tom, objetivos e limites sem segredos; mantenha `shikigami/README.md` e `shikigami/AGENTS.md` para a documentação e as regras versionadas da instância.
+Execute o setup uma vez para concluir o wizard inicial e definir a identidade local do Shikigami em `configs/onmyoji-system.toml`. Em seguida, preencha `instructions.md` com tom, objetivos e limites sem segredos; mantenha `README.md` e `AGENTS.md` para a documentação e as regras versionadas da instância.
 
 ```bash
 python3 setupOnmyoji.py
@@ -158,7 +157,7 @@ Crie ou escolha um workspace externo, como `Shikigami-<Nome>-Work/`, e configure
 
 ### 4. Instalar uma skill própria da instância
 
-Crie a fonte versionada em `shikigami/skills/<nome>/` com `SKILL.md` e recursos opcionais. Uma skill própria também pode incluir `setupSkill.py`, que será descoberta pelo setup e exibida em **Skills do Shikigami**. Habilite-a pelo menu central; na próxima abertura gerenciada do Codex, ela será copiada para `<workspace>/.agents/skills/<nome>/`. Use a fonte versionada para conhecimento e playbooks próprios, sem segredos, caminhos dependentes da máquina, logs ou estado operacional.
+Crie a fonte versionada em `shikigami-skills/<nome>/` com `SKILL.md` e recursos opcionais. Uma skill própria também pode incluir `setupSkill.py`, que será descoberta pelo setup e exibida em **Skills do Shikigami**. Habilite-a pelo menu central; na próxima abertura gerenciada do Codex, ela será copiada para `<workspace>/.agents/skills/<nome>/`. Use a fonte versionada para conhecimento e playbooks próprios, sem segredos, caminhos dependentes da máquina, logs ou estado operacional.
 
 ### 5. Configurar integrações MCP
 

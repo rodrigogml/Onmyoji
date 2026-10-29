@@ -1,5 +1,8 @@
 # SDD · Telegram outbound — requisitos
 
+> [!WARNING]
+> Registro histórico da migração inicial do Telegram. Não descreve a arquitetura vigente nem deve orientar implementação, validação ou operação. Consulte `onmyoji-daemon/docs/Telegram.md` e os contratos do módulo MCP `telegram`.
+
 **Fonte aprovada:** [briefing funcional](../../20261017-briefing-skill-telegram.md), decisões P1–P8. **Upstream:** Onmyoji. **Escopo:** desenvolvimento, sem acesso a credenciais ou Telegram real.
 
 ## Contrato observável

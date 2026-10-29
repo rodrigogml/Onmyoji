@@ -1599,18 +1599,25 @@ def daemon_menu(root: Path) -> None:
                 enabled = bool(json.loads((root / "configs" / "daemon" / "services.json").read_text(encoding="utf-8")).get("telegram", {}).get("enabled", False))
             except (OSError, ValueError): enabled = False
             try:
-                telegram_settings = tomllib.loads(telegram_path.read_text(encoding="utf-8")); totp_enabled = bool(telegram_settings.get("totp", {}).get("enabled", False)); app_server_enabled = bool(telegram_settings.get("app_server", {}).get("enabled", False)); app_server_idle = int(telegram_settings.get("app_server", {}).get("idle_timeout_seconds") or 1800); voice_enabled = bool(telegram_settings.get("voice_reply", {}).get("enabled", False)); voice_profile = str(telegram_settings.get("voice_reply", {}).get("eccovox_profile") or ""); voice_auto_off = int(telegram_settings.get("voice_reply", {}).get("auto_off_minutes") or 15); outbound_media = bool(telegram_settings.get("telegram", {}).get("agent_outbound_media", telegram_settings.get("voice_reply", {}).get("agent_outbound_media", False)))
-            except (OSError, tomllib.TOMLDecodeError): telegram_settings = {}; totp_enabled, app_server_enabled, app_server_idle, voice_enabled, voice_profile, voice_auto_off, outbound_media = False, False, 1800, False, "", 15, False
+                telegram_settings = tomllib.loads(telegram_path.read_text(encoding="utf-8"))
+                totp_enabled = bool(telegram_settings.get("totp", {}).get("enabled", False))
+                voice_enabled = bool(telegram_settings.get("voice_reply", {}).get("enabled", False))
+                voice_profile = str(telegram_settings.get("voice_reply", {}).get("eccovox_profile") or "")
+                voice_auto_off = int(telegram_settings.get("voice_reply", {}).get("auto_off_minutes") or 15)
+                outbound_media = bool(telegram_settings.get("telegram", {}).get("agent_outbound_media", telegram_settings.get("voice_reply", {}).get("agent_outbound_media", False)))
+            except (OSError, tomllib.TOMLDecodeError):
+                telegram_settings = {}; totp_enabled, voice_enabled, voice_profile, voice_auto_off, outbound_media = False, False, "", 15, False
             try:
                 daemon_settings = tomllib.loads((root / "configs" / "daemon" / "daemon.toml").read_text(encoding="utf-8"))
                 daemon_app_server = daemon_settings.get("app_server", {})
+                daemon_instructions = daemon_settings.get("instructions", {})
                 app_server_enabled = bool(daemon_app_server.get("enabled", False))
                 app_server_idle = int(daemon_app_server.get("idle_timeout_seconds") or 1800)
-            except (OSError, tomllib.TOMLDecodeError, AttributeError, TypeError, ValueError): pass
+                instruction_file = str(daemon_instructions.get("shikigami_file") or "instructions.md")
+            except (OSError, tomllib.TOMLDecodeError, AttributeError, TypeError, ValueError):
+                app_server_enabled, app_server_idle, instruction_file = False, 1800, "instructions.md"
             agent_preferences = telegram_settings.get("agent", {}) if "telegram_settings" in locals() and isinstance(telegram_settings.get("agent", {}), dict) else {}
             owner_preferences = bool(agent_preferences.get("owner_execution_preferences", True)); owner_models = ";".join(str(value) for value in agent_preferences.get("owner_allowed_models", []) if isinstance(value, str)); owner_efforts = ";".join(str(value) for value in agent_preferences.get("owner_allowed_reasoning_efforts", []) if isinstance(value, str))
-            instruction_settings = telegram_settings.get("instructions", {}) if isinstance(telegram_settings.get("instructions", {}), dict) else {}
-            instruction_file = str(instruction_settings.get("shikigami_file") or "instructions.md")
             title, subtitle = {
                 "gateway": ("Gateway Telegram", "Ativação e teste da conexão com o bot"),
                 "credential": ("Credencial do bot", "KeePass Vault e autenticação protegida"),

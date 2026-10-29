@@ -355,7 +355,10 @@ class SystemSetupTests(unittest.TestCase):
             with patch.object(MODULE, "validate_system", return_value=(True, "pronto")), patch("onmyoji_daemon.codex_execution.McpReconciliation.reconcile_if_pending", return_value=False), patch.object(MODULE.subprocess, "run") as run:
                 MODULE.launch_codex(root, data)
             command = run.call_args.args[0]
-            self.assertEqual(command, [sys.executable, "--add-dir", str(extra)])
+            self.assertEqual(command[0], sys.executable)
+            self.assertEqual(command[1], "--config")
+            self.assertTrue(command[2].startswith('developer_instructions='))
+            self.assertEqual(command[-2:], ["--add-dir", str(extra)])
             self.assertEqual(run.call_args.kwargs["cwd"], str(project))
             environment = run.call_args.kwargs["env"]
             self.assertEqual(environment["CODEX_HOME"], str(root))

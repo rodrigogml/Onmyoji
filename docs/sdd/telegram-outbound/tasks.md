@@ -1,5 +1,8 @@
 # SDD · Telegram outbound — tarefas e validação
 
+> [!WARNING]
+> Registro histórico da entrega inicial. As referências a skill, wrapper, compatibilidade e GitHub Actions pertencem à época da entrega e não representam a arquitetura, os testes ou a operação atuais. Consulte `onmyoji-daemon/docs/Telegram.md` e execute as validações localmente.
+
 **Fonte funcional:** [briefing P1–P8](../../20261017-briefing-skill-telegram.md). **Repositório:** Onmyoji upstream. **Branch:** `main`.
 
 ## Desenvolvimento — concluído
