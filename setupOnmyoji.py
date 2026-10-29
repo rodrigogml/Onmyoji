@@ -1579,7 +1579,7 @@ def daemon_menu(root: Path) -> None:
                 enabled = bool(json.loads((root / "configs" / "daemon" / "services.json").read_text(encoding="utf-8")).get("telegram", {}).get("enabled", False))
             except (OSError, ValueError): enabled = False
             try:
-                telegram_settings = tomllib.loads(telegram_path.read_text(encoding="utf-8")); totp_enabled = bool(telegram_settings.get("totp", {}).get("enabled", False)); app_server_enabled = bool(telegram_settings.get("app_server", {}).get("enabled", False)); app_server_idle = int(telegram_settings.get("app_server", {}).get("idle_timeout_seconds") or 1800); voice_enabled = bool(telegram_settings.get("voice_reply", {}).get("enabled", False)); voice_profile = str(telegram_settings.get("voice_reply", {}).get("eccovox_profile") or ""); voice_auto_off = int(telegram_settings.get("voice_reply", {}).get("auto_off_minutes") or 15); outbound_media = bool(telegram_settings.get("voice_reply", {}).get("agent_outbound_media", False))
+                telegram_settings = tomllib.loads(telegram_path.read_text(encoding="utf-8")); totp_enabled = bool(telegram_settings.get("totp", {}).get("enabled", False)); app_server_enabled = bool(telegram_settings.get("app_server", {}).get("enabled", False)); app_server_idle = int(telegram_settings.get("app_server", {}).get("idle_timeout_seconds") or 1800); voice_enabled = bool(telegram_settings.get("voice_reply", {}).get("enabled", False)); voice_profile = str(telegram_settings.get("voice_reply", {}).get("eccovox_profile") or ""); voice_auto_off = int(telegram_settings.get("voice_reply", {}).get("auto_off_minutes") or 15); outbound_media = bool(telegram_settings.get("telegram", {}).get("agent_outbound_media", telegram_settings.get("voice_reply", {}).get("agent_outbound_media", False)))
             except (OSError, tomllib.TOMLDecodeError): telegram_settings = {}; totp_enabled, app_server_enabled, app_server_idle, voice_enabled, voice_profile, voice_auto_off, outbound_media = False, False, 1800, False, "", 15, False
             try:
                 daemon_settings = tomllib.loads((root / "configs" / "daemon" / "daemon.toml").read_text(encoding="utf-8"))
@@ -1596,7 +1596,9 @@ def daemon_menu(root: Path) -> None:
                 "credential": ("Credencial do bot", "KeePass Vault e autenticação protegida"),
                 "app-server": ("Codex App Server", "Conversa persistente e teste controlado do agente"),
                 "owners": ("Owners e comandos", "Pareamento, comandos privados e preferências"),
-                "optional": ("Recursos opcionais", "TOTP, áudio e instruções particulares"),
+                "security": ("Segurança e instruções", "TOTP e instruções particulares do Shikigami"),
+                "audio": ("Respostas em áudio", "Configuração do EccoVox para o gateway Telegram"),
+                "media": ("Arquivos e fotos do agente", "Permissão do gateway Telegram para mídia de saída"),
             }[section]
             screen(title, subtitle)
             if section == "gateway":
@@ -1613,10 +1615,13 @@ def daemon_menu(root: Path) -> None:
                 item("1.", "Parear owner", "Exige gateway em execução")
                 item("2.", "Atualizar comandos privados", "Regrava e confirma comandos de cada owner")
                 item("3.", "Preferências de execução do owner", "Habilitadas" if owner_preferences else "Desabilitadas")
-            else:
+            elif section == "security":
                 item("1.", "Desabilitar TOTP" if totp_enabled else "Configurar e habilitar TOTP")
-                item("2.", "Configurar respostas em áudio", (f"EccoVox: {voice_profile} · auto-off: {voice_auto_off} min" if voice_enabled else "Desabilitadas"))
-                item("3.", "Instruções do Shikigami", instruction_file)
+                item("2.", "Instruções do Shikigami", instruction_file)
+            elif section == "audio":
+                item("1.", "Desabilitar respostas em áudio" if voice_enabled else "Configurar e habilitar respostas em áudio", f"EccoVox: {voice_profile} · auto-off: {voice_auto_off} min" if voice_enabled else "Desabilitadas")
+            else:
+                item("1.", "Desabilitar envio pelo agente" if outbound_media else "Habilitar envio pelo agente", "Arquivos, fotos e áudio na conversa Telegram ativa")
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
@@ -1625,7 +1630,9 @@ def daemon_menu(root: Path) -> None:
                 "credential": {"1": "2", "2": "3"},
                 "app-server": {"1": "7", "2": "9", "3": "10"},
                 "owners": {"1": "4", "2": "8", "3": "12"},
-                "optional": {"1": "6", "2": "11", "3": "13"},
+                "security": {"1": "6", "2": "13"},
+                "audio": {"1": "11"},
+                "media": {"1": "14"},
             }[section]
             if choice not in actions:
                 result(False, "Opção inválida."); continue
@@ -1728,25 +1735,22 @@ def daemon_menu(root: Path) -> None:
                 if changed.returncode == 0: offer_restart()
             elif choice == "11":
                 active = prompt("Habilitar respostas em áudio? [S/n]: ").strip().casefold() not in {"n", "x", "\x1b"}
-                profile = prompt(f"Perfil MCP EccoVox [{voice_profile}]: ").strip() or voice_profile
+                profile = voice_profile
+                if active:
+                    try:
+                        profiles = sorted(name for name, value in McpConfiguration(root).eccovox()["profiles"].items() if isinstance(value, dict) and value.get("enabled") is True)
+                    except Exception:
+                        profiles = []
+                    if not profiles:
+                        result(False, "Nenhum perfil EccoVox habilitado. Configure-o primeiro em MCP > Integrações MCP > EccoVox.")
+                        continue
+                    profile = choose("Perfil MCP EccoVox", profiles, voice_profile if voice_profile in profiles else profiles[0])
+                    if profile is None:
+                        continue
                 raw = prompt(f"Desligar áudio após minutos sem interação [{voice_auto_off}]: ").strip()
                 try: minutes = int(raw) if raw else voice_auto_off
                 except ValueError: result(False, "Informe minutos inteiros."); continue
-                media = prompt(f"Permitir que o agente envie arquivos e fotos? [{'S' if outbound_media else 'n'}]: ").strip().casefold() or ("s" if outbound_media else "n")
-                if active or media == "s":
-                    try:
-                        system = load_system(root); project_directory = Path(str(system["project_directory"])).resolve()
-                        if not project_directory.is_dir(): raise ValueError("Configure primeiro a pasta de projeto no menu Codex-CLI.")
-                        staging = project_directory / ".onmyoji" / "telegram" / "staging"
-                    except ValueError as error: result(False, str(error)); continue
-                    print()
-                    note("Para áudios, anexos e respostas com arquivos, o Onmyōji precisa de uma área temporária restrita no workspace.")
-                    note("O setup criará e autorizará somente este diretório, para leitura e escrita do perfil EccoVox e para o sandbox do agente:")
-                    print("      " + Ui.text(str(staging), Ui.cyan))
-                    note("Nada será gravado em CODEX_HOME/configs; nenhum diretório mais amplo será liberado.")
-                    confirm = prompt("Aplicar essa autorização agora? [S/n]: ").strip().casefold()
-                    if confirm not in {"", "s", "sim"}: result(False, "Configuração cancelada; nenhuma permissão foi alterada."); continue
-                arguments = [sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-voice-reply", "--profile", profile, "--auto-off-minutes", str(minutes)] + (["--enabled"] if active else []) + (["--agent-outbound-media"] if media == "s" else [])
+                arguments = [sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-voice-reply", "--profile", profile, "--auto-off-minutes", str(minutes)] + (["--enabled"] if active else [])
                 changed = command(arguments, quiet=True); result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
                 if changed.returncode == 0: offer_restart()
             elif choice == "12":
@@ -1778,6 +1782,11 @@ def daemon_menu(root: Path) -> None:
                         result(checked.returncode == 0, "Instruções salvas e validadas." if checked.returncode == 0 else (checked.stdout or checked.stderr).strip())
                         if checked.returncode == 0: note("A alteração cria uma nova conversa Codex na próxima mensagem do Telegram.")
                     except (OSError, ValueError) as error: result(False, f"Não foi possível abrir o editor: {error}")
+            elif choice == "14":
+                enabled_media = prompt(f"Habilitar o envio de arquivos, fotos e áudio pelo agente? [{'S' if outbound_media else 'n'}]: ").strip().casefold() or ("s" if outbound_media else "n")
+                arguments = [sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-agent-outbound-media"] + (["--enabled"] if enabled_media == "s" else ["--disabled"])
+                changed = command(arguments, quiet=True); result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
+                if changed.returncode == 0: offer_restart()
             else: result(False, "Opção inválida.")
 
     def configure_wizard_telegram_credential() -> bool:
@@ -1932,7 +1941,9 @@ def daemon_menu(root: Path) -> None:
             item("3.", "Codex App Server", "Conversa persistente e teste do agente")
             item("4.", "Owners e comandos", "Pareamento e preferências de execução")
             print()
-            item("5.", "Recursos opcionais", "TOTP, áudio e instruções particulares")
+            item("5.", "Segurança e instruções", "TOTP e instruções particulares")
+            item("6.", "Respostas em áudio", "Perfil EccoVox e duração da resposta por voz")
+            item("7.", "Arquivos e fotos do agente", "Permissão de mídia enviada pelo gateway Telegram")
             print()
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
@@ -1943,7 +1954,9 @@ def daemon_menu(root: Path) -> None:
             elif choice == "2": telegram_section_menu("credential")
             elif choice == "3": telegram_section_menu("app-server")
             elif choice == "4": telegram_section_menu("owners")
-            elif choice == "5": telegram_section_menu("optional")
+            elif choice == "5": telegram_section_menu("security")
+            elif choice == "6": telegram_section_menu("audio")
+            elif choice == "7": telegram_section_menu("media")
             else: result(False, "Opção inválida.")
 
     def miniapps_command(*arguments: str) -> subprocess.CompletedProcess[str]:

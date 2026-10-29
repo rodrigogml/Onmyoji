@@ -6,6 +6,7 @@ enabled = false
 keepass_profile = "telegram"
 token_entry = "APIs/Telegram:Shikigami"
 poll_timeout_seconds = 30
+agent_outbound_media = false
 
 [agent]
 # O workspace, modelo, sandbox e aprovação vêm de configs/onmyoji-system.toml.
@@ -50,7 +51,6 @@ response_format = "mp3"
 max_text_characters = 3500
 auto_off_minutes = 15
 fallback_to_text = true
-agent_outbound_media = false
 
 [totp]
 enabled = false

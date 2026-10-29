@@ -24,7 +24,7 @@ def test_voice_setup_authorizes_only_telegram_staging(tmp_path):
     (tmp_path / "config.toml").write_text("", encoding="utf-8")
     target = module.bootstrap(tmp_path); data = module.telegram_data(tmp_path); module.save_telegram(tmp_path, "vault", "APIs/Telegram:Bot", data)
 
-    staging = module.save_voice_reply(tmp_path, True, "eccovox", 15, True)
+    staging = module.save_voice_reply(tmp_path, True, "eccovox", 15)
 
     assert staging == workspace / ".onmyoji" / "telegram" / "staging" and staging.is_dir()
     ecco = tomllib.loads((configs / "mcp" / "eccovox.toml").read_text(encoding="utf-8"))["profiles"]["eccovox"]
@@ -32,8 +32,22 @@ def test_voice_setup_authorizes_only_telegram_staging(tmp_path):
     complete_system = tomllib.loads((configs / "onmyoji-system.toml").read_text(encoding="utf-8"))
     assert complete_system["shikigami"] == {"identity": "Exemplo", "installed": True}
     system = complete_system["codex"]
-    assert system["additional_writable_directories"] == [str(staging)]
+    assert system["additional_writable_directories"] == []
     assert tomllib.loads(target.read_text(encoding="utf-8"))["voice_reply"]["enabled"]
+
+
+def test_outbound_media_does_not_require_an_eccovox_profile(tmp_path):
+    module = setup_module(); workspace = tmp_path / "workspace"; workspace.mkdir()
+    configs = tmp_path / "configs"; configs.mkdir()
+    (configs / "onmyoji-system.toml").write_text('[codex]\nproject_directory = "' + workspace.as_posix() + '"\nsandbox_mode = "workspace-write"\n', encoding="utf-8")
+    module.bootstrap(tmp_path); data = module.telegram_data(tmp_path); module.save_telegram(tmp_path, "vault", "APIs/Telegram:Bot", data)
+
+    staging = module.save_agent_outbound_media(tmp_path, True)
+
+    saved = tomllib.loads(module.target(tmp_path).read_text(encoding="utf-8"))
+    assert staging == workspace / ".onmyoji" / "telegram" / "staging"
+    assert saved["telegram"]["agent_outbound_media"] is True
+    assert saved["voice_reply"]["eccovox_profile"] == ""
 
 
 def test_validation_requires_an_absolute_codex_executable_for_services(tmp_path):

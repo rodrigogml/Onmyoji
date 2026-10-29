@@ -141,8 +141,10 @@ def save_telegram(root: Path, profile: str, entry: str, data: dict | None = None
     data = data or telegram_data(root)
     telegram = data.setdefault("telegram", {}); telegram["vault_profile"] = profile; telegram.pop("keepass_profile", None); telegram["token_entry"] = entry
     agent, app_server, limits, totp, voice = data.setdefault("agent", {}), data.setdefault("app_server", {}), data.setdefault("limits", {}), data.setdefault("totp", {}), data.setdefault("voice_reply", {})
+    # A permissão de enviar mídia pertence ao gateway, não ao provedor EccoVox.
+    telegram["agent_outbound_media"] = bool(telegram.get("agent_outbound_media", voice.pop("agent_outbound_media", False)))
     instructions = data.get('instructions', {})
-    lines = ["schema_version = 1", f"enabled = {str(bool(data.get('enabled', False))).lower()}", "", "[telegram]", f"vault_profile = {json.dumps(profile, ensure_ascii=False)}", f"token_entry = {json.dumps(entry, ensure_ascii=False)}", f"poll_timeout_seconds = {int(telegram.get('poll_timeout_seconds', 30))}", "", "[agent]", f"max_parallel_conversations = {int(agent.get('max_parallel_conversations', 1))}", f"turn_timeout_seconds = {int(agent.get('turn_timeout_seconds', 900))}", "", "[instructions]", f"enabled = {str(bool(instructions.get('enabled', True))).lower()}", "shikigami_file = \"instructions.md\"", "", "[app_server]", f"enabled = {str(bool(app_server.get('enabled', False))).lower()}", f"idle_timeout_seconds = {int(app_server.get('idle_timeout_seconds', 1800))}", "", "[limits]", f"max_attachment_bytes = {int(limits.get('max_attachment_bytes', 20971520))}", f"max_batch_attachment_bytes = {int(limits.get('max_batch_attachment_bytes', 52428800))}", f"max_pending_items = {int(limits.get('max_pending_items', 50))}", f"max_retained_attachment_bytes = {int(limits.get('max_retained_attachment_bytes', 262144000))}", f"max_outbound_media_bytes = {int(limits.get('max_outbound_media_bytes', 20971520))}", f"max_outbound_media_per_turn = {int(limits.get('max_outbound_media_per_turn', 3))}", "", "[voice_reply]", f"enabled = {str(bool(voice.get('enabled', False))).lower()}", f"eccovox_profile = {json.dumps(str(voice.get('eccovox_profile', '')), ensure_ascii=False)}", f"language = {json.dumps(str(voice.get('language', 'pt-BR')), ensure_ascii=False)}", f"voice = {json.dumps(str(voice.get('voice', '')), ensure_ascii=False)}", f"speed = {float(voice.get('speed', 1.0))}", f"response_format = {json.dumps(str(voice.get('response_format', 'opus')), ensure_ascii=False)}", f"max_text_characters = {int(voice.get('max_text_characters', 3500))}", f"auto_off_minutes = {int(voice.get('auto_off_minutes', 15))}", f"fallback_to_text = {str(bool(voice.get('fallback_to_text', True))).lower()}", f"agent_outbound_media = {str(bool(voice.get('agent_outbound_media', False))).lower()}", "", "[totp]", f"enabled = {str(bool(totp.get('enabled', False))).lower()}", f"real_password_entry = {json.dumps(str(totp.get('real_password_entry', '')), ensure_ascii=False)}", f"fake_password_entry = {json.dumps(str(totp.get('fake_password_entry', '')), ensure_ascii=False)}", f"period_seconds = {int(totp.get('period_seconds', 30))}", ""]
+    lines = ["schema_version = 1", f"enabled = {str(bool(data.get('enabled', False))).lower()}", "", "[telegram]", f"vault_profile = {json.dumps(profile, ensure_ascii=False)}", f"token_entry = {json.dumps(entry, ensure_ascii=False)}", f"poll_timeout_seconds = {int(telegram.get('poll_timeout_seconds', 30))}", f"agent_outbound_media = {str(bool(telegram['agent_outbound_media'])).lower()}", "", "[agent]", f"max_parallel_conversations = {int(agent.get('max_parallel_conversations', 1))}", f"turn_timeout_seconds = {int(agent.get('turn_timeout_seconds', 900))}", "", "[instructions]", f"enabled = {str(bool(instructions.get('enabled', True))).lower()}", "shikigami_file = \"instructions.md\"", "", "[app_server]", f"enabled = {str(bool(app_server.get('enabled', False))).lower()}", f"idle_timeout_seconds = {int(app_server.get('idle_timeout_seconds', 1800))}", "", "[limits]", f"max_attachment_bytes = {int(limits.get('max_attachment_bytes', 20971520))}", f"max_batch_attachment_bytes = {int(limits.get('max_batch_attachment_bytes', 52428800))}", f"max_pending_items = {int(limits.get('max_pending_items', 50))}", f"max_retained_attachment_bytes = {int(limits.get('max_retained_attachment_bytes', 262144000))}", f"max_outbound_media_bytes = {int(limits.get('max_outbound_media_bytes', 20971520))}", f"max_outbound_media_per_turn = {int(limits.get('max_outbound_media_per_turn', 3))}", "", "[voice_reply]", f"enabled = {str(bool(voice.get('enabled', False))).lower()}", f"eccovox_profile = {json.dumps(str(voice.get('eccovox_profile', '')), ensure_ascii=False)}", f"language = {json.dumps(str(voice.get('language', 'pt-BR')), ensure_ascii=False)}", f"voice = {json.dumps(str(voice.get('voice', '')), ensure_ascii=False)}", f"speed = {float(voice.get('speed', 1.0))}", f"response_format = {json.dumps(str(voice.get('response_format', 'opus')), ensure_ascii=False)}", f"max_text_characters = {int(voice.get('max_text_characters', 3500))}", f"auto_off_minutes = {int(voice.get('auto_off_minutes', 15))}", f"fallback_to_text = {str(bool(voice.get('fallback_to_text', True))).lower()}", "", "[totp]", f"enabled = {str(bool(totp.get('enabled', False))).lower()}", f"real_password_entry = {json.dumps(str(totp.get('real_password_entry', '')), ensure_ascii=False)}", f"fake_password_entry = {json.dumps(str(totp.get('fake_password_entry', '')), ensure_ascii=False)}", f"period_seconds = {int(totp.get('period_seconds', 30))}", ""]
     agent_end = lines.index("", lines.index("[agent]") + 1)
     lines[agent_end:agent_end] = [f"owner_execution_preferences = {str(bool(agent.get('owner_execution_preferences', True))).lower()}", f"owner_allowed_models = {json.dumps(agent.get('owner_allowed_models', []), ensure_ascii=False)}", f"owner_allowed_reasoning_efforts = {json.dumps(agent.get('owner_allowed_reasoning_efforts', []), ensure_ascii=False)}"]
     target(root).write_text("\n".join(lines), encoding="utf-8", newline="\n")
@@ -251,8 +253,8 @@ def save_system(root: Path, data: dict) -> None:
         raise
 
 
-def ensure_gateway_activity_permissions(root: Path, profile: str) -> Path:
-    """Autoriza o staging do Telegram no perfil MCP EccoVox e no sandbox."""
+def ensure_eccovox_staging_access(root: Path, profile: str) -> Path:
+    """Autoriza somente o perfil EccoVox a ler e escrever no staging Telegram."""
     if not profile.strip(): raise ValueError("Informe o perfil EccoVox que fará TTS e STT.")
     staging = telegram_staging(root).resolve(); staging.mkdir(parents=True, exist_ok=True)
     mcp = McpConfiguration(root); ecco = mcp.eccovox(); selected = ecco["profiles"].get(profile)
@@ -263,24 +265,31 @@ def ensure_gateway_activity_permissions(root: Path, profile: str) -> Path:
         if all(Path(str(value)).resolve() != staging for value in roots): roots.append(str(staging))
     try:
         mcp.save_eccovox(ecco)
-        system_path = root / "configs" / "onmyoji-system.toml"
-        system = tomllib.loads(system_path.read_text(encoding="utf-8")); codex = system.setdefault("codex", {})
-        roots = codex.setdefault("additional_writable_directories", [])
-        if not isinstance(roots, list): raise ValueError("A lista de diretórios adicionais do Codex-CLI está inválida.")
-        if all(Path(str(value)).resolve() != staging for value in roots): roots.append(str(staging))
-        save_system(root, system)
     except Exception:
         raise
     return staging
 
 
-def save_voice_reply(root: Path, enabled: bool, profile: str, auto_off_minutes: int, outbound_media: bool) -> Path | None:
+def save_voice_reply(root: Path, enabled: bool, profile: str, auto_off_minutes: int) -> Path | None:
     if not 1 <= auto_off_minutes <= 1440: raise ValueError("O desligamento automático deve estar entre 1 e 1440 minutos.")
     staging: Path | None = None
-    if enabled or outbound_media: staging = ensure_gateway_activity_permissions(root, profile)
+    if enabled: staging = ensure_eccovox_staging_access(root, profile)
     data = telegram_data(root); voice = data.setdefault("voice_reply", {})
-    voice.update({"enabled": enabled, "eccovox_profile": profile, "auto_off_minutes": auto_off_minutes, "agent_outbound_media": outbound_media})
+    voice.update({"enabled": enabled, "eccovox_profile": profile, "auto_off_minutes": auto_off_minutes})
     telegram = data.get("telegram", {}); save_telegram(root, str(telegram.get("vault_profile") or telegram.get("keepass_profile") or ""), str(telegram.get("token_entry") or ""), data)
+    return staging
+
+
+def save_agent_outbound_media(root: Path, enabled: bool) -> Path | None:
+    """Configura o envio de arquivos pelo agente sem depender do EccoVox."""
+    staging: Path | None = None
+    if enabled:
+        system = tomllib.loads((root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8")).get("codex", {})
+        if str(system.get("sandbox_mode") or "workspace-write") == "read-only":
+            raise ValueError("Escolha o sandbox workspace-write para permitir que o agente prepare arquivos do Telegram.")
+        staging = telegram_staging(root).resolve(); staging.mkdir(parents=True, exist_ok=True)
+    data = telegram_data(root); telegram = data.setdefault("telegram", {}); telegram["agent_outbound_media"] = enabled
+    save_telegram(root, str(telegram.get("vault_profile") or telegram.get("keepass_profile") or ""), str(telegram.get("token_entry") or ""), data)
     return staging
 
 
@@ -508,7 +517,7 @@ def test_telegram(root: Path) -> tuple[bool, str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--onmyoji-root", default=str(ROOT)); parser.add_argument("--action", choices=["bootstrap", "daemon-bootstrap", "validate", "validation-json", "keepass-validation-json", "daemon-validation-json", "instructions-status", "profiles", "set-runtime", "set-credential", "set-totp", "set-app-server", "set-owner-execution-preferences", "set-voice-reply", "check-entry", "write-token", "test-telegram", "test-agent"], default="bootstrap"); parser.add_argument("--profile"); parser.add_argument("--entry"); parser.add_argument("--real-entry"); parser.add_argument("--fake-entry"); parser.add_argument("--runtime-mode"); parser.add_argument("--python"); parser.add_argument("--base-python"); parser.add_argument("--enabled", action="store_true"); parser.add_argument("--disabled", action="store_true"); parser.add_argument("--idle-timeout", type=int); parser.add_argument("--auto-off-minutes", type=int); parser.add_argument("--agent-outbound-media", action="store_true"); parser.add_argument("--models", default=""); parser.add_argument("--efforts", default=""); args = parser.parse_args()
+    parser = argparse.ArgumentParser(); parser.add_argument("--onmyoji-root", default=str(ROOT)); parser.add_argument("--action", choices=["bootstrap", "daemon-bootstrap", "validate", "validation-json", "keepass-validation-json", "daemon-validation-json", "instructions-status", "profiles", "set-runtime", "set-credential", "set-totp", "set-app-server", "set-owner-execution-preferences", "set-voice-reply", "set-agent-outbound-media", "check-entry", "write-token", "test-telegram", "test-agent"], default="bootstrap"); parser.add_argument("--profile"); parser.add_argument("--entry"); parser.add_argument("--real-entry"); parser.add_argument("--fake-entry"); parser.add_argument("--runtime-mode"); parser.add_argument("--python"); parser.add_argument("--base-python"); parser.add_argument("--enabled", action="store_true"); parser.add_argument("--disabled", action="store_true"); parser.add_argument("--idle-timeout", type=int); parser.add_argument("--auto-off-minutes", type=int); parser.add_argument("--models", default=""); parser.add_argument("--efforts", default=""); args = parser.parse_args()
     root = Path(args.onmyoji_root).resolve()
     if args.action == "bootstrap": print(bootstrap(root)); return 0
     if args.action == "daemon-bootstrap": print(bootstrap_daemon(root)); return 0
@@ -529,8 +538,11 @@ def main() -> int:
     if args.action == "set-owner-execution-preferences":
         bootstrap(root); save_owner_execution_preferences(root, not args.disabled, args.models, args.efforts); print("Preferências de execução do owner salvas."); return 0
     if args.action == "set-voice-reply":
-        bootstrap(root); staging = save_voice_reply(root, args.enabled, args.profile or "", args.auto_off_minutes or 15, args.agent_outbound_media)
+        bootstrap(root); staging = save_voice_reply(root, args.enabled, args.profile or "", args.auto_off_minutes or 15)
         print(f"Configuração de resposta por áudio salva. Staging autorizado: {staging}" if staging else "Configuração de resposta por áudio salva."); return 0
+    if args.action == "set-agent-outbound-media":
+        bootstrap(root); staging = save_agent_outbound_media(root, args.enabled)
+        print(f"Envio de arquivos do agente habilitado. Staging preparado: {staging}" if staging else "Envio de arquivos do agente desabilitado."); return 0
     if args.action == "check-entry":
         if not args.profile or not args.entry: parser.error("--profile e --entry são obrigatórios")
         exists, message = entry_exists(root, args.profile, args.entry); print(json.dumps({"exists": exists, "message": message}, ensure_ascii=False)); return 0
