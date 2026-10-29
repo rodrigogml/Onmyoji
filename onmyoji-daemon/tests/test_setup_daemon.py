@@ -68,6 +68,21 @@ def test_missing_telegram_token_entry_is_not_reported_as_a_vault_failure(tmp_pat
     resolver.password_exists.assert_not_called()
 
 
+def test_telegram_validation_marks_only_the_legacy_generic_entry_as_pending(tmp_path):
+    module = setup_module(); module.bootstrap(tmp_path)
+    data = module.telegram_data(tmp_path)
+    module.save_telegram(tmp_path, "default", "APIs/Telegram:Shikigami", data)
+
+    checks = module.validation(tmp_path)
+    reference = next(check for check in checks if check["label"] == "Referência do token")
+    assert reference["state"] == "pending"
+
+    module.save_telegram(tmp_path, "default", "APIs/Telegram:Lavelinha")
+    checks = module.validation(tmp_path)
+    reference = next(check for check in checks if check["label"] == "Referência do token")
+    assert reference == {"state": "ok", "label": "Referência do token", "detail": "APIs/Telegram:Lavelinha"}
+
+
 def test_daemon_setup_uses_only_the_internal_mcp_vault() -> None:
     source = (Path(__file__).parents[1] / "setupDaemon.py").read_text(encoding="utf-8")
 

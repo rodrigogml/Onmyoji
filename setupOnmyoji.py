@@ -847,6 +847,11 @@ def telegram_token_entry(root: Path) -> str:
     return f"APIs/Telegram:{instance_identity(root)}"
 
 
+def configured_telegram_token_entry(root: Path, current_entry: str = "") -> str:
+    """Preserva uma escolha explícita, mas substitui o marcador legado genérico."""
+    return current_entry if current_entry and current_entry != "APIs/Telegram:Shikigami" else telegram_token_entry(root)
+
+
 def update_system(root: Path, data: dict[str, object], key: str, value: object) -> dict[str, object]:
     candidate = dict(data); candidate[key] = value
     ok, message = save_system(root, candidate)
@@ -1792,7 +1797,7 @@ def daemon_menu(root: Path) -> None:
         print("    Perfis de vault MCP disponíveis: " + ", ".join(str(profile) for profile in profiles))
         profile = prompt(f"Perfil de vault MCP [{default_profile}]: ").strip() or default_profile
         if profile not in profiles: result(False, "Perfil de vault MCP inválido."); return False
-        default_entry = current_entry or telegram_token_entry(root)
+        default_entry = configured_telegram_token_entry(root, current_entry)
         entry = prompt(f"Entrada do vault [{default_entry}]: ").strip() or default_entry
         saved = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-credential", "--profile", profile, "--entry", entry], quiet=True)
         if saved.returncode != 0: result(False, (saved.stdout or saved.stderr).strip()); return False

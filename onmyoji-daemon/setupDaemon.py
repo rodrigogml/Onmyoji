@@ -361,7 +361,8 @@ def validation(root: Path) -> list[dict[str, str]]:
     profile, entry = str(telegram.get("vault_profile") or telegram.get("keepass_profile") or ""), str(telegram.get("token_entry") or "")
     known = profiles(root)
     add("ok" if profile and profile in known else "error", "Perfil de vault MCP", f"{profile!r} disponível." if profile in known else ("Selecione um perfil de vault MCP existente." if not profile else f"Perfil {profile!r} não encontrado."))
-    add("ok" if entry and not entry.endswith(":Shikigami") else "pending", "Referência do token", entry if entry and not entry.endswith(":Shikigami") else "Defina a entrada KeePass do token do bot.")
+    legacy_entry = entry == "APIs/Telegram:Shikigami"
+    add("ok" if entry and not legacy_entry else "pending", "Referência do token", entry if entry and not legacy_entry else "Defina a entrada KeePass do token do bot.")
     try:
         system = tomllib.loads((root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8")).get("codex", {})
         executable = Path(str(system.get("executable") or ""))
