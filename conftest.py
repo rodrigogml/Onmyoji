@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import shutil
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parent
 TEST_TEMPORARY_ROOT = ROOT / "tmp" / "pytest-system"
 TEST_PYCACHE_ROOT = ROOT / "tmp" / "pycache"
+TEST_PYTEST_CACHE_ROOT = ROOT / "tmp" / "pytest-cache"
 
 
 def pytest_configure() -> None:
@@ -30,3 +34,11 @@ def pytest_configure() -> None:
         value = str(path)
         if value not in sys.path:
             sys.path.insert(0, value)
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session, exitstatus: int) -> None:
+    """Remove os artefatos da suíte, inclusive quando algum teste falhar."""
+    del session, exitstatus
+    for path in (ROOT / ".pytest_cache", ROOT / "tmp" / "pytest", TEST_TEMPORARY_ROOT, TEST_PYCACHE_ROOT, TEST_PYTEST_CACHE_ROOT):
+        shutil.rmtree(path, ignore_errors=True)
