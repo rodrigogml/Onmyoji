@@ -23,6 +23,9 @@ class BootstrapShikigamiTests(unittest.TestCase):
         with self.assertRaises(MODULE.BootstrapError):
             MODULE.identifier_for("CON")
 
+    def test_directory_component_preserves_case_and_normalizes_only_spaces(self) -> None:
+        self.assertEqual(MODULE.directory_component_for("  Lavelinha  AI  "), "Lavelinha-AI")
+
     def test_directory_name_is_limited_to_a_child_of_the_base_directory(self) -> None:
         self.assertEqual(MODULE.directory_name_for("Shikigami-Akuma", "Nome da pasta"), "Shikigami-Akuma")
         for value in ("C:\\opt\\Akuma", "../Akuma", "Akuma/Work"):

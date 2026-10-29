@@ -46,6 +46,14 @@ def identifier_for(name: str) -> str:
     return identifier
 
 
+def directory_component_for(name: str) -> str:
+    """Preserva o nome informado para a pasta, normalizando apenas espaços."""
+    component = "-".join(name.strip().split())
+    if not component or "/" in component or "\\" in component or component.rstrip(". ").upper() in WINDOWS_RESERVED_NAMES:
+        raise BootstrapError("Informe um nome de Shikigami válido.")
+    return component
+
+
 def directory_name_for(value: str, label: str) -> str:
     """Aceita somente o nome de uma pasta filha da base selecionada."""
     name = value.strip()
@@ -176,10 +184,11 @@ def interactive(ask: Callable[[str], str] = input, output: Callable[[str], None]
         output("ONMYŌJI / INSTALADOR DE SHIKIGAMI")
     try:
         name = ask(Ui.text("› Nome do Shikigami: ", Ui.violet, Ui.bold)).strip()
-        identifier = identifier_for(name)
+        identifier_for(name)
+        directory_component = directory_component_for(name)
         base = prompt_path("Pasta base", Path.cwd(), ask)
-        instance = prompt_directory_name("Nome da pasta da instância", f"Shikigami-{identifier}", base, ask)
-        workspace = prompt_directory_name("Nome da pasta de trabalho", f"Shikigami-{identifier}-Work", base, ask)
+        instance = prompt_directory_name("Nome da pasta da instância", f"Shikigami-{directory_component}", base, ask)
+        workspace = prompt_directory_name("Nome da pasta de trabalho", f"Shikigami-{directory_component}-Work", base, ask)
         upstream = ask(Ui.text(f"› Repositório do Onmyōji [{DEFAULT_UPSTREAM_URL}]: ", Ui.violet, Ui.bold)).strip() or DEFAULT_UPSTREAM_URL
         origin = ask(Ui.text("› Repositório remoto próprio (vazio, opcional): ", Ui.violet, Ui.bold)).strip() or None
         output("\n  " + Ui.text("Instância:", Ui.cyan, Ui.bold) + f" {instance}\n  " + Ui.text("Workspace:", Ui.cyan, Ui.bold) + f" {workspace}\n  " + Ui.text("Upstream:", Ui.cyan, Ui.bold) + f"  {upstream}\n  " + Ui.text("Origin:", Ui.cyan, Ui.bold) + f"    {origin or '(não configurado)'}")
