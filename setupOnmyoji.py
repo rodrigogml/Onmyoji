@@ -2145,19 +2145,6 @@ def daemon_menu(root: Path) -> None:
                     result(True, json.dumps(diagnosis.get("tunnel", {}), ensure_ascii=False))
             else: result(False, "Opção inválida.")
 
-    def services_menu() -> None:
-        """Agrupa integrações que dependem da plataforma, sem configurá-las no wizard."""
-        while True:
-            screen("Serviços instalados", "Integrações independentes que usam o daemon já configurado")
-            item("T.", "Gateway Telegram", "Configuração, teste e pareamento")
-            item("M.", "MiniApps", "Gateway HTTPS e Cloudflare Tunnel")
-            item("X.", "Voltar")
-            choice = prompt("Opção: ").strip().casefold()
-            if choice in {"x", "\x1b"}: return
-            if choice == "t": telegram_menu()
-            elif choice == "m": miniapps_menu()
-            else: result(False, "Opção inválida.")
-
     def utilities_menu() -> None:
         """Reúne somente ferramentas auxiliares e de manutenção da plataforma."""
         while True:
@@ -2187,7 +2174,8 @@ def daemon_menu(root: Path) -> None:
         item("2.", "Processo/Serviço do Daemon", "Processo local e serviço do sistema operacional")
         item("3.", "Utilitários e manutenção", "Ambiente Python e remoção")
         print()
-        item("M.", "Módulos do Daemon", "Telegram, MiniApps e futuras integrações")
+        item("T.", "Gateway Telegram", "Configuração, teste e pareamento")
+        item("M.", "MiniApps", "Gateway HTTPS e Cloudflare Tunnel")
         print()
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
@@ -2200,9 +2188,10 @@ def daemon_menu(root: Path) -> None:
             if not installed(): result(False, "Instale o daemon pela opção 1 antes de operá-lo.")
             else: operation_menu()
         elif choice == "3": utilities_menu()
-        elif choice == "m":
+        elif choice in {"t", "m"}:
             if not installed(): result(False, "Instale o daemon pela opção 1 antes de configurar serviços.")
-            else: services_menu()
+            elif choice == "t": telegram_menu()
+            else: miniapps_menu()
         else: result(False, "Opção inválida.")
 
 
