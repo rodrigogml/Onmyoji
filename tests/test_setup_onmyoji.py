@@ -344,7 +344,7 @@ class SystemSetupTests(unittest.TestCase):
             state_path = MODULE.skill_state_path(root)
             self.assertTrue(state_path.is_file())
             state = tomllib.loads(state_path.read_text(encoding="utf-8"))
-            self.assertEqual(state, {"schema_version": 1, "skills": {"omie": {"enabled": True, "mode": "managed_copy"}}})
+            self.assertEqual(state, {"schema_version": 1, "skills": {"omie": {"enabled": True, "mode": "managed_copy", "source": "omie"}}})
             self.assertEqual(MODULE.enabled_ids(root, [skill]), {"omie"})
             self.assertTrue(MODULE.save_enabled(root, set(), [skill])[0])
             self.assertFalse(tomllib.loads(state_path.read_text(encoding="utf-8"))["skills"]["omie"]["enabled"])
@@ -354,7 +354,7 @@ class SystemSetupTests(unittest.TestCase):
             root = Path(temporary); skill = self.fake_skill(root)
             self.assertTrue(MODULE.ensure_skill_state(root, [skill])[0])
             state = tomllib.loads(MODULE.skill_state_path(root).read_text(encoding="utf-8"))
-            self.assertEqual(state["skills"]["omie"], {"enabled": False, "mode": "managed_copy"})
+            self.assertEqual(state["skills"]["omie"], {"enabled": False, "mode": "managed_copy", "source": "omie"})
 
     def test_invalid_skill_state_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

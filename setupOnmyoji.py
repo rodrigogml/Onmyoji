@@ -704,7 +704,7 @@ def render_skill_state(identifiers: set[str], skills: list[Skill]) -> str:
     """Gera o estado local de publicação das skills próprias do Shikigami."""
     lines = ["schema_version = 1", ""]
     for skill in sorted(skills, key=lambda item: item.identifier):
-        lines.extend([f"[skills.{json.dumps(skill.identifier, ensure_ascii=False)}]", f"enabled = {'true' if skill.identifier in identifiers else 'false'}", 'mode = "managed_copy"', ""])
+        lines.extend([f"[skills.{json.dumps(skill.identifier, ensure_ascii=False)}]", f"enabled = {'true' if skill.identifier in identifiers else 'false'}", 'mode = "managed_copy"', f"source = {json.dumps(skill.source.name, ensure_ascii=False)}", ""])
     return "\n".join(lines)
 
 
@@ -744,7 +744,7 @@ def ensure_skill_state(root: Path, skills: list[Skill]) -> tuple[bool, str]:
             records = data.get("skills", {})
             if data.get("schema_version") != 1 or not isinstance(records, dict): raise ValueError("estrutura inválida")
             for identifier, state in records.items():
-                if not isinstance(identifier, str) or not isinstance(state, dict) or type(state.get("enabled")) is not bool or state.get("mode") != "managed_copy": raise ValueError("registro inválido")
+                if not isinstance(identifier, str) or not isinstance(state, dict) or type(state.get("enabled")) is not bool or state.get("mode") != "managed_copy" or not isinstance(state.get("source", identifier), str): raise ValueError("registro inválido")
         except (OSError, tomllib.TOMLDecodeError, ValueError) as error: return False, f"O estado das skills é inválido: {error}"
         return True, "Estado das skills válido."
     return save_enabled(root, set(), skills)
