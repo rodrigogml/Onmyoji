@@ -115,7 +115,7 @@ def test_daemon_bootstrap_prepares_only_the_platform(tmp_path):
     data = tomllib.loads(configured.read_text(encoding="utf-8"))
     assert data["app_server"]["enabled"] is False
     assert data["instructions"]["shikigami_file"] == "instructions.md"
-    assert (tmp_path / "shikigami" / "instructions.md").is_file()
+    assert not (tmp_path / "shikigami" / "instructions.md").exists()
     assert not (tmp_path / "shikigami" / "daemon" / "telegram.toml").exists()
 
 

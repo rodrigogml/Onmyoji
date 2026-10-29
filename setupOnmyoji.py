@@ -114,20 +114,6 @@ def instance_identity(root: Path) -> str:
     return name.strip() or "Shikigami"
 
 
-def ensure_shikigami_resources(root: Path) -> None:
-    """Cria recursos versionáveis do Shikigami após a instalação inicial."""
-    directory = root / "shikigami"; identity = instance_identity(root)
-    directory.mkdir(parents=True, exist_ok=True)
-    readme = directory / "README.md"
-    if not readme.exists(): readme.write_text(f"# {identity}\n\nDefinição versionada deste Shikigami. Arquivos da base Onmyōji não são personalizados aqui; particularidades versionadas ficam nesta pasta. A identidade e o estado de execução são locais, em `../configs/`. O workspace externo é a única área para arquivos de trabalho do agente.\n", encoding="utf-8", newline="\n")
-    agents = directory / "AGENTS.md"
-    if not agents.exists(): agents.write_text(f"# {identity}\n\nLeia este arquivo e `README.md` antes de trabalhar nesta instância. Não altere arquivos da base Onmyōji (`onmyoji-daemon/`, `setupOnmyoji.py` e `docs/`) para personalizar {identity}; registre personalizações em `shikigami/` ou proponha melhorias genéricas ao upstream.\n\nNão armazene segredos, tokens, chaves, bancos de conversa, logs, staging ou arquivos de trabalho nesta pasta. O workspace externo é a única área de escrita para a atividade do agente.\n", encoding="utf-8", newline="\n")
-    instructions = directory / "instructions.md"
-    if not instructions.exists():
-        model = root / "onmyoji-daemon" / "configs" / "shikigami.md.model"
-        if model.exists(): shutil.copy2(model, instructions)
-
-
 def default_system() -> dict[str, object]:
     return {
         "shikigami_identity": "",
@@ -2302,7 +2288,6 @@ def main() -> int:
             return 2
         system = initial_installation_wizard(ROOT, system)
         if system is None: return 0
-    ensure_shikigami_resources(ROOT)
     skills = discover(); conflicts = conflicting_skill_ids(skills); by_id = {skill.identifier: skill for skill in skills if skill.identifier not in conflicts}
     initialized, initialization_message = ensure_skill_state(ROOT, skills)
     if not initialized:

@@ -19,6 +19,12 @@ def test_instruction_path_cannot_escape_authorized_root(tmp_path):
     with pytest.raises(InstructionError): InstructionComposer(tmp_path, data, "../outside.md").compose(identity="Exemplo", telegram=False)
 
 
+def test_missing_shikigami_instruction_file_is_optional(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"
+    bundle = InstructionComposer(tmp_path, data, "instructions.md").compose(identity="Exemplo", telegram=False)
+    assert "[SHIKIGAMI — INSTRUÇÕES PARTICULARES]" not in bundle.text
+
+
 def test_channel_capability_restarts_baseline_but_reply_mode_is_overlay_only(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"
     composer = InstructionComposer(tmp_path, data, "instructions.md")

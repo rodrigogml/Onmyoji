@@ -128,4 +128,5 @@ class CodexLaunch:
         """Prepara o console Onmyōji no mesmo runtime que atende o gateway."""
         if not runtime_ready(self.root):
             raise CodexExecutionError("Runtime do daemon não está pronto para iniciar o console Onmyōji.")
+        self._reconcile_mcp()
         return [str(daemon_python(self.root)), "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(self.root), "interactive"], self.workspace, self.environment(daemon_source=True)

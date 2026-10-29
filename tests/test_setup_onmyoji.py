@@ -111,8 +111,9 @@ class SystemSetupTests(unittest.TestCase):
             self.assertIsNotNone(installed)
             self.assertEqual(installed["shikigami_identity"], "Exemplo da Silva")
             self.assertTrue(installed["shikigami_installed"])
-            MODULE.ensure_shikigami_resources(root)
-            self.assertTrue((root / "shikigami" / "README.md").is_file())
+            self.assertFalse((root / "shikigami" / "README.md").exists())
+            self.assertFalse((root / "shikigami" / "AGENTS.md").exists())
+            self.assertFalse((root / "shikigami" / "instructions.md").exists())
             self.assertFalse((root / "shikigami" / "instance.toml").exists())
 
     def test_wizard_accepts_the_identity_previously_recorded_by_bootstrap(self) -> None:
@@ -372,7 +373,7 @@ class SystemSetupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); project = root / "project"; project.mkdir()
             data = MODULE.default_system() | {"executable": sys.executable, "project_directory": str(project)}
-            with patch.object(MODULE, "validate_system", return_value=(True, "pronto")), patch("onmyoji_daemon.codex_execution.runtime_ready", return_value=True), patch("onmyoji_daemon.codex_execution.daemon_python", return_value=Path(sys.executable)), patch.object(MODULE.subprocess, "run") as run:
+            with patch.object(MODULE, "validate_system", return_value=(True, "pronto")), patch("onmyoji_daemon.codex_execution.runtime_ready", return_value=True), patch("onmyoji_daemon.codex_execution.daemon_python", return_value=Path(sys.executable)), patch("onmyoji_daemon.codex_execution.CodexLaunch._reconcile_mcp"), patch.object(MODULE.subprocess, "run") as run:
                 MODULE.launch_onmyoji_interactive(root, data)
             command = run.call_args.args[0]
             self.assertEqual(command[:5], [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root)])

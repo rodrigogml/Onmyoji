@@ -43,7 +43,9 @@ class InstructionComposer:
         if relative.is_absolute() or ".." in relative.parts: raise InstructionError("O arquivo de instruções do Shikigami deve ser relativo e permanecer na raiz autorizada.")
         candidate = (self.instruction_root / relative).resolve()
         if not candidate.is_relative_to(self.instruction_root): raise InstructionError("O arquivo de instruções está fora de shikigami/.")
-        if not candidate.exists():
+        if not candidate.is_file():
+            if candidate.exists():
+                return None, None
             legacy = (self.legacy_instruction_root / relative).resolve()
             if relative.name == "shikigami.md" and legacy.is_relative_to(self.legacy_instruction_root) and legacy.exists():
                 candidate = legacy

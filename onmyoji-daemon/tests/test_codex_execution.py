@@ -45,11 +45,14 @@ def test_all_codex_entrypoints_synchronize_shikigami_skills(tmp_path: Path, monk
     synchronized: list[Path] = []
     monkeypatch.setattr(codex_execution.ShikigamiSkillMaterializer, "synchronize", lambda _self, target: synchronized.append(target) or False)
     monkeypatch.setattr(codex_execution.McpReconciliation, "reconcile_if_pending", lambda *_args: False)
+    monkeypatch.setattr(codex_execution, "runtime_ready", lambda _root: True)
+    monkeypatch.setattr(codex_execution, "daemon_python", lambda _root: tmp_path / "runtime" / "python")
 
     launch.direct_launch()
     launch.app_server_launch()
+    launch.interactive_launcher()
 
-    assert synchronized == [workspace.resolve(), workspace.resolve()]
+    assert synchronized == [workspace.resolve(), workspace.resolve(), workspace.resolve()]
 
 
 def test_shikigami_skill_sync_failure_blocks_codex_startup(tmp_path: Path, monkeypatch) -> None:

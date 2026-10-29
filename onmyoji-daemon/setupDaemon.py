@@ -27,7 +27,6 @@ from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialRes
 
 ROOT = PROJECT.parent
 MODEL = PROJECT / "configs" / "telegram.toml.model"
-INSTRUCTION_MODEL = PROJECT / "configs" / "shikigami.md.model"
 
 
 def target(root: Path) -> Path: return root / "shikigami" / "daemon" / "telegram.toml"
@@ -99,8 +98,6 @@ def bootstrap_daemon(root: Path) -> Path:
     runtime.setdefault("base_python", "")
     runtime.setdefault("executable", "")
     save_daemon_data(root, data)
-    instruction = root / "shikigami" / str(instructions["shikigami_file"])
-    if not instruction.exists(): instruction.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(INSTRUCTION_MODEL, instruction)
     return daemon_target(root)
 
 
@@ -111,8 +108,6 @@ def bootstrap(root: Path) -> Path:
     if daemon_target(root).is_file(): bootstrap_daemon(root)
     path = target(root)
     if not path.exists(): path.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(MODEL, path)
-    instruction = root / "shikigami" / "instructions.md"
-    if not instruction.exists(): instruction.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(INSTRUCTION_MODEL, instruction)
     return path
 
 
