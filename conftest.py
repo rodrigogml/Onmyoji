@@ -8,13 +8,20 @@ usado por cada teste isolado.
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
+TEST_TEMPORARY_ROOT = ROOT / "tmp" / "pytest-system"
+TEST_PYCACHE_ROOT = ROOT / "tmp" / "pycache"
 
 
 def pytest_configure() -> None:
+    TEST_TEMPORARY_ROOT.mkdir(parents=True, exist_ok=True)
+    TEST_PYCACHE_ROOT.mkdir(parents=True, exist_ok=True)
+    tempfile.tempdir = str(TEST_TEMPORARY_ROOT)
+    sys.pycache_prefix = str(TEST_PYCACHE_ROOT)
     paths = [ROOT / "onmyoji-daemon" / "src"]
     skill_root = ROOT / "shikigami" / "skills"
     if skill_root.is_dir():

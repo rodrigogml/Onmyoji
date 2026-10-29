@@ -27,9 +27,9 @@ jobs:
       - name: Run Telegram subsystem regression tests
         env:
           PYTHONPATH: onmyoji-daemon/src
-        run: python -m pytest -q onmyoji-daemon/tests/test_telegram.py onmyoji-daemon/tests/test_telegram_channels.py onmyoji-daemon/tests/test_mcp_telegram.py
+        run: python -B -m pytest -q onmyoji-daemon/tests/test_telegram.py onmyoji-daemon/tests/test_telegram_channels.py onmyoji-daemon/tests/test_mcp_telegram.py
       - name: Report full offline suite (advisory; other integrations have separate dependencies and baseline failures)
         continue-on-error: true
         env:
           PYTHONPATH: onmyoji-daemon/src
-        run: python -m pytest -q
+        run: python -B -m pytest -q

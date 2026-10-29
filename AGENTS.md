@@ -14,7 +14,7 @@ O workspace do agente é externo ao `CODEX_HOME`. Arquivos de trabalho, saídas,
 
 ## Artefatos temporários
 
-Não crie arquivos transitórios, saídas de compilação, caches ou bancos de teste na raiz do repositório. Testes devem usar o diretório temporário fornecido pelo framework (`tmp_path` ou `TemporaryDirectory`), que é isolado e removido ao fim da execução. Quando uma operação local precisar manter arquivos temporários inspecionáveis durante sua execução, use exclusivamente `tmp/`, que é ignorado pelo Git e pode ser removido integralmente. Estado operacional persistente pertence a `configs/` ou ao workspace do Shikigami, conforme sua finalidade; nunca a diretórios improvisados na raiz.
+`tmp/` é o único local temporário do repositório. Todo arquivo transitório, saída de compilação, cache ou banco de teste criado durante desenvolvimento, testes ou execução local deve ficar dentro dele; nunca crie diretórios temporários na raiz, em `configs/`, em `shikigami/` ou em qualquer outra pasta do repositório. Testes devem usar `tmp_path` ou `TemporaryDirectory` já configurados para `tmp/`; não devem escolher o diretório temporário padrão do sistema nem criar caminhos próprios. Execute a suíte com `python -B -m pytest` para que o interpretador não grave bytecode fora de `tmp/`. Estado operacional persistente pertence a `configs/` ou ao workspace do Shikigami, conforme sua finalidade. `tmp/` é ignorado pelo Git e pode ser removido integralmente.
 
 ## Alteração de instruções e skills
 
