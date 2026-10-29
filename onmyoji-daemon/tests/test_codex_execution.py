@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from onmyoji_daemon import codex_execution
 
 
@@ -35,6 +37,31 @@ def test_direct_cli_and_app_server_share_instance_context(tmp_path: Path, monkey
     assert launch.model == "gpt-test" and launch.effort == "medium"
     assert launch.sandbox == "workspace-write" and launch.approval == "never"
     assert len(reconciled) == 2
+
+
+def test_all_codex_entrypoints_synchronize_shikigami_skills(tmp_path: Path, monkeypatch) -> None:
+    workspace = tmp_path / "workspace"; workspace.mkdir()
+    launch = codex_execution.CodexLaunch.from_data(tmp_path, data(workspace))
+    synchronized: list[Path] = []
+    monkeypatch.setattr(codex_execution.ShikigamiSkillMaterializer, "synchronize", lambda _self, target: synchronized.append(target) or False)
+    monkeypatch.setattr(codex_execution.McpReconciliation, "reconcile_if_pending", lambda *_args: False)
+
+    launch.direct_launch()
+    launch.app_server_launch()
+
+    assert synchronized == [workspace.resolve(), workspace.resolve()]
+
+
+def test_shikigami_skill_sync_failure_blocks_codex_startup(tmp_path: Path, monkeypatch) -> None:
+    workspace = tmp_path / "workspace"; workspace.mkdir()
+    launch = codex_execution.CodexLaunch.from_data(tmp_path, data(workspace))
+    def fail_synchronization(*_args: object) -> bool:
+        raise RuntimeError("skill inválida")
+
+    monkeypatch.setattr(codex_execution.ShikigamiSkillMaterializer, "synchronize", fail_synchronization)
+
+    with pytest.raises(codex_execution.CodexExecutionError, match="skill inválida"):
+        launch.direct_launch()
 
 
 def test_interactive_launcher_uses_selected_daemon_runtime(tmp_path: Path, monkeypatch) -> None:

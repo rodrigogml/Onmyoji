@@ -17,6 +17,7 @@ from .mcp.configuration import McpConfiguration
 from .mcp.data_tables import ManagedDataTablesSkill
 from .mcp.memory import ManagedMemorySkill
 from .mcp.reconciliation import McpReconciliation
+from .shikigami_skills import ShikigamiSkillMaterializer
 
 
 class CodexExecutionError(RuntimeError):
@@ -113,12 +114,13 @@ class CodexLaunch:
             raise CodexExecutionError(str(error)) from error
 
     def synchronize_managed_skills(self) -> bool:
-        """Mantém no workspace os workflows correspondentes aos serviços MCP ativos."""
+        """Mantém no workspace todos os workflows canônicos habilitados."""
         try:
             configuration = McpConfiguration(self.root)
             memory_changed = ManagedMemorySkill(self.root).synchronize(self.workspace, configuration.memory_tool_available())
             tables_changed = ManagedDataTablesSkill(self.root).synchronize(self.workspace, configuration.data_tables_tool_available())
-            return memory_changed or tables_changed
+            shikigami_changed = ShikigamiSkillMaterializer(self.root).synchronize(self.workspace)
+            return memory_changed or tables_changed or shikigami_changed
         except Exception as error:
             raise CodexExecutionError(str(error)) from error
 
