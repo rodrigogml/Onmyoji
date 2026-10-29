@@ -96,6 +96,14 @@ class SystemSetupTests(unittest.TestCase):
             self.assertTrue((root / "shikigami" / "README.md").is_file())
             self.assertFalse((root / "shikigami" / "instance.toml").exists())
 
+    def test_wizard_accepts_the_identity_previously_recorded_by_bootstrap(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch("builtins.input", return_value=""), patch.object(MODULE, "configure_initial_codex", side_effect=lambda _root, data: data | {"executable": sys.executable}), patch.object(MODULE, "choose_project_directory", side_effect=lambda root, _current: str(root)), patch.object(MODULE, "choose_sandbox", return_value="workspace-write"), patch.object(MODULE, "choose_approval_policy", return_value="on-request"):
+            root = Path(temporary)
+            data = MODULE.default_system() | {"shikigami_identity": "Lavelinha"}
+            installed = MODULE.initial_installation_wizard(root, data)
+        self.assertIsNotNone(installed)
+        self.assertEqual(installed["shikigami_identity"], "Lavelinha")
+
     def test_workspace_suggestion_is_a_sibling_with_work_suffix(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "MeuShikigami"; root.mkdir()

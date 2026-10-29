@@ -4,6 +4,7 @@ import importlib.util
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -40,6 +41,13 @@ class BootstrapShikigamiTests(unittest.TestCase):
             MODULE.copy_template(template, destination, {"{{SHIKIGAMI_NAME}}": "Akuma"})
             self.assertEqual((destination / "README.md").read_text(encoding="utf-8"), "# Akuma")
             self.assertEqual((destination / ".gitignore").read_text(encoding="utf-8"), "cache")
+
+    def test_initial_configuration_preserves_the_shikigami_name_for_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            MODULE.write_initial_configuration(repository, "Lavelinha")
+            saved = tomllib.loads((repository / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8"))
+        self.assertEqual(saved["shikigami"], {"identity": "Lavelinha", "installed": False})
 
     def test_remote_is_empty_uses_git_reference_listing(self) -> None:
         completed = subprocess.CompletedProcess([], 0, stdout="", stderr="")

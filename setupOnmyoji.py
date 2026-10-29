@@ -657,9 +657,11 @@ def initial_installation_wizard(root: Path, data: dict[str, object]) -> dict[str
     while True:
         screen("Instalação inicial", "Identidade do Shikigami")
         note("Informe o nome exibido pelo Shikigami. Digite X para cancelar.")
-        raw = prompt("Nome do Shikigami: ").strip()
+        suggested = " ".join(str(data.get("shikigami_identity") or "").split())
+        label = f"Nome do Shikigami [{suggested}]: " if suggested else "Nome do Shikigami: "
+        raw = prompt(label).strip()
         if raw.casefold() in {"x", "\x1b"}: return None
-        identity = " ".join(raw.split())
+        identity = " ".join(raw.split()) or suggested
         if not identity:
             result(False, "Informe um nome não vazio.")
             continue

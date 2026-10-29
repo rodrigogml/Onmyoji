@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import os
+import json
 import shutil
 import subprocess
 import sys
@@ -133,6 +134,14 @@ def configure_identity(repository: Path, ask: Callable[[str], str]) -> None:
         git(["config", field, value], cwd=repository)
 
 
+def write_initial_configuration(repository: Path, name: str) -> None:
+    """Registra a identidade escolhida para que o setup a ofereça como padrão."""
+    path = repository / "configs" / "onmyoji-system.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = "\n".join(("schema_version = 1", "", "[shikigami]", f"identity = {json.dumps(name, ensure_ascii=False)}", "installed = false", ""))
+    path.write_text(content, encoding="utf-8", newline="\n")
+
+
 def create_instance(name: str, instance_directory: Path, workspace_directory: Path, upstream_url: str, origin_url: str | None, ask: Callable[[str], str]) -> None:
     """Clona a base, aplica a identidade inicial e opcionalmente publica no origin vazio."""
     require_new_directory(instance_directory, "A pasta da instância")
@@ -143,6 +152,7 @@ def create_instance(name: str, instance_directory: Path, workspace_directory: Pa
     try:
         workspace_directory.mkdir()
         copy_template(instance_directory / TEMPLATE_DIRECTORY, instance_directory, {"{{SHIKIGAMI_NAME}}": name, "{{SHIKIGAMI_ID}}": identifier_for(name)})
+        write_initial_configuration(instance_directory, name)
         configure_identity(instance_directory, ask)
         configure_merge_protection(instance_directory)
         git(["add", "--", *PROTECTED_FILES], cwd=instance_directory)
