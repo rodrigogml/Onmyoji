@@ -40,5 +40,5 @@ def pytest_configure() -> None:
 def pytest_sessionfinish(session, exitstatus: int) -> None:
     """Remove os artefatos da suíte, inclusive quando algum teste falhar."""
     del session, exitstatus
-    for path in (ROOT / ".pytest_cache", ROOT / "tmp" / "pytest", TEST_TEMPORARY_ROOT, TEST_PYCACHE_ROOT, TEST_PYTEST_CACHE_ROOT):
+    for path in (ROOT / ".pytest_cache", ROOT / "__pycache__", ROOT / "tmp" / "pytest", TEST_TEMPORARY_ROOT, TEST_PYCACHE_ROOT, TEST_PYTEST_CACHE_ROOT):
         shutil.rmtree(path, ignore_errors=True)

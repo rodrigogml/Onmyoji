@@ -1,0 +1,25 @@
+# Configuração local da instância
+/config.toml
+/*.config.toml
+/configs/*
+/*.bak
+/*.bak.*
+
+# Estado local do Codex
+/auth.json
+/sessions/
+/state/
+/log/
+/tmp/
+/plugins/
+/cache/
+/thread-writer-locks/
+/*.sqlite
+/*.sqlite-shm
+/*.sqlite-wal
+
+# Artefatos locais de Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/

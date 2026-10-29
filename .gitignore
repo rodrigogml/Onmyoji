@@ -6,8 +6,11 @@
 !/AGENTS.md
 !/README.md
 !/setupOnmyoji.py
+!/bootstrapShikigami.py
 !/pytest.ini
 !/conftest.py
+!/shikigami-template/
+!/shikigami-template/**
 !/docs/
 !/docs/**
 !/etc/
