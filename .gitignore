@@ -11,6 +11,9 @@
 !/shikigami/
 !/docs/
 !/docs/**
+!/etc/
+!/etc/ID Visual/
+!/etc/ID Visual/logo.png
 !/onmyoji-daemon/
 !/onmyoji-daemon/**
 !/tests/
