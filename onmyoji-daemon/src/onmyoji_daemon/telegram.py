@@ -28,6 +28,7 @@ from .codex_execution import CodexExecutionError, CodexLaunch
 from .mcp.credentials import CredentialError, KeePassCredentialResolver
 from .mcp.eccovox import EccoVoxError, EccoVoxService
 from .mcp.reconciliation import mcp_reconciliation_pending
+from .telegram_formatting import MAX_MESSAGE_LENGTH, plain_text, render_html, split_html
 
 SERVICE_MESSAGE_FIELDS = frozenset((
     "forum_topic_closed", "forum_topic_created", "forum_topic_edited", "forum_topic_reopened",
@@ -452,6 +453,13 @@ class Gateway(TelegramChannels):
         value = self.staging_root / "outbox" / self._ensure_conversation(str(chat_id)) / turn_id
         value.mkdir(parents=True, exist_ok=True); return value
 
+    def _send_agent_text(self, chat_id: int, text: str, **values: Any) -> list[dict[str, Any]]:
+        """Envia a resposta do agente em HTML seguro, preservando todo o texto."""
+        if not self.api:
+            raise RuntimeError("Gateway Telegram indisponível.")
+        rendered = render_html(text)
+        return [self.api.send(chat_id, chunk, parse_mode="HTML", **values) for chunk in split_html(rendered, MAX_MESSAGE_LENGTH)]
+
     def _tts(self, text: str, output: Path) -> None:
         if not self.settings.voice_enabled: raise RuntimeError("Resposta em áudio não está disponível.")
         try:
@@ -608,11 +616,14 @@ class Gateway(TelegramChannels):
             text, ttl = arguments.get("text"), arguments.get("ttl_seconds", 0)
             if not isinstance(text, str) or not 1 <= len(text.strip()) <= 4000: raise RuntimeError("text deve ter entre 1 e 4000 caracteres.")
             if not isinstance(ttl, int) or isinstance(ttl, bool) or not 0 <= ttl <= 86400: raise RuntimeError("ttl_seconds deve estar entre 0 e 86400.")
-            if not self.api: raise RuntimeError("Gateway Telegram indisponível.")
-            sent = self.api.send(active.chat_id, text, protect_content=bool(arguments.get("protect_content", False)), **active.telegram_topic_values); message_id = sent.get("message_id")
-            if ttl and isinstance(message_id, int): self._schedule_delete(active.chat_id, message_id, ttl)
-            return {"contentItems": [{"type": "inputText", "text": json.dumps({"sent": True, "ephemeral": bool(ttl)}, ensure_ascii=False)}], "success": True}
+            sent = self._send_agent_text(active.chat_id, text, protect_content=bool(arguments.get("protect_content", False)), **active.telegram_topic_values)
+            if ttl:
+                for item in sent:
+                    message_id = item.get("message_id")
+                    if isinstance(message_id, int): self._schedule_delete(active.chat_id, message_id, ttl)
+            return {"contentItems": [{"type": "inputText", "text": json.dumps({"sent": True, "messages": len(sent), "ephemeral": bool(ttl)}, ensure_ascii=False)}], "success": True}
         if tool == "ask_menu":
+            if self._conversation_kind(active.conversation_id) != "private": raise RuntimeError("Menus interativos estão disponíveis somente em conversas privadas ativas.")
             question, options, timeout = arguments.get("question"), arguments.get("options"), arguments.get("timeout_seconds", 120)
             if not isinstance(question, str) or not 1 <= len(question.strip()) <= 4000: raise RuntimeError("question deve ter entre 1 e 4000 caracteres.")
             if not isinstance(options, list) or not 2 <= len(options) <= 20 or not isinstance(timeout, int) or not 10 <= timeout <= 300: raise RuntimeError("Menu inválido.")
@@ -620,9 +631,11 @@ class Gateway(TelegramChannels):
             for option in options:
                 if not isinstance(option, dict) or not isinstance(option.get("id"), str) or not isinstance(option.get("label"), str) or not 1 <= len(option["id"]) <= 64 or not 1 <= len(option["label"]) <= 64 or option["id"] in ids: raise RuntimeError("Cada opção exige id e label únicos de até 64 caracteres.")
                 ids.add(option["id"]); normalized.append({"id": option["id"], "label": option["label"]})
-            if not self.api: raise RuntimeError("Gateway Telegram indisponível.")
             token = secrets.token_urlsafe(12); keyboard = {"inline_keyboard": [[{"text": option["label"], "callback_data": f"ag:{token}:{index}"}] for index, option in enumerate(normalized)]}
-            sent = self.api.send(active.chat_id, question, reply_markup=keyboard, protect_content=bool(arguments.get("protect_content", False)), **active.telegram_topic_values); message_id = sent.get("message_id")
+            rendered = render_html(question)
+            if len(rendered) > MAX_MESSAGE_LENGTH: raise RuntimeError("A pergunta do menu excede o limite de uma mensagem Telegram após a formatação.")
+            if not self.api: raise RuntimeError("Gateway Telegram indisponível.")
+            sent = self.api.send(active.chat_id, rendered, parse_mode="HTML", reply_markup=keyboard, protect_content=bool(arguments.get("protect_content", False)), **active.telegram_topic_values); message_id = sent.get("message_id")
             if not isinstance(message_id, int): raise RuntimeError("Telegram não retornou o identificador do menu.")
             session = MenuSession(token, active.chat_id, message_id, normalized)
             with self.menu_lock: self.menu_sessions[token] = session
@@ -643,7 +656,9 @@ class Gateway(TelegramChannels):
             path = (active.outbox / name).resolve()
             if not name or not under(path, active.outbox) or not path.is_file() or path.is_symlink() or path.stat().st_size > self.settings.max_outbound_media_bytes: raise RuntimeError("Arquivo do outbox inválido ou excede o limite.")
             kind = str(arguments.get("kind") or "document"); method, field = {"photo": ("sendPhoto", "photo"), "document": ("sendDocument", "document"), "audio": ("sendAudio", "audio")}[kind]
-            result = self.api.send_file(method, active.chat_id, path, field, str(arguments.get("caption") or ""), **active.telegram_topic_values) if self.api else {}
+            caption = render_html(str(arguments.get("caption") or ""))
+            if len(caption) > 1024: raise RuntimeError("A legenda excede o limite do Telegram após a formatação.")
+            result = self.api.send_file(method, active.chat_id, path, field, caption, parse_mode="HTML", **active.telegram_topic_values) if self.api else {}
             return {"contentItems": [{"type": "inputText", "text": json.dumps({"sent": True, "message_id": result.get("message_id")}, ensure_ascii=False)}], "success": True}
         if tool == "list_attachments":
             entries = [{key: entry[key] for key in ("id", "kind", "name", "mime_type", "size", "created_at")} for entry in self._attachment_rows(active.conversation_id, int(arguments.get("limit", 20)))]
@@ -726,6 +741,12 @@ class Gateway(TelegramChannels):
             except CodexProtocolError: self.database.execute("UPDATE conversations SET codex_thread_id=NULL WHERE chat_id=?", (str(chat_id),)); self.database.commit()
         tools = [{"type": "namespace", "name": "telegram_gateway", "description": "Interface restrita à DM Telegram ativa.", "tools": [{"type": "function", "name": "get_channel_state", "description": "Consulta o modo de resposta da conversa ativa.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "set_reply_mode", "description": "Define a resposta final como texto ou áudio nesta conversa.", "inputSchema": {"type": "object", "properties": {"mode": {"type": "string", "enum": ["text", "audio"]}}, "required": ["mode"], "additionalProperties": False}}, {"type": "function", "name": "get_outbox", "description": "Retorna o diretório temporário seguro para arquivos que serão enviados neste turno.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "send_file", "description": "Envia um arquivo do outbox do turno à conversa ativa.", "inputSchema": {"type": "object", "properties": {"file_name": {"type": "string"}, "kind": {"type": "string", "enum": ["photo", "document", "audio"]}, "caption": {"type": "string"}}, "required": ["file_name", "kind"], "additionalProperties": False}}, {"type": "function", "name": "list_attachments", "description": "Lista os metadados dos anexos retidos na conversa atual.", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False}}, {"type": "function", "name": "materialize_attachment", "description": "Copia um anexo retido para o staging seguro do turno atual.", "inputSchema": {"type": "object", "properties": {"attachment_id": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["attachment_id"], "additionalProperties": False}}]}]
         tools[0]["tools"].extend([{"type": "function", "name": "send_message", "description": "Envia mensagem adicional somente à DM Telegram ativa; pode expirar automaticamente.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "minLength": 1, "maxLength": 4000}, "ttl_seconds": {"type": "integer", "minimum": 0, "maximum": 86400}, "protect_content": {"type": "boolean"}}, "required": ["text"], "additionalProperties": False}}, {"type": "function", "name": "ask_menu", "description": "Exibe opções ao owner da DM ativa e aguarda a seleção com prazo limitado.", "inputSchema": {"type": "object", "properties": {"question": {"type": "string", "minLength": 1, "maxLength": 4000}, "options": {"type": "array", "minItems": 2, "maxItems": 20, "items": {"type": "object", "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 64}, "label": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["id", "label"], "additionalProperties": False}}, "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": 300}, "protect_content": {"type": "boolean"}}, "required": ["question", "options"], "additionalProperties": False}}])
+        tools[0]["description"] = "Interface restrita à conversa Telegram ativa. Cada ferramenta declara o escopo em que funciona."
+        for tool in tools[0]["tools"]:
+            if tool["name"] == "send_message":
+                tool["description"] = "Envia mensagem adicional à conversa Telegram ativa; pode expirar automaticamente."
+        if self._conversation_kind(str(chat_id)) != "private":
+            tools[0]["tools"] = [tool for tool in tools[0]["tools"] if tool["name"] != "ask_menu"]
         started = client.request("thread/start", {**params, "serviceName": "onmyoji_telegram", "dynamicTools": tools}); thread = started.get("thread") if isinstance(started.get("thread"), dict) else started; thread_id = str(thread.get("id") or "") if isinstance(thread, dict) else ""
         if not thread_id: raise CodexProtocolError("Codex App Server não retornou uma thread")
         self.database.execute("UPDATE conversations SET codex_thread_id=?, instruction_baseline_hash=?, updated_at=? WHERE chat_id=?", (thread_id, bundle.baseline_hash, time.time(), str(chat_id))); self.database.commit(); return thread_id
@@ -1047,17 +1068,17 @@ class Gateway(TelegramChannels):
                 if mode == "audio":
                     output = self._outbox(chat_id, secrets.token_urlsafe(10)) / f"resposta.{self.settings.voice_format}"
                     try:
-                        self._tts(answer, output); self.api.send_file("sendVoice", telegram_chat_id, output, "voice", **topic_values)
+                        self._tts(plain_text(answer), output); self.api.send_file("sendVoice", telegram_chat_id, output, "voice", **topic_values)
                     except Exception as voice_error:
                         self._record_error(voice_error)
-                        if self.settings.voice_fallback_to_text: self.api.send(telegram_chat_id, "Não consegui gerar a resposta em áudio.\n\n" + answer[-3500:], **topic_values)
+                        if self.settings.voice_fallback_to_text: self._send_agent_text(telegram_chat_id, "Não consegui gerar a resposta em áudio.\n\n" + answer, **topic_values)
                         else: self._ephemeral(chat_id, "Não consegui gerar a resposta em áudio. Tente novamente ou altere o modo para texto.")
                     finally: shutil.rmtree(output.parent, ignore_errors=True)
                 else:
-                    sent = self.api.send(telegram_chat_id, answer[-4000:], **topic_values)
-                    message_id = sent.get("message_id") if isinstance(sent, dict) else None
-                    if isinstance(message_id, int):
-                        with self.database_lock: self.database.execute("INSERT OR IGNORE INTO bot_messages(chat_id, generation, telegram_message_id, created_at) VALUES (?, ?, ?, ?)", (str(chat_id), self._generation(chat_id), message_id, time.time())); self.database.commit()
+                    for sent in self._send_agent_text(telegram_chat_id, answer, **topic_values):
+                        message_id = sent.get("message_id") if isinstance(sent, dict) else None
+                        if isinstance(message_id, int):
+                            with self.database_lock: self.database.execute("INSERT OR IGNORE INTO bot_messages(chat_id, generation, telegram_message_id, created_at) VALUES (?, ?, ?, ?)", (str(chat_id), self._generation(chat_id), message_id, time.time())); self.database.commit()
         except Exception as error:
             self._record_error(error)
             if self.api: self.api.send(telegram_chat_id, self._public_turn_error(error), **topic_values)

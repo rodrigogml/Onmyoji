@@ -35,6 +35,20 @@ por procedência. Uma transcrição de voz informa que é automática e pode con
 erros de reconhecimento; nomes próprios, siglas e termos incomuns exigem
 confirmação antes de orientar uma ação relevante.
 
+## Respostas em texto e menus
+
+Respostas do agente são convertidas de um subconjunto simples de Markdown para
+HTML seguro do Telegram. O Gateway aceita negrito, itálico, sublinhado,
+tachado, links e citações, escapa qualquer HTML de origem e divide mensagens
+longas sem descartar o começo ou o fim da resposta. A [Bot API do
+Telegram](https://core.telegram.org/bots/api#formatting-options) suporta
+formatação HTML e o parâmetro `parse_mode` em mensagens de texto.
+
+Menus interativos são publicados somente em conversas privadas, pois a
+validação do callback exige o owner dessa conversa. Em grupos e tópicos, a
+ferramenta não é entregue ao agente; envio de mensagens e arquivos continua
+restrito à conversa ativa.
+
 ## Voz
 
 Transcrição e síntese usam diretamente o serviço interno MCP EccoVox. O perfil

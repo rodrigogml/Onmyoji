@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from onmyoji_daemon.telegram import AppServerTurn, CodexAppServer, Contacts, Gateway, McpVault, Settings
 from onmyoji_daemon.launcher import _approval_policy, _sandbox_policy
+from onmyoji_daemon.telegram_formatting import MAX_MESSAGE_LENGTH, plain_text, render_html, split_html, visible_text
 
 
 def write_settings(root: Path, data_dir: Path) -> None:
@@ -283,7 +284,7 @@ def test_private_topic_isolated_and_routes_responses_to_its_topic(tmp_path):
     assert queued == [("private:9:42", "olá", [])]
     gateway._app_turn = lambda *_args: ("resposta", "text")
     gateway._turn_serial("private:9:42", "olá", [])
-    assert sent[-1] == (9, "resposta", {"message_thread_id": 42})
+    assert sent[-1] == (9, "resposta", {"parse_mode": "HTML", "message_thread_id": 42})
 
 
 def test_private_topic_ephemeral_controls_stay_in_the_active_topic(tmp_path):
@@ -368,6 +369,38 @@ def test_context_window_reports_locally_dropped_messages(tmp_path):
     gateway.database.execute("UPDATE conversations SET context_max_messages=1, context_max_age_seconds=0 WHERE chat_id=?", (channel,)); gateway.database.commit()
     snapshot, attachments, summary = gateway._context_snapshot(channel)
     assert '"dropped_messages": 2' in snapshot and '"max_messages"' in snapshot and attachments == [] and summary == {"contains_untrusted_context": True}
+
+
+def test_telegram_html_renderer_escapes_input_and_splits_without_losing_text():
+    source = "<script> & **destaque** *ênfase* [site](https://example.test/?a=1&b=2)\n" + ("palavra " * 1000)
+    rendered = render_html(source)
+    chunks = split_html(rendered)
+    assert "&lt;script&gt;" in rendered and "<b>destaque</b>" in rendered and "<i>ênfase</i>" in rendered
+    assert all(len(chunk) <= MAX_MESSAGE_LENGTH for chunk in chunks)
+    assert visible_text("".join(chunks)) == plain_text(source)
+
+
+def test_agent_text_uses_html_parse_mode_for_every_chunk(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data)); sent = []
+    gateway.api = type("Api", (), {"send": lambda _self, chat, text, **values: sent.append((chat, text, values)) or {"message_id": len(sent)}})()
+    gateway._send_agent_text(9, "**texto** " + ("longo " * 1000))
+    assert len(sent) > 1 and all(values["parse_mode"] == "HTML" and len(text) <= MAX_MESSAGE_LENGTH for _chat, text, values in sent)
+
+
+def test_group_dynamic_tools_do_not_publish_interactive_menu(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data)); calls = []
+
+    class Client:
+        def request(self, method, params):
+            calls.append((method, params))
+            return {"thread": {"id": "thread-1"}}
+
+    gateway._app_thread("group:-100:1", Client(), {"conversation_kind": "group", "source_trust": "OWNER"})
+    tools = calls[-1][1]["dynamicTools"][0]["tools"]
+    assert "ask_menu" not in {tool["name"] for tool in tools}
+    assert next(tool for tool in tools if tool["name"] == "send_message")["description"].startswith("Envia mensagem adicional à conversa")
 
 
 def test_queue_preserves_trusted_turn_metadata_separately_from_user_content(tmp_path):
