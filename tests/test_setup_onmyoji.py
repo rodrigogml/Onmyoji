@@ -33,6 +33,12 @@ class SystemSetupTests(unittest.TestCase):
             self.assertEqual(MODULE.prompt("Opção: "), "x")
         input_mock.assert_called_once_with("› Opção: ")
 
+    def test_opening_logo_uses_the_same_width_as_menu_headers(self) -> None:
+        output = io.StringIO()
+        with patch.object(MODULE, "terminal_width", return_value=56), patch.object(MODULE.sys, "stdout", output):
+            MODULE.opening_logo()
+        self.assertEqual(output.getvalue().splitlines(), [line.center(56) for line in MODULE.TEXT_LOGO.splitlines()])
+
     def test_flow_choice_uses_numeric_default_without_opening_a_screen(self) -> None:
         with patch.object(MODULE, "prompt", return_value="") as prompt_mock, patch.object(MODULE, "screen") as screen_mock:
             selected = MODULE.flow_choice("Escolha a credencial", ["Criar", "Reutilizar"], "Reutilizar")

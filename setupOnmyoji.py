@@ -36,6 +36,30 @@ INSTANCE_SKILLS_DIRECTORY = "shikigami-skills"
 SHIKIGAMI_SKILLS_STATE = "configs/shikigami/skills.toml"
 SANDBOXES = ["read-only", "workspace-write", "danger-full-access"]
 APPROVALS = ["on-request", "never"]
+TEXT_LOGO = """⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢰⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⡀⣚⡀⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣀⣤⣴⡶⠿⠍⠛⠓⣸⡀⠛⠻⠽⠷⣶⣤⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣀⣴⡾⠛⠉⠰⡆⡠⠤⣴⠋⣹⡉⢳⡤⠄⡀⡆⠉⠙⠻⣶⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⣾⠿⠹⡀⠀⠀⠀⠀⠀⠀⠻⣜⣋⣛⡼⠃⠀⠀⠀⠀⠀⠀⡥⠙⢿⣦⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⡀⠀⢀⣞⠝⠁⠀⠀⠙⢦⠀⢀⣠⡴⠶⠚⢊⣿⣇⠚⠲⠦⣤⡀⠀⣠⠎⠀⠀⠀⠙⣷⣄⠀⢀⡀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⡗⢤⣿⠏⠐⠑⠀⠀⠀⢀⡻⠊⠁⠀⠀⠀⣾⣿⣿⡄⠀⠀⠀⠙⠺⣇⠀⠀⠀⠒⠁⠈⢿⣆⣐⡆⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⣇⡿⢯⠖⠋⡛⢦⡀⣰⠏⠀⠀⣠⡶⡛⣼⡿⠻⢿⣿⣈⡳⣦⠀⠀⠘⢷⡀⣰⠚⣛⠓⣌⠿⣆⡇⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠈⣿⢹⠹⣜⠾⠛⣱⠧⣭⣤⣬⣭⣭⣭⣵⣿⣥⠤⢤⣭⣧⣭⣬⣥⣭⣬⣬⡥⢧⡚⠛⢓⡼⢹⢻⡧⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⣤⢿⣘⣀⣈⠉⠉⠁⣷⠈⠛⢿⣯⣍⢉⣿⠃⠊⠉⢻⣶⣡⣌⢈⣿⣿⠟⠉⢸⡄⠉⠉⢉⣀⣸⣸⢳⡀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⣿⡼⠀⠀⠀⠀⠀⣿⠀⠀⠀⣭⡻⣿⣯⡳⡀⢈⣸⡿⣹⣿⡝⣫⡆⠀⠀⣸⠇⠀⠀⠀⠀⢸⢸⠎⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⣽⣧⠀⢩⠀⠀⠀⠸⣇⠀⠀⠐⣹⣿⠙⠻⣊⣭⡿⠞⠉⢹⣿⡑⠀⠀⢠⡟⠀⠀⠀⢨⠀⢼⣿⡌⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⡧⢿⣆⢸⠀⡀⠀⠀⠘⢧⡀⢰⣿⣿⣴⡾⠟⢯⢞⠿⣷⣤⣿⣧⢀⣰⠟⠀⠀⢀⡀⢸⣄⣿⠃⡇⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠧⠈⢿⣾⠊⠁⠢⣀⡴⠒⠲⢿⠿⢋⠁⠀⠀⢸⠀⠀⠈⢙⠻⣿⠶⢓⠶⣄⠠⠂⠉⣺⣿⠃⠠⠅⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠁⠀⠀⠻⣷⣄⢁⣿⢸⣷⣿⣌⡇⠉⠛⠓⠖⢾⠶⠒⠛⠉⠁⣏⢾⣿⣷⢸⠆⢁⣴⡿⠁⠀⠈⠁⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠻⣿⣍⡓⠶⠖⠋⠄⠀⠀⠀⢀⢸⢀⠀⠀⠀⠀⡌⠲⠶⠖⣫⣴⠿⠋⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠙⠫⣗⣦⣌⣀⠀⠀⠀⢸⢸⢸⠂⠀⠀⢀⣉⣤⣶⠽⠛⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⢀⣤⣶⣦⣤⣄⣀⠀⠀⠀⠀⠀⠀⠀⠈⠙⠓⠺⠯⠥⠄⢸⠠⠬⠭⠿⠒⠋⠉⠀⠀⠀⠀⠀⠀⠀⠀⢀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⣤⣾⣿⠿⠛⠻⠛⠻⣿⣷⡄⡀⢀⣀⠀⠀⠀⣠⡄⠀⣠⣄⠀⢹⠁⢠⣤⠀⣤⣤⠄⠀⢠⣤⠀⠀⡋⠭⣭⣍⡃⠀⢠⣤⡄⠀⢤⣤⠄⠀
+⠀⣾⣿⡿⠃⠀⠀⡀⠀⠀⠘⣿⣿⡄⣸⣿⣷⣄⠀⢸⠀⠀⢸⢿⣆⠀⣠⢿⣷⠀⠈⠻⣧⣠⠎⠀⣴⠃⠀⠀⠀⠙⣿⡆⠠⣿⡇⠀⢸⣿⠀⠀
+⠀⢿⣿⣧⡀⠀⠸⠿⠃⠀⢀⣿⣿⠇⢸⠃⠈⠻⣷⣽⠀⠀⣾⠊⢿⣿⠋⢻⣿⠀⠀⠀⣿⡇⠀⠀⣿⡄⠀⠀⠀⠀⣸⠇⠰⣿⡇⠀⢸⣿⠀⠀
+⠀⠈⠻⢿⣷⣀⣀⠀⠀⣠⣾⣿⠏⠀⠾⠦⠀⠀⠈⢿⠀⠰⠿⠄⠈⠃⠀⠼⠿⠆⠀⠀⣿⠧⠀⠀⠈⠻⠷⠤⠤⠒⠁⠀⢠⣿⠁⠀⠼⠿⠄⠀
+⠀⠀⠀⠀⠉⠉⣉⣥⣾⡿⠟⣁⣀⣀⣀⣀⣀⣀⣀⣀⣀⡀⣀⠀⠀⠀⠀⠀⢀⡀⣀⣈⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⠀⠔⠋⠁⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠨⠙⠛⠋⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠀⠀⠀⠀⠀⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀"""
 
 
 class Ui:
@@ -749,8 +773,20 @@ def invoke(skill: Skill, root: Path) -> tuple[bool, str]:
     return True, "Configuração concluída."
 
 
+def terminal_width() -> int:
+    """Retorna a largura visual comum às telas interativas do setup."""
+    return max(56, min(shutil.get_terminal_size((78, 24)).columns, 96))
+
+
+def opening_logo() -> None:
+    """Exibe o logo textual centralizado sem redimensionar suas linhas."""
+    width = terminal_width()
+    for line in TEXT_LOGO.splitlines():
+        print(line.center(width))
+
+
 def screen(title: str, subtitle: str = "") -> None:
-    width = max(56, min(shutil.get_terminal_size((78, 24)).columns, 96))
+    width = terminal_width()
     print("\n" + Ui.text("╭" + "─" * (width - 2) + "╮", Ui.violet))
     heading = f" ONMYŌJI  /  {title.upper()}"
     print("│" + Ui.text(heading.ljust(width - 2), Ui.bold, Ui.violet) + "│")
@@ -2283,6 +2319,7 @@ def menu(skills: list[Skill], root: Path) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(); parser.add_argument("--action", choices=["menu", "list", "enable", "disable", "configure", "status"], default="menu"); parser.add_argument("--skill"); parser.add_argument("--json", action="store_true"); args = parser.parse_args()
+    if args.action == "menu": opening_logo()
     system, message = ensure_shikigami_configuration(ROOT)
     if system is None:
         if args.json: print(json.dumps({"ok": False, "error": {"code": "system_configuration_failed", "message": message}}, ensure_ascii=False))
