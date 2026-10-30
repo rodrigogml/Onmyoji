@@ -163,6 +163,25 @@ def create_instance(name: str, instance_directory: Path, workspace_directory: Pa
         raise
 
 
+def clear_screen() -> None:
+    """Limpa a tela antes de transferir a instalação para o setup da instância."""
+    os.system("cls" if os.name == "nt" else "clear")
+
+
+def run_instance_setup(instance_directory: Path) -> int:
+    """Inicia o setup recém-clonado usando o mesmo Python do instalador."""
+    setup = instance_directory / "setupOnmyoji.py"
+    if not setup.is_file():
+        raise BootstrapError("O setup da instância não foi encontrado após o clone.")
+    try:
+        completed = subprocess.run([sys.executable, str(setup)], cwd=str(instance_directory), check=False)
+    except OSError as error:
+        raise BootstrapError("Não foi possível iniciar o setup da nova instância.") from error
+    if completed.returncode:
+        raise BootstrapError(f"O setup da nova instância terminou com código {completed.returncode}.")
+    return 0
+
+
 def prompt_path(message: str, default: Path, ask: Callable[[str], str]) -> Path:
     """Lê um caminho, usando o destino sugerido quando a resposta é vazia."""
     value = ask(Ui.text(f"› {message} [{default}]: ", Ui.violet, Ui.bold)).strip()
@@ -196,8 +215,8 @@ def interactive(ask: Callable[[str], str] = input, output: Callable[[str], None]
             output("\n  Instalação cancelada.")
             return 0
         create_instance(name, instance, workspace, upstream, origin, ask)
-        output("\n  " + Ui.text("✓", Ui.green, Ui.bold) + f" Shikigami {name} criado em {instance}.")
-        return 0
+        clear_screen()
+        return run_instance_setup(instance)
     except BootstrapError as error:
         output("\n  " + Ui.text("!", Ui.red, Ui.bold) + f" {error}")
         return 1

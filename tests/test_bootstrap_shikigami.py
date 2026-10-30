@@ -75,3 +75,20 @@ class BootstrapShikigamiTests(unittest.TestCase):
         self.assertEqual(result, 0)
         create.assert_not_called()
         self.assertIn("Instalação cancelada.", output[-1])
+
+    def test_interactive_starts_the_setup_after_creating_the_instance(self) -> None:
+        answers = iter(["Akuma", "", "", "", "", "", "s"])
+        with patch.object(MODULE, "create_instance") as create, patch.object(MODULE, "clear_screen") as clear, patch.object(MODULE, "run_instance_setup", return_value=0) as setup:
+            result = MODULE.interactive(lambda _prompt: next(answers), lambda _message: None)
+        self.assertEqual(result, 0)
+        create.assert_called_once()
+        clear.assert_called_once()
+        setup.assert_called_once_with(Path.cwd() / "Shikigami-Akuma")
+
+    def test_run_instance_setup_uses_the_bootstrap_python_and_instance_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            instance = Path(temporary); (instance / "setupOnmyoji.py").touch()
+            completed = subprocess.CompletedProcess([], 0)
+            with patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+                self.assertEqual(MODULE.run_instance_setup(instance), 0)
+        run.assert_called_once_with([sys.executable, str(instance / "setupOnmyoji.py")], cwd=str(instance), check=False)
