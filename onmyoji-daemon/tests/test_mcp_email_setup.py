@@ -4,7 +4,7 @@ from __future__ import annotations
 import copy
 from unittest.mock import Mock
 
-from onmyoji_daemon.mcp.email.setup import email_menu, manage, edit_endpoint
+from onmyoji_daemon.mcp.email.setup import edit_endpoint, edit_roots, email_menu, manage
 
 
 def state():
@@ -48,6 +48,35 @@ def test_reused_credentials_skip_vault_and_secret_prompts(tmp_path):
     assert result["auth"] == auth and result["auth"] is not auth
     ui.configure_vault_entry_fields.assert_not_called(); ui.select.assert_not_called()
     ui.screen.assert_not_called()
+
+
+def test_attachment_roots_default_to_and_create_workspace_email_directory(tmp_path):
+    workspace = tmp_path / "workspace"
+    system = tmp_path / "configs" / "onmyoji-system.toml"; system.parent.mkdir(parents=True)
+    system.write_text('[codex]\nproject_directory = "' + str(workspace).replace("\\", "\\\\") + '"\n', encoding="utf-8")
+    config = Mock(root=tmp_path); ui = Mock()
+    root = str(workspace / ".onmyoji" / "email")
+    ui.ask.side_effect = [root, root]
+    account = {"readable_roots": [], "writable_roots": []}
+
+    assert edit_roots(config, ui, account) is True
+
+    assert account == {"readable_roots": [root], "writable_roots": [root]}
+    assert [call.args[1] for call in ui.ask.call_args_list] == [root, root]
+    assert (workspace / ".onmyoji" / "email").is_dir()
+
+
+def test_attachment_roots_preserve_explicit_opt_out_without_creating_directory(tmp_path):
+    workspace = tmp_path / "workspace"
+    system = tmp_path / "configs" / "onmyoji-system.toml"; system.parent.mkdir(parents=True)
+    system.write_text('[codex]\nproject_directory = "' + str(workspace).replace("\\", "\\\\") + '"\n', encoding="utf-8")
+    config = Mock(root=tmp_path); ui = Mock(); ui.ask.side_effect = ["-", "-"]
+    account = {"readable_roots": [], "writable_roots": []}
+
+    assert edit_roots(config, ui, account) is True
+
+    assert account == {"readable_roots": [], "writable_roots": []}
+    assert not (workspace / ".onmyoji" / "email").exists()
 
 
 def test_connection_test_returns_to_same_menu(tmp_path, monkeypatch):
