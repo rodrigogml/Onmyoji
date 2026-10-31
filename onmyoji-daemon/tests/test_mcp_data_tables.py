@@ -56,5 +56,6 @@ def test_registry_only_publishes_installed_enabled_schemas(tmp_path: Path) -> No
     configuration.save_data_tables({"schema_version": 1, "schemas": {"crm_leads": {"enabled": True}}})
     assert DataTablesToolRegistry(configuration).definitions() == []
     SchemaCatalog(tmp_path).apply("crm_leads")
-    assert "data_tables.create_record" in {item["name"] for item in DataTablesToolRegistry(configuration).definitions()}
+    tool_names = {item["name"] for item in DataTablesToolRegistry(configuration).definitions()}
+    assert "data_tables.create_record" in tool_names
 
