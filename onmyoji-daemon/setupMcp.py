@@ -1989,10 +1989,17 @@ def data_tables_menu(config: McpConfiguration) -> None:
         item("1.", "Schemas disponíveis", f"{len(schemas)} encontrado(s)")
         item("2.", "Instalar ou atualizar schema")
         item("3.", "Habilitar ou desabilitar schema", f"{len(enabled)} habilitado(s)")
-        item("4.", "Validar integridade"); item("X.", "Voltar")
+        item("4.", "Validar integridade")
+        item("5.", "Permitir autoria de schemas", "Habilitada" if state["schema_authoring_enabled"] else "Desabilitada")
+        item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
-        if choice not in {"1", "2", "3", "4"}: result(False, "Opção inválida."); continue
+        if choice not in {"1", "2", "3", "4", "5"}: result(False, "Opção inválida."); continue
+        if choice == "5":
+            state["schema_authoring_enabled"] = not state["schema_authoring_enabled"]
+            try: config.save_data_tables(state); result(True, "Autoria de schemas habilitada." if state["schema_authoring_enabled"] else "Autoria de schemas desabilitada.")
+            except McpConfigurationError as error: result(False, str(error))
+            continue
         if not schemas: result(False, "Nenhum schema encontrado em shikigami-skills/*/schemas/*/schema.toml."); continue
         names = sorted(schemas)
         if choice == "1":

@@ -120,3 +120,17 @@ def test_workflows_are_published_and_read_only_when_memory_is_enabled(tmp_path: 
         content = workflows.call("workflows.read", {"id": identifier})
         expected = (workflows.resources / f"{identifier}.md").read_text(encoding="utf-8").strip()
         assert content == {"id": identifier, "module": "memory", "content": expected}
+
+
+def test_data_tables_schema_authoring_workflow_is_independent_of_enabled_schemas(tmp_path: Path) -> None:
+    configuration = McpConfiguration(tmp_path)
+    state = configuration.data_tables(); state["schema_authoring_enabled"] = True
+    configuration.save_data_tables(state)
+
+    workflows = WorkflowRegistry(configuration)
+    definition = workflows.definitions()[0]
+    assert definition["input_schema"]["properties"]["id"]["enum"] == ["data-tables-schema-authoring"]
+    instructions = workflows.developer_instructions()
+    assert instructions and "data-tables-schema-authoring" in instructions and "exclusivamente ao serviço MCP data_tables" in instructions
+    content = workflows.call("workflows.read", {"id": "data-tables-schema-authoring"})
+    assert content["module"] == "data_tables" and "Não use este workflow" in content["content"]

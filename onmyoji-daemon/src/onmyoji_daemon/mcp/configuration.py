@@ -82,7 +82,7 @@ def empty_memory() -> dict[str, Any]:
 
 def empty_data_tables() -> dict[str, Any]:
     """Estado local dos schemas declarados pelas skills do Shikigami."""
-    return {"schema_version": 1, "schemas": {}}
+    return {"schema_version": 1, "schema_authoring_enabled": False, "schemas": {}}
 
 
 def _quote(value: str) -> str:
@@ -322,6 +322,8 @@ class McpConfiguration:
         McpReconciliation(self.root).mark_pending()
 
     def save_data_tables(self, data: dict[str, Any]) -> None:
+        data = copy.deepcopy(data)
+        data.setdefault("schema_authoring_enabled", False)
         self._validate_data_tables(data)
         self._save(self.data_tables_path, self._render_data_tables(data))
         McpReconciliation(self.root).mark_pending()
@@ -431,6 +433,11 @@ class McpConfiguration:
     def data_tables_tool_available(self) -> bool:
         try: return any(state.get("enabled") is True for state in self.data_tables()["schemas"].values())
         except (KeyError, McpConfigurationError): return False
+
+    def data_tables_schema_authoring_available(self) -> bool:
+        """Indica se o workflow de autoria do serviço Data Tables está publicado."""
+        try: return self.data_tables().get("schema_authoring_enabled") is True
+        except McpConfigurationError: return False
 
     def enabled_todoist_profiles(self) -> list[dict[str, str]]:
         vault_profiles = self.credentials()["profiles"]
@@ -763,7 +770,7 @@ class McpConfiguration:
 
     @staticmethod
     def _validate_data_tables(data: dict[str, Any]) -> None:
-        if data.get("schema_version") != 1 or not isinstance(data.get("schemas"), dict):
+        if data.get("schema_version") != 1 or type(data.get("schema_authoring_enabled")) is not bool or not isinstance(data.get("schemas"), dict):
             raise McpConfigurationError("Configuração de tabelas de dados inválida.")
         for identifier, state in data["schemas"].items():
             _profile_name(identifier)
@@ -872,7 +879,7 @@ class McpConfiguration:
 
     @staticmethod
     def _render_data_tables(data: dict[str, Any]) -> str:
-        lines = ["schema_version = 1"]
+        lines = ["schema_version = 1", f"schema_authoring_enabled = {'true' if data.get('schema_authoring_enabled', False) else 'false'}"]
         for identifier, state in sorted(data["schemas"].items()):
             lines += ["", f"[schemas.{identifier}]", f"enabled = {'true' if state['enabled'] else 'false'}"]
         return "\n".join(lines) + "\n"

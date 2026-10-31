@@ -30,12 +30,15 @@ class WorkflowRegistry:
         self.resources = Path(__file__).resolve().parents[3] / "resources" / "workflows"
 
     def available(self) -> tuple[Workflow, ...]:
-        if not self.configuration.memory_tool_available():
-            return ()
-        return (
-            Workflow("memory-decision", "memory", "Antes de responder a uma solicitação substantiva, decidir, planejar, agir ou perguntar ao usuário ou a terceiros, aplique este procedimento de pesquisa.", "memory-decision.md"),
-            Workflow("memory-learning", "memory", "Após correção, preferência durável ou aprendizado validado, avalie este procedimento antes de encerrar; aplique-o antes de criar, revisar ou excluir memória.", "memory-learning.md"),
-        )
+        workflows: list[Workflow] = []
+        if self.configuration.memory_tool_available():
+            workflows.extend((
+                Workflow("memory-decision", "memory", "Antes de responder a uma solicitação substantiva, decidir, planejar, agir ou perguntar ao usuário ou a terceiros, aplique este procedimento de pesquisa.", "memory-decision.md"),
+                Workflow("memory-learning", "memory", "Após correção, preferência durável ou aprendizado validado, avalie este procedimento antes de encerrar; aplique-o antes de criar, revisar ou excluir memória.", "memory-learning.md"),
+            ))
+        if self.configuration.data_tables_schema_authoring_available():
+            workflows.append(Workflow("data-tables-schema-authoring", "data_tables", "Quando o usuário solicitar criar, alterar, corrigir ou estruturar um schema destinado exclusivamente ao serviço MCP data_tables, aplique este procedimento antes de editar a definição.", "data-tables-schema-authoring.md"))
+        return tuple(workflows)
 
     def developer_instructions(self) -> str | None:
         routes = self.available()
