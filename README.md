@@ -116,6 +116,31 @@ As skills pertencem exclusivamente ao Shikigami. Suas fontes ficam em `shikigami
 
 Workflows fornecidos por serviços MCP, como memória e autoria de schemas Data Tables, permanecem no servidor MCP e são lidos sob demanda por `workflows.read` quando sua configuração independente estiver habilitada. Eles coexistem com as skills do Shikigami, mas nunca são copiados para o workspace.
 
+### MCPs disponíveis
+
+| MCP | O que faz |
+| --- | --- |
+| [AWS](onmyoji-daemon/docs/mcp-aws.md) | Consulta identidade e administra objetos S3 e recursos IAM, incluindo usuários, políticas e MFA. |
+| [BIS2CMD](onmyoji-daemon/docs/mcp-bis2cmd.md) | Consulta e altera dados do BIS2 pelo cliente Java BISCMD, incluindo itens, preços, documentos fiscais e operações de NFC-e. |
+| [BIS10CMD](onmyoji-daemon/docs/mcp-bis10cmd.md) | Consulta empresas, contas e categorias do BIS10 e gerencia lançamentos financeiros e transferências. |
+| [BTG Empresas](onmyoji-daemon/docs/mcp-btg.md) | Consulta informações bancárias e gerencia pagamentos, com autorização OAuth e acompanhamento de pendências. |
+| [Cloudflare](onmyoji-daemon/docs/mcp-cloudflare.md) | Consulta zonas e administra registros DNS, incluindo importação e exportação. |
+| [Data Tables](onmyoji-daemon/docs/mcp-data-tables.md) | Oferece tabelas e registros estruturados para skills do Shikigami, com schemas e migrações aplicados pelo setup. |
+| [EccoVox](onmyoji-daemon/docs/mcp-eccovox.md) | Transcreve arquivos de áudio e sintetiza fala usando o runtime local EccoVox. |
+| [E-mail](onmyoji-daemon/docs/mcp-email.md) | Acessa contas IMAP, POP3 e SMTP com senha ou OAuth Google/Microsoft. Permite consultar e organizar mensagens, tratar anexos, manter rascunhos e enviar e-mails sob demanda. |
+| [Forward Email](onmyoji-daemon/docs/mcp-forward-email.md) | Administra domínios e aliases do provedor Forward Email, incluindo verificações DNS e SMTP e geração de senha de alias. |
+| [Google](onmyoji-daemon/docs/mcp-google.md) | Integra Gmail, contatos, Drive e Calendar com autenticação OAuth. |
+| [Memória](onmyoji-daemon/docs/mcp-memory.md) | Pesquisa e mantém instruções duráveis que orientam decisões e aprendizados do agente. |
+| [MiniApps](onmyoji-daemon/docs/mcp-mini-apps.md) | Publica aplicações por referência a diretórios do workspace e administra o gateway, TLS, Cloudflare Tunnel e callbacks OAuth. |
+| [MySQL](onmyoji-daemon/docs/mcp-mysql.md) | Executa consultas, comandos e scripts SQL pelo cliente nativo, com credenciais obtidas do cofre interno. |
+| [Notion](onmyoji-daemon/docs/mcp-notion.md) | Consulta e altera páginas, blocos, databases e data sources do Notion, além de operações com arquivos e comentários. |
+| [Omie](onmyoji-daemon/docs/mcp-omie.md) | Integra cadastros, operações financeiras e NF-e do ERP Omie. |
+| [Spotify](onmyoji-daemon/docs/mcp-spotify.md) | Consulta o catálogo e gerencia biblioteca, playlists, seguimento e reprodução. |
+| [SSH](onmyoji-daemon/docs/mcp-ssh.md) | Executa comandos remotos e transfere arquivos por SFTP, com autenticação por senha ou chave privada. |
+| [Telegram](onmyoji-daemon/docs/mcp-telegram.md) | Consulta destinos registrados e envia mensagens e arquivos por meio do Gateway Telegram. |
+| [Todoist](onmyoji-daemon/docs/mcp-todoist.md) | Consulta e gerencia tarefas, projetos, seções, etiquetas, comentários e lembretes, além de operações de sincronização e arquivos. |
+| [Workflows](onmyoji-daemon/docs/mcp-workflows.md) | Entrega ao agente os procedimentos completos dos serviços ativos, sob demanda e conforme os gatilhos das instruções. |
+
 ## Criar e configurar um Shikigami
 
 ### Instalar uma nova instância
