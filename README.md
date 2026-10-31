@@ -118,106 +118,34 @@ Workflows fornecidos por serviços MCP, como memória e tabelas de dados, usam a
 
 ## Criar e configurar um Shikigami
 
-Antes de criar uma instância, leia o [guia de instalação](docs/installation.md). Ele reúne os primeiros passos para criar o clone com `upstream`, separar o workspace e conectar o repositório remoto da identidade.
+### Instalar uma nova instância
 
-### 1. Fazer checkout de um Shikigami existente
-
-```bash
-git clone git@github.com:<organização>/Shikigami-<Nome>.git Shikigami-<Nome>
-cd Shikigami-<Nome>
-git remote -v
-```
-
-Confirme que `origin` aponta para o repositório do Shikigami e que `upstream` aponta para `git@github.com:<organização>/Onmyoji.git`. Se o clone não tiver `upstream`, registre-o uma vez:
+Baixe `bootstrapShikigami.py` e coloque-o na pasta que deverá conter a instância e o seu workspace. Execute-o com o Python disponível na máquina:
 
 ```powershell
-git remote add upstream git@github.com:<organização>/Onmyoji.git
+py -3 bootstrapShikigami.py
 ```
 
-### 2. Criar um Shikigami novo a partir da base
-
-Crie primeiro um repositório Git vazio para a nova instância. Depois, clone a base com o nome de remoto `upstream`, conecte o repositório da instância como `origin` e publique a branch principal:
+No Linux, use:
 
 ```bash
-git clone --origin upstream git@github.com:<organização>/Onmyoji.git Shikigami-<Nome>
-cd Shikigami-<Nome>
-git remote add origin git@github.com:<organização>/Shikigami-<Nome>.git
-git push -u origin main
+python3 bootstrapShikigami.py
 ```
 
-### 3. Instalação inicial e workspace
+O instalador solicita o nome do Shikigami, a pasta-base, os nomes das pastas da instância e do workspace, o repositório do Onmyōji e, opcionalmente, um repositório próprio ainda vazio. Ele clona a base como `upstream`, cria o workspace externo, aplica a identidade inicial da instância e configura o `origin` quando informado.
 
-Execute o setup uma vez para concluir o wizard inicial e definir a identidade local do Shikigami em `configs/onmyoji-system.toml`. Em seguida, preencha `instructions.md` com tom, objetivos e limites sem segredos; mantenha `README.md` e `AGENTS.md` para a documentação e as regras versionadas da instância.
+Ao concluir essas etapas, o instalador limpa a tela e inicia automaticamente o setup da nova instância. O setup recebe o nome já escolhido e conduz a configuração inicial sem perguntar a identidade outra vez.
 
-```bash
-python3 setupOnmyoji.py
-```
+> [!IMPORTANT]
+> O repositório próprio informado ao bootstrap precisa estar vazio. Se ele já contiver histórico ou arquivos, configure a migração manualmente para resolver os conflitos com segurança.
 
-Crie ou escolha um workspace externo, como `Shikigami-<Nome>-Work/`, e configure-o no menu do setup. Nunca use o `CODEX_HOME` para artefatos do trabalho do agente.
+### Reabrir a configuração do Shikigami
 
-### 4. Instalar uma skill própria da instância
-
-Crie a fonte versionada em `shikigami-skills/<nome>/` com `SKILL.md` e recursos opcionais. Uma skill própria também pode incluir `setupSkill.py`, que será descoberta pelo setup e exibida em **Skills do Shikigami**. Habilite-a pelo menu central; na próxima abertura gerenciada do Codex, ela será copiada para `<workspace>/.agents/skills/<nome>/`. Use a fonte versionada para conhecimento e playbooks próprios, sem segredos, caminhos dependentes da máquina, logs ou estado operacional.
-
-### 5. Configurar integrações MCP
-
-Use **MCP** no menu para configurar perfis de vault e integrações disponíveis. O setup guarda o estado em `configs/mcp/` e mantém segredos no cofre configurado; o servidor MCP só publica as ferramentas cuja integração tenha perfil habilitado.
-
-```bash
-python3 setupOnmyoji.py
-python3 setupOnmyoji.py --action list
-```
-
-Para uma integração com credenciais, configure primeiro seu provedor de segredo, depois crie o perfil local da integração no MCP e execute o teste de acesso somente leitura oferecido pelo setup. Por exemplo, uma política própria do Shikigami pode exigir que a Omie possua um perfil lógico `laveli`; a associação desse nome às credenciais fica exclusivamente em `configs/mcp/omie.toml` e no KeePass.
-
-### 6. Versionar a definição e atualizar a base
-
-Versione somente a definição portátil do Shikigami. Não adicione `skills/`, `configs/`, `config.toml`, sessões, logs ou dados do workspace.
+Para alterar a configuração depois da instalação, abra um terminal na pasta da instância e execute o setup:
 
 ```powershell
-git add shikigami
-git commit -m "Configura Shikigami <Nome>"
-git push origin main
+Set-Location Shikigami-<Nome>
+py -3 setupOnmyoji.py
 ```
 
-Para atualizar a base, incorpore `upstream/main` e publique o resultado no repositório da instância:
-
-```powershell
-git fetch upstream
-git merge upstream/main
-git push origin main
-```
-
-## Fluxo Git obrigatório
-
-Melhorias gerais — daemon, servidor MCP, setup e documentação — são implementadas exclusivamente no repositório Onmyōji:
-
-```bash
-cd Onmyoji
-git pull --ff-only origin main
-# alterar, testar, commit e publicar a base
-git push origin main
-```
-
-Em um Shikigami, altere somente `shikigami/` para personalizações da instância. O `git push` simples publica no `origin` daquele Shikigami, nunca no Onmyōji.
-
-```bash
-cd Shikigami-Exemplo
-git add shikigami
-git commit -m "Descreve a personalização do Shikigami de exemplo"
-git push
-```
-
-Para receber uma atualização da base, não use `git pull upstream`. Busque e incorpore o upstream explicitamente, revise o merge e então publique somente no repositório do Shikigami:
-
-```powershell
-git fetch upstream
-git merge upstream/main
-git push origin main
-```
-
-Nunca execute `git push upstream` dentro de um Shikigami. Isso tentaria enviar personalizações para o repositório Onmyōji e viola a separação entre base e instância.
-
-Execute `py -3 setupOnmyoji.py` para inicializar e configurar as skills disponíveis. Consulte [a arquitetura](docs/architecture.md) e [o guia de setup](docs/setup.md).
-
-O projeto `onmyoji-daemon/` supervisiona os serviços locais de uma instância, começando pelo gateway Telegram. Seus dados operacionais ficam em `configs/daemon/` e nunca são versionados.
+No Linux, use `python3 setupOnmyoji.py`. O menu central permite revisar o Codex CLI, o daemon, o MCP, os serviços instalados e as skills próprias da instância. Um guia detalhado de configuração será incluído nesta página em etapa posterior.
