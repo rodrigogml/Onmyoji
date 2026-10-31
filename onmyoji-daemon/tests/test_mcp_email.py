@@ -249,13 +249,15 @@ def test_workspace_roots_block_configs_and_downloaded_files_are_editable(tmp_pat
     (root / "configs/onmyoji-system.toml").write_text('[codex]\nproject_directory = ' + json.dumps(str(work)), encoding="utf-8")
     document = config.email(); document["accounts"]["default"]["writable_roots"] = [str(root / "configs")]
     with pytest.raises(ValueError): config.save_email(document)
-    document["accounts"]["default"]["writable_roots"] = [str(work)]; config.save_email(document)
+    downloads = work / ".onmyoji" / "email"
+    document["accounts"]["default"]["writable_roots"] = [str(downloads)]; config.save_email(document)
     connections = FakeConnections()
     monkeypatch.setattr("onmyoji_daemon.mcp.email.service.Connections", lambda *a: connections)
     box = Mailbox("default", document["accounts"]["default"], document["defaults"], connections)
-    target = work / "anexo.pdf"
+    target = downloads / "anexo.pdf"
     result = EmailService(root).invoke("default", "download_attachment", {"reference": box.reference("INBOX", 42, 1), "attachment_id": "1", "output_path": str(target), "confirm": True})
     assert result["bytes"] == 7 and target.read_bytes() == b"invoice"
+    assert downloads.is_dir()
     target.write_bytes(b"editado")
     assert target.read_bytes() == b"editado"
 
