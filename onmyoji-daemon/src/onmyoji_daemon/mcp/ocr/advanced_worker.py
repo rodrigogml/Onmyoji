@@ -120,6 +120,11 @@ def main(argv=None):
     try:
         request = json.loads(Path(args.request).read_text(encoding="utf-8"))
         models = Path(request["models"]).resolve()
+        from ..document_processing.paths import reject_links
+        reject_links(models); reject_links(output)
+        if not models.is_relative_to(output.resolve().parent):
+            raise ValueError("Inference models must be staged in the job workspace")
+        os.chdir(output.resolve().parent)
         if not (models / "prepared.json").is_file():
             raise ValueError("Models are not prepared")
         manifest = json.loads((models / "prepared.json").read_text(encoding="utf-8"))
@@ -143,7 +148,7 @@ def main(argv=None):
                 image.seek(index)
                 if image.width * image.height > int(request["max_pixels"]):
                     raise ValueError("Resource limit")
-                context = SimpleNamespace(defaults={"max_pixels": request["max_pixels"], "timeout_seconds": request.get("timeout_seconds", 1800)}, temporary_path=lambda suffix: output.parent / (uuid4().hex + suffix))
+                context = SimpleNamespace(job_dir=output.resolve().parent, defaults={"max_pixels": request["max_pixels"], "timeout_seconds": request.get("timeout_seconds", 1800)}, temporary_path=lambda suffix: output.parent / (uuid4().hex + suffix))
                 prepared, transforms, warnings = prepare_image(ImageOps.exif_transpose(image.copy()), request.get("options", {}), request.get("preprocessing_profile", {}), context)
                 import numpy as np
                 for result in pipeline.predict(input=np.asarray(prepared)[:, :, ::-1]):

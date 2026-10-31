@@ -4,11 +4,19 @@ O módulo `pdf` oferece leitura e processamento documental sob demanda, no servi
 
 ## Preparação
 
-Use **MCP > Integrações MCP > PDF** para criar um perfil. O setup sugere entrada, saída e trabalho em `<workspace>/.onmyoji/pdf/`, mostra o valor adotado por Enter e cria as pastas após validar a configuração. Raízes personalizadas também devem estar no workspace externo à instância. Autorize pastas adicionais de onde o agente recebe anexos quando necessário.
+Use **MCP > Integrações MCP > PDF** para criar um perfil. O setup sugere entrada, saída e trabalho em `<workspace>/.onmyoji/pdf/`, mostra o valor adotado por Enter e cria as pastas após validar a configuração. Autorize pastas adicionais do workspace de onde o agente recebe anexos quando necessário.
 
-Cada opção de edição mostra seus atributos na segunda coluna. É possível alterar diretórios, descrição, perfil OCR, executáveis de PDF/A, habilitação e limites. Configurações ficam em `configs/mcp/pdf.toml`; documentos nunca são guardados ali. A opção de instalação prepara as bibliotecas no runtime privado do MCP. A dependência PyMuPDF usa AGPL/comercial; distribuições devem observar seus termos e os das demais dependências.
+Cada opção de edição mostra seus atributos na segunda coluna. É possível alterar diretórios, descrição, perfil OCR, executáveis de PDF/A, habilitação e limites. Configurações ficam em `configs/mcp/pdf.toml`; documentos nunca são guardados ali. A opção de instalação prepara as bibliotecas no runtime privado do MCP, em `configs/mcp/venv`, dentro do domínio da instância. A dependência PyMuPDF usa AGPL/comercial; distribuições devem observar seus termos e os das demais dependências.
 
-Sem perfil habilitado, nenhuma ferramenta PDF é publicada. Um perfil é implícito; com vários, consulte `pdf.list_profiles` e informe `profile`. `pdf.get_capabilities` informa componentes disponíveis. A ausência de OCR, PDF/A ou assinatura não impede operações estruturais.
+Sem perfil habilitado, nenhuma ferramenta PDF é publicada. Um perfil é implícito; com vários, consulte `pdf.list_profiles` e informe `profile`. `pdf.get_capabilities` verifica as bibliotecas no runtime privado, sem considerar pacotes presentes apenas no Python usado pelo setup. A ausência de OCR, PDF/A ou assinatura não impede operações estruturais.
+
+## Diretórios e recursos
+
+O workspace definido por `codex.project_directory` deve ser externo e disjunto da instância: nenhum deles pode conter o outro. As raízes de leitura e escrita e o diretório de trabalho precisam ser caminhos absolutos dentro desse workspace. Links simbólicos e junctions são recusados, inclusive nos ancestrais dos caminhos. As permissões são revalidadas durante a execução e antes de publicar resultados; trocar o workspace exige ajustar os perfis que ainda apontem para o local anterior.
+
+`work_directory` é uma subpasta exclusiva para jobs e não pode ser o próprio workspace. Entradas e saídas finais não podem ficar dentro dela, mesmo que uma raiz autorizada mais ampla inclua esse caminho. Cada job usa sua própria subpasta como diretório corrente e mantém nela staging, temporários e caches das bibliotecas. A limpeza por retenção alcança esses dados transitórios, sem remover os documentos de entrada ou os resultados finais.
+
+Recursos administrativos têm finalidade distinta dos documentos. O perfil ICC de PDF/A pode estar no workspace ou em `configs/mcp/pdf/resources`, sem links; isso não autoriza o perfil a ler documentos de `configs/`. Executáveis nativos como Ghostscript e veraPDF podem usar uma instalação administrativa fora do workspace. A instalação usa staging e caches em `tmp/document-install` para as bibliotecas documentais e `tmp/mcp-install` para a base do runtime MCP, dentro da instância; arquivos de processamento permanecem no workspace.
 
 ## Execução e resultados
 

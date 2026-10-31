@@ -17,6 +17,8 @@ from onmyoji_daemon.mcp.document_processing.worker import main as run_worker
 def profile(tmp_path):
     root = tmp_path / "instance"; root.mkdir()
     workspace = tmp_path / "workspace"; workspace.mkdir()
+    (root / "configs").mkdir()
+    (root / "configs" / "onmyoji-system.toml").write_text('[codex]\nproject_directory = "' + workspace.as_posix() + '"\n', encoding="utf-8")
     return root, {"readable_roots": [str(workspace)], "writable_roots": [str(workspace)], "work_directory": str(workspace / "jobs")}
 
 
@@ -71,7 +73,7 @@ def test_result_paginates_collections_and_cancel_is_idempotent(tmp_path):
 
 def test_worker_dependency_failure_is_sanitized(tmp_path):
     root, configured = profile(tmp_path)
-    directory = tmp_path / "request"; directory.mkdir()
+    directory = Path(configured["work_directory"]) / "document-jobs" / "pdf" / "default" / ("a" * 32); directory.mkdir(parents=True)
     request = directory / "request.json"
     request.write_text(json.dumps({"namespace": "pdf", "root": str(root), "profile_name": "default", "profile": configured, "defaults": {}, "operation": "inspect", "arguments": {}}), encoding="utf-8")
     with patch.dict("sys.modules", {"onmyoji_daemon.mcp.pdf.service": None}):
@@ -79,6 +81,104 @@ def test_worker_dependency_failure_is_sanitized(tmp_path):
     completion = json.loads((directory / "completion.json").read_text(encoding="utf-8"))
     assert completion["error"]["code"] == "dependency_missing"
     assert "Traceback" not in str(completion)
+
+
+def test_job_launch_keeps_cwd_temporaries_and_caches_inside_its_workspace(tmp_path):
+    root, configured = profile(tmp_path)
+    jobs = Jobs(root, "pdf")
+    try:
+        with jobs._lock, patch.dict(os.environ, {"PYTHONPATH": "outside-libraries", "PYTHONHOME": "outside-python", "PYTHONUSERBASE": "outside-user"}), patch("onmyoji_daemon.mcp.document_processing.jobs.subprocess.Popen") as launch, patch("onmyoji_daemon.mcp.document_processing.jobs._windows_job", return_value=None):
+            submitted = jobs.submit("default", configured, {}, "inspect", {}, "environment")
+            identifier = submitted["job_id"]
+            jobs._launch(identifier)
+            jobs._records[identifier]["status"] = "cancelled"
+        kwargs = launch.call_args.kwargs
+        directory = jobs._directories[identifier]
+        assert Path(kwargs["cwd"]) == directory
+        assert all(Path(kwargs["env"][name]).is_relative_to(directory) for name in ("TEMP", "TMP", "TMPDIR", "XDG_CACHE_HOME", "HF_HOME", "PADDLE_HOME", "TORCH_HOME"))
+        assert "outside-libraries" not in kwargs["env"]["PYTHONPATH"]
+        assert kwargs["env"]["PYTHONNOUSERSITE"] == "1"
+        assert "PYTHONHOME" not in kwargs["env"] and "PYTHONUSERBASE" not in kwargs["env"]
+    finally:
+        jobs.close()
+
+
+def test_job_directory_must_remain_inside_the_current_workspace(tmp_path):
+    root, configured = profile(tmp_path)
+    jobs = Jobs(root, "pdf")
+    try:
+        with jobs._lock:
+            submitted = jobs.submit("default", configured, {}, "inspect", {}, "workspace-change")
+            jobs._records[submitted["job_id"]]["status"] = "succeeded"
+            (jobs._directories[submitted["job_id"]] / "result.json").write_text('{"text":"private"}', encoding="utf-8")
+        replacement = tmp_path / "new-workspace"; replacement.mkdir()
+        (root / "configs" / "onmyoji-system.toml").write_text('[codex]\nproject_directory = "' + replacement.as_posix() + '"\n', encoding="utf-8")
+        with pytest.raises(DocumentError, match="workspace"):
+            jobs.result("default", submitted["job_id"])
+    finally:
+        jobs.close()
+
+
+def test_jobs_reject_outside_work_even_if_it_is_outside_the_instance(tmp_path):
+    root, configured = profile(tmp_path)
+    outside = tmp_path / "elsewhere"; outside.mkdir()
+    configured["work_directory"] = str(outside)
+    jobs = Jobs(root, "pdf")
+    try:
+        with pytest.raises(DocumentError, match="workspace"):
+            jobs.register("default", configured)
+        assert not (outside / "document-jobs").exists()
+    finally:
+        jobs.close()
+
+
+def test_internal_work_files_are_not_accepted_as_documents(tmp_path):
+    root, configured = profile(tmp_path)
+    work = Path(configured["work_directory"]); work.mkdir()
+    internal = work / "request.pdf"; internal.write_bytes(b"internal")
+    jobs = Jobs(root, "pdf")
+    try:
+        with pytest.raises(DocumentError, match="internos"):
+            jobs.submit("default", configured, {}, "inspect", {"input_path": str(internal)}, "private-source")
+    finally:
+        jobs.close()
+
+
+def test_tampered_publication_journal_cannot_delete_a_file_outside_workspace(tmp_path):
+    from onmyoji_daemon.mcp.document_processing.paths import file_digest
+    root, configured = profile(tmp_path)
+    unrelated = tmp_path / "unrelated.txt"; unrelated.write_text("preserve", encoding="utf-8")
+    identity = unrelated.stat()
+    jobs = Jobs(root, "pdf")
+    try:
+        with jobs._lock:
+            submitted = jobs.submit("default", configured, {}, "inspect", {}, "journal-tampering")
+            identifier = submitted["job_id"]
+            journal = {"artifacts": [{"path": str(unrelated), "inode": identity.st_ino, "device": identity.st_dev, "sha256": file_digest(unrelated)}]}
+            (jobs._directories[identifier] / "publication.json").write_text(json.dumps(journal), encoding="utf-8")
+            jobs.cancel("default", identifier)
+        assert unrelated.read_text(encoding="utf-8") == "preserve"
+    finally:
+        jobs.close()
+
+
+def test_symlinked_job_result_cannot_read_outside_workspace(tmp_path):
+    root, configured = profile(tmp_path)
+    outside = tmp_path / "outside.json"; outside.write_text('{"secret":"hidden"}', encoding="utf-8")
+    jobs = Jobs(root, "pdf")
+    try:
+        with jobs._lock:
+            submitted = jobs.submit("default", configured, {}, "inspect", {}, "result-link")
+            identifier = submitted["job_id"]
+            jobs._records[identifier]["status"] = "succeeded"
+            try:
+                (jobs._directories[identifier] / "result.json").symlink_to(outside)
+            except OSError:
+                pytest.skip("Links simbólicos indisponíveis nesta plataforma.")
+        with pytest.raises(DocumentError):
+            jobs.result("default", identifier)
+    finally:
+        jobs.close()
 
 
 def wait_job(jobs, identifier):

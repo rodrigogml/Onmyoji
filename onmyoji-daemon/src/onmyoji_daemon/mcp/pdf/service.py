@@ -876,6 +876,7 @@ def _signature_validation(doc, args: dict, context) -> dict:
 
 
 def _pdfa(doc, args: dict, context) -> dict:
+    from ..document_processing.configuration import pdf_resource_path
     from ..ocr.runtime import command_path
     from ..ocr.service import _run
     executable = command_path(str(context.profile.get("verapdf_path", "verapdf")))
@@ -888,8 +889,7 @@ def _pdfa(doc, args: dict, context) -> dict:
         _require(bool(gs), "backend_unavailable", "Instale Ghostscript para conversão PDF/A.")
         icc_value = context.profile.get("icc_profile_path")
         _require(bool(icc_value), "backend_unavailable", "Configure o perfil ICC sRGB para conversão PDF/A.")
-        icc = Path(icc_value).expanduser()
-        _require(icc.is_absolute() and icc.is_file() and not icc.is_symlink(), "invalid_config", "O perfil ICC configurado deve ser um arquivo absoluto válido.")
+        icc = pdf_resource_path(context.root, icc_value)
         # A definição de OutputIntent precisa existir: apenas -dPDFA não prova
         # conformidade. Os caminhos são argumentos, nunca comandos de shell.
         definition = context.temporary_path(".ps")

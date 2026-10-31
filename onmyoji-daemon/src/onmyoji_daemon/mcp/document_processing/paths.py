@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 from uuid import uuid4
 
 from .contracts import DocumentError, require
@@ -22,7 +23,11 @@ def file_digest(path: Path) -> str:
 def reject_links(path: Path) -> None:
     """Rejeita links e junctions existentes no caminho, inclusive nos ancestrais."""
     for candidate in (path, *path.parents):
-        if candidate.is_symlink() or (hasattr(candidate, "is_junction") and candidate.is_junction()):
+        try:
+            reparse = bool(getattr(candidate.lstat(), "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)) if os.name == "nt" else False
+        except FileNotFoundError:
+            reparse = False
+        if reparse or candidate.is_symlink() or (hasattr(candidate, "is_junction") and candidate.is_junction()):
             raise DocumentError("path_not_allowed", "O caminho não pode conter links simbólicos ou junctions.")
 
 
@@ -35,6 +40,7 @@ def contained_path(value: str, roots: list[str], *, existing: bool = False) -> P
     allowed = []
     for configured in roots:
         candidate = Path(configured).expanduser()
+        require(candidate.is_absolute(), "invalid_config", "As raízes autorizadas devem ser absolutas.")
         reject_links(candidate)
         allowed.append(candidate.resolve())
     require(any(path.is_relative_to(root) for root in allowed), "path_not_allowed", "O arquivo está fora das raízes autorizadas.")
@@ -57,13 +63,27 @@ class DocumentContext:
         self.profile_name = profile_name
         self.profile = profile
         self.defaults = defaults
-        self.job_dir = Path(job_dir).resolve()
+        self.job_dir = Path(job_dir).absolute()
+        self._validate_locations()
         self.job_dir.mkdir(parents=True, exist_ok=True)
         self._sources: dict[Path, str] = {}
         self._outputs: dict[Path, Path] = {}
 
+    def _validate_locations(self) -> Path:
+        from .configuration import validate_profile_directories
+        try:
+            work = validate_profile_directories(self.root, self.profile)
+        except (ValueError, OSError) as error:
+            raise DocumentError("path_not_allowed", "As permissões do perfil não pertencem ao workspace atual.") from error
+        reject_links(self.job_dir)
+        require(self.job_dir.resolve().is_relative_to(work) and self.job_dir.resolve() != work,
+                "path_not_allowed", "O job deve ficar dentro do diretório de trabalho autorizado.")
+        return work
+
     def input_path(self, value: str) -> Path:
+        work = self._validate_locations()
         path = contained_path(value, self.profile.get("readable_roots", []), existing=True)
+        require(not path.is_relative_to(work), "path_not_allowed", "Arquivos internos de trabalho não são documentos de entrada.")
         require(path.stat().st_size <= self.defaults.get("max_input_bytes", 262144000), "input_too_large", "O arquivo excede o limite de entrada configurado.")
         digest = file_digest(path)
         if path in self._sources:
@@ -72,10 +92,12 @@ class DocumentContext:
         return path
 
     def temporary_path(self, suffix: str = "") -> Path:
+        self._validate_locations()
         require(isinstance(suffix, str) and not any(c in suffix for c in "/\\\x00"), "invalid_argument", "Extensão temporária inválida.")
         return self.job_dir / (uuid4().hex + suffix)
 
     def stage_output(self, destination: str) -> Path:
+        self._validate_locations()
         path = contained_path(destination, self.profile.get("writable_roots", []))
         work = Path(self.profile.get("work_directory", str(self.job_dir))).resolve()
         require(not path.is_relative_to(work), "path_not_allowed", "A saída final deve ficar fora do diretório temporário de trabalho.")
@@ -106,7 +128,9 @@ class DocumentContext:
         temporary.replace(target)
 
     def publish(self) -> list[dict]:
+        self._validate_locations()
         for source, digest in self._sources.items():
+            contained_path(str(source), self.profile.get("readable_roots", []), existing=True)
             require(source.is_file() and file_digest(source) == digest, "source_changed", "Um arquivo de entrada foi alterado durante a operação.")
         for destination, staged in self._outputs.items():
             contained_path(str(destination), self.profile.get("writable_roots", []))
@@ -117,6 +141,7 @@ class DocumentContext:
         journal: list[dict] = []
         try:
             for destination, staged in self._outputs.items():
+                self._validate_locations()
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 reject_links(destination)
                 temporary = destination.parent / (".onmyoji-" + uuid4().hex + ".tmp")
@@ -137,9 +162,11 @@ class DocumentContext:
                 published.append(destination)
             artifacts = [{"path": str(path), "sha256": file_digest(path), "bytes": path.stat().st_size} for path in published]
             return artifacts
-        except FileExistsError as error:
+        except (FileExistsError, DocumentError) as error:
             for path in published:
                 path.unlink(missing_ok=True)
+            if isinstance(error, DocumentError):
+                raise
             raise DocumentError("output_exists", "Um destino foi criado por outra operação; nenhuma saída foi publicada.") from error
         except OSError as error:
             for path in published:

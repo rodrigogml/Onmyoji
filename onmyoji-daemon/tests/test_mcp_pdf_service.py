@@ -26,7 +26,10 @@ def document(tmp_path):
 
 
 def context(tmp_path):
-    return DocumentContext(tmp_path / "instance", "pdf", "test", {"readable_roots": [str(tmp_path)], "writable_roots": [str(tmp_path / "output")], "work_directory": str(tmp_path / "work")}, {"max_pages": 2000, "max_pixels": 50000000}, tmp_path / "work" / "job")
+    root = tmp_path.parent / (tmp_path.name + "-instance")
+    (root / "configs").mkdir(parents=True, exist_ok=True)
+    (root / "configs" / "onmyoji-system.toml").write_text('[codex]\nproject_directory = "' + tmp_path.as_posix() + '"\n', encoding="utf-8")
+    return DocumentContext(root, "pdf", "test", {"readable_roots": [str(tmp_path)], "writable_roots": [str(tmp_path / "output")], "work_directory": str(tmp_path / "work")}, {"max_pages": 2000, "max_pixels": 50000000}, tmp_path / "work" / "job")
 
 
 def run(tmp_path, document, operation, **arguments):

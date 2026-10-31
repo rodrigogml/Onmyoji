@@ -25,8 +25,11 @@ def workspace_for(root: Path) -> Path:
         if not isinstance(value, str) or not value.strip():
             raise ValueError
         workspace = Path(value).expanduser()
-        workspace = (workspace if workspace.is_absolute() else root / workspace).resolve()
-        if workspace.is_relative_to(root.resolve()):
+        workspace = workspace if workspace.is_absolute() else root / workspace
+        from .paths import reject_links
+        reject_links(workspace)
+        workspace = workspace.resolve()
+        if workspace.is_relative_to(root.resolve()) or root.resolve().is_relative_to(workspace):
             raise ValueError
         return workspace
     except (OSError, KeyError, TypeError, ValueError) as error:
@@ -45,6 +48,44 @@ def profile_defaults(root: Path, namespace: str) -> dict:
     return profile
 
 
+def validate_profile_directories(root: Path, profile: dict) -> Path:
+    """Revalida permissões contra o workspace atual, inclusive em jobs já enviados.
+
+    O trabalho deve ser uma subpasta própria. Nenhuma raiz pode ficar dentro
+    dele: fontes/resultados não participam da limpeza dos jobs transitórios.
+    """
+    from .paths import reject_links
+    workspace = workspace_for(root)
+    paths = []
+    for key in ("readable_roots", "writable_roots"):
+        values = profile.get(key)
+        if not isinstance(values, list) or not all(isinstance(value, str) and value.strip() for value in values):
+            raise ValueError("Raízes documentais inválidas.")
+        paths.extend(values)
+    value = profile.get("work_directory")
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("Diretório de trabalho documental obrigatório.")
+    work = Path(value).expanduser()
+    reject_links(work)
+    if not work.is_absolute() or not work.resolve().is_relative_to(workspace) or work.resolve() == workspace:
+        raise ValueError("O diretório de trabalho deve ser uma subpasta própria do workspace.")
+    work = work.resolve()
+    for value in paths:
+        path = Path(value).expanduser()
+        reject_links(path)
+        if not path.is_absolute() or not path.resolve().is_relative_to(workspace):
+            raise ValueError("Diretórios documentais devem estar contidos no workspace configurado.")
+        if path.resolve().is_relative_to(work):
+            raise ValueError("Diretórios de documentos não podem ficar dentro do trabalho temporário.")
+    return work
+
+
+def pdf_resource_path(root: Path, value: str) -> Path:
+    """Valida o ICC administrativo sem ampliar as permissões de documentos."""
+    from .paths import contained_path
+    return contained_path(value, [str(workspace_for(root)), str(root.resolve() / "configs" / "mcp" / "pdf" / "resources")], existing=True)
+
+
 def validate_configuration(root: Path, namespace: str, data: dict) -> None:
     if namespace not in {"pdf", "ocr"} or not isinstance(data, dict) or data.get("schema_version") != 1:
         raise ValueError("Configuração documental inválida.")
@@ -60,7 +101,7 @@ def validate_configuration(root: Path, namespace: str, data: dict) -> None:
             raise ValueError(f"Limite documental inválido: {key}.")
     if not data["profiles"]:
         return
-    workspace = workspace_for(root)
+    workspace_for(root)
     common = {"enabled", "description", "readable_roots", "writable_roots", "work_directory"}
     extra = {"ocr_profile", "ghostscript_path", "verapdf_path", "icc_profile_path"} if namespace == "pdf" else {"engine", "languages", "dpi", "tesseract_path", "tessdata_dir", "advanced_model_directory", "rotate_pages", "deskew"}
     for name, profile in data["profiles"].items():
@@ -70,25 +111,12 @@ def validate_configuration(root: Path, namespace: str, data: dict) -> None:
             raise ValueError("Atributos do perfil documental inválidos.")
         if not isinstance(profile.get("description"), str) or not 1 <= len(profile["description"].strip()) <= 240:
             raise ValueError("Informe uma descrição do perfil com até 240 caracteres.")
-        paths = []
-        for key in ("readable_roots", "writable_roots"):
-            values = profile.get(key)
-            if not isinstance(values, list) or not all(isinstance(value, str) and value.strip() for value in values):
-                raise ValueError("Raízes documentais inválidas.")
-            paths.extend(values)
-        work = profile.get("work_directory")
-        if not isinstance(work, str) or not work.strip():
-            raise ValueError("Diretório de trabalho documental obrigatório.")
-        paths.append(work)
-        from .paths import reject_links
-        for value in paths:
-            path = Path(value).expanduser()
-            reject_links(path)
-            if not path.is_absolute() or not path.resolve().is_relative_to(workspace):
-                raise ValueError("Diretórios documentais devem estar contidos no workspace configurado.")
+        validate_profile_directories(root, profile)
         if namespace == "pdf":
             if not all(isinstance(profile.get(key, ""), str) for key in extra):
                 raise ValueError("Referência do perfil OCR inválida.")
+            if profile.get("icc_profile_path"):
+                pdf_resource_path(root, profile["icc_profile_path"])
         else:
             if any(type(profile.get(key, False)) is not bool for key in ("rotate_pages", "deskew")):
                 raise ValueError("Opções de pré-processamento OCR inválidas.")
@@ -101,6 +129,8 @@ def validate_configuration(root: Path, namespace: str, data: dict) -> None:
             for key in ("tesseract_path", "tessdata_dir", "advanced_model_directory"):
                 if not isinstance(profile.get(key, ""), str):
                     raise ValueError("Caminho do runtime OCR inválido.")
+            from ..ocr.runtime import model_directory
+            model_directory(root, profile)
 
 
 def render_configuration(data: dict) -> str:

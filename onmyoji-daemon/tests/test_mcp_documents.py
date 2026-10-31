@@ -35,6 +35,40 @@ def test_document_config_roundtrip_and_rejects_outside_workspace(tmp_path):
         config.save_pdf(data)
 
 
+@pytest.mark.parametrize("field", ["readable_roots", "writable_roots", "work_directory"])
+def test_document_config_rejects_every_directory_outside_workspace(tmp_path, field):
+    config, data, _ = configured(tmp_path)
+    data["profiles"]["default"][field] = str(tmp_path) if field == "work_directory" else [str(tmp_path)]
+    with pytest.raises(ValueError):
+        config.save_pdf(data)
+
+
+def test_workspace_cannot_contain_the_instance_and_work_cannot_be_workspace(tmp_path):
+    from onmyoji_daemon.mcp.document_processing.configuration import workspace_for
+    config, data, workspace = configured(tmp_path)
+    data["profiles"]["default"]["work_directory"] = str(workspace)
+    with pytest.raises(ValueError, match="subpasta"):
+        config.save_pdf(data)
+    (config.root / "configs" / "onmyoji-system.toml").write_text('[codex]\nproject_directory = "' + tmp_path.as_posix() + '"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="externo"):
+        workspace_for(config.root)
+
+
+def test_pdf_icc_resource_is_limited_to_work_or_private_resources(tmp_path):
+    from onmyoji_daemon.mcp.document_processing.configuration import pdf_resource_path
+    config, data, workspace = configured(tmp_path)
+    external = tmp_path / "external.icc"; external.write_bytes(b"profile")
+    with pytest.raises(ValueError):
+        pdf_resource_path(config.root, str(external))
+    local = workspace / "profile.icc"; local.write_bytes(b"profile")
+    assert pdf_resource_path(config.root, str(local)) == local
+    resource = config.root / "configs" / "mcp" / "pdf" / "resources" / "profile.icc"
+    resource.parent.mkdir(parents=True); resource.write_bytes(b"profile")
+    data["profiles"]["default"]["icc_profile_path"] = str(resource)
+    config.save_pdf(data)
+    assert pdf_resource_path(config.root, str(resource)) == resource
+
+
 def test_pdf_tools_are_opt_in_and_validate_closed_schemas(tmp_path):
     registry = PdfToolRegistry(McpConfiguration(tmp_path))
     assert registry.definitions() == []

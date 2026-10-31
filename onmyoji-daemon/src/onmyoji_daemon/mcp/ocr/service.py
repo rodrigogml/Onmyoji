@@ -16,7 +16,7 @@ import tomllib
 import xml.etree.ElementTree as ET
 
 from ..document_processing.contracts import DocumentError
-from .runtime import advanced_python, command_path, get_capabilities, installed_languages, model_directory
+from .runtime import advanced_python, command_path, get_capabilities, installed_languages, model_directory, local_process_environment, copy_model_cache
 
 
 def _ocr_profile(context) -> dict:
@@ -39,7 +39,8 @@ def _run(command: list[str], context, *, env: dict | None = None, allowed_codes=
     if os.name == "nt" and Path(command[0]).suffix.lower() in {".bat", ".cmd"} and any(re.search(r"[&|<>^%!\r\n]", argument) for argument in command):
         raise DocumentError("invalid_path", "O launcher de validação não aceita metacaracteres de shell nos caminhos; escolha um nome simples para o arquivo.")
     try:
-        completed = subprocess.run(command, env=env, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=int(context.defaults.get("timeout_seconds", 1800)), check=False)
+        environment = local_process_environment(context.job_dir, base=env, source=env.get("PYTHONPATH") if env else None)
+        completed = subprocess.run(command, env=environment, cwd=str(context.job_dir), text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=int(context.defaults.get("timeout_seconds", 1800)), check=False)
     except subprocess.TimeoutExpired as error:
         raise DocumentError("operation_timeout", "O processamento OCR excedeu o tempo configurado.") from error
     except OSError as error:
@@ -186,11 +187,13 @@ def _advanced(path: Path, options: dict, profile: dict, context, *, layout: bool
     executable, models = advanced_python(context.root), model_directory(context.root, profile)
     if not executable.is_file() or not (models / "prepared.json").is_file():
         raise DocumentError("models_unavailable", "Prepare o runtime e os modelos avançados pelo setup OCR.")
+    cached_models = copy_model_cache(models, context.temporary_path(".models"))
     request = context.temporary_path(".json")
     result = context.temporary_path(".json")
     effective_options = {"rotate_pages": profile.get("rotate_pages", False), "deskew": profile.get("deskew", False), **options}
-    request.write_text(json.dumps({"input_path": str(path), "models": str(models), "layout": layout, "options": effective_options, "preprocessing_profile": {"tesseract_path": profile.get("tesseract_path") or "tesseract", "tessdata_dir": profile.get("tessdata_dir", "")}, "max_pixels": context.defaults.get("max_pixels", 50000000), "max_pages": context.defaults.get("max_pages", 2000), "timeout_seconds": context.defaults.get("timeout_seconds", 1800)}, ensure_ascii=False), encoding="utf-8")
-    environment = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[3]), "PYTHONDONTWRITEBYTECODE": "1", "HF_HUB_OFFLINE": "1", "PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK": "True", "PADDLE_PDX_CACHE_HOME": str(models)}
+    request.write_text(json.dumps({"input_path": str(path), "models": str(cached_models), "layout": layout, "options": effective_options, "preprocessing_profile": {"tesseract_path": profile.get("tesseract_path") or "tesseract", "tessdata_dir": profile.get("tessdata_dir", "")}, "max_pixels": context.defaults.get("max_pixels", 50000000), "max_pages": context.defaults.get("max_pages", 2000), "timeout_seconds": context.defaults.get("timeout_seconds", 1800)}, ensure_ascii=False), encoding="utf-8")
+    environment = local_process_environment(context.job_dir, source=str(Path(__file__).resolve().parents[3]))
+    environment.update({"HF_HUB_OFFLINE": "1", "PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK": "True", "PADDLE_PDX_CACHE_HOME": str(cached_models)})
     _run([str(executable), "-B", "-m", "onmyoji_daemon.mcp.ocr.advanced_worker", str(request), str(result)], context, env=environment)
     try:
         data = json.loads(result.read_text(encoding="utf-8"))

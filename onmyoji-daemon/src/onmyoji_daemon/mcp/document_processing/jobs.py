@@ -5,6 +5,7 @@ import atexit
 import copy
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -26,9 +27,33 @@ _instances_lock = threading.Lock()
 
 
 def _write_json(path: Path, value: dict) -> None:
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
-    temporary.replace(path)
+    reject_links(path)
+    temporary = path.with_name(path.name + "." + uuid4().hex + ".tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as stream:
+            json.dump(value, stream, ensure_ascii=False)
+        reject_links(path)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def execution_environment(directory: Path, source: str) -> dict[str, str]:
+    """Direciona temporários e caches de bibliotecas para o trabalho do job."""
+    reject_links(directory)
+    temporary, cache = directory / "tmp", directory / "cache"
+    temporary.mkdir(exist_ok=True); cache.mkdir(exist_ok=True)
+    reject_links(temporary); reject_links(cache)
+    environment = {**os.environ, "PYTHONPATH": source, "PYTHONNOUSERSITE": "1", "PYTHONSAFEPATH": "1",
+                   "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1", "ONMYOJI_DOCUMENT_PARENT_PID": str(os.getpid())}
+    for name in ("PYTHONHOME", "PYTHONUSERBASE", "PYTHONSTARTUP"):
+        environment.pop(name, None)
+    for name in ("TMP", "TEMP", "TMPDIR"):
+        environment[name] = str(temporary)
+    environment.update(XDG_CACHE_HOME=str(cache), HF_HOME=str(cache / "huggingface"), TORCH_HOME=str(cache / "torch"),
+                       PADDLE_HOME=str(cache / "paddle"), PADDLE_PDX_CACHE_HOME=str(cache / "paddle-pdx"),
+                       MPLCONFIGDIR=str(cache / "matplotlib"), NUMBA_CACHE_DIR=str(cache / "numba"), PYTHONPYCACHEPREFIX=str(cache / "pycache"))
+    return environment
 
 
 def _stop_process(process: subprocess.Popen) -> None:
@@ -118,6 +143,7 @@ class Jobs:
         self._records: dict[str, dict] = {}
         self._directories: dict[str, Path] = {}
         self._profiles: dict[str, Path] = {}
+        self._settings: dict[str, dict] = {}
         self._retention: dict[str, float] = {}
         self._processes: dict[str, subprocess.Popen] = {}
         self._job_handles: dict[str, object] = {}
@@ -131,24 +157,26 @@ class Jobs:
     def register(self, profile_name: str, profile: dict, defaults: dict | None = None) -> None:
         require(isinstance(profile_name, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", profile_name) is not None, "invalid_profile", "Perfil de documentos inválido.")
         with self._lock:
-            work = Path(profile.get("work_directory", "")).expanduser()
-            require(work.is_absolute(), "invalid_config", "Configure o diretório de trabalho do perfil.")
-            reject_links(work)
-            require(not work.resolve().is_relative_to(self.root), "invalid_config", "O trabalho documental deve ficar no workspace externo à instância.")
+            work = self._authorized_work(profile)
             directory = work.resolve() / "document-jobs" / self.namespace / profile_name
+            reject_links(directory)
             self._retention[profile_name] = (defaults or {}).get("retention_hours", 24) * 3600
             if profile_name in self._profiles:
                 require(self._profiles[profile_name] == directory, "profile_busy", "Reinicie o MCP após alterar o diretório de trabalho do perfil.")
+                self._settings[profile_name] = copy.deepcopy(profile)
                 return
             directory.mkdir(parents=True, exist_ok=True)
+            reject_links(directory)
             self._profiles[profile_name] = directory
+            self._settings[profile_name] = copy.deepcopy(profile)
             retention = self._retention[profile_name]
             for candidate in directory.iterdir():
                 if not candidate.is_dir() or candidate.is_symlink() or not re.fullmatch(r"[a-f0-9]{32}", candidate.name):
                     continue
                 try:
+                    reject_links(candidate / "state.json")
                     state = json.loads((candidate / "state.json").read_text(encoding="utf-8"))
-                    if state.get("profile") != profile_name or state.get("job_id") != candidate.name:
+                    if not self._valid_state(state, profile_name, candidate.name):
                         continue
                     if state.get("status") in {"queued", "running"}:
                         state.update(status="interrupted", finished_at=time.time(), error={"code": "interrupted", "message": "A execução foi interrompida; envie um novo request_id para tentar novamente."})
@@ -162,8 +190,46 @@ class Jobs:
                 except (OSError, ValueError, TypeError):
                     continue
 
+    def _authorized_work(self, profile: dict) -> Path:
+        from .configuration import validate_profile_directories
+        try:
+            return validate_profile_directories(self.root, profile)
+        except (ValueError, OSError) as error:
+            raise DocumentError("path_not_allowed", "As permissões documentais devem ficar no workspace configurado.") from error
+
+    def _safe_directory(self, identifier: str) -> Path:
+        state = self._records[identifier]
+        profile_name = state["profile"]
+        work = self._authorized_work(self._settings[profile_name])
+        expected = work / "document-jobs" / self.namespace / profile_name / identifier
+        directory = self._directories[identifier]
+        reject_links(directory)
+        require(directory == expected and directory.is_dir(), "job_unavailable", "O diretório da execução não está disponível no workspace atual.")
+        return directory
+
+    def _job_file(self, identifier: str, name: str) -> Path:
+        path = self._safe_directory(identifier) / name
+        reject_links(path)
+        return path
+
+    def _persist(self, identifier: str, value: dict) -> None:
+        try:
+            _write_json(self._job_file(identifier, "state.json"), value)
+        except (OSError, ValueError):
+            # Um diretório removido ou movido não autoriza gravar em seu novo destino.
+            pass
+
+    def _valid_state(self, state: object, profile_name: str, identifier: str) -> bool:
+        return (isinstance(state, dict) and state.get("profile") == profile_name and state.get("job_id") == identifier
+                and state.get("namespace") == self.namespace and state.get("status") in TERMINAL | {"queued", "running"}
+                and isinstance(state.get("operation"), str) and isinstance(state.get("request_hash"), str)
+                and type(state.get("created_at")) in {int, float} and math.isfinite(state["created_at"])
+                and type(state.get("timeout_seconds")) in {int, float} and math.isfinite(state["timeout_seconds"])
+                and ("finished_at" not in state or type(state["finished_at"]) in {int, float} and math.isfinite(state["finished_at"])))
+
     def _input_fingerprints(self, profile: dict, args: dict, maximum: int) -> dict[str, str]:
         fingerprints = {}
+        work = self._authorized_work(profile)
         def inspect(value, key=""):
             if isinstance(value, dict):
                 for field, item in value.items():
@@ -173,6 +239,7 @@ class Jobs:
                     inspect(item, key)
             elif isinstance(value, str) and key in {"input_path", "input_paths", "path", "source", "source_path", "image_path", "insert_path", "overlay_path", "attachment_path", "left_path", "right_path", "other_path", "trust_roots"}:
                 path = contained_path(value, profile.get("readable_roots", []), existing=True)
+                require(not path.is_relative_to(work), "path_not_allowed", "Arquivos internos de trabalho não são documentos de entrada.")
                 require(path.stat().st_size <= maximum, "input_too_large", "O arquivo excede o limite de entrada configurado.")
                 fingerprints[str(path)] = file_digest(path)
         inspect(args)
@@ -194,7 +261,9 @@ class Jobs:
             require(pending < defaults.get("max_queue", 16), "queue_full", "A fila do perfil está cheia.")
             identifier = uuid4().hex
             directory = self._profiles[profile_name] / identifier
+            reject_links(directory)
             directory.mkdir()
+            reject_links(directory)
             state = {"job_id": identifier, "namespace": self.namespace, "profile": profile_name, "operation": operation, "status": "queued", "created_at": time.time(), "request_id": request_id, "request_hash": digest, "timeout_seconds": defaults.get("timeout_seconds", 1800)}
             request = {"root": str(self.root), "namespace": self.namespace, "profile_name": profile_name, "profile": profile, "defaults": defaults, "operation": operation, "arguments": args, "sources": fingerprints}
             _write_json(directory / "request.json", request)
@@ -207,6 +276,7 @@ class Jobs:
         require(isinstance(identifier, str) and re.fullmatch(r"[a-f0-9]{32}", identifier) is not None, "job_not_found", "Execução não encontrada neste perfil.")
         state = self._records.get(identifier)
         require(state is not None and state["profile"] == profile_name, "job_not_found", "Execução não encontrada neste perfil.")
+        self._safe_directory(identifier)
         return state
 
     def _public(self, state: dict) -> dict:
@@ -214,7 +284,7 @@ class Jobs:
         directory = self._directories.get(state["job_id"])
         if directory and state["status"] == "running":
             try:
-                result["progress"] = json.loads((directory / "progress.json").read_text(encoding="utf-8"))
+                result["progress"] = json.loads(self._job_file(state["job_id"], "progress.json").read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 pass
         return result
@@ -229,7 +299,8 @@ class Jobs:
             state = self._state(profile_name, job_id)
             require(state["status"] == "succeeded", "result_unavailable", "O resultado ainda não está disponível; consulte o estado da execução.")
             try:
-                result = json.loads((self._directories[job_id] / "result.json").read_text(encoding="utf-8"))
+                result = json.loads(self._job_file(job_id, "result.json").read_text(encoding="utf-8"))
+                require(isinstance(result, dict), "result_unavailable", "O resultado da execução possui formato inválido.")
             except (OSError, ValueError) as error:
                 raise DocumentError("result_unavailable", "O resultado da execução não está disponível.") from error
         # JSON extenso, inclusive objetos/tabelas aninhados, usa fragmentos
@@ -262,19 +333,23 @@ class Jobs:
                     _stop_process(process)
                 _close_windows_job(self._job_handles.pop(job_id, None))
                 self._rollback_completed(job_id)
-                _write_json(self._directories[job_id] / "state.json", state)
+                self._persist(job_id, state)
             return self._public(state)
 
     def list(self, profile_name: str) -> dict:
         with self._lock:
             records = sorted((state for state in self._records.values() if state["profile"] == profile_name), key=lambda state: state["created_at"], reverse=True)
+            for state in records:
+                self._safe_directory(state["job_id"])
             return {"jobs": [self._public(state) for state in records[:100]], "total": len(records)}
 
     def _launch(self, identifier: str) -> subprocess.Popen:
         source = str(Path(__file__).resolve().parents[3])
-        environment = {**os.environ, "PYTHONPATH": source + (os.pathsep + os.environ["PYTHONPATH"] if os.environ.get("PYTHONPATH") else ""), "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1", "ONMYOJI_DOCUMENT_PARENT_PID": str(os.getpid())}
+        directory = self._safe_directory(identifier)
+        reject_links(directory / "request.json")
+        environment = execution_environment(directory, source)
         options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
-        process = subprocess.Popen([sys.executable, "-B", "-m", "onmyoji_daemon.mcp.document_processing.worker", str(self._directories[identifier] / "request.json")], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=environment, **options)
+        process = subprocess.Popen([sys.executable, "-B", "-m", "onmyoji_daemon.mcp.document_processing.worker", str(directory / "request.json")], cwd=str(directory), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=environment, **options)
         if os.name == "nt":
             try:
                 self._job_handles[identifier] = _windows_job(process)
@@ -285,15 +360,19 @@ class Jobs:
 
     def _rollback_completed(self, identifier: str) -> None:
         try:
-            directory = self._directories[identifier]
-            completion = json.loads((directory / "publication.json").read_text(encoding="utf-8"))
+            completion = json.loads(self._job_file(identifier, "publication.json").read_text(encoding="utf-8"))
+            profile = self._settings[self._records[identifier]["profile"]]
             for artifact in completion.get("artifacts", []):
-                path = Path(artifact["path"])
-                reject_links(path)
+                path = contained_path(artifact["path"], profile.get("writable_roots", []))
+                from .configuration import workspace_for
+                require(path.is_relative_to(workspace_for(self.root)), "path_not_allowed", "A publicação não pertence ao workspace atual.")
                 identity = path.stat() if path.is_file() else None
                 if identity is not None and identity.st_ino == artifact.get("inode") and identity.st_dev == artifact.get("device") and file_digest(path) == artifact.get("sha256"):
                     path.unlink()
                 temporary = Path(artifact["temporary"]) if artifact.get("temporary") else None
+                if temporary is not None:
+                    require(temporary.parent == path.parent and re.fullmatch(r"\.onmyoji-[a-f0-9]{32}\.tmp", temporary.name) is not None, "path_not_allowed", "Arquivo transitório de publicação inválido.")
+                    contained_path(str(temporary), profile.get("writable_roots", []))
                 if temporary is not None and temporary.is_file():
                     temporary_identity = temporary.stat()
                     if temporary_identity.st_ino == artifact.get("inode") and temporary_identity.st_dev == artifact.get("device"):
@@ -308,35 +387,44 @@ class Jobs:
                     for identifier, state in list(self._records.items()):
                         elapsed = time.time() - state.get("finished_at", state["created_at"])
                         if state["status"] in TERMINAL and elapsed > self._retention.get(state["profile"], 86400):
-                            directory = self._directories[identifier]
                             try:
-                                reject_links(directory)
+                                directory = self._safe_directory(identifier)
                                 shutil.rmtree(directory)
                                 del self._directories[identifier]
                                 del self._records[identifier]
-                            except OSError:
+                            except (OSError, ValueError):
                                 pass
                     self._last_cleanup = time.time()
                 for identifier, process in list(self._processes.items()):
                     state = self._records[identifier]
+                    try:
+                        self._safe_directory(identifier)
+                    except (OSError, ValueError):
+                        _stop_process(process)
+                        self._rollback_completed(identifier)
+                        state.update(status="failed", finished_at=time.time(), error={"code": "workspace_changed", "message": "O workspace ou diretório de trabalho mudou durante a execução."})
+                        del self._processes[identifier]
+                        _close_windows_job(self._job_handles.pop(identifier, None))
+                        continue
                     exit_code = process.poll()
                     if exit_code is None and time.time() - state["started_at"] <= state["timeout_seconds"]:
                         continue
                     timed_out = exit_code is None
                     if timed_out:
                         _stop_process(process)
-                    directory = self._directories[identifier]
                     try:
-                        completion = json.loads((directory / "completion.json").read_text(encoding="utf-8"))
+                        completion = json.loads(self._job_file(identifier, "completion.json").read_text(encoding="utf-8"))
+                        result_exists = self._job_file(identifier, "result.json").is_file()
                     except (OSError, ValueError):
                         completion = {}
-                    if not timed_out and exit_code == 0 and completion.get("ok") is True and (directory / "result.json").is_file():
+                        result_exists = False
+                    if not timed_out and exit_code == 0 and completion.get("ok") is True and result_exists:
                         state.update(status="succeeded", artifacts=completion.get("artifacts", []))
                     else:
                         self._rollback_completed(identifier)
                         state.update(status="failed", error={"code": "timeout" if timed_out else completion.get("error", {}).get("code", "worker_failed"), "message": "A execução excedeu o prazo configurado." if timed_out else completion.get("error", {}).get("message", "O processo documental não concluiu a operação.")})
                     state["finished_at"] = time.time()
-                    _write_json(directory / "state.json", state)
+                    self._persist(identifier, state)
                     del self._processes[identifier]
                     _close_windows_job(self._job_handles.pop(identifier, None))
                 busy = {self._records[identifier]["profile"] for identifier in self._processes}
@@ -348,9 +436,9 @@ class Jobs:
                         self._processes[identifier] = self._launch(identifier)
                         state.update(status="running", started_at=time.time())
                         busy.add(state["profile"])
-                    except OSError:
+                    except (OSError, ValueError):
                         state.update(status="failed", finished_at=time.time(), error={"code": "worker_unavailable", "message": "Não foi possível iniciar o processo documental."})
-                    _write_json(self._directories[identifier] / "state.json", state)
+                    self._persist(identifier, state)
 
     def close(self) -> None:
         if self._closed.is_set():
@@ -363,7 +451,7 @@ class Jobs:
             for identifier, state in self._records.items():
                 if state["status"] not in TERMINAL:
                     state.update(status="interrupted", finished_at=time.time(), error={"code": "interrupted", "message": "O servidor MCP foi encerrado durante a execução."})
-                    _write_json(self._directories[identifier] / "state.json", state)
+                    self._persist(identifier, state)
             self._processes.clear()
             for handle in self._job_handles.values():
                 _close_windows_job(handle)

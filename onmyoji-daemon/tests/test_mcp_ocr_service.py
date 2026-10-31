@@ -185,6 +185,96 @@ def test_capabilities_probe_the_private_runtime_not_the_setup_interpreter(tmp_pa
     assert calls[0][0] == str(executable)
 
 
+def test_model_directory_rejects_resources_outside_the_instance(tmp_path):
+    from onmyoji_daemon.mcp.ocr.runtime import model_directory
+    expected = tmp_path / "configs" / "mcp" / "ocr" / "models"
+    assert model_directory(tmp_path) == expected
+    assert model_directory(tmp_path, {"advanced_model_directory": str(expected / "latin")}) == expected / "latin"
+    with pytest.raises(DocumentError, match="própria instância"):
+        model_directory(tmp_path, {"advanced_model_directory": str(tmp_path / "external-models")})
+
+
+def test_capabilities_do_not_use_host_libraries_when_instance_runtime_is_missing(tmp_path, monkeypatch):
+    from onmyoji_daemon.mcp.ocr import runtime
+    monkeypatch.setattr(runtime.importlib.metadata, "version", lambda _name: pytest.fail("Host libraries are not instance dependencies"))
+    monkeypatch.setattr(runtime, "installed_languages", lambda _profile: [])
+    monkeypatch.setattr(runtime, "command_path", lambda _name: None)
+
+    capabilities = runtime.get_capabilities(tmp_path)
+
+    assert capabilities["runtime_ready"] is False and capabilities["pdf"] is False
+    assert all(package["installed"] is None for package in capabilities["packages"].values())
+
+
+def test_ocr_subprocess_uses_job_directory_for_temporary_files_and_cache(tmp_path, monkeypatch):
+    captured = {}
+    monkeypatch.setenv("PYTHONPATH", "host-python-libraries")
+    monkeypatch.setenv("TEMP", "host-temp")
+    def run(command, **kwargs):
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+    monkeypatch.setattr(service.subprocess, "run", run)
+
+    service._run(["tesseract", "input.png", "stdout"], Context(tmp_path))
+
+    assert captured["cwd"] == str(tmp_path)
+    assert {captured["env"][key] for key in ("TMP", "TEMP", "TMPDIR")} == {str(tmp_path)}
+    assert captured["env"]["XDG_CACHE_HOME"] == str(tmp_path / "cache")
+    assert "PYTHONPATH" not in captured["env"]
+
+
+def test_model_cache_copy_does_not_share_writable_model_files(tmp_path):
+    from onmyoji_daemon.mcp.ocr.runtime import copy_model_cache
+    models = tmp_path / "models"; models.mkdir()
+    resource = models / "weights.bin"; resource.write_bytes(b"original")
+    cache = copy_model_cache(models, tmp_path / "work" / "model-cache")
+    (cache / "weights.bin").write_bytes(b"activity")
+    assert resource.read_bytes() == b"original"
+
+
+def test_advanced_inference_uses_a_working_copy_of_prepared_resources(tmp_path, monkeypatch):
+    source = image_file(tmp_path)
+    executable = tmp_path / "advanced-python.exe"; executable.touch()
+    models = tmp_path / "configs" / "mcp" / "ocr" / "models"; models.mkdir(parents=True)
+    (models / "prepared.json").write_text('{"device":"cpu"}', encoding="utf-8")
+    (models / "weights.bin").write_bytes(b"resource")
+    monkeypatch.setattr(service, "advanced_python", lambda _root: executable)
+    def run(command, context, **kwargs):
+        request = json.loads(Path(command[-2]).read_text(encoding="utf-8"))
+        cache = Path(request["models"])
+        assert cache != models and cache.is_relative_to(context.job_dir)
+        assert kwargs["env"]["PADDLE_PDX_CACHE_HOME"] == str(cache)
+        (cache / "weights.bin").write_bytes(b"working-copy")
+        Path(command[-1]).write_text('{"text":"reconhecido"}', encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+    monkeypatch.setattr(service, "_run", run)
+
+    assert service.analyze_image_layout(source, {}, Context(tmp_path))["text"] == "reconhecido"
+    assert (models / "weights.bin").read_bytes() == b"resource"
+
+
+def test_installation_environment_and_target_are_private_to_instance(tmp_path, monkeypatch):
+    from onmyoji_daemon.mcp.ocr import runtime
+    root = tmp_path / "instance"; root.mkdir()
+    executable = root / "configs" / "mcp" / "venv" / "Scripts" / "python.exe"
+    calls = []
+    monkeypatch.setattr("onmyoji_daemon.mcp.runtime.ensure_mcp_runtime", lambda _root: None)
+    monkeypatch.setattr("onmyoji_daemon.mcp.runtime.mcp_runtime_python", lambda _root: executable)
+    monkeypatch.setattr(runtime, "pip_command", lambda: ["installer-python", "-I", "pip-main.py"])
+    monkeypatch.setattr(runtime, "_run_install", lambda command, **kwargs: calls.append((command, kwargs)))
+    monkeypatch.setattr(runtime, "get_capabilities", lambda _root: {})
+    monkeypatch.setenv("PIP_TARGET", "host-target")
+    monkeypatch.setenv("PYTHONPATH", "host-libraries")
+
+    runtime.install_runtime(root)
+
+    command, arguments = calls[0]
+    assert command[command.index("--python") + 1] == str(executable)
+    assert arguments["cwd"] == root / "tmp" / "document-install"
+    assert arguments["environment"]["TEMP"] == str(root / "tmp" / "document-install")
+    assert "PIP_TARGET" not in arguments["environment"] and "PYTHONPATH" not in arguments["environment"]
+
+
 def test_searchable_pdf_auto_uses_redo_to_recognize_hybrid_pages(tmp_path, monkeypatch):
     configure_engine(monkeypatch)
     context = Context(tmp_path); source = tmp_path / "source.pdf"; source.write_bytes(b"PDF")

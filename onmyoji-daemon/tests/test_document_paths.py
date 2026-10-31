@@ -11,8 +11,10 @@ from onmyoji_daemon.mcp.document_processing.paths import DocumentContext
 def context(tmp_path):
     instance = tmp_path / "instance"; instance.mkdir()
     workspace = tmp_path / "workspace"; workspace.mkdir()
-    profile = {"readable_roots": [str(workspace)], "writable_roots": [str(workspace)]}
-    return DocumentContext(instance, "pdf", "default", profile, {"max_input_bytes": 100}, workspace / "jobs"), workspace
+    (instance / "configs").mkdir()
+    (instance / "configs" / "onmyoji-system.toml").write_text('[codex]\nproject_directory = "' + workspace.as_posix() + '"\n', encoding="utf-8")
+    profile = {"readable_roots": [str(workspace)], "writable_roots": [str(workspace)], "work_directory": str(workspace / "jobs")}
+    return DocumentContext(instance, "pdf", "default", profile, {"max_input_bytes": 100}, workspace / "jobs" / "execution"), workspace
 
 
 def test_publication_preserves_sources_and_reports_hashes(tmp_path):
@@ -86,3 +88,33 @@ def test_raw_password_is_not_accepted_as_a_vault_reference(tmp_path):
     execution, _ = context(tmp_path)
     with pytest.raises(DocumentError, match="referência"):
         execution.resolve_password("secret")
+
+
+def test_context_rejects_permissions_outside_current_workspace(tmp_path):
+    execution, workspace = context(tmp_path)
+    outside = tmp_path / "outside"; outside.mkdir()
+    execution.profile["readable_roots"] = [str(outside)]
+    with pytest.raises(DocumentError, match="workspace"):
+        execution.input_path(str(outside / "source.pdf"))
+    assert not (outside / "source.pdf").exists()
+
+
+def test_context_revalidates_workspace_before_publishing(tmp_path):
+    execution, workspace = context(tmp_path)
+    destination = workspace / "result.pdf"
+    execution.stage_output(str(destination)).write_bytes(b"result")
+    replacement = tmp_path / "new-workspace"; replacement.mkdir()
+    (execution.root / "configs" / "onmyoji-system.toml").write_text('[codex]\nproject_directory = "' + replacement.as_posix() + '"\n', encoding="utf-8")
+    with pytest.raises(DocumentError, match="workspace"):
+        execution.publish()
+    assert not destination.exists()
+
+
+def test_context_rejects_job_directory_outside_work_and_internal_job_inputs(tmp_path):
+    execution, workspace = context(tmp_path)
+    internal = execution.job_dir / "request.json"; internal.write_text("{}", encoding="utf-8")
+    with pytest.raises(DocumentError, match="internos"):
+        execution.input_path(str(internal))
+    with pytest.raises(DocumentError, match="job"):
+        DocumentContext(execution.root, "pdf", "default", execution.profile, {}, workspace / "outside-job")
+    assert not (workspace / "outside-job").exists()

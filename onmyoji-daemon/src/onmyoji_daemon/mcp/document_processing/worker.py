@@ -6,12 +6,13 @@ import os
 from pathlib import Path
 import signal
 import sys
+import tempfile
 import threading
 import time
 
 from .contracts import DocumentError, require
-from .jobs import _write_json
-from .paths import DocumentContext, file_digest
+from .jobs import _write_json, execution_environment
+from .paths import DocumentContext, file_digest, reject_links
 
 
 def _watch_parent() -> None:
@@ -26,13 +27,31 @@ def _watch_parent() -> None:
 def main(request_path: str) -> int:
     if os.name != "nt" and "ONMYOJI_DOCUMENT_PARENT_PID" in os.environ:
         threading.Thread(target=_watch_parent, daemon=True).start()
-    directory = Path(request_path).resolve().parent
+    raw = Path(request_path)
+    directory = None
+    original_directory, original_temporary = Path.cwd(), tempfile.tempdir
+    original_environment = {}
     started = time.monotonic()
     try:
-        request = json.loads(Path(request_path).read_text(encoding="utf-8"))
+        require(raw.is_absolute(), "invalid_path", "O pedido documental deve usar caminho absoluto.")
+        reject_links(raw)
+        request = json.loads(raw.read_text(encoding="utf-8"))
         namespace = request["namespace"]
         require(namespace in {"pdf", "ocr"}, "invalid_namespace", "Módulo documental inválido.")
-        context = DocumentContext(Path(request["root"]), namespace, request["profile_name"], request["profile"], request["defaults"], directory)
+        from .configuration import validate_profile_directories
+        root = Path(request["root"])
+        work = validate_profile_directories(root, request["profile"])
+        candidate = raw.resolve().parent
+        expected = work.resolve() / "document-jobs" / namespace / request["profile_name"] / candidate.name
+        require(candidate == expected, "path_not_allowed", "O pedido não pertence ao diretório de trabalho do perfil.")
+        directory = candidate
+        runtime_environment = execution_environment(directory, str(Path(__file__).resolve().parents[3]))
+        for name in ("TMP", "TEMP", "TMPDIR", "XDG_CACHE_HOME", "HF_HOME", "TORCH_HOME", "PADDLE_HOME", "PADDLE_PDX_CACHE_HOME", "MPLCONFIGDIR", "NUMBA_CACHE_DIR"):
+            original_environment[name] = os.environ.get(name)
+            os.environ[name] = runtime_environment[name]
+        os.chdir(directory)
+        tempfile.tempdir = runtime_environment["TMP"]
+        context = DocumentContext(root, namespace, request["profile_name"], request["profile"], request["defaults"], directory)
         for path, expected in request.get("sources", {}).items():
             require(file_digest(context.input_path(path)) == expected, "source_changed", "Um arquivo de entrada foi alterado após o envio.")
         if namespace == "pdf":
@@ -49,11 +68,22 @@ def main(request_path: str) -> int:
         _write_json(directory / "completion.json", {"ok": True, "artifacts": artifacts})
         return 0
     except DocumentError as error:
-        _write_json(directory / "completion.json", {"ok": False, "error": {"code": error.code, "message": str(error)}})
+        if directory is not None:
+            _write_json(directory / "completion.json", {"ok": False, "error": {"code": error.code, "message": str(error)}})
     except ImportError:
-        _write_json(directory / "completion.json", {"ok": False, "error": {"code": "dependency_missing", "message": "Instale as dependências desta operação pelo Setup MCP."}})
+        if directory is not None:
+            _write_json(directory / "completion.json", {"ok": False, "error": {"code": "dependency_missing", "message": "Instale as dependências desta operação pelo Setup MCP."}})
     except Exception:
-        _write_json(directory / "completion.json", {"ok": False, "error": {"code": "processing_failed", "message": "Não foi possível processar o documento. Confira o arquivo e os parâmetros da operação."}})
+        if directory is not None:
+            _write_json(directory / "completion.json", {"ok": False, "error": {"code": "processing_failed", "message": "Não foi possível processar o documento. Confira o arquivo e os parâmetros da operação."}})
+    finally:
+        os.chdir(original_directory)
+        tempfile.tempdir = original_temporary
+        for name, value in original_environment.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
     return 2
 
 
