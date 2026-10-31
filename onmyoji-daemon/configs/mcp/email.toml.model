@@ -1,0 +1,12 @@
+schema_version = 1
+
+[defaults]
+timeout_seconds = 30
+page_size = 50
+max_message_bytes = 52428800
+max_attachment_bytes = 26214400
+max_body_characters = 65536
+pop_scan_limit = 200
+
+# Contas são criadas pelo Setup MCP. Somente referências do vault são persistidas.
+[accounts]

@@ -36,6 +36,12 @@ def hash_value(value: str) -> str:
 
 BTG_INTEGRATION = "btg"
 BTG_CALLBACK_PATH = "/oauth/mcp/btg/callback"
+EMAIL_INTEGRATION = "email"
+EMAIL_CALLBACK_PATH = "/oauth/mcp/email/callback"
+OAUTH_ADAPTERS = {
+    BTG_INTEGRATION: ("onmyoji_daemon.mcp.btg.oauth_adapter", "btg-empresas", BTG_CALLBACK_PATH),
+    EMAIL_INTEGRATION: ("onmyoji_daemon.mcp.email.oauth_adapter", "email", EMAIL_CALLBACK_PATH),
+}
 
 
 class McpOAuthBroker:
@@ -66,14 +72,14 @@ class McpOAuthBroker:
         return con
 
     def adapter(self, integration: str, profile: str, action: str, **values: Any) -> dict[str, Any]:
-        ensure(integration == BTG_INTEGRATION, "Integração OAuth MCP inválida")
+        ensure(integration in OAUTH_ADAPTERS, "Integração OAuth MCP inválida")
         ensure(isinstance(profile, str) and bool(re.fullmatch(r"[A-Za-z0-9_-]+", profile)), "Perfil OAuth inválido")
         ensure(action in {"describe", "start", "complete", "cancel"}, "Ação OAuth inválida")
         from .runtime import mcp_runtime_python
-        command = [str(mcp_runtime_python(self.root)), "-m", "onmyoji_daemon.mcp.btg.oauth_adapter", "--onmyoji-root", str(self.root)]
+        command = [str(mcp_runtime_python(self.root)), "-m", OAUTH_ADAPTERS[integration][0], "--onmyoji-root", str(self.root)]
         request = {"version": 1, "action": action, "profile": profile, **values}
         try:
-            environment = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parent.parent), "PYTHONUTF8": "1"}
+            environment = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[2]), "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1"}
             result = subprocess.run(command, input=json.dumps(request), text=True, encoding="utf-8", capture_output=True, timeout=180, env=environment)
             payload = json.loads(result.stdout)
         except (OSError, ValueError, subprocess.TimeoutExpired) as error:
@@ -85,7 +91,7 @@ class McpOAuthBroker:
         return payload["data"]
 
     def describe(self, integration: str, profile: str) -> dict[str, Any]:
-        ensure(integration == BTG_INTEGRATION, "Integração OAuth MCP inválida")
+        ensure(integration in OAUTH_ADAPTERS, "Integração OAuth MCP inválida")
         origin = self.public_origin()
         parsed = urllib.parse.urlsplit(origin)
         ensure(parsed.scheme == "https" and bool(parsed.hostname) and not parsed.username and not parsed.password and parsed.path in {"", "/"} and not parsed.query and not parsed.fragment, "Origem OAuth pública inválida")
@@ -99,9 +105,9 @@ class McpOAuthBroker:
             value = urllib.parse.urlsplit(metadata[field])
             ensure(value.scheme == "https" and bool(value.hostname) and not value.username and not value.password and not value.fragment, "URI OAuth inválida")
         declared = Path(metadata[location]).resolve()
-        expected = self.root / "configs" / "mcp" / "btg-empresas"
-        ensure(declared == expected.resolve(), "Estado OAuth BTG MCP inválido")
-        callback = origin.rstrip("/") + BTG_CALLBACK_PATH
+        expected = self.root / "configs" / "mcp" / OAUTH_ADAPTERS[integration][1]
+        ensure(declared == expected.resolve(), "Estado OAuth MCP inválido")
+        callback = origin.rstrip("/") + OAUTH_ADAPTERS[integration][2]
         return {**metadata, "callbackUrl": callback, "redirectMatches": callback == metadata["redirectUri"]}
 
     @staticmethod

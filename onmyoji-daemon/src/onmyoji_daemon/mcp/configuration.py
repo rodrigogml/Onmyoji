@@ -15,6 +15,7 @@ from .todoist import todoist_config_path
 from .btg.configuration import BtgConfigurationError, configuration_lock as btg_configuration_lock, empty_configuration as empty_btg, render_configuration as render_btg, validate_configuration as validate_btg
 from .google.configuration import empty_configuration as empty_google, render_configuration as render_google, validate_configuration as validate_google
 from .spotify.configuration import empty_configuration as empty_spotify, render_configuration as render_spotify, validate_configuration as validate_spotify
+from .email.configuration import empty_configuration as empty_email, render_configuration as render_email, validate_configuration as validate_email, validate_roots as validate_email_roots
 
 
 def omie_config_path(onmyoji_root: Path) -> Path:
@@ -180,6 +181,30 @@ class McpConfiguration:
 
     def credentials(self) -> dict[str, Any]:
         return self._load(self.credentials_path, empty_credentials())
+
+    @property
+    def email_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "email.toml"
+
+    def email(self) -> dict[str, Any]:
+        return self._load(self.email_path, empty_email())
+
+    def save_email(self, data: dict[str, Any]) -> None:
+        try:
+            validate_email(data)
+            validate_email_roots(self.root, data)
+        except ValueError as error:
+            raise McpConfigurationError(str(error)) from error
+        self._save(self.email_path, render_email(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def enabled_email_accounts(self) -> list[dict[str, Any]]:
+        document = self.email()
+        validate_email(document)
+        vaults = self.credentials()["profiles"]
+        return [{"name": name, **account} for name, account in sorted(document["accounts"].items())
+                if account["enabled"] and all(endpoint["auth"]["credential_profile"] in vaults
+                                             for endpoint in (account.get("incoming"), account.get("smtp")) if endpoint)]
 
     def todoist(self) -> dict[str, Any]:
         return self._load(self.todoist_path, empty_todoist())

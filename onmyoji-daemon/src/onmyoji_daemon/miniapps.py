@@ -31,7 +31,7 @@ from aiohttp import web
 from .rpc import RpcServer
 from .miniapps_pki import ensure_material, install_trust, server_context
 from .miniapps_tunnel import TunnelController, TunnelError
-from .mcp.oauth_broker import BTG_CALLBACK_PATH, BTG_INTEGRATION, McpOAuthBroker, OAuthError
+from .mcp.oauth_broker import BTG_CALLBACK_PATH, BTG_INTEGRATION, EMAIL_CALLBACK_PATH, EMAIL_INTEGRATION, OAUTH_ADAPTERS, McpOAuthBroker, OAuthError
 
 
 STATES = {"CREATED", "PUBLISHED_UNCLAIMED", "ACTIVE", "UNPUBLISHED", "EXPIRED", "ERROR", "DELETED"}
@@ -587,15 +587,17 @@ class MiniAppsGateway:
     def rpc(self, method: str, params: dict[str, Any]) -> Any:
         action = method.removeprefix("mini-apps.")
         if action.startswith("oauth."):
+            integration = params.get("integration", BTG_INTEGRATION)
+            if integration not in OAUTH_ADAPTERS: raise ValueError("Integração OAuth inválida")
             if action == "oauth.callback-url":
-                return {"integration": BTG_INTEGRATION, "callbackUrl": self._oauth_origin().rstrip("/") + BTG_CALLBACK_PATH}
+                return {"integration": integration, "callbackUrl": self._oauth_origin().rstrip("/") + OAUTH_ADAPTERS[integration][2]}
             broker = self._oauth_broker()
-            if action == "oauth.info": return broker.info(BTG_INTEGRATION, str(params["profile"]))
-            if action == "oauth.active": return broker.active(BTG_INTEGRATION, str(params["profile"]))
-            if action == "oauth.cancel-active": return broker.cancel_active(BTG_INTEGRATION, str(params["profile"]), params.get("confirm") is True)
-            if action == "oauth.start": return broker.start(BTG_INTEGRATION, str(params["profile"]), params.get("confirm") is True)
-            if action == "oauth.status": return broker.status(str(params["session_id"]), BTG_INTEGRATION, params.get("profile"))
-            if action == "oauth.cancel": return broker.cancel(str(params["session_id"]), params.get("confirm") is True, BTG_INTEGRATION, params.get("profile"))
+            if action == "oauth.info": return broker.info(integration, str(params["profile"]))
+            if action == "oauth.active": return broker.active(integration, str(params["profile"]))
+            if action == "oauth.cancel-active": return broker.cancel_active(integration, str(params["profile"]), params.get("confirm") is True)
+            if action == "oauth.start": return broker.start(integration, str(params["profile"]), params.get("confirm") is True)
+            if action == "oauth.status": return broker.status(str(params["session_id"]), integration, params.get("profile"))
+            if action == "oauth.cancel": return broker.cancel(str(params["session_id"]), params.get("confirm") is True, integration, params.get("profile"))
             raise ValueError("unknown OAuth method")
         if action == "status": return {"state": "running", "http_port": self.http_port, "apps": len(self.list()), "last_error": self.last_error}
         if action == "diagnose": return self.diagnose()
@@ -692,7 +694,8 @@ class MiniAppsGateway:
         try:
             broker = self._oauth_broker()
             query = {key: request.query.getall(key) for key in request.query.keys()}
-            identifier = await asyncio.to_thread(broker.callback, BTG_INTEGRATION, query)
+            integration = EMAIL_INTEGRATION if request.path == EMAIL_CALLBACK_PATH else BTG_INTEGRATION
+            identifier = await asyncio.to_thread(broker.callback, integration, query)
         except (ValueError, OSError, sqlite3.Error):
             return self._oauth_page("Retorno inválido, expirado ou já utilizado. Consulte o agente no chat.", 400)
         raise web.HTTPSeeOther("/oauth/result/" + identifier, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
@@ -727,6 +730,7 @@ class MiniAppsGateway:
         app.router.add_route("GET", "/internal/v1/tunnel", self.admin_tunnel)
         app.router.add_route("POST", "/internal/v1/tunnel/{action:configure|provision|start|stop|restart|install-cloudflared}", self.admin_tunnel)
         app.router.add_route("GET", BTG_CALLBACK_PATH, self.mcp_oauth_callback)
+        app.router.add_route("GET", EMAIL_CALLBACK_PATH, self.mcp_oauth_callback)
         app.router.add_route("GET", "/oauth/result/{session_id}", self.mcp_oauth_result)
         app.router.add_route("*", "/a/{app_id}/{tail:.*}", self.public_request)
         app.router.add_route("*", "/a/{app_id}", self.public_request)

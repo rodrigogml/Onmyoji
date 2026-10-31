@@ -29,3 +29,16 @@ resolvido diretamente pelo serviço interno `KeePassCredentialResolver`, somente
 em memória, sem expor uma ferramenta de vault, scripts intermediários, sessões
 ou arquivos temporários. A configuração do Tunnel persiste apenas
 `credential_profile`, `credential_entry_path` e o campo protegido utilizado.
+
+## Callbacks OAuth de integrações MCP
+
+O Gateway recebe callbacks HTTPS para integrações explicitamente registradas no
+broker interno: BTG e E-mail. Cada uma possui seu próprio caminho, adaptador,
+vínculo de configuração e armazenamento autorizado. Nenhum miniapp de arquivos
+precisa ser publicado para realizar o consentimento.
+
+O callback do E-mail usa `/oauth/mcp/email/callback`. O setup verifica a origem
+do Tunnel ativo e permite cadastrar a mesma URI no cliente OAuth do provedor.
+O broker encaminha o retorno ao runtime MCP, onde tokens e PKCE são tratados
+internamente; credenciais e refresh tokens não são retornados ao navegador.
+O modo local de OAuth do E-mail funciona diretamente no setup sem o Gateway.

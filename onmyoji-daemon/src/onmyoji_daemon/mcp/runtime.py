@@ -9,6 +9,8 @@ import sys
 
 MCP_REQUIREMENT = "mcp>=2,<3"
 OAUTH_REQUIREMENT = "pykeepass>=4.1,<5"
+EMAIL_REQUIREMENT = "IMAPClient>=3,<4"
+VALIDATION_REQUIREMENT = "jsonschema>=4,<5"
 
 
 class McpRuntimeError(RuntimeError):
@@ -29,7 +31,7 @@ def mcp_runtime_python(root: Path) -> Path:
 def mcp_runtime_ready(root: Path) -> bool:
     """Confirma que o runtime local pode importar a versão suportada do SDK MCP."""
     executable = mcp_runtime_python(root)
-    probe = "from importlib.metadata import version; from pykeepass import PyKeePass; value=tuple(map(int, version('mcp').split('.')[:2])); assert (2, 0) <= value < (3, 0)"
+    probe = "from importlib.metadata import version; from pykeepass import PyKeePass; from imapclient import IMAPClient; from jsonschema import Draft202012Validator; value=tuple(map(int, version('mcp').split('.')[:2])); assert (2, 0) <= value < (3, 0)"
     try:
         completed = subprocess.run([str(executable), "-c", probe], text=True, capture_output=True, timeout=10, check=False)
     except (OSError, subprocess.TimeoutExpired):
@@ -53,7 +55,7 @@ def ensure_mcp_runtime(root: Path) -> str:
             raise McpRuntimeError("Não foi possível criar o runtime privado do MCP.")
     target = environment / ("Lib/site-packages" if os.name == "nt" else f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages")
     try:
-        installed = subprocess.run([sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", "--target", str(target), MCP_REQUIREMENT, OAUTH_REQUIREMENT], text=True, capture_output=True, timeout=600, check=False)
+        installed = subprocess.run([sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", "--target", str(target), MCP_REQUIREMENT, OAUTH_REQUIREMENT, EMAIL_REQUIREMENT, VALIDATION_REQUIREMENT], text=True, capture_output=True, timeout=600, check=False)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise McpRuntimeError("Não foi possível instalar os componentes do runtime MCP.") from error
     if installed.returncode != 0 or not mcp_runtime_ready(root):

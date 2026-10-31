@@ -29,6 +29,7 @@ from .telegram.tools import TelegramToolRegistry
 from .mini_apps.tools import MiniAppsToolRegistry
 from .workflows import WorkflowRegistry
 from .instructions import McpInstructionRegistry
+from .email.tools import EmailToolRegistry
 
 
 class McpApplication:
@@ -56,15 +57,18 @@ class McpApplication:
         self.mini_apps = MiniAppsToolRegistry(self.configuration.root)
         self.workflows = WorkflowRegistry(self.configuration)
         self.instructions_registry = McpInstructionRegistry(self.configuration)
+        self.email = EmailToolRegistry(self.configuration)
 
     def definitions(self) -> list[dict[str, Any]]:
-        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions() + self.cloudflare.definitions() + self.eccovox.definitions() + self.forward_email.definitions() + self.notion.definitions() + self.aws.definitions() + self.mysql.definitions() + self.ssh.definitions() + self.bis2cmd.definitions() + self.bis10cmd.definitions() + self.google.definitions() + self.spotify.definitions() + self.memory.definitions() + self.data_tables.definitions() + self.telegram.definitions() + self.mini_apps.definitions() + self.workflows.definitions()
+        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions() + self.cloudflare.definitions() + self.eccovox.definitions() + self.forward_email.definitions() + self.notion.definitions() + self.aws.definitions() + self.mysql.definitions() + self.ssh.definitions() + self.bis2cmd.definitions() + self.bis10cmd.definitions() + self.google.definitions() + self.spotify.definitions() + self.memory.definitions() + self.data_tables.definitions() + self.telegram.definitions() + self.mini_apps.definitions() + self.workflows.definitions() + self.email.definitions()
 
     def instructions(self) -> str | None:
         """Publica as contribuições dos módulos MCP habilitados."""
         return self.instructions_registry.developer_instructions()
 
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if name.startswith("email."):
+            return self.email.call(name, arguments)
         if name.startswith("btg."):
             return self.btg.call(name, arguments)
         if name.startswith("omie."):

@@ -44,6 +44,7 @@ from onmyoji_daemon.mcp.memory import MemoryError, MemoryService
 from onmyoji_daemon.mcp.data_tables import DataTablesError, SchemaCatalog
 from onmyoji_daemon.mcp.btg.configuration import BtgConfigurationError, DEFAULT_SCOPES, MONITOR_DEFAULTS, validate_profile as validate_btg_profile
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
+from onmyoji_daemon.mcp.email.setup import email_menu
 
 
 def ask(label: str, current: str = "", required: bool = False) -> str | None:
@@ -2064,6 +2065,7 @@ def integrations_menu(config: McpConfiguration) -> None:
         integration_item("14.", "Spotify", spotify_profiles)
         integration_item("15.", "Memória", {"ativa": {"enabled": True}} if memory_enabled else {})
         integration_item("16.", "Tabelas de dados", {"ativa": {"enabled": True}} if data_tables_enabled else {})
+        integration_item("17.", "E-mail", config.email()["accounts"])
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}:
@@ -2100,6 +2102,8 @@ def integrations_menu(config: McpConfiguration) -> None:
             memory_menu(config)
         elif choice == "16":
             data_tables_menu(config)
+        elif choice == "17":
+            email_menu(config, sys.modules[__name__])
         else:
             result(False, "Opção inválida.")
 
