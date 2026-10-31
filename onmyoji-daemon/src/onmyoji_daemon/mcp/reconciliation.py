@@ -82,7 +82,15 @@ class McpReconciliation:
         temporary = self.path.with_suffix(".tmp")
         try:
             temporary.write_text(json.dumps({"schema_version": REGISTRATION_SCHEMA_VERSION, "pending": pending}, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
-            os.replace(temporary, self.path)
+            for attempt in range(6):
+                try:
+                    os.replace(temporary, self.path)
+                    break
+                except PermissionError as error:
+                    # Leitores/antivírus no Windows podem bloquear brevemente a troca.
+                    if getattr(error, "winerror", None) not in {5, 32} or attempt == 5:
+                        raise
+                    time.sleep(0.05 * (attempt + 1))
         except OSError as error:
             temporary.unlink(missing_ok=True)
             raise McpReconciliationError("Não foi possível atualizar o estado MCP local.") from error

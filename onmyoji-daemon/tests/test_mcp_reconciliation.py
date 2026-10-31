@@ -45,3 +45,29 @@ def test_configuration_change_marks_a_previously_synchronized_state_pending(tmp_
     state.mark_pending()
 
     assert mcp_reconciliation_pending(tmp_path) is True
+
+
+def test_windows_transient_replace_error_is_retried_without_losing_state(tmp_path, monkeypatch):
+    import os
+    state = McpReconciliation(tmp_path); state.mark_synchronized()
+    original = os.replace; attempts = []
+    def replace(source, target):
+        attempts.append(1)
+        if len(attempts) < 3:
+            error = PermissionError("transient"); error.winerror = 5; raise error
+        return original(source, target)
+    monkeypatch.setattr("onmyoji_daemon.mcp.reconciliation.os.replace", replace)
+    monkeypatch.setattr("onmyoji_daemon.mcp.reconciliation.time.sleep", lambda delay: None)
+    state.mark_pending()
+    assert len(attempts) == 3 and mcp_reconciliation_pending(tmp_path)
+
+
+def test_persistent_replace_error_preserves_existing_file_and_removes_temporary(tmp_path, monkeypatch):
+    state = McpReconciliation(tmp_path); state.mark_synchronized(); original = state.path.read_bytes()
+    def replace(*args):
+        error = PermissionError("persistent"); error.winerror = 5; raise error
+    monkeypatch.setattr("onmyoji_daemon.mcp.reconciliation.os.replace", replace)
+    monkeypatch.setattr("onmyoji_daemon.mcp.reconciliation.time.sleep", lambda delay: None)
+    with pytest.raises(McpReconciliationError): state.mark_pending()
+    assert state.path.read_bytes() == original
+    assert not state.path.with_suffix(".tmp").exists()
