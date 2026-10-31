@@ -133,4 +133,6 @@ def test_data_tables_schema_authoring_workflow_is_independent_of_enabled_schemas
     instructions = workflows.developer_instructions()
     assert instructions and "data-tables-schema-authoring" in instructions and "exclusivamente ao serviço MCP data_tables" in instructions
     content = workflows.call("workflows.read", {"id": "data-tables-schema-authoring"})
-    assert content["module"] == "data_tables" and "Não use este workflow" in content["content"]
+    assert content["module"] == "data_tables"
+    assert "Não use este workflow" in content["content"]
+    assert "Use somente `create_table`, `add_column` e `create_index`." in content["content"]
