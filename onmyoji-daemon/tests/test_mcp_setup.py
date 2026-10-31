@@ -308,6 +308,26 @@ def test_btg_new_profile_scopes_default_keepass_entry_by_environment(monkeypatch
     assert data["profiles"]["empresa"]["credential_entry_path"] == entries[0]
 
 
+def test_btg_new_profile_reports_missing_required_description(monkeypatch):
+    module = setup_module()
+    config = mock_configuration()
+    config.btg.return_value = {"profiles": {}}
+    answers = iter(["1", "x"])
+    monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
+    monkeypatch.setattr(module, "ask_new_profile_name", lambda *_args: "empresa")
+    monkeypatch.setattr(module, "flow_choice", lambda *_args: "sandbox")
+    monkeypatch.setattr(module, "select", lambda *_args: "vault")
+    monkeypatch.setattr(module, "ask", lambda label, current="", required=False: {"CNPJ da empresa (14 dígitos)": "30306294000145", "Entrada KeePass das credenciais": current, "Descrição de quando utilizar este perfil": None}[label])
+    monkeypatch.setattr(module, "btg_credentials", lambda _config, _vault, entry: (entry, {}))
+    reported = Mock()
+    monkeypatch.setattr(module, "result", reported)
+
+    module.btg_menu(config)
+
+    reported.assert_called_once_with(False, "A descrição de quando utilizar o perfil BTG é obrigatória.")
+    config.save_btg.assert_not_called()
+
+
 @pytest.mark.parametrize("action,confirmation,operation", [("9", "CoNeCtAr", "start_authorization"), ("10", None, "get_authorization_status"), ("11", "CaNcElAr", "cancel_authorization"), ("12", None, "get_account")])
 def test_btg_oauth_and_bank_commands_remain_in_profile_menu(monkeypatch, capsys, action, confirmation, operation):
     module = setup_module()

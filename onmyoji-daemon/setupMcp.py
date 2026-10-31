@@ -46,6 +46,7 @@ from onmyoji_daemon.mcp.data_tables import DataTablesError, SchemaCatalog
 from onmyoji_daemon.mcp.btg.configuration import BtgConfigurationError, DEFAULT_SCOPES, MONITOR_DEFAULTS, validate_profile as validate_btg_profile
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
 from onmyoji_daemon.mcp.email.setup import email_menu
+from onmyoji_daemon.mcp.document_processing.setup import document_menu
 
 
 def ask(label: str, current: str = "", required: bool = False) -> str | None:
@@ -1756,6 +1757,7 @@ def btg_menu(config: McpConfiguration) -> None:
         profile["credential_entry_path"] = credential[0]
         description = ask("Descrição de quando utilizar este perfil", required=True)
         if not description:
+            result(False, "A descrição de quando utilizar o perfil BTG é obrigatória.")
             continue
         profile["description"] = description
         data["profiles"][name] = profile
@@ -2162,6 +2164,8 @@ def integrations_menu(config: McpConfiguration) -> None:
         integration_item("15.", "Memória", {"ativa": {"enabled": True}} if memory_enabled else {})
         integration_item("16.", "Tabelas de dados", {"ativa": {"enabled": True}} if data_tables_enabled else {})
         integration_item("17.", "E-mail", config.email()["accounts"])
+        integration_item("18.", "PDF", config.pdf()["profiles"])
+        integration_item("19.", "OCR", config.ocr()["profiles"])
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}:
@@ -2200,6 +2204,8 @@ def integrations_menu(config: McpConfiguration) -> None:
             data_tables_menu(config)
         elif choice == "17":
             email_menu(config, sys.modules[__name__])
+        elif choice in {"18", "19"}:
+            document_menu(config, sys.modules[__name__], "pdf" if choice == "18" else "ocr")
         else:
             result(False, "Opção inválida.")
 
