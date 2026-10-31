@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import sys
 import unittest
 from pathlib import Path
@@ -17,6 +18,20 @@ SPEC.loader.exec_module(MODULE)
 
 
 class McpSetupTests(unittest.TestCase):
+    def test_profile_overview_displays_nested_configured_values_in_the_value_column(self) -> None:
+        output = io.StringIO()
+        profile = {"enabled": True, "description": "Conta principal", "connection": {"host": "mail.example.test", "port": 465}, "roots": []}
+
+        with patch.object(MODULE.sys, "stdout", output):
+            MODULE.profile_overview(profile)
+
+        rendered = output.getvalue()
+        self.assertIn("Valores configurados:", rendered)
+        self.assertIn("description", rendered)
+        self.assertIn("Conta principal", rendered)
+        self.assertIn("connection.host", rendered)
+        self.assertIn("mail.example.test", rendered)
+
     def test_new_profile_suggests_default_only_when_available(self) -> None:
         with patch.object(MODULE, "ask", return_value="default") as ask:
             self.assertEqual(MODULE.ask_new_profile_name("Nome", {}), "default")

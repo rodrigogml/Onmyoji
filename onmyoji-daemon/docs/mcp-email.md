@@ -4,7 +4,7 @@ O módulo `email` conecta contas IMAP ou POP3 para recebimento e SMTP para envio
 
 ## Configuração
 
-Use `MCP > Integrações MCP > E-mail`. Crie uma conta com nome único, endereço e descrição do contexto. Configure recebimento, envio ou ambos. Credenciais são referências de entradas de vault MCP; o roteiro permite reutilizar valores existentes ou substituí-los pelos helpers comuns. A configuração efetiva fica em `configs/mcp/email.toml`.
+Use `MCP > Integrações MCP > E-mail`. Crie uma conta com nome interno único, endereço, nome exibido do remetente e descrição do contexto. O nome exibido é usado no cabeçalho `From` dos e-mails enviados; ele é independente do identificador interno do perfil. Configure recebimento, envio ou ambos. Credenciais são referências de entradas de vault MCP; o roteiro permite reutilizar valores existentes ou substituí-los pelos helpers comuns. A configuração efetiva fica em `configs/mcp/email.toml`.
 
 O menu de gestão permite mudar identidade, conexões, pastas, raízes de arquivos, habilitação e autenticação. Remover uma conta preserva seu vault e o registro de submissões. Sem contas habilitadas, nenhuma ferramenta de e-mail é publicada. Com uma conta a seleção é implícita; com várias, `email.list_accounts` apresenta seus contextos e as chamadas exigem `account`.
 

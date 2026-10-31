@@ -105,13 +105,14 @@ def manage(config, ui, name):
         data = config.email(); account = data["accounts"].get(name)
         if account is None: return
         ui.screen("MCP · Conta de e-mail", name + " · " + ("ATIVA" if account["enabled"] else "inativa"))
+        ui.profile_overview(account)
         for key, label in (("1.", "Identidade e descrição"), ("2.", "Recebimento IMAP / POP3"), ("3.", "Envio SMTP"), ("4.", "Pastas e cópia de enviados"), ("5.", "Raízes de anexos e arquivos"), ("6.", "Autorizar OAuth"), ("7.", "Testar conexão"), ("8.", "Desabilitar" if account["enabled"] else "Habilitar"), ("9.", "Remover conta"), ("10.", "Consultar ou cancelar OAuth remoto")):
             ui.item(key, label)
         ui.item("X.", "Voltar"); choice = ui.prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
         try:
             if choice == "1":
-                for key, label in (("address", "Endereço"), ("display_name", "Nome de exibição"), ("description", "Descrição de quando utilizar esta conta")):
+                for key, label in (("address", "Endereço"), ("display_name", "Nome exibido do remetente"), ("description", "Descrição de quando utilizar esta conta")):
                     value = ui.ask(label, account[key], True)
                     if value is None: break
                     account[key] = value
@@ -192,7 +193,9 @@ def email_menu(config, ui):
             try:
                 address = ui.ask("Endereço da caixa", required=True)
                 if not address: continue
-                account = {"enabled": True, "address": address, "display_name": name, "description": "", "allowed_senders": [], "readable_roots": [], "writable_roots": [], "sent_copy": "server", "folders": {"inbox": "INBOX", "sent": "", "drafts": "", "trash": "", "archive": ""}}
+                display_name = ui.ask("Nome exibido do remetente", required=True)
+                if not display_name: continue
+                account = {"enabled": True, "address": address, "display_name": display_name, "description": "", "allowed_senders": [], "readable_roots": [], "writable_roots": [], "sent_copy": "server", "folders": {"inbox": "INBOX", "sent": "", "drafts": "", "trash": "", "archive": ""}}
                 mode = ui.flow_choice("Conexões", ["Recebimento e envio", "Somente recebimento", "Somente envio"], "Recebimento e envio")
                 if not mode: continue
                 cancelled = False

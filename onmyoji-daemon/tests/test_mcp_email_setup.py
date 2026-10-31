@@ -19,6 +19,15 @@ def test_cancel_identity_does_not_save_partial_changes(tmp_path):
     assert document["accounts"]["default"]["address"] == "test@example.test"
 
 
+def test_email_profile_exposes_the_configured_values_in_its_edit_screen(tmp_path):
+    config = Mock(root=tmp_path); config.email.side_effect = lambda: copy.deepcopy(state())
+    ui = Mock(); ui.prompt.return_value = "x"
+
+    manage(config, ui, "default")
+
+    ui.profile_overview.assert_called_once_with(state()["accounts"]["default"])
+
+
 def test_removal_is_case_insensitive_and_returns_to_accounts_menu(tmp_path):
     config = Mock(root=tmp_path); document = state(); config.email.side_effect = lambda: copy.deepcopy(document)
     def save(value): document.clear(); document.update(copy.deepcopy(value))

@@ -95,6 +95,27 @@ def integration_item(key: str, label: str, profiles: dict[str, dict]) -> None:
     print(f"  {shortcut}  {label:<30}   " + integration_profile_summary(profiles))
 
 
+def profile_overview(profile: dict[str, object]) -> None:
+    """Exibe, ao lado dos rótulos, os valores configurados no perfil em edição."""
+    def entries(values: dict[str, object], prefix: str = ""):
+        for key, value in values.items():
+            label = f"{prefix}.{key}" if prefix else key
+            if isinstance(value, dict):
+                yield from entries(value, label)
+            else:
+                if isinstance(value, list):
+                    rendered = "; ".join(str(item) for item in value) or "(vazio)"
+                elif isinstance(value, bool):
+                    rendered = "sim" if value else "não"
+                else:
+                    rendered = str(value) or "(vazio)"
+                yield label.replace("_", " "), rendered
+
+    print("  Valores configurados:")
+    for label, value in entries(profile):
+        item("·", label, value)
+
+
 def store_windows_password(target: str, password: str) -> None:
     import ctypes
     class Credential(ctypes.Structure):
@@ -166,6 +187,7 @@ def manage_vault_profile(config: McpConfiguration, name: str) -> None:
             return
         vault = data["vaults"][profile["vault"]]
         screen("MCP · Perfil de vault", name)
+        profile_overview({**profile, "vault_configurado": vault})
         item("1.", "Alterar cofre associado")
         item("2.", "Alterar executável KeePassXC")
         item("3.", "Configurar autenticação")
@@ -394,6 +416,7 @@ def manage_todoist_profile(config: McpConfiguration, name: str) -> None:
         if not isinstance(profile, dict):
             return
         screen("MCP · Perfil Todoist", name)
+        profile_overview(profile)
         item("1.", "Alterar perfil de vault")
         item("2.", "Alterar entrada e chave")
         item("3.", "Alterar descrição")
@@ -494,6 +517,7 @@ def manage_omie_profile(config: McpConfiguration, name: str) -> None:
         if not isinstance(profile, dict):
             return
         screen("MCP · Perfil Omie", name)
+        profile_overview(profile)
         item("1.", "Alterar perfil de vault")
         item("2.", "Alterar entrada e credenciais")
         item("3.", "Alterar descrição")
@@ -603,6 +627,7 @@ def manage_cloudflare_profile(config: McpConfiguration, name: str) -> None:
         if not isinstance(profile, dict):
             return
         screen("MCP · Perfil Cloudflare", name)
+        profile_overview(profile)
         item("1.", "Alterar perfil de vault")
         item("2.", "Alterar entrada e API Token")
         item("3.", "Alterar descrição")
@@ -726,6 +751,7 @@ def manage_forward_email_profile(config: McpConfiguration, name: str) -> None:
         if not isinstance(profile, dict):
             return
         screen("MCP · Perfil Forward Email", name)
+        profile_overview(profile)
         item("1.", "Alterar perfil de vault")
         item("2.", "Alterar entrada e token")
         item("3.", "Alterar descrição")
@@ -849,6 +875,7 @@ def manage_notion_profile(config: McpConfiguration, name: str) -> None:
         if not isinstance(profile, dict):
             return
         screen("MCP · Perfil Notion", name)
+        profile_overview(profile)
         item("1.", "Alterar perfil de vault")
         item("2.", "Alterar entrada e token")
         item("3.", "Alterar descrição")
@@ -976,6 +1003,7 @@ def manage_aws_profile(config: McpConfiguration, name: str) -> None:
         data = config.aws(); profile = data["profiles"].get(name)
         if not isinstance(profile, dict): return
         screen("MCP · Perfil AWS", name)
+        profile_overview(profile)
         item("1.", "Alterar perfil de vault"); item("2.", "Alterar entrada e credenciais"); item("3.", "Alterar descrição")
         item("4.", "Alterar região padrão", profile.get("region") or "não definida"); item("5.", "Alterar conta esperada", profile.get("expected_account_id") or "não definida")
         item("6.", "Alterar executável AWS CLI", profile["cli_path"]); item("7.", "Alterar raízes de leitura", f"{len(profile['readable_roots'])} configurada(s)")
@@ -1069,6 +1097,7 @@ def manage_mysql_profile(config: McpConfiguration, name: str) -> None:
         data = config.mysql(); profile = data["profiles"].get(name)
         if not isinstance(profile, dict): return
         screen("MCP · Perfil MySQL", name)
+        profile_overview(profile)
         item("1.", "Alterar perfil de vault"); item("2.", "Alterar entrada e credenciais"); item("3.", "Alterar descrição"); item("4.", "Alterar servidor e banco")
         item("5.", "Alterar socket", profile.get("socket") or "não definido"); item("6.", "Alterar raízes de scripts", f"{len(profile['readable_roots'])} configurada(s)")
         item("7.", "Comandos livres do cliente", "habilitados" if profile["allow_client_commands"] else "desabilitados"); item("8.", "Habilitar"); item("9.", "Desabilitar")
@@ -1171,6 +1200,7 @@ def manage_ssh_profile(config: McpConfiguration, name: str) -> None:
         data = config.ssh(); profile = data["profiles"].get(name)
         if not isinstance(profile, dict): return
         screen("MCP · Perfil SSH", name)
+        profile_overview(profile)
         item("1.", "Alterar servidor, porta e usuário"); item("2.", "Alterar autenticação e credencial"); item("3.", "Alterar descrição")
         item("4.", "Confirmar chave do servidor"); item("5.", "Alterar raízes de upload", f"{len(profile['readable_roots'])} configurada(s)"); item("6.", "Alterar raízes de download", f"{len(profile['writable_roots'])} configurada(s)")
         item("7.", "Habilitar"); item("8.", "Desabilitar"); item("9.", "Testar conexão"); item("10.", "Remover perfil"); item("X.", "Voltar")
@@ -1256,6 +1286,7 @@ def manage_bis2cmd_profile(config: McpConfiguration, name: str) -> None:
         data = config.bis2cmd(); profile = data["profiles"].get(name)
         if not isinstance(profile, dict): return
         screen("MCP · Perfil BIS2CMD", name)
+        profile_overview(profile)
         item("1.", "Alterar perfil de vault"); item("2.", "Alterar entrada e credenciais"); item("3.", "Alterar descrição"); item("4.", "Alterar JAR e diretório de trabalho")
         item("5.", "Alterar host e porta"); item("6.", "Alterar raízes de importação", f"{len(profile['readable_roots'])} configurada(s)"); item("7.", "Alterar raízes de exportação", f"{len(profile['writable_roots'])} configurada(s)")
         item("8.", "Habilitar"); item("9.", "Desabilitar"); item("10.", "Testar conexão"); item("11.", "Remover perfil"); item("X.", "Voltar")
@@ -1336,6 +1367,7 @@ def manage_bis10cmd_profile(config: McpConfiguration, name: str) -> None:
         data = config.bis10cmd(); profile = data["profiles"].get(name)
         if not isinstance(profile, dict): return
         screen("MCP · Perfil BIS10CMD", name)
+        profile_overview(profile)
         item("1.", "Alterar vault JNDI"); item("2.", "Alterar entrada JNDI"); item("3.", "Alterar vault BIS10"); item("4.", "Alterar entrada BIS10")
         item("5.", "Alterar descrição"); item("6.", "Alterar JAR e diretório de trabalho"); item("7.", "Alterar host, porta e locale")
         item("8.", "Habilitar"); item("9.", "Desabilitar"); item("10.", "Testar conexão"); item("11.", "Remover perfil"); item("X.", "Voltar")
@@ -1424,6 +1456,7 @@ def btg_payment_settings(config: McpConfiguration, name: str) -> None:
         if not isinstance(profile, dict):
             return
         screen("MCP · BTG · Pagamentos e monitor", name)
+        profile_overview(profile)
         item("1.", "Limite local por pagamento", "BRL " + profile.get("max_amount", "1000000.00"))
         item("2.", "Monitor do perfil", "habilitado" if profile.get("monitor_enabled") else "desabilitado")
         item("3.", "Intervalos de acompanhamento")
@@ -1498,6 +1531,7 @@ def manage_btg_profile(config: McpConfiguration, name: str) -> None:
         if not isinstance(profile, dict):
             return
         screen("MCP · Perfil BTG Empresas", f"{name} · {profile['environment']} · CNPJ {profile['company_id']}")
+        profile_overview(profile)
         item("1.", "Alterar perfil de vault")
         item("2.", "Alterar entrada e credenciais")
         item("3.", "Alterar descrição")
@@ -1678,6 +1712,7 @@ def manage_eccovox_profile(config: McpConfiguration, name: str) -> None:
         data = config.eccovox(); profile = data["profiles"].get(name)
         if not isinstance(profile, dict): return
         screen("MCP · Perfil EccoVox", name)
+        profile_overview(profile)
         item("1.", "Alterar descrição")
         item("2.", "Alterar endpoint local")
         item("3.", "Alterar raízes de leitura")
@@ -1755,6 +1790,7 @@ def manage_google_profile(config: McpConfiguration, name: str) -> None:
         data = config.google(); profile = data["profiles"].get(name)
         if not isinstance(profile, dict): return
         screen("MCP · Perfil Google", name)
+        profile_overview(profile)
         item("1.", "Alterar perfil de vault"); item("2.", "Alterar entrada e credenciais"); item("3.", "Alterar descrição")
         item("4.", "Alterar identificador OAuth"); item("5.", "Alterar usuário Gmail"); item("6.", "Alterar raízes de arquivos")
         item("7.", "Habilitar"); item("8.", "Desabilitar"); item("9.", "Autorizar conta no Google")
@@ -1841,6 +1877,7 @@ def manage_spotify_profile(config: McpConfiguration, name: str) -> None:
         if not isinstance(profile, dict): return
         redirect_uri = f"http://127.0.0.1:{profile['callback_port']}/callback"
         screen("MCP · Perfil Spotify", name)
+        profile_overview(profile)
         item("1.", "Alterar perfil de vault"); item("2.", "Alterar entrada e Client ID"); item("3.", "Alterar descrição")
         item("4.", "Alterar porta de callback", redirect_uri); item("5.", "Habilitar"); item("6.", "Desabilitar")
         item("7.", "Autorizar conta no Spotify"); item("8.", "Testar conexão"); item("9.", "Remover perfil"); item("X.", "Voltar")
