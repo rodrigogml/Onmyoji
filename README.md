@@ -134,7 +134,9 @@ Workflows fornecidos por serviços MCP, como memória e autoria de schemas Data 
 | [MiniApps](onmyoji-daemon/docs/mcp-mini-apps.md) | Publica aplicações por referência a diretórios do workspace e administra o gateway, TLS, Cloudflare Tunnel e callbacks OAuth. |
 | [MySQL](onmyoji-daemon/docs/mcp-mysql.md) | Executa consultas, comandos e scripts SQL pelo cliente nativo, com credenciais obtidas do cofre interno. |
 | [Notion](onmyoji-daemon/docs/mcp-notion.md) | Consulta e altera páginas, blocos, databases e data sources do Notion, além de operações com arquivos e comentários. |
+| [OCR](onmyoji-daemon/docs/mcp-ocr.md) | Reconhece texto em imagens e TIFF multipágina, com idiomas configuráveis, análise de layout e tabelas pelo motor avançado e integração ao MCP de PDF. |
 | [Omie](onmyoji-daemon/docs/mcp-omie.md) | Integra cadastros, operações financeiras e NF-e do ERP Omie. |
+| [PDF](onmyoji-daemon/docs/mcp-pdf.md) | Lê, pesquisa, extrai e compõe PDFs; manipula páginas, imagens, formulários, anotações e tarjas, com OCR, proteção e validação por jobs locais. |
 | [Spotify](onmyoji-daemon/docs/mcp-spotify.md) | Consulta o catálogo e gerencia biblioteca, playlists, seguimento e reprodução. |
 | [SSH](onmyoji-daemon/docs/mcp-ssh.md) | Executa comandos remotos e transfere arquivos por SFTP, com autenticação por senha ou chave privada. |
 | [Telegram](onmyoji-daemon/docs/mcp-telegram.md) | Consulta destinos registrados e envia mensagens e arquivos por meio do Gateway Telegram. |
