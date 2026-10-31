@@ -12,6 +12,8 @@ TLS direto usa, por padrão, 993/IMAP, 995/POP3 e 465/SMTP. STARTTLS obrigatóri
 
 Configure nomes reais de pastas IMAP em Gerenciar conta > Pastas. Os nomes podem ser obtidos por `email.list_folders`; não se presume que todos os provedores usem os mesmos nomes. Cópia de enviados é gerenciada pelo servidor por padrão. Use APPEND somente quando o servidor não mantiver essa cópia; a opção exige IMAP e pasta de enviados configurada.
 
+Em Gerenciar conta > Raízes de anexos e arquivos, o setup sugere `<workspace>/.onmyoji/email` tanto para leitura quanto para escrita e cria essa pasta quando ela é escolhida. Downloads e exportações são gravados sob as raízes de escrita; anexos enviados e mensagens importadas são lidos apenas sob as raízes de leitura. Escolha `-` para bloquear explicitamente qualquer operação de arquivo.
+
 ## OAuth Google e Microsoft
 
 Registre seu cliente OAuth no provedor e escolha o tipo compatível com callback local (Desktop/público) ou web (confidencial). Client ID é parâmetro público; Client Secret e refresh tokens ficam na entrada dedicada do vault. O aplicativo público não usa client secret. No Microsoft, configure o tenant e permissões delegadas dos protocolos usados, além de acesso offline. No Google, os protocolos usam o escopo de correio completo.
