@@ -238,7 +238,6 @@ Referências no upstream:
 - [Supervisor](../onmyoji-daemon/src/onmyoji_daemon/supervisor.py)
 - [RPC](../onmyoji-daemon/src/onmyoji_daemon/rpc.py)
 - [Documentação do daemon](daemon.md)
-- [Arquitetura da instância](architecture.md)
 
 O gateway **já oferece**:
 - RPC interno com operação de envio simples; ainda recebe chat_id explícito e não realiza resolução via catálogo.
