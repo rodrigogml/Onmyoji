@@ -247,7 +247,18 @@ def create_vault_profile(config: McpConfiguration) -> None:
             if made.returncode or not Path(database).is_file(): result(False, "KeePassXC não criou o cofre."); return
         except (OSError, subprocess.SubprocessError): result(False, "Não foi possível criar o cofre."); return
         config.save_credentials(data); save_password(name, auth, config.root, password)
-    else: config.save_credentials(data)
+    else:
+        password = getpass.getpass(Ui.text("› Senha mestra do vault existente (não será exibida): ", Ui.violet, Ui.bold))
+        if not password:
+            result(False, "Senha mestra não informada; perfil não foi salvo.")
+            return
+        try:
+            KeePassCredentialResolver.validate_vault_access(data["vaults"][name], data.get("defaults", {}), password)
+        except CredentialError:
+            result(False, "Não foi possível acessar o cofre com a senha informada.")
+            return
+        config.save_credentials(data)
+        save_password(name, auth, config.root, password)
     result(True, "Perfil de vault salvo.")
 
 

@@ -110,7 +110,7 @@ class KeePassCredentialResolver:
         defaults, profile, vault = self._settings(profile_id)
         password = self._master_password(profile)
         try:
-            self._check_access(vault, defaults, password)
+            self.validate_vault_access(vault, defaults, password)
         finally:
             del password
 
@@ -476,7 +476,13 @@ class KeePassCredentialResolver:
         cls._run_write_command(vault, defaults, arguments, password, extra)
 
     @staticmethod
-    def _check_access(vault: dict[str, Any], defaults: dict[str, Any], password: str) -> None:
+    def validate_vault_access(vault: dict[str, Any], defaults: dict[str, Any], password: str) -> None:
+        """Valida a abertura de um KDBX com a senha informada.
+
+        A validação não exige um perfil já persistido e não consulta entradas
+        do cofre. Erros de configuração, execução do KeePassXC ou senha
+        incorreta são relatados como :class:`CredentialError`.
+        """
         platform = _platform_name()
         database = vault.get("database", {})
         database_path = _require_string(database.get(platform) if isinstance(database, dict) else None, "invalid_config", "Caminho do cofre não configurado para esta plataforma.")
