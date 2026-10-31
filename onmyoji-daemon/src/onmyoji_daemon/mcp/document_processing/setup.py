@@ -30,6 +30,12 @@ def _create_directories(profile):
         Path(value).mkdir(parents=True, exist_ok=True)
 
 
+def _limits_summary(defaults):
+    """Resume os limites operacionais sem despejar a estrutura interna na tela."""
+    maximum = int(defaults["max_input_bytes"]) // (1024 * 1024)
+    return f"Entrada {maximum} MiB · {int(defaults['max_pages']):,} páginas · {int(defaults['timeout_seconds']) // 60} min".replace(",", ".")
+
+
 def _diagnostics(config, ui, profile=None):
     from ..ocr.runtime import get_capabilities, native_installation_guidance
     capabilities = get_capabilities(config.root, profile)
@@ -115,9 +121,15 @@ def _install(config, ui):
     tier = ui.flow_choice("Componentes documentais", ["Básico PDF e OCR", "OCR avançado CPU", "OCR avançado GPU NVIDIA", "PDF/A"], "Básico PDF e OCR")
     if tier is None:
         return
-    ui.note("Dependências e modelos serão preparados agora; o processamento posterior usa os arquivos locais.")
-    install_runtime(config.root, "advanced" if "avançado" in tier else "pdfa" if tier == "PDF/A" else "base", gpu="GPU" in tier)
-    ui.result(True, "Bibliotecas Python preparadas.")
+    ui.flow_heading("Preparação de componentes", tier)
+    ui.note("Cada etapa será exibida. Dependências e modelos podem levar alguns minutos, mas o setup informará que continua trabalhando.")
+    try:
+        install_runtime(config.root, "advanced" if "avançado" in tier else "pdfa" if tier == "PDF/A" else "base", gpu="GPU" in tier, progress=ui.note)
+    except (RuntimeError, ValueError, OSError) as error:
+        ui.result(False, f"Preparação interrompida. {error}")
+        ui.note("Corrija o problema informado e escolha 'Instalar ou reparar componentes' novamente.")
+        return
+    ui.result(True, "Bibliotecas Python preparadas e validadas.")
     _diagnostics(config, ui)
 
 
@@ -129,7 +141,7 @@ def document_menu(config, ui, namespace):
         ui.render_item("1.", "Criar perfil")
         ui.render_item("2.", "Gerenciar perfil", f"{len(data['profiles'])} configurado(s)")
         ui.render_item("3.", "Instalar ou reparar componentes")
-        ui.render_item("4.", "Limites e retenção", str(data["defaults"]))
+        ui.render_item("4.", "Limites e retenção", _limits_summary(data["defaults"]))
         ui.render_item("X.", "Voltar")
         choice = ui.prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return

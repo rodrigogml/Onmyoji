@@ -6,9 +6,12 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
+import threading
+from collections.abc import Callable
 from uuid import uuid4
 
 from ..document_processing.contracts import DocumentError
@@ -190,16 +193,33 @@ def native_installation_guidance() -> dict:
             "links": {"verapdf": "https://verapdf.org/software/", "tesseract": "https://tesseract-ocr.github.io/tessdoc/Installation.html"}}
 
 
-def _run_install(command: list[str], *, timeout: int = 1200, environment: dict | None = None, cwd: Path | None = None) -> None:
+def _run_install(command: list[str], *, timeout: int = 1200, environment: dict | None = None, cwd: Path | None = None, stage: str = "Preparando componentes documentais.", progress: Callable[[str], None] | None = None) -> None:
+    """Executa uma etapa com aviso periódico e devolve o diagnóstico do instalador."""
+    if progress:
+        progress(stage)
+    finished = threading.Event()
+    def heartbeat() -> None:
+        while not finished.wait(15):
+            if progress:
+                progress(f"{stage} Ainda em andamento; aguarde a conclusão ou o diagnóstico.")
+    reporter = threading.Thread(target=heartbeat, daemon=True)
+    reporter.start()
     try:
         completed = subprocess.run(command, env=environment, cwd=str(cwd) if cwd else None, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=timeout, check=False)
     except (OSError, subprocess.TimeoutExpired) as error:
-        raise DocumentError("installation_failed", "Não foi possível preparar o runtime de documentos.") from error
+        raise DocumentError("installation_failed", f"{stage} Não foi possível concluir a etapa.") from error
+    finally:
+        finished.set(); reporter.join(timeout=1)
     if completed.returncode:
-        raise DocumentError("installation_failed", "A instalação dos componentes não foi concluída; confira a compatibilidade do Python e os diagnósticos do setup.")
+        lines = (completed.stderr or completed.stdout).strip().splitlines()
+        detail = re.sub(r"(?i)\b(token|password|secret|credential)\b(\s*[:=]\s*)\S+", r"\1\2[redacted]", lines[-1]) if lines else ""
+        suffix = f" Detalhe: {detail}" if detail else ""
+        raise DocumentError("installation_failed", f"{stage} O instalador retornou código {completed.returncode}.{suffix}")
+    if progress:
+        progress(f"{stage} Concluída.")
 
 
-def install_runtime(root: Path, tier: str = "base", gpu: bool = False) -> dict:
+def install_runtime(root: Path, tier: str = "base", gpu: bool = False, progress: Callable[[str], None] | None = None) -> dict:
     """Instala versões explícitas no runtime privado, somente por ação do setup.
 
     Tesseract, Ghostscript e veraPDF são dependências nativas diagnosticadas;
@@ -210,28 +230,31 @@ def install_runtime(root: Path, tier: str = "base", gpu: bool = False) -> dict:
     from ..runtime import ensure_mcp_runtime, mcp_runtime_python
     preparation = installation_directory(root)
     environment = local_process_environment(preparation)
-    ensure_mcp_runtime(root)
+    if progress:
+        ensure_mcp_runtime(root, progress=progress)
+    else:
+        ensure_mcp_runtime(root)
     executable = mcp_runtime_python(root)
     if tier == "advanced":
         executable = advanced_python(root)
         if not executable.is_file():
-            _run_install([sys.executable, "-I", "-B", "-m", "venv", "--without-pip", str(advanced_directory(root))], timeout=120, environment=environment, cwd=preparation)
+            _run_install([sys.executable, "-I", "-B", "-m", "venv", "--without-pip", str(advanced_directory(root))], timeout=120, environment=environment, cwd=preparation, stage="Criando ambiente isolado para OCR avançado.", progress=progress)
         requirements = list(ADVANCED_REQUIREMENTS)
         # CPU e GPU compartilham o pacote importável paddle; não manter ambos.
-        _run_install([*pip_command(), "--python", str(executable), "uninstall", "--yes", "paddlepaddle", "paddlepaddle-gpu"], environment=environment, cwd=preparation)
+        _run_install([*pip_command(), "--python", str(executable), "uninstall", "--yes", "paddlepaddle", "paddlepaddle-gpu"], environment=environment, cwd=preparation, stage="Removendo a variante OCR avançada anterior.", progress=progress)
         if gpu:
             # Official CUDA 12.6 wheels are not published on PyPI.
-            _run_install([*pip_command(), "--python", str(executable), "install", "--disable-pip-version-check", "--no-input", "paddlepaddle-gpu==3.2.0", "--index-url", "https://www.paddlepaddle.org.cn/packages/stable/cu126/"], environment=environment, cwd=preparation)
+            _run_install([*pip_command(), "--python", str(executable), "install", "--disable-pip-version-check", "--no-input", "paddlepaddle-gpu==3.2.0", "--index-url", "https://www.paddlepaddle.org.cn/packages/stable/cu126/"], environment=environment, cwd=preparation, stage="Instalando PaddleOCR com suporte NVIDIA CUDA 12.6.", progress=progress)
             requirements.pop()
-            _run_install([str(executable), "-I", "-B", "-c", "import paddle; assert paddle.is_compiled_with_cuda() and paddle.device.cuda.device_count() > 0"], timeout=60, environment=environment, cwd=preparation)
-        _run_install([*pip_command(), "--python", str(executable), "install", "--disable-pip-version-check", "--no-input", *requirements], environment=environment, cwd=preparation)
-        prepare_advanced_models(root, device="gpu:0" if gpu else "cpu")
+            _run_install([str(executable), "-I", "-B", "-c", "import paddle; assert paddle.is_compiled_with_cuda() and paddle.device.cuda.device_count() > 0"], timeout=60, environment=environment, cwd=preparation, stage="Validando a GPU NVIDIA para OCR avançado.", progress=progress)
+        _run_install([*pip_command(), "--python", str(executable), "install", "--disable-pip-version-check", "--no-input", *requirements], environment=environment, cwd=preparation, stage="Instalando bibliotecas do OCR avançado.", progress=progress)
+        prepare_advanced_models(root, device="gpu:0" if gpu else "cpu", progress=progress)
     else:
-        _run_install([*pip_command(), "--python", str(executable), "install", "--disable-pip-version-check", "--no-input", *BASE_REQUIREMENTS, *OCR_REQUIREMENTS], environment=environment, cwd=preparation)
+        _run_install([*pip_command(), "--python", str(executable), "install", "--disable-pip-version-check", "--no-input", *BASE_REQUIREMENTS, *OCR_REQUIREMENTS], environment=environment, cwd=preparation, stage="Instalando bibliotecas PDF e OCR básico.", progress=progress)
     return {"tier": tier, "installed": True, "capabilities": get_capabilities(root)}
 
 
-def prepare_advanced_models(root: Path, device: str = "cpu", profile: dict | None = None) -> None:
+def prepare_advanced_models(root: Path, device: str = "cpu", profile: dict | None = None, progress: Callable[[str], None] | None = None) -> None:
     """Permite download dos modelos exclusivamente durante o setup explícito."""
     models = model_directory(root, profile)
     models.mkdir(parents=True, exist_ok=True)
@@ -239,7 +262,7 @@ def prepare_advanced_models(root: Path, device: str = "cpu", profile: dict | Non
     preparation = installation_directory(root)
     environment = local_process_environment(preparation, source=source)
     environment.update({"PADDLE_PDX_CACHE_HOME": str(models), "HF_HOME": str(models / "huggingface"), "PADDLE_HOME": str(models / "paddle")})
-    _run_install([str(advanced_python(root)), "-B", "-m", "onmyoji_daemon.mcp.ocr.advanced_worker", "--prepare", str(models), "--device", device], environment=environment, cwd=preparation)
+    _run_install([str(advanced_python(root)), "-B", "-m", "onmyoji_daemon.mcp.ocr.advanced_worker", "--prepare", str(models), "--device", device], environment=environment, cwd=preparation, stage=f"Baixando e validando modelos locais do OCR avançado ({device}).", progress=progress)
     # Alguns caches de download usam links internos para os blobs. O conjunto
     # preparado contém arquivos comuns para poder ser copiado sem seguir links.
     for candidate in models.rglob("*"):

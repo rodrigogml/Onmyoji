@@ -108,6 +108,12 @@ def test_setup_creates_a_pdf_profile_using_enter_defaults(tmp_path):
     assert all(Path(path).is_dir() for path in profile["readable_roots"])
 
 
+def test_document_limits_are_rendered_as_an_operational_summary():
+    from onmyoji_daemon.mcp.document_processing.setup import _limits_summary
+
+    assert _limits_summary(empty_configuration()["defaults"]) == "Entrada 250 MiB · 2.000 páginas · 30 min"
+
+
 def test_pdf_worker_publishes_new_artifact_and_keeps_source(tmp_path):
     fitz = pytest.importorskip("pymupdf")
     config, data, workspace = configured(tmp_path)

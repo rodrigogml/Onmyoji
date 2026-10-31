@@ -4,8 +4,11 @@ from __future__ import annotations
 import os
 import importlib.util
 from pathlib import Path
+import re
 import subprocess
 import sys
+import threading
+from collections.abc import Callable
 
 
 MCP_REQUIREMENT = "mcp>=2,<3"
@@ -16,6 +19,40 @@ VALIDATION_REQUIREMENT = "jsonschema>=4,<5"
 
 class McpRuntimeError(RuntimeError):
     """Indica que o ambiente privado do MCP não pôde ser preparado."""
+
+
+def _setup_error_detail(completed: subprocess.CompletedProcess[str]) -> str:
+    """Retorna a última linha útil do instalador sem propagar segredos acidentais."""
+    lines = (completed.stderr or completed.stdout).strip().splitlines()
+    if not lines:
+        return ""
+    return re.sub(r"(?i)\b(token|password|secret|credential)\b(\s*[:=]\s*)\S+", r"\1\2[redacted]", lines[-1])
+
+
+def _run_setup_command(command: list[str], *, cwd: Path, environment: dict[str, str], timeout: int, stage: str, progress: Callable[[str], None] | None) -> subprocess.CompletedProcess[str]:
+    """Executa uma etapa do setup exibindo andamento e preservando erro sanitizado."""
+    if progress:
+        progress(stage)
+    finished = threading.Event()
+    def heartbeat() -> None:
+        while not finished.wait(15):
+            if progress:
+                progress(f"{stage} Ainda em andamento; esta etapa pode levar alguns minutos.")
+    reporter = threading.Thread(target=heartbeat, daemon=True)
+    reporter.start()
+    try:
+        completed = subprocess.run(command, cwd=str(cwd), env=environment, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise McpRuntimeError(f"{stage} Não foi possível concluir a etapa.") from error
+    finally:
+        finished.set(); reporter.join(timeout=1)
+    if completed.returncode:
+        detail = _setup_error_detail(completed)
+        suffix = f" Detalhe: {detail}" if detail else ""
+        raise McpRuntimeError(f"{stage} O comando retornou código {completed.returncode}.{suffix}")
+    if progress:
+        progress(f"{stage} Concluída.")
+    return completed
 
 
 def mcp_runtime_directory(root: Path) -> Path:
@@ -68,25 +105,25 @@ def mcp_runtime_ready(root: Path) -> bool:
     return completed.returncode == 0
 
 
-def ensure_mcp_runtime(root: Path) -> str:
-    """Cria ou repara o ambiente MCP sem instalar ou iniciar o daemon."""
+def ensure_mcp_runtime(root: Path, progress: Callable[[str], None] | None = None) -> str:
+    """Cria ou repara o ambiente MCP, relatando etapas ao chamador quando solicitado."""
+    if progress:
+        progress("Verificando o runtime MCP privado.")
     if mcp_runtime_ready(root):
+        if progress:
+            progress("Runtime MCP privado já está pronto.")
         return "Runtime MCP já está pronto."
     environment = mcp_runtime_directory(root)
     executable = mcp_runtime_python(root)
     preparation, install_environment = _preparation(root)
     environment.parent.mkdir(parents=True, exist_ok=True)
     if not executable.is_file():
-        try:
-            created = subprocess.run([sys.executable, "-I", "-B", "-m", "venv", "--without-pip", str(environment)], cwd=str(preparation), env=install_environment, text=True, capture_output=True, timeout=120, check=False)
-        except (OSError, subprocess.TimeoutExpired) as error:
-            raise McpRuntimeError("Não foi possível criar o runtime privado do MCP.") from error
-        if created.returncode != 0:
-            raise McpRuntimeError("Não foi possível criar o runtime privado do MCP.")
-    try:
-        installed = subprocess.run([sys.executable, "-I", "-B", _pip_entrypoint(), "--python", str(executable), "install", "--disable-pip-version-check", "--no-input", "--upgrade", MCP_REQUIREMENT, OAUTH_REQUIREMENT, EMAIL_REQUIREMENT, VALIDATION_REQUIREMENT], cwd=str(preparation), env=install_environment, text=True, capture_output=True, timeout=600, check=False)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise McpRuntimeError("Não foi possível instalar os componentes do runtime MCP.") from error
-    if installed.returncode != 0 or not mcp_runtime_ready(root):
+        _run_setup_command([sys.executable, "-I", "-B", "-m", "venv", "--without-pip", str(environment)], cwd=preparation, environment=install_environment, timeout=120, stage="Criando o runtime MCP privado.", progress=progress)
+    _run_setup_command([sys.executable, "-I", "-B", _pip_entrypoint(), "--python", str(executable), "install", "--disable-pip-version-check", "--no-input", "--upgrade", MCP_REQUIREMENT, OAUTH_REQUIREMENT, EMAIL_REQUIREMENT, VALIDATION_REQUIREMENT], cwd=preparation, environment=install_environment, timeout=600, stage="Instalando dependências básicas do runtime MCP.", progress=progress)
+    if progress:
+        progress("Validando o runtime MCP privado.")
+    if not mcp_runtime_ready(root):
         raise McpRuntimeError("O runtime MCP não pôde ser validado após a instalação.")
+    if progress:
+        progress("Runtime MCP instalado e validado.")
     return "Runtime MCP instalado e validado."
