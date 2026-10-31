@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -39,6 +40,15 @@ class McpSetupTests(unittest.TestCase):
         with patch.object(MODULE, "ask", return_value="outro") as ask:
             self.assertEqual(MODULE.ask_new_profile_name("Nome", {"default": {}}), "outro")
         ask.assert_called_once_with("Nome", "", required=True)
+
+    def test_eccovox_media_roots_are_created_inside_the_configured_workspace(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd() / "tmp") as temporary:
+            root = Path(temporary) / "instance"; workspace = Path(temporary) / "workspace"
+            root.mkdir(); workspace.mkdir(); (root / "configs").mkdir()
+            (root / "configs" / "onmyoji-system.toml").write_text('[codex]\nproject_directory = ' + repr(str(workspace)).replace("'", '"') + '\n', encoding="utf-8")
+            roots = MODULE.eccovox_media_roots(SimpleNamespace(root=root))
+            self.assertEqual(roots, [str(workspace / ".onmyoji" / "eccovox" / "input"), str(workspace / ".onmyoji" / "eccovox" / "output")])
+            self.assertTrue(all(Path(root).is_dir() for root in roots))
 
     def test_profile_selection_is_a_flow_step_not_a_new_screen(self) -> None:
         with patch.object(MODULE, "flow_choice", return_value="principal") as choice, patch.object(MODULE, "screen") as screen:
