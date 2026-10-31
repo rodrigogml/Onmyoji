@@ -12,6 +12,12 @@ oferece reutilização ou substituição de cada credencial sem exibir valores e
 preserva os metadados OAuth. O diagnóstico consulta o cofre e não exige daemon,
 Gateway ou conexão com o banco.
 
+Ao criar um perfil, o caminho sugerido para a entrada é
+`Integrations/BTG/<ambiente>/<perfil>`; por exemplo,
+`Integrations/BTG/sandbox/empresa` ou
+`Integrations/BTG/production/empresa`. Assim, Client ID, Client Secret e o
+estado OAuth de cada ambiente ficam em entradas separadas.
+
 Sem perfil habilitado com vault configurado, a integração não publica tools.
 Com um perfil, as ferramentas dispensam argumento de perfil e incluem o
 contexto na descrição. Com vários, exigem `profile` e disponibilizam

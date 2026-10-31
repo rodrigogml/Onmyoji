@@ -278,6 +278,36 @@ def test_btg_credentials_configure_two_fields_and_preserve_notes(monkeypatch):
     assert configure.call_args.args[-1] == [("client_id_field", "Client ID", "username"), ("client_secret_field", "Client Secret", "password")]
 
 
+@pytest.mark.parametrize("environment", ["sandbox", "production"])
+def test_btg_new_profile_scopes_default_keepass_entry_by_environment(monkeypatch, environment):
+    module = setup_module()
+    config = mock_configuration()
+    data = {"profiles": {}}
+    config.btg.return_value = data
+    answers = iter(["1", "x"])
+    monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
+    monkeypatch.setattr(module, "ask_new_profile_name", lambda *_args: "empresa")
+    monkeypatch.setattr(module, "flow_choice", lambda *_args: environment)
+    monkeypatch.setattr(module, "select", lambda *_args: "vault")
+    entries = []
+    def ask(label, current="", required=False):
+        if label == "Entrada KeePass das credenciais":
+            entries.append(current)
+            return current
+        if label == "CNPJ da empresa (14 dígitos)":
+            return "30306294000145"
+        if label == "Descrição de quando utilizar este perfil":
+            return "Conta de teste"
+        raise AssertionError(label)
+    monkeypatch.setattr(module, "ask", ask)
+    monkeypatch.setattr(module, "btg_credentials", lambda _config, _vault, entry: (entry, {}))
+
+    module.btg_menu(config)
+
+    assert entries == [f"Integrations/BTG/{environment}/empresa"]
+    assert data["profiles"]["empresa"]["credential_entry_path"] == entries[0]
+
+
 @pytest.mark.parametrize("action,confirmation,operation", [("9", "CoNeCtAr", "start_authorization"), ("10", None, "get_authorization_status"), ("11", "CaNcElAr", "cancel_authorization"), ("12", None, "get_account")])
 def test_btg_oauth_and_bank_commands_remain_in_profile_menu(monkeypatch, capsys, action, confirmation, operation):
     module = setup_module()

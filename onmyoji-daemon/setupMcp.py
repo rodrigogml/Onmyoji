@@ -1741,7 +1741,7 @@ def btg_menu(config: McpConfiguration) -> None:
         vault = select("Escolha o perfil de vault", config.vault_profile_names())
         if not vault:
             continue
-        entry = ask("Entrada KeePass das credenciais", f"Integrations/BTG/{name}", True)
+        entry = ask("Entrada KeePass das credenciais", f"Integrations/BTG/{environment}/{name}", True)
         if not entry:
             continue
         profile = {"enabled": True, "description": "Perfil em configuração", "environment": environment, "company_id": company, "credential_profile": vault, "credential_entry_path": entry, "oauth_mode": "remote", "scopes": DEFAULT_SCOPES, "redirect_uri": "", "max_amount": "1000000.00", "monitor_enabled": False}
