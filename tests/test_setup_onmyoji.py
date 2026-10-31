@@ -61,6 +61,13 @@ class SystemSetupTests(unittest.TestCase):
         resolver.password_exists.assert_called_once_with("principal", "APIs/Cloudflare/MiniApps")
         resolver.save_password.assert_not_called()
 
+    def test_totp_password_configuration_creates_missing_vault_entry(self) -> None:
+        resolver = MagicMock(); resolver.entry_exists.return_value = False
+        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "KeePassCredentialResolver", return_value=resolver), patch.object(MODULE, "prompt", return_value=""), patch.object(MODULE, "flow_choice", return_value="Informar a senha e criar esta entrada"), patch.object(MODULE.getpass, "getpass", return_value="senha-totp"):
+            entry = MODULE.configure_totp_password(Path(temporary), "principal", "real", "APIs/TelegramTOTP:Example:Real")
+        self.assertEqual(entry, "APIs/TelegramTOTP:Example:Real")
+        resolver.save_password.assert_called_once_with("principal", "APIs/TelegramTOTP:Example:Real", "senha-totp")
+
     def test_diagnostics_are_a_flow_view_not_a_navigable_menu(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "flow_heading") as heading, patch.object(MODULE, "screen") as screen, patch.object(MODULE, "shikigami_diagnostics", return_value=[]), patch.object(MODULE, "prompt", return_value=""):
             MODULE.diagnostics_menu(Path(temporary))

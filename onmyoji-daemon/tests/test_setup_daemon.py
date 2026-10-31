@@ -84,6 +84,33 @@ def test_missing_telegram_token_entry_is_not_reported_as_a_vault_failure(tmp_pat
     resolver.password_exists.assert_not_called()
 
 
+def test_save_totp_requires_existing_passwords_in_the_telegram_vault(tmp_path):
+    module = setup_module(); module.bootstrap(tmp_path)
+    data = module.telegram_data(tmp_path); module.save_telegram(tmp_path, "vault", "APIs/Telegram:Bot", data)
+
+    with patch.object(module, "KeePassCredentialResolver") as resolver:
+        resolver.return_value.entry_exists.return_value = False
+        try:
+            module.save_totp(tmp_path, True, "APIs/TelegramTOTP:Example:Real", "APIs/TelegramTOTP:Example:Fake")
+        except ValueError as error:
+            assert "senha TOTP real não existe" in str(error)
+        else:
+            raise AssertionError("O TOTP não deve ser habilitado com senha ausente.")
+
+
+def test_save_totp_persists_only_validated_password_references(tmp_path):
+    module = setup_module(); module.bootstrap(tmp_path)
+    data = module.telegram_data(tmp_path); module.save_telegram(tmp_path, "vault", "APIs/Telegram:Bot", data)
+
+    with patch.object(module, "KeePassCredentialResolver") as resolver:
+        resolver.return_value.entry_exists.return_value = True
+        resolver.return_value.password_exists.return_value = True
+        module.save_totp(tmp_path, True, "APIs/TelegramTOTP:Example:Real", "APIs/TelegramTOTP:Example:Fake")
+
+    saved = tomllib.loads(module.target(tmp_path).read_text(encoding="utf-8"))
+    assert saved["totp"] == {"enabled": True, "real_password_entry": "APIs/TelegramTOTP:Example:Real", "fake_password_entry": "APIs/TelegramTOTP:Example:Fake", "period_seconds": 30}
+
+
 def test_telegram_validation_marks_only_the_legacy_generic_entry_as_pending(tmp_path):
     module = setup_module(); module.bootstrap(tmp_path)
     data = module.telegram_data(tmp_path)

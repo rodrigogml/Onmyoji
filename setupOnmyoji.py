@@ -898,6 +898,49 @@ def configure_mcp_password_reference(root: Path, integration: str, default_entry
         return profile, entry
 
 
+def configure_totp_password(root: Path, profile: str, label: str, default_entry: str, current_entry: str = "") -> str | None:
+    """Garante a senha TOTP indicada no mesmo vault usado pelo gateway."""
+    resolver = KeePassCredentialResolver(root)
+    entry = current_entry or default_entry
+    while True:
+        informed = prompt(f"Entrada KeePass da senha TOTP {label} [{entry}]: ").strip()
+        if informed.casefold() in {"x", "\x1b"}:
+            return None
+        entry = informed or entry
+        try:
+            exists = resolver.entry_exists(profile, entry)
+            has_password = exists and resolver.password_exists(profile, entry)
+        except CredentialError as error:
+            result(False, str(error))
+            return None
+        if has_password:
+            action = flow_choice(f"Senha TOTP {label}", ["Usar a senha já salva", "Informar nova senha e substituir", "Reinformar entrada KeePass"], "Usar a senha já salva")
+            if action is None:
+                return None
+            if action.startswith("Usar"):
+                return entry
+            if action.startswith("Reinformar"):
+                continue
+        else:
+            verb = "salvar nesta entrada" if exists else "criar esta entrada"
+            action = flow_choice(f"Senha TOTP {label}", [f"Informar a senha e {verb}", "Reinformar entrada KeePass"], f"Informar a senha e {verb}")
+            if action is None:
+                return None
+            if action.startswith("Reinformar"):
+                continue
+        secret = getpass.getpass(Ui.text(f"› Senha TOTP {label} (não será exibida): ", Ui.violet, Ui.bold)).strip()
+        if not secret:
+            result(False, "A senha TOTP é obrigatória.")
+            continue
+        try:
+            created = resolver.save_password(profile, entry, secret)
+        except CredentialError as error:
+            result(False, str(error))
+            return None
+        result(True, "Entrada criada no cofre MCP." if created else "Senha atualizada no cofre MCP.")
+        return entry
+
+
 def telegram_token_entry(root: Path) -> str:
     """Retorna a entrada padrão do token vinculada à identidade da instância."""
     return f"APIs/Telegram:{instance_identity(root)}"
@@ -1774,8 +1817,17 @@ def daemon_menu(root: Path) -> None:
                     if changed.returncode == 0: offer_restart()
                 else:
                     instance = "".join(part[:1].upper() + part[1:] for part in instance_identity(root).split()) or "Shikigami"
-                    real = prompt(f"Entrada KeePass da senha TOTP real [APIs/TelegramTOTP:{instance}:Real]: ").strip() or f"APIs/TelegramTOTP:{instance}:Real"
-                    fake = prompt(f"Entrada KeePass da senha TOTP falsa [APIs/TelegramTOTP:{instance}:Fake]: ").strip() or f"APIs/TelegramTOTP:{instance}:Fake"
+                    profile = str(telegram_settings.get("telegram", {}).get("vault_profile") or "")
+                    if not profile:
+                        result(False, "Configure primeiro a credencial do bot e seu perfil de vault MCP.")
+                        continue
+                    totp = telegram_settings.get("totp", {})
+                    real = configure_totp_password(root, profile, "real", f"APIs/TelegramTOTP:{instance}:Real", str(totp.get("real_password_entry") or ""))
+                    if real is None:
+                        continue
+                    fake = configure_totp_password(root, profile, "falsa", f"APIs/TelegramTOTP:{instance}:Fake", str(totp.get("fake_password_entry") or ""))
+                    if fake is None:
+                        continue
                     changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-totp", "--enabled", "--real-entry", real, "--fake-entry", fake], quiet=True)
                     result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
                     if changed.returncode == 0: offer_restart()

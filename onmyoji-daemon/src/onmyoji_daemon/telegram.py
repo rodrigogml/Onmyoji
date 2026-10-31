@@ -129,6 +129,17 @@ class Settings:
         # runtime e pelo Telegram; preservamos configurações já criadas.
         voice_format = "mp3" if requested_format == "opus" else requested_format
         if enabled and (not voice_profile or voice_format not in {"mp3", "wav", "flac"} or not 1 <= voice_text <= 4000 or not 1 <= auto_off <= 1440): raise ValueError("Telegram voice reply configuration is invalid")
+        if bool(totp.get("enabled", False)):
+            real, fake = str(totp.get("real_password_entry") or ""), str(totp.get("fake_password_entry") or "")
+            if not real or not fake:
+                raise ValueError("TOTP habilitado exige as entradas de senha real e falsa no vault MCP.")
+            try:
+                resolver = KeePassCredentialResolver(root)
+                for entry_path in (real, fake):
+                    if not resolver.entry_exists(profile, entry_path) or not resolver.password_exists(profile, entry_path):
+                        raise ValueError("TOTP habilitado exige senhas real e falsa existentes no vault MCP.")
+            except CredentialError as error:
+                raise ValueError("Não foi possível validar as senhas TOTP no vault MCP.") from error
         return cls(root, data_dir, profile, entry, project, str(system.get("executable") or "codex"), str(system.get("model") or ""), str(system.get("model_reasoning_effort") or "medium"), str(system.get("sandbox_mode") or "workspace-write"), str(system.get("approval_policy") or "never"), int(telegram.get("poll_timeout_seconds") or 30), int(agent.get("turn_timeout_seconds") or 900), max(1, int(agent.get("max_parallel_conversations") or 1)), str(instructions.get("shikigami_file") or "instructions.md"), bool(instructions.get("enabled", True)), bool(agent.get("owner_execution_preferences", True)), permitted_models, permitted_efforts, bool(app_server.get("enabled", False)), idle, per_file, batch, max(1, pending), retained, output_bytes, output_count, context_messages, context_age, enabled, voice_profile, str(voice.get("language") or "pt-BR"), str(voice.get("voice") or ""), float(voice.get("speed") or 1.0), voice_format, voice_text, auto_off, bool(voice.get("fallback_to_text", True)), outbound_media, bool(totp.get("enabled", False)))
 
 

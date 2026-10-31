@@ -163,8 +163,22 @@ def write_token(root: Path, profile: str, entry: str, token: str, exists: bool) 
 
 def save_totp(root: Path, enabled: bool, real_entry: str = "", fake_entry: str = "") -> None:
     data = telegram_data(root); totp = data.setdefault("totp", {})
-    totp["enabled"], totp["real_password_entry"], totp["fake_password_entry"] = enabled, real_entry or str(totp.get("real_password_entry") or ""), fake_entry or str(totp.get("fake_password_entry") or "")
-    telegram = data.get("telegram", {}); save_telegram(root, str(telegram.get("vault_profile") or ""), str(telegram.get("token_entry") or ""), data)
+    telegram = data.get("telegram", {})
+    profile = str(telegram.get("vault_profile") or "")
+    selected_real, selected_fake = real_entry or str(totp.get("real_password_entry") or ""), fake_entry or str(totp.get("fake_password_entry") or "")
+    if enabled:
+        if not profile:
+            raise ValueError("Configure o perfil de vault MCP da credencial do bot antes de habilitar o TOTP.")
+        resolver = KeePassCredentialResolver(root)
+        for label, entry in (("real", selected_real), ("falsa", selected_fake)):
+            if not entry:
+                raise ValueError(f"Informe a entrada KeePass da senha TOTP {label}.")
+            if not resolver.entry_exists(profile, entry):
+                raise ValueError(f"A entrada KeePass da senha TOTP {label} não existe no vault MCP.")
+            if not resolver.password_exists(profile, entry):
+                raise ValueError(f"A entrada KeePass da senha TOTP {label} não contém uma senha utilizável.")
+    totp["enabled"], totp["real_password_entry"], totp["fake_password_entry"] = enabled, selected_real, selected_fake
+    save_telegram(root, profile, str(telegram.get("token_entry") or ""), data)
 
 
 def save_app_server(root: Path, enabled: bool | None, idle_timeout: int | None) -> None:
@@ -359,6 +373,16 @@ def validation(root: Path) -> list[dict[str, str]]:
     add("ok" if profile and profile in known else "error", "Perfil de vault MCP", f"{profile!r} disponível." if profile in known else ("Selecione um perfil de vault MCP existente." if not profile else f"Perfil {profile!r} não encontrado."))
     legacy_entry = entry == "APIs/Telegram:Shikigami"
     add("ok" if entry and not legacy_entry else "pending", "Referência do token", entry if entry and not legacy_entry else "Defina a entrada KeePass do token do bot.")
+    totp = data.get("totp", {})
+    if bool(totp.get("enabled", False)):
+        resolver = KeePassCredentialResolver(root)
+        for label, entry_path in (("Senha TOTP real", str(totp.get("real_password_entry") or "")), ("Senha TOTP falsa", str(totp.get("fake_password_entry") or ""))):
+            try:
+                ready = bool(profile and entry_path and resolver.entry_exists(profile, entry_path) and resolver.password_exists(profile, entry_path))
+                detail = entry_path if ready else "Configure uma entrada KeePass com senha utilizável antes de habilitar o TOTP."
+            except CredentialError as error:
+                ready, detail = False, str(error)
+            add("ok" if ready else "error", label, detail)
     try:
         system = tomllib.loads((root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8")).get("codex", {})
         executable = Path(str(system.get("executable") or ""))

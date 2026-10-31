@@ -47,9 +47,28 @@ def test_totp_enabled_comes_from_telegram_service_configuration(tmp_path):
     config = data / "config.toml"
     config.write_text(config.read_text(encoding="utf-8") + '\n[totp]\nenabled = true\nreal_password_entry = "APIs/TOTP:real"\nfake_password_entry = "APIs/TOTP:fake"\n', encoding="utf-8")
 
-    gateway = Gateway(Settings.load(tmp_path, data))
+    resolver = patch("onmyoji_daemon.telegram.KeePassCredentialResolver")
+    with resolver as configured:
+        configured.return_value.entry_exists.return_value = True
+        configured.return_value.password_exists.return_value = True
+        gateway = Gateway(Settings.load(tmp_path, data))
 
     assert gateway._totp_enabled()
+
+
+def test_totp_enabled_rejects_missing_vault_password(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    config = data / "config.toml"
+    config.write_text(config.read_text(encoding="utf-8") + '\n[totp]\nenabled = true\nreal_password_entry = "APIs/TOTP:real"\nfake_password_entry = "APIs/TOTP:fake"\n', encoding="utf-8")
+
+    with patch("onmyoji_daemon.telegram.KeePassCredentialResolver") as resolver:
+        resolver.return_value.entry_exists.return_value = False
+        try:
+            Settings.load(tmp_path, data)
+        except ValueError as error:
+            assert "senhas real e falsa existentes" in str(error)
+        else:
+            raise AssertionError("A inicialização deveria rejeitar senhas TOTP ausentes.")
 
 
 def test_app_server_does_not_pass_profiles_to_the_codex_subcommand(tmp_path):
