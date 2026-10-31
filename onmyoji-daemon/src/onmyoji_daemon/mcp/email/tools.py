@@ -15,8 +15,10 @@ def array(items): return {"type": "array", "items": items, "maxItems": 100}
 REFERENCE = string("Referência opaca retornada por list_messages; não é Message-ID nem número de posição.")
 REFERENCES = {**array(REFERENCE), "minItems": 1}
 FOLDER = string("Nome exato retornado por list_folders ou configurado no setup.")
+INLINE_IMAGE = {"type": "object", "properties": {"path": string("Caminho absoluto de uma imagem dentro das raízes autorizadas."), "content_id": string("Identificador usado no HTML como cid:content_id.")}, "required": ["path", "content_id"], "additionalProperties": False}
 MESSAGE = {"to": array(string()), "cc": array(string()), "bcc": array(string()), "from_address": string(), "subject": string(),
-           "text": {"type": "string"}, "html": {"type": "string"}, "attachments": array(string("Caminho absoluto de um arquivo dentro das raízes autorizadas."))}
+           "text": {"type": "string"}, "html": {"type": "string"}, "attachments": array(string("Caminho absoluto de um arquivo dentro das raízes autorizadas.")),
+           "inline_images": array(INLINE_IMAGE)}
 FILTERS = {"type": "object", "properties": {**{key: string() for key in ("from", "to", "subject", "text")},
             **{key: {"type": "string", "format": "date"} for key in ("since", "before")},
             "unread": {"type": "boolean"}, "flagged": {"type": "boolean"}}, "additionalProperties": False}

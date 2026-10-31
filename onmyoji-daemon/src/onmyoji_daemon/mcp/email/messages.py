@@ -9,6 +9,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 import mimetypes
 import os
+import re
 
 from .contracts import require, text
 
@@ -111,6 +112,26 @@ def addresses(values, label: str) -> list[str]:
     return [address for _, address in parsed]
 
 
+def inline_images(account: dict, args: dict, limits: dict, attachment_cache: dict[str, bytes] | None = None) -> list[tuple[Path, str, bytes, str, str]]:
+    """Lê imagens inline autorizadas e valida seus CIDs antes de compor a parte MIME relacionada."""
+    values = args.get("inline_images", [])
+    require(isinstance(values, list) and len(values) <= 100, "invalid_argument", "Lista de imagens inline inválida.")
+    result = []; content_ids = set()
+    for value in values:
+        require(isinstance(value, dict) and set(value) == {"path", "content_id"}, "invalid_argument", "Imagem inline inválida.")
+        content_id = value["content_id"]
+        require(isinstance(content_id, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}", content_id) is not None, "invalid_content_id", "Content-ID de imagem inline inválido.")
+        require(content_id not in content_ids, "duplicate_content_id", "Content-ID de imagem inline repetido.")
+        path = authorized_path(value["path"], account["readable_roots"], reading=True)
+        mime = mimetypes.guess_type(path.name)[0]
+        require(mime is not None and mime.startswith("image/"), "invalid_inline_image", "Arquivo inline deve ser uma imagem reconhecida.")
+        data = attachment_cache[str(path)] if attachment_cache is not None else path.read_bytes()
+        require(len(data) <= limits["max_attachment_bytes"], "attachment_too_large", "Imagem inline excede o limite configurado.")
+        main, sub = mime.split("/", 1)
+        result.append((path, content_id, data, main, sub)); content_ids.add(content_id)
+    return result
+
+
 def compose(account: dict, args: dict, limits: dict, attachment_cache: dict[str, bytes] | None = None) -> tuple[EmailMessage, list[str]]:
     message = EmailMessage(policy=policy.SMTP)
     sender = args.get("from_address", account["address"])
@@ -128,14 +149,23 @@ def compose(account: dict, args: dict, limits: dict, attachment_cache: dict[str,
     body = args.get("text", "")
     require(isinstance(body, str), "invalid_body", "Corpo textual inválido.")
     message.set_content(body)
-    if args.get("html"):
-        require(isinstance(args["html"], str), "invalid_body", "Corpo HTML inválido.")
-        message.add_alternative(args["html"], subtype="html")
+    html = args.get("html")
+    images = inline_images(account, args, limits, attachment_cache)
+    require(not images or isinstance(html, str) and bool(html), "html_required", "Imagens inline exigem corpo HTML.")
+    if html:
+        require(isinstance(html, str), "invalid_body", "Corpo HTML inválido.")
+        for _, content_id, _, _, _ in images:
+            require(f"cid:{content_id}" in html, "inline_image_not_referenced", "Corpo HTML não referencia uma imagem inline.")
+        message.add_alternative(html, subtype="html")
+        html_part = message.get_payload()[-1]
+        for path, content_id, data, main, sub in images:
+            html_part.add_related(data, maintype=main, subtype=sub, cid=f"<{content_id}>", filename=path.name, disposition="inline")
     for key, header in (("in_reply_to", "In-Reply-To"), ("references", "References")):
         if args.get(key): message[header] = text(args[key], header, 4000)
     paths = args.get("attachments", [])
     require(isinstance(paths, list) and len(paths) <= 100, "invalid_argument", "Lista de anexos inválida.")
-    total = 0
+    total = sum(len(data) for _, _, data, _, _ in images)
+    require(total <= limits["max_message_bytes"], "message_too_large", "Imagens inline excedem o limite configurado.")
     for value in paths:
         path = authorized_path(value, account["readable_roots"], reading=True)
         require(path.stat().st_size <= limits["max_attachment_bytes"], "attachment_too_large", "Anexo excede o limite configurado.")

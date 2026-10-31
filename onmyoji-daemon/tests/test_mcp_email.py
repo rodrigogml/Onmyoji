@@ -14,7 +14,7 @@ from onmyoji_daemon.mcp.configuration import McpConfiguration
 from onmyoji_daemon.mcp.email.configuration import empty_configuration, validate_configuration
 from onmyoji_daemon.mcp.email.contracts import EmailError
 from onmyoji_daemon.mcp.email.mailbox import Mailbox
-from onmyoji_daemon.mcp.email.messages import parse_message, content, authorized_path, write_file
+from onmyoji_daemon.mcp.email.messages import authorized_path, compose, content, parse_message, write_file
 from onmyoji_daemon.mcp.email.oauth import EmailOAuth
 from onmyoji_daemon.mcp.email.service import EmailService
 from onmyoji_daemon.mcp.email.store import SubmissionStore
@@ -77,6 +77,8 @@ def test_roundtrip_publication_selection_and_workflow(tmp_path):
     tools = EmailToolRegistry(config); definitions = tools.definitions()
     assert "account" not in next(tool for tool in definitions if tool["name"] == "email.get_message")["input_schema"]["properties"]
     assert "Correspondência da empresa" in definitions[0]["description"]
+    send = next(tool for tool in definitions if tool["name"] == "email.send_message")
+    assert set(send["input_schema"]["properties"]["inline_images"]["items"]["properties"]) == {"path", "content_id"}
     assert WorkflowRegistry(config).call("workflows.read", {"id": "email-operations"})["module"] == "email"
     document["accounts"]["outgoing"] = account(None); config.save_email(document)
     assert len(tools.call("email.list_accounts", {})["accounts"]) == 2
@@ -122,7 +124,7 @@ def test_mime_safe_paths_and_exclusive_download(tmp_path):
     client = FakeImap(); msg = parse_message(client.raw, 10000)
     assert content(msg, 10)["truncated"] is True
     assert content(msg, 100)["attachments"][0]["filename"] == "../fatura.pdf"
-    root = tmp_path / "work"; root.mkdir()
+    root = tmp_path.parent / (tmp_path.name + "-work"); root.mkdir()
     with pytest.raises(EmailError): authorized_path(str(root / ".." / "escape"), [str(root)], reading=False)
     target = authorized_path(str(root / "safe.pdf"), [str(root)], reading=False)
     write_file(target, b"safe")
@@ -151,9 +153,78 @@ def test_confirmation_sender_injection_and_extra_arguments_are_rejected(tmp_path
     config = configure(tmp_path); tools = EmailToolRegistry(config)
     with pytest.raises(EmailError): tools.call("email.send_message", {"to": ["x@example.test"], "request_id": "a"})
     with pytest.raises(EmailError): tools.call("email.get_message", {"reference": "x", "password": "bad"})
-    from onmyoji_daemon.mcp.email.messages import compose
     for args in ({"from_address": "other@example.test"}, {"subject": "bad\r\nBcc: hidden@example.test"}, {"to": ["a@example.test\r\nBcc: hidden@example.test"]}):
         with pytest.raises(EmailError): compose(account(), {"to": ["x@example.test"], **args}, empty_configuration()["defaults"])
+
+
+def test_inline_images_are_related_mime_parts_referenced_by_cid(tmp_path):
+    root = tmp_path / "work"; root.mkdir()
+    image = root / "logo.png"; image.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+    value = account(); value["readable_roots"] = [str(root)]
+
+    message, recipients = compose(value, {"to": ["x@example.test"], "text": "Versão em texto", "html": '<p>Marca <img src="cid:brand-logo"></p>',
+                                      "inline_images": [{"path": str(image), "content_id": "brand-logo"}]}, empty_configuration()["defaults"])
+
+    assert recipients == ["x@example.test"]
+    assert message.get_content_type() == "multipart/alternative"
+    related = message.get_payload()[-1]
+    assert related.get_content_type() == "multipart/related"
+    html, embedded = related.get_payload()
+    assert html.get_content_type() == "text/html" and "cid:brand-logo" in html.get_content()
+    assert embedded.get_content_type() == "image/png"
+    assert embedded["Content-ID"] == "<brand-logo>"
+    assert embedded.get_content_disposition() == "inline"
+
+
+@pytest.mark.parametrize("args", [
+    {"inline_images": [{"path": "placeholder", "content_id": "logo"}]},
+    {"html": '<img src="cid:other">', "inline_images": [{"path": "placeholder", "content_id": "logo"}]},
+    {"html": '<img src="cid:bad cid">', "inline_images": [{"path": "placeholder", "content_id": "bad cid"}]},
+    {"html": '<img src="cid:logo">', "inline_images": [{"path": "placeholder", "content_id": "logo"}, {"path": "placeholder", "content_id": "logo"}]},
+])
+def test_inline_images_require_html_reference_and_unique_safe_content_ids(tmp_path, args):
+    root = tmp_path / "work"; root.mkdir()
+    image = root / "placeholder.png"; image.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+    value = account(); value["readable_roots"] = [str(root)]
+    args = copy.deepcopy(args)
+    for image_specification in args.get("inline_images", []): image_specification["path"] = str(image)
+
+    with pytest.raises(EmailError): compose(value, {"to": ["x@example.test"], **args}, empty_configuration()["defaults"])
+
+
+def test_inline_images_reject_non_images_and_count_toward_message_limit(tmp_path):
+    root = tmp_path / "work"; root.mkdir()
+    document = root / "document.pdf"; document.write_bytes(b"not an image")
+    image = root / "logo.png"; image.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+    value = account(); value["readable_roots"] = [str(root)]
+
+    with pytest.raises(EmailError, match="imagem reconhecida"):
+        compose(value, {"to": ["x@example.test"], "html": '<img src="cid:file">', "inline_images": [{"path": str(document), "content_id": "file"}]}, empty_configuration()["defaults"])
+    limits = {**empty_configuration()["defaults"], "max_message_bytes": 5}
+    with pytest.raises(EmailError, match="Imagens inline"):
+        compose(value, {"to": ["x@example.test"], "html": '<img src="cid:logo">', "inline_images": [{"path": str(image), "content_id": "logo"}]}, limits)
+
+
+def test_send_message_delivers_inline_images_as_related_parts(tmp_path, monkeypatch):
+    config = configure(tmp_path)
+    root = tmp_path.parent / (tmp_path.name + "-work"); root.mkdir()
+    (tmp_path / "configs/onmyoji-system.toml").write_text('[codex]\nproject_directory = ' + json.dumps(str(root)), encoding="utf-8")
+    image = root / "logo.png"; image.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+    document = config.email(); document["accounts"]["default"]["readable_roots"] = [str(root)]; config.save_email(document)
+    connections = FakeConnections(); connections.smtp.sendmail.return_value = {}
+    monkeypatch.setattr("onmyoji_daemon.mcp.email.service.Connections", lambda *a: connections)
+    args = {"to": ["x@example.test"], "text": "Alternativa", "html": '<img src="cid:logo">',
+            "inline_images": [{"path": str(image), "content_id": "logo"}], "request_id": "inline-one", "confirm": True}
+
+    result = EmailToolRegistry(config).call("email.send_message", args)
+
+    assert result["status"] == "accepted"
+    sent = parse_message(connections.smtp.sendmail.call_args.args[2], 1_000_000)
+    related = sent.get_payload()[-1]
+    assert related.get_content_type() == "multipart/related"
+    assert related.get_payload()[-1]["Content-ID"] == "<logo>"
+    assert EmailToolRegistry(config).call("email.send_message", args) == result
+    assert connections.smtp.sendmail.call_count == 1
 
 
 def test_send_draft_retry_survives_original_removal(tmp_path, monkeypatch):

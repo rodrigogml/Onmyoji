@@ -131,11 +131,15 @@ class EmailService:
         request_id = text(args.get("request_id"), "request_id", 200)
         fingerprint_args = {key: value for key, value in args.items() if key not in {"confirm", "account"}}
         hashes = []; attachment_cache = {}; total_attachment_bytes = 0
-        for value in args.get("attachments", []):
+        file_paths = list(args.get("attachments", []))
+        inline_images = args.get("inline_images", [])
+        require(isinstance(inline_images, list), "invalid_argument", "Lista de imagens inline inválida.")
+        file_paths += [value.get("path") if isinstance(value, dict) else None for value in inline_images]
+        for value in file_paths:
             path = messages.authorized_path(value, account["readable_roots"], reading=True)
-            require(path.stat().st_size <= limits["max_attachment_bytes"], "attachment_too_large", "Anexo excede o limite.")
+            require(path.stat().st_size <= limits["max_attachment_bytes"], "attachment_too_large", "Arquivo excede o limite.")
             data = path.read_bytes(); total_attachment_bytes += len(data)
-            require(len(data) <= limits["max_attachment_bytes"] and total_attachment_bytes <= limits["max_message_bytes"], "attachment_too_large", "Anexos excedem o limite configurado.")
+            require(len(data) <= limits["max_attachment_bytes"] and total_attachment_bytes <= limits["max_message_bytes"], "attachment_too_large", "Anexos e imagens inline excedem o limite configurado.")
             attachment_cache[str(path)] = data
             hashes.append(hashlib.sha256(data).hexdigest())
         store = SubmissionStore(self.root); binding = digest(account["smtp"])
