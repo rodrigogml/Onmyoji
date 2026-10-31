@@ -2240,7 +2240,7 @@ def daemon_menu(root: Path) -> None:
         item("2.", "Processo/Serviço do Daemon", "Processo local e serviço do sistema operacional")
         item("3.", "Utilitários e manutenção", "Ambiente Python e remoção")
         print()
-        item("T.", "Gateway Telegram", "Configuração, teste e pareamento")
+        item("T.", "Telegram", "Configuração, teste e pareamento")
         item("M.", "MiniApps", "Gateway HTTPS e Cloudflare Tunnel")
         print()
         item("X.", "Voltar")
