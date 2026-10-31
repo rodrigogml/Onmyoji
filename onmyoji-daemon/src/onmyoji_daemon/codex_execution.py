@@ -14,8 +14,6 @@ from typing import Any, Mapping
 
 from .management import daemon_python, runtime_ready
 from .mcp.codex import CodexMcpRegistration
-from .mcp.configuration import McpConfiguration
-from .mcp.data_tables import ManagedDataTablesSkill
 from .mcp.reconciliation import McpReconciliation
 from .shikigami_skills import ShikigamiSkillMaterializer
 from .instructions import InstructionComposer, InstructionError
@@ -127,18 +125,15 @@ class CodexLaunch:
     def _reconcile_mcp(self) -> None:
         """Aplica uma pendência MCP sem exigir reinicialização do gateway."""
         try:
-            self.synchronize_managed_skills()
+            self.synchronize_shikigami_skills()
             McpReconciliation(self.root).reconcile_if_pending(CodexMcpRegistration(self.root, self.executable))
         except Exception as error:
             raise CodexExecutionError(str(error)) from error
 
-    def synchronize_managed_skills(self) -> bool:
+    def synchronize_shikigami_skills(self) -> bool:
         """Mantém no workspace somente as skills próprias do Shikigami."""
         try:
-            configuration = McpConfiguration(self.root)
-            tables_changed = ManagedDataTablesSkill(self.root).synchronize(self.workspace, configuration.data_tables_tool_available())
-            shikigami_changed = ShikigamiSkillMaterializer(self.root).synchronize(self.workspace)
-            return tables_changed or shikigami_changed
+            return ShikigamiSkillMaterializer(self.root).synchronize(self.workspace)
         except Exception as error:
             raise CodexExecutionError(str(error)) from error
 

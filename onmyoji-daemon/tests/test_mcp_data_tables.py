@@ -7,7 +7,6 @@ import pytest
 
 from onmyoji_daemon.mcp.configuration import McpConfiguration
 from onmyoji_daemon.mcp.data_tables import DataTablesError, DataTablesService, SchemaCatalog
-from onmyoji_daemon.mcp.data_tables.skill import ManagedDataTablesSkill
 from onmyoji_daemon.mcp.data_tables.tools import DataTablesToolRegistry
 
 
@@ -59,17 +58,3 @@ def test_registry_only_publishes_installed_enabled_schemas(tmp_path: Path) -> No
     SchemaCatalog(tmp_path).apply("crm_leads")
     assert "data_tables.create_record" in {item["name"] for item in DataTablesToolRegistry(configuration).definitions()}
 
-
-def test_managed_skill_is_copied_repaired_and_removed(tmp_path: Path) -> None:
-    root = tmp_path / "root"; workspace = tmp_path / "work"; workspace.mkdir()
-    source = tmp_path / "canonical"; (source / "references").mkdir(parents=True)
-    (source / "SKILL.md").write_text("---\nname: onmyoji-data-tables\ndescription: Teste.\n---\n", encoding="utf-8")
-    (source / "references" / "schema-authoring.md").write_text("Regras.\n", encoding="utf-8")
-    manager = ManagedDataTablesSkill(root); manager.source = source
-    assert manager.synchronize(workspace, True) is True
-    target = manager.target(workspace); assert (target / "references" / "schema-authoring.md").is_file()
-    (target / "SKILL.md").write_text("alterada", encoding="utf-8")
-    assert manager.synchronize(workspace, True) is True
-    assert "onmyoji-data-tables" in (target / "SKILL.md").read_text(encoding="utf-8")
-    assert manager.synchronize(workspace, False) is True
-    assert not target.exists() and not manager.state_path.exists()

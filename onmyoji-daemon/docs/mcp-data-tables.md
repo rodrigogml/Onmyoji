@@ -26,7 +26,7 @@ O operador instala e atualiza schemas em `MCP > Integrações MCP > Tabelas de d
 
 Os bancos ficam em `configs/mcp/data-tables/<schema>.sqlite3`. A configuração local `configs/mcp/data-tables.toml` define quais schemas instalados estão habilitados. Sem schema habilitado, nenhuma ferramenta `data_tables.*` é publicada.
 
-Com ao menos um schema habilitado, o Onmyōji copia e repara o workflow `onmyoji-data-tables` em `<workspace>/.agents/skills/`. A cópia não é link simbólico nem fonte de verdade: é recriada de `onmyoji-daemon/resources/agent-skills/onmyoji-data-tables/` antes de iniciar o Codex-CLI ou o App Server. Ao desabilitar todos os schemas, a cópia gerenciada é removida.
+O Onmyōji não materializa skills próprias no workspace. A opção independente **Permitir autoria de schemas** publica o workflow MCP `data-tables-schema-authoring`, lido sob demanda com `workflows.read`, para orientar exclusivamente a criação ou evolução de schemas deste serviço. Ela não é necessária para consultar ou operar schemas já instalados.
 
 ## Operação pelo agente
 
