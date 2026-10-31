@@ -424,14 +424,15 @@ class KeePassCredentialResolver:
 
     @classmethod
     def _list_totp(cls, vault: dict[str, Any], defaults: dict[str, Any], password: str) -> list[str]:
+        """Lista caminhos TOTP sem o grupo raiz técnico do banco KeePassXC."""
         xml = cls._run_write_command(vault, defaults, ["export", "-q", "--format", "xml", "__DATABASE__"], password)
         try:
             root = ET.fromstring(xml)
         except ET.ParseError as error:
             raise CredentialError("keepass_error", "Exportação XML do KeePassXC inválida.") from error
         entries: list[str] = []
-        def walk(group: ET.Element, prefix: str) -> None:
-            current = "/".join(item for item in (prefix, group.findtext("Name", "")) if item)
+        def walk(group: ET.Element, prefix: str, include_group: bool = True) -> None:
+            current = "/".join(item for item in (prefix, group.findtext("Name", "")) if item) if include_group else prefix
             for entry in group.findall("Entry"):
                 values = {item.findtext("Key", ""): item.findtext("Value", "") for item in entry.findall("String")}
                 if values.get("Title") and values.get("otp"):
@@ -439,7 +440,7 @@ class KeePassCredentialResolver:
             for child in group.findall("Group"):
                 walk(child, current)
         for group in root.findall(".//Root/Group"):
-            walk(group, "")
+            walk(group, "", include_group=False)
         return entries
 
     @classmethod

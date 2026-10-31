@@ -110,6 +110,15 @@ def test_errors_are_sanitized_when_keepass_fails(tmp_path, monkeypatch):
     assert "private" not in str(error.value)
 
 
+def test_list_totp_omits_the_database_root_from_entry_paths(monkeypatch):
+    xml = """<KeePassFile><Root><Group><Name>Root</Name><Group><Name>APIs</Name><Entry><String><Key>Title</Key><Value>Telegram</Value></String><String><Key>otp</Key><Value Protected=\"True\">secret</Value></String></Entry></Group></Group></Root></KeePassFile>"""
+    monkeypatch.setattr(KeePassCredentialResolver, "_run_write_command", lambda *_args: xml)
+
+    entries = KeePassCredentialResolver._list_totp({}, {}, "master-password")
+
+    assert entries == ["APIs/Telegram"]
+
+
 def test_entry_exists_lists_paths_without_reading_secret(tmp_path, monkeypatch):
     write_config(tmp_path)
     resolver = KeePassCredentialResolver(tmp_path)
