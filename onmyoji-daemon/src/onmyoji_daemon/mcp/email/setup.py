@@ -97,6 +97,8 @@ def edit_roots(config, ui, account):
         value = ui.ask(label + " separadas por ; (- = nenhuma)", ";".join(account.get(key, [])) or suggested)
         if value is None: return False
         account[key] = [] if value == "-" else [part.strip() for part in value.split(";") if part.strip()]
+    if suggested and any(suggested in account[key] for key in ("readable_roots", "writable_roots")):
+        Path(suggested).mkdir(parents=True, exist_ok=True)
     return True
 
 
