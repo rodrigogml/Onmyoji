@@ -58,7 +58,7 @@ Onmyōji/
 | Diretório ou arquivo | Papel |
 | --- | --- |
 | `configs/` | Armazena a configuração local efetiva da instância, incluindo Codex CLI, perfis MCP e estado dos serviços. Seu conteúdo não é versionado. |
-| `docs/` | Reúne a documentação de arquitetura, instalação, setup e decisões da base. |
+| `docs/` | Reúne a documentação de setup, operação do daemon, interface dos scripts e diretrizes de desenvolvimento. |
 | `etc/` | Armazena documentos e elementos adicionais diversos relacionados ao projeto, incluindo seus recursos de identidade visual. |
 | `onmyoji-daemon/` | Contém o daemon, o servidor MCP interno e os módulos das integrações disponíveis para uma instância. |
 | `setupOnmyoji.py` | Executa o setup inicial e administra a configuração do Codex CLI, do MCP, do cofre e dos serviços locais. |
@@ -114,7 +114,7 @@ As integrações compartilhadas do Onmyōji são implementadas e publicadas pelo
 
 As skills pertencem exclusivamente ao Shikigami. Suas fontes ficam em `shikigami-skills/<nome>/`, podem conter um `SKILL.md` e, opcionalmente, um `setupSkill.py`. O setup descobre apenas essa pasta e grava a habilitação em `configs/shikigami/skills.toml`. Antes de cada abertura gerenciada do Codex, o Onmyōji copia as skills habilitadas para `<workspace>/.agents/skills/<nome>/`; nunca usa links simbólicos. A cópia é reparada quando divergir da fonte e não pode alterar a definição versionada.
 
-Workflows fornecidos por serviços MCP, como memória e tabelas de dados, usam a mesma superfície do workspace com controle próprio de habilitação. Eles coexistem com as skills do Shikigami, mas suas fontes canônicas permanecem no servidor MCP.
+Workflows fornecidos por serviços MCP, como memória e autoria de schemas Data Tables, permanecem no servidor MCP e são lidos sob demanda por `workflows.read` quando sua configuração independente estiver habilitada. Eles coexistem com as skills do Shikigami, mas nunca são copiados para o workspace.
 
 ## Criar e configurar um Shikigami
 
