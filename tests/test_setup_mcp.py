@@ -18,19 +18,18 @@ SPEC.loader.exec_module(MODULE)
 
 
 class McpSetupTests(unittest.TestCase):
-    def test_profile_overview_displays_nested_configured_values_in_the_value_column(self) -> None:
+    def test_profile_item_displays_the_configured_value_beside_its_edit_action(self) -> None:
         output = io.StringIO()
-        profile = {"enabled": True, "description": "Conta principal", "connection": {"host": "mail.example.test", "port": 465}, "roots": []}
+        profile = {"host": "mail.example.test", "port": 465}
 
         with patch.object(MODULE.sys, "stdout", output):
-            MODULE.profile_overview(profile)
+            MODULE.profile_screen("Perfil", "Teste", profile)
+            MODULE.item("1.", "Alterar host e porta")
 
         rendered = output.getvalue()
-        self.assertIn("Valores configurados:", rendered)
-        self.assertIn("description", rendered)
-        self.assertIn("Conta principal", rendered)
-        self.assertIn("connection.host", rendered)
+        self.assertIn("host: mail.example.test", rendered)
         self.assertIn("mail.example.test", rendered)
+        self.assertIn("port: 465", rendered)
 
     def test_new_profile_suggests_default_only_when_available(self) -> None:
         with patch.object(MODULE, "ask", return_value="default") as ask:

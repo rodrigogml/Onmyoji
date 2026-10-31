@@ -19,13 +19,13 @@ def test_cancel_identity_does_not_save_partial_changes(tmp_path):
     assert document["accounts"]["default"]["address"] == "test@example.test"
 
 
-def test_email_profile_exposes_the_configured_values_in_its_edit_screen(tmp_path):
+def test_email_profile_binds_configured_values_to_its_edit_menu(tmp_path):
     config = Mock(root=tmp_path); config.email.side_effect = lambda: copy.deepcopy(state())
     ui = Mock(); ui.prompt.return_value = "x"
 
     manage(config, ui, "default")
 
-    ui.profile_overview.assert_called_once_with(state()["accounts"]["default"])
+    ui.profile_screen.assert_called_once_with("MCP · Conta de e-mail", "default · ATIVA", state()["accounts"]["default"])
 
 
 def test_removal_is_case_insensitive_and_returns_to_accounts_menu(tmp_path):
@@ -35,7 +35,8 @@ def test_removal_is_case_insensitive_and_returns_to_accounts_menu(tmp_path):
     ui = Mock(); ui.prompt.side_effect = ["2", "9", "x"]; ui.select.return_value = "default"; ui.ask.return_value = "ReMoVeR"
     email_menu(config, ui)
     assert document["accounts"] == {}
-    assert [call.args[0] for call in ui.screen.call_args_list] == ["MCP · E-mail", "MCP · Conta de e-mail", "MCP · E-mail"]
+    assert [call.args[0] for call in ui.screen.call_args_list] == ["MCP · E-mail", "MCP · E-mail"]
+    assert [call.args[0] for call in ui.profile_screen.call_args_list] == ["MCP · Conta de e-mail"]
     assert any("Conta removida" in call.args[1] for call in ui.result.call_args_list)
 
 
@@ -56,7 +57,7 @@ def test_connection_test_returns_to_same_menu(tmp_path, monkeypatch):
     ui = Mock(); ui.prompt.side_effect = ["7", "x"]
     manage(config, ui, "default")
     admin.assert_called_once_with(config, ui, "default", "test")
-    assert ui.screen.call_count == 2
+    assert ui.profile_screen.call_count == 2
     config.save_email.assert_not_called()
 
 

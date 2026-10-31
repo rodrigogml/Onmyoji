@@ -104,8 +104,7 @@ def manage(config, ui, name):
     while True:
         data = config.email(); account = data["accounts"].get(name)
         if account is None: return
-        ui.screen("MCP · Conta de e-mail", name + " · " + ("ATIVA" if account["enabled"] else "inativa"))
-        ui.profile_overview(account)
+        ui.profile_screen("MCP · Conta de e-mail", name + " · " + ("ATIVA" if account["enabled"] else "inativa"), account)
         for key, label in (("1.", "Identidade e descrição"), ("2.", "Recebimento IMAP / POP3"), ("3.", "Envio SMTP"), ("4.", "Pastas e cópia de enviados"), ("5.", "Raízes de anexos e arquivos"), ("6.", "Autorizar OAuth"), ("7.", "Testar conexão"), ("8.", "Desabilitar" if account["enabled"] else "Habilitar"), ("9.", "Remover conta"), ("10.", "Consultar ou cancelar OAuth remoto")):
             ui.item(key, label)
         ui.item("X.", "Voltar"); choice = ui.prompt("Opção: ").strip().casefold()
