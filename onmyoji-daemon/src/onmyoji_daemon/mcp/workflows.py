@@ -40,6 +40,9 @@ class WorkflowRegistry:
             workflows.append(Workflow("data-tables-schema-authoring", "data_tables", "Quando o usuário solicitar criar, alterar, corrigir ou estruturar um schema destinado exclusivamente ao serviço MCP data_tables, aplique este procedimento antes de editar a definição.", "data-tables-schema-authoring.md"))
         if self.configuration.enabled_email_accounts():
             workflows.append(Workflow("email-operations", "email", "Antes de usar email.* para consultar, organizar ou enviar e-mails, leia o procedimento de contas, anexos, conteúdo não confiável e submissões SMTP.", "email-operations.md"))
+        for module in ("pdf", "ocr"):
+            if self.configuration.enabled_document_profiles(module):
+                workflows.append(Workflow(module + "-operations", module, f"Antes de usar {module}.* em documentos ou imagens, consulte seleções, jobs, saídas e limites em {module}-operations.", module + "-operations.md"))
         return tuple(workflows)
 
     def developer_instructions(self) -> str | None:

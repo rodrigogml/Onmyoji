@@ -189,6 +189,33 @@ class McpConfiguration:
     def email(self) -> dict[str, Any]:
         return self._load(self.email_path, empty_email())
 
+    def pdf(self) -> dict[str, Any]:
+        from .document_processing.configuration import load_configuration
+        return load_configuration(self.root, "pdf")
+
+    def ocr(self) -> dict[str, Any]:
+        from .document_processing.configuration import load_configuration
+        return load_configuration(self.root, "ocr")
+
+    def save_document_profiles(self, namespace: str, data: dict) -> None:
+        from .document_processing.configuration import validate_configuration, render_configuration
+        try:
+            validate_configuration(self.root, namespace, data)
+        except ValueError as error:
+            raise McpConfigurationError(str(error)) from error
+        self._save(self.root / "configs" / "mcp" / f"{namespace}.toml", render_configuration(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def save_pdf(self, data: dict) -> None:
+        self.save_document_profiles("pdf", data)
+
+    def save_ocr(self, data: dict) -> None:
+        self.save_document_profiles("ocr", data)
+
+    def enabled_document_profiles(self, namespace: str) -> list[dict]:
+        from .document_processing.configuration import load_configuration
+        return [{"name": name, **profile} for name, profile in sorted(load_configuration(self.root, namespace)["profiles"].items()) if profile["enabled"]]
+
     def save_email(self, data: dict[str, Any]) -> None:
         try:
             validate_email(data)

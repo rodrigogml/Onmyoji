@@ -1,0 +1,12 @@
+schema_version = 1
+
+[defaults]
+max_input_bytes = 262144000
+max_pages = 2000
+max_pixels = 50000000
+timeout_seconds = 1800
+retention_hours = 24
+max_queue = 16
+
+# Modelos ficam na configuração local; imagens e resultados ficam no workspace.
+[profiles]

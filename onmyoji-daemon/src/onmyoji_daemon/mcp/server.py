@@ -30,6 +30,8 @@ from .mini_apps.tools import MiniAppsToolRegistry
 from .workflows import WorkflowRegistry
 from .instructions import McpInstructionRegistry
 from .email.tools import EmailToolRegistry
+from .pdf.tools import PdfToolRegistry
+from .ocr.tools import OcrToolRegistry
 
 
 class McpApplication:
@@ -58,15 +60,21 @@ class McpApplication:
         self.workflows = WorkflowRegistry(self.configuration)
         self.instructions_registry = McpInstructionRegistry(self.configuration)
         self.email = EmailToolRegistry(self.configuration)
+        self.pdf = PdfToolRegistry(self.configuration)
+        self.ocr = OcrToolRegistry(self.configuration)
 
     def definitions(self) -> list[dict[str, Any]]:
-        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions() + self.cloudflare.definitions() + self.eccovox.definitions() + self.forward_email.definitions() + self.notion.definitions() + self.aws.definitions() + self.mysql.definitions() + self.ssh.definitions() + self.bis2cmd.definitions() + self.bis10cmd.definitions() + self.google.definitions() + self.spotify.definitions() + self.memory.definitions() + self.data_tables.definitions() + self.telegram.definitions() + self.mini_apps.definitions() + self.workflows.definitions() + self.email.definitions()
+        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions() + self.cloudflare.definitions() + self.eccovox.definitions() + self.forward_email.definitions() + self.notion.definitions() + self.aws.definitions() + self.mysql.definitions() + self.ssh.definitions() + self.bis2cmd.definitions() + self.bis10cmd.definitions() + self.google.definitions() + self.spotify.definitions() + self.memory.definitions() + self.data_tables.definitions() + self.telegram.definitions() + self.mini_apps.definitions() + self.workflows.definitions() + self.email.definitions() + self.pdf.definitions() + self.ocr.definitions()
 
     def instructions(self) -> str | None:
         """Publica as contribuições dos módulos MCP habilitados."""
         return self.instructions_registry.developer_instructions()
 
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if name.startswith("pdf."):
+            return self.pdf.call(name, arguments)
+        if name.startswith("ocr."):
+            return self.ocr.call(name, arguments)
         if name.startswith("email."):
             return self.email.call(name, arguments)
         if name.startswith("btg."):
@@ -120,14 +128,19 @@ def create_server(root: Path):
 
     async def call_tool(_ctx, params):
         try:
-            data = application.call(params.name, params.arguments or {})
+            if params.name.startswith(("pdf.", "ocr.")):
+                data = await asyncio.to_thread(application.call, params.name, params.arguments or {})
+            else:
+                data = application.call(params.name, params.arguments or {})
             text = json.dumps(data, ensure_ascii=False)
             return CallToolResult(content=[TextContent(type="text", text=text)], structured_content=data)
         except Exception as error:
             # Erros de domínio já são sanitizados; nunca serialize exceções ou tracebacks.
             return CallToolResult(content=[TextContent(type="text", text=str(error))], is_error=True)
 
-    return Server("Onmyoji", version="0.1.0", instructions=application.instructions(), on_list_tools=list_tools, on_call_tool=call_tool)
+    server = Server("Onmyoji", version="0.1.0", instructions=application.instructions(), on_list_tools=list_tools, on_call_tool=call_tool)
+    server.document_application = application
+    return server
 
 
 async def serve(root: Path) -> None:
@@ -135,8 +148,12 @@ async def serve(root: Path) -> None:
     from mcp.server.stdio import stdio_server
 
     server = create_server(root)
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
+    try:
+        async with stdio_server() as (read_stream, write_stream):
+            await server.run(read_stream, write_stream, server.create_initialization_options())
+    finally:
+        server.document_application.pdf.close()
+        server.document_application.ocr.close()
 
 
 def main(argv: list[str] | None = None) -> int:

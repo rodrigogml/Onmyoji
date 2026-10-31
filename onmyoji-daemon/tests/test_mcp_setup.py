@@ -13,6 +13,8 @@ import pytest
 def mock_configuration():
     config = Mock()
     config.email.return_value = {"accounts": {}}
+    config.pdf.return_value = {"profiles": {}}
+    config.ocr.return_value = {"profiles": {}}
     return config
 
 
