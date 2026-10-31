@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,12 @@ SPEC.loader.exec_module(MODULE)
 
 
 class BootstrapShikigamiTests(unittest.TestCase):
+    def test_opening_logo_uses_the_setup_header_width(self) -> None:
+        output = io.StringIO()
+        with patch.object(MODULE, "terminal_width", return_value=56), patch.object(MODULE.sys, "stdout", output):
+            MODULE.opening_logo()
+        self.assertEqual(output.getvalue().splitlines(), [line.center(56) for line in MODULE.TEXT_LOGO.splitlines()])
+
     def test_identifier_normalizes_name_and_rejects_reserved_windows_name(self) -> None:
         self.assertEqual(MODULE.identifier_for("  Akuma Ágil  "), "akuma-agil")
         with self.assertRaises(MODULE.BootstrapError):

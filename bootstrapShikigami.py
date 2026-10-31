@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import os
 import json
+import shutil
 import subprocess
 import sys
 import unicodedata
@@ -19,6 +20,30 @@ DEFAULT_UPSTREAM_URL = "https://github.com/rodrigogml/Onmyoji.git"
 TEMPLATE_DIRECTORY = Path("shikigami-template")
 PROTECTED_FILES = ("README.md", "AGENTS.md", ".gitignore")
 WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{number}" for number in range(1, 10)), *(f"LPT{number}" for number in range(1, 10))}
+TEXT_LOGO = """⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢰⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⡀⣚⡀⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣀⣤⣴⡶⠿⠍⠛⠓⣸⡀⠛⠻⠽⠷⣶⣤⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣀⣴⡾⠛⠉⠰⡆⡠⠤⣴⠋⣹⡉⢳⡤⠄⡀⡆⠉⠙⠻⣶⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⣾⠿⠹⡀⠀⠀⠀⠀⠀⠀⠻⣜⣋⣛⡼⠃⠀⠀⠀⠀⠀⠀⡥⠙⢿⣦⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⡀⠀⢀⣞⠝⠁⠀⠀⠙⢦⠀⢀⣠⡴⠶⠚⢊⣿⣇⠚⠲⠦⣤⡀⠀⣠⠎⠀⠀⠀⠙⣷⣄⠀⢀⡀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⡗⢤⣿⠏⠐⠑⠀⠀⠀⢀⡻⠊⠁⠀⠀⠀⣾⣿⣿⡄⠀⠀⠀⠙⠺⣇⠀⠀⠀⠒⠁⠈⢿⣆⣐⡆⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⣇⡿⢯⠖⠋⡛⢦⡀⣰⠏⠀⠀⣠⡶⡛⣼⡿⠻⢿⣿⣈⡳⣦⠀⠀⠘⢷⡀⣰⠚⣛⠓⣌⠿⣆⡇⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠈⣿⢹⠹⣜⠾⠛⣱⠧⣭⣤⣬⣭⣭⣭⣵⣿⣥⠤⢤⣭⣧⣭⣬⣥⣭⣬⣬⡥⢧⡚⠛⢓⡼⢹⢻⡧⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⣤⢿⣘⣀⣈⠉⠉⠁⣷⠈⠛⢿⣯⣍⢉⣿⠃⠊⠉⢻⣶⣡⣌⢈⣿⣿⠟⠉⢸⡄⠉⠉⢉⣀⣸⣸⢳⡀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⣿⡼⠀⠀⠀⠀⠀⣿⠀⠀⠀⣭⡻⣿⣯⡳⡀⢈⣸⡿⣹⣿⡝⣫⡆⠀⠀⣸⠇⠀⠀⠀⠀⢸⢸⠎⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⣽⣧⠀⢩⠀⠀⠀⠸⣇⠀⠀⠐⣹⣿⠙⠻⣊⣭⡿⠞⠉⢹⣿⡑⠀⠀⢠⡟⠀⠀⠀⢨⠀⢼⣿⡌⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⡧⢿⣆⢸⠀⡀⠀⠀⠘⢧⡀⢰⣿⣿⣴⡾⠟⢯⢞⠿⣷⣤⣿⣧⢀⣰⠟⠀⠀⢀⡀⢸⣄⣿⠃⡇⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠧⠈⢿⣾⠊⠁⠢⣀⡴⠒⠲⢿⠿⢋⠁⠀⠀⢸⠀⠀⠈⢙⠻⣿⠶⢓⠶⣄⠠⠂⠉⣺⣿⠃⠠⠅⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠁⠀⠀⠻⣷⣄⢁⣿⢸⣷⣿⣌⡇⠉⠛⠓⠖⢾⠶⠒⠛⠉⠁⣏⢾⣿⣷⢸⠆⢁⣴⡿⠁⠀⠈⠁⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠻⣿⣍⡓⠶⠖⠋⠄⠀⠀⠀⢀⢸⢀⠀⠀⠀⠀⡌⠲⠶⠖⣫⣴⠿⠋⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠙⠫⣗⣦⣌⣀⠀⠀⠀⢸⢸⢸⠂⠀⠀⢀⣉⣤⣶⠽⠛⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⢀⣤⣶⣦⣤⣄⣀⠀⠀⠀⠀⠀⠀⠀⠈⠙⠓⠺⠯⠥⠄⢸⠠⠬⠭⠿⠒⠋⠉⠀⠀⠀⠀⠀⠀⠀⠀⢀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⣤⣾⣿⠿⠛⠻⠛⠻⣿⣷⡄⡀⢀⣀⠀⠀⠀⣠⡄⠀⣠⣄⠀⢹⠁⢠⣤⠀⣤⣤⠄⠀⢠⣤⠀⠀⡋⠭⣭⣍⡃⠀⢠⣤⡄⠀⢤⣤⠄⠀
+⠀⣾⣿⡿⠃⠀⠀⡀⠀⠀⠘⣿⣿⡄⣸⣿⣷⣄⠀⢸⠀⠀⢸⢿⣆⠀⣠⢿⣷⠀⠈⠻⣧⣠⠎⠀⣴⠃⠀⠀⠀⠙⣿⡆⠠⣿⡇⠀⢸⣿⠀⠀
+⠀⢿⣿⣧⡀⠀⠸⠿⠃⠀⢀⣿⣿⠇⢸⠃⠈⠻⣷⣽⠀⠀⣾⠊⢿⣿⠋⢻⣿⠀⠀⠀⣿⡇⠀⠀⣿⡄⠀⠀⠀⠀⣸⠇⠰⣿⡇⠀⢸⣿⠀⠀
+⠀⠈⠻⢿⣷⣀⣀⠀⠀⣠⣾⣿⠏⠀⠾⠦⠀⠀⠈⢿⠀⠰⠿⠄⠈⠃⠀⠼⠿⠆⠀⠀⣿⠧⠀⠀⠈⠻⠷⠤⠤⠒⠁⠀⢠⣿⠁⠀⠼⠿⠄⠀
+⠀⠀⠀⠀⠉⠉⣉⣥⣾⡿⠟⣁⣀⣀⣀⣀⣀⣀⣀⣀⣀⡀⣀⠀⠀⠀⠀⠀⢀⡀⣀⣈⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⠀⠔⠋⠁⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠨⠙⠛⠋⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠀⠀⠀⠀⠀⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀"""
 
 
 class BootstrapError(RuntimeError):
@@ -34,6 +59,18 @@ class Ui:
     @classmethod
     def text(cls, value: str, *styles: str) -> str:
         return "".join(styles) + value + cls.reset if cls.enabled and styles else value
+
+
+def terminal_width() -> int:
+    """Retorna a largura visual compartilhada com os cabeçalhos do setup."""
+    return max(56, min(shutil.get_terminal_size((78, 24)).columns, 96))
+
+
+def opening_logo() -> None:
+    """Exibe o logo textual centralizado sem redimensionar suas linhas."""
+    width = terminal_width()
+    for line in TEXT_LOGO.splitlines():
+        print(line.center(width))
 
 
 def identifier_for(name: str) -> str:
@@ -197,6 +234,7 @@ def prompt_directory_name(message: str, default: str, base: Path, ask: Callable[
 def interactive(ask: Callable[[str], str] = input, output: Callable[[str], None] = print) -> int:
     """Conduz a criação interativa de uma instância de Shikigami."""
     if output is print:
+        opening_logo()
         print("\n  " + Ui.text("ONMYŌJI / INSTALADOR DE SHIKIGAMI", Ui.bold, Ui.violet))
         print("  " + Ui.text("Cria uma instância, seu workspace e a identidade local", Ui.slate))
     else:

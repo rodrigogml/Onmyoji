@@ -1307,7 +1307,8 @@ def daemon_menu(root: Path) -> None:
             if not valid: result(False, "O executável deve ser um Python funcional na versão 3.11 ou superior."); continue
             if prompt(f"Usar {candidate} (Python {version})? [S/n]: ").strip().casefold() not in {"", "s", "sim"}: continue
             saved = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-runtime", "--runtime-mode", selected_mode, "--python", candidate, "--base-python", candidate], quiet=True)
-            result(saved.returncode == 0, (saved.stdout or saved.stderr).strip())
+            detail = (saved.stdout if saved.returncode == 0 else (saved.stderr or saved.stdout)).strip()
+            result(saved.returncode == 0, detail or "Não foi possível salvar o runtime do daemon.")
             return saved.returncode == 0
 
     def install_daemon() -> bool:
