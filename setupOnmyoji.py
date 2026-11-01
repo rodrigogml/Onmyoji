@@ -1517,7 +1517,10 @@ def daemon_menu(root: Path) -> None:
 
     def lifecycle(action: str, extra: list[str] | None = None, input_value: str | None = None) -> bool:
         visible = action in {"install-service", "configure-windows-service-account", "remove-service", "service-start", "service-stop", "service-restart", "service-force-stop"}
-        completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), action, *(extra or [])], quiet=not visible, input_value=input_value)
+        try:
+            completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), action, *(extra or [])], quiet=not visible, input_value=input_value)
+        except KeyboardInterrupt:
+            result(False, "Operação interrompida pelo usuário."); return False
         result(completed.returncode == 0, (completed.stdout or completed.stderr or "Operação concluída.").strip())
         return completed.returncode == 0
 

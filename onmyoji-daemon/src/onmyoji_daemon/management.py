@@ -17,6 +17,7 @@ import time
 import tomllib
 import uuid
 import shutil
+from collections.abc import Callable
 
 from .rpc import call
 from .registry import SERVICES
@@ -332,7 +333,7 @@ def configure_windows_service_account(root: Path, account: str, password: str = 
     return True, f"Conta do serviço atualizada para {info['run_as_user']}. Reinicie o serviço para aplicar a alteração."
 
 
-def install_service(root: Path, name: str, description: str, scope: str = "system", run_as_user: str = "", run_as_group: str = "", use_sudo: bool = False, windows_account: str = "", windows_password: str = "") -> tuple[bool, str]:
+def install_service(root: Path, name: str, description: str, scope: str = "system", run_as_user: str = "", run_as_group: str = "", use_sudo: bool = False, windows_account: str = "", windows_password: str = "", progress: Callable[[str], None] | None = None) -> tuple[bool, str]:
     if not is_installed(root): return False, "Instale primeiro o daemon desta instância."
     if service_path(root).exists(): return False, "Já existe um serviço instalado para esta instância."
     if running_process(root): return False, "Finalize o processo local antes de instalar o serviço."
@@ -341,13 +342,19 @@ def install_service(root: Path, name: str, description: str, scope: str = "syste
     executable = str(daemon_python(root))
     if os.name == "nt":
         if scope != "system": return False, "O Windows Service é sempre instalado no escopo do sistema operacional."
+        if progress: progress("Preparando o host do Serviço do Windows.")
         host_ready, host_message = prepare_windows_service_host(root)
         if not host_ready: return False, host_message
         source = str(Path(__file__).resolve().parents[1]); environment = dict(os.environ)
         environment["PYTHONPATH"] = source + (os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else "")
-        created = subprocess.run([executable, "-m", "onmyoji_daemon.windows_service", "--service-name", name, "--onmyoji-root", str(root.resolve()), "--startup", "auto", "install"], text=True, capture_output=True, env=environment, check=False)
+        if progress: progress("Registrando o serviço no sistema operacional; esta etapa pode levar até 60 segundos.")
+        try:
+            created = subprocess.run([executable, "-m", "onmyoji_daemon.windows_service", "--service-name", name, "--onmyoji-root", str(root.resolve()), "--startup", "auto", "install"], text=True, capture_output=True, env=environment, check=False, timeout=60)
+        except subprocess.TimeoutExpired:
+            return False, "O registro do Serviço do Windows excedeu 60 segundos e foi interrompido. Verifique permissões administrativas e o estado do Gerenciador de Controle de Serviços."
         if created.returncode != 0: return False, (created.stderr or created.stdout).strip()
         try:
+            if progress: progress("Validando o registro do serviço no Windows.")
             import winreg
             key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, f"SYSTEM\\CurrentControlSet\\Services\\{name}")
             try: registered_root, _kind = winreg.QueryValueEx(key, "OnmyojiRoot")
@@ -356,8 +363,10 @@ def install_service(root: Path, name: str, description: str, scope: str = "syste
         except (OSError, ValueError) as error:
             subprocess.run([executable, "-m", "onmyoji_daemon.windows_service", "--service-name", name, "--onmyoji-root", str(root.resolve()), "remove"], text=True, capture_output=True, env=environment, check=False)
             return False, f"O registro do Serviço do Windows não pôde ser validado; a instalação foi desfeita: {error}"
-        subprocess.run(["sc.exe", "description", name, description], text=True, capture_output=True, check=False)
+        if progress: progress("Aplicando a descrição do serviço.")
+        subprocess.run(["sc.exe", "description", name, description], text=True, capture_output=True, check=False, timeout=20)
         if windows_account and windows_account.casefold() != "localsystem":
+            if progress: progress("Configurando a conta Windows selecionada; a senha não será exibida nem armazenada.")
             _write_json(service_path(root), {"name": name, "root": str(root.resolve())})
             configured, detail = configure_windows_service_account(root, windows_account, windows_password)
             if not configured:
