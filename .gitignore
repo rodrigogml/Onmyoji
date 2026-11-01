@@ -30,7 +30,9 @@
 # Configuração local de uma instância do Onmyōji (CODEX_HOME)
 /config.toml
 /*.config.toml
-/venv/
+!/venv/
+/venv/*
+!/venv/.gitkeep
 !/configs/
 /configs/*
 !/configs/.gitkeep
@@ -40,9 +42,13 @@
 # Estado, autenticação e caches gerenciados pelo Codex
 /auth.json
 /sessions/
-/state/
+!/state/
+/state/*
+!/state/.gitkeep
 /log/
-/tmp/
+!/tmp/
+/tmp/*
+!/tmp/.gitkeep
 /plugins/
 /cache/
 /thread-writer-locks/
