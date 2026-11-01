@@ -92,6 +92,8 @@ class Settings:
     voice_fallback_to_text: bool
     agent_outbound_media: bool
     totp_enabled: bool
+    default_share_thoughts: bool
+    default_delete_thoughts: bool
 
     @classmethod
     def load(cls, root: Path, data_dir: Path) -> "Settings":
@@ -142,7 +144,7 @@ class Settings:
                         raise ValueError("TOTP habilitado exige senhas real e falsa existentes no vault MCP.")
             except CredentialError as error:
                 raise ValueError("Não foi possível validar as senhas TOTP no vault MCP.") from error
-        return cls(root, data_dir, profile, entry, project, str(system.get("executable") or "codex"), str(system.get("model") or ""), str(system.get("model_reasoning_effort") or "medium"), str(system.get("sandbox_mode") or "workspace-write"), str(system.get("approval_policy") or "never"), int(telegram.get("poll_timeout_seconds") or 30), int(agent.get("turn_timeout_seconds") or 900), max(1, int(agent.get("max_parallel_conversations") or 1)), str(instructions.get("shikigami_file") or "instructions.md"), bool(instructions.get("enabled", True)), bool(agent.get("owner_execution_preferences", True)), permitted_models, permitted_efforts, bool(app_server.get("enabled", False)), idle, per_file, batch, max(1, pending), retained, output_bytes, output_count, context_messages, context_age, enabled, voice_profile, str(voice.get("language") or ""), str(voice.get("voice") or ""), float(voice.get("speed") or 1.0), voice_format, voice_text, auto_off, bool(voice.get("fallback_to_text", True)), outbound_media, bool(totp.get("enabled", False)))
+        return cls(root, data_dir, profile, entry, project, str(system.get("executable") or "codex"), str(system.get("model") or ""), str(system.get("model_reasoning_effort") or "medium"), str(system.get("sandbox_mode") or "workspace-write"), str(system.get("approval_policy") or "never"), int(telegram.get("poll_timeout_seconds") or 30), int(agent.get("turn_timeout_seconds") or 900), max(1, int(agent.get("max_parallel_conversations") or 1)), str(instructions.get("shikigami_file") or "instructions.md"), bool(instructions.get("enabled", True)), bool(agent.get("owner_execution_preferences", True)), permitted_models, permitted_efforts, bool(app_server.get("enabled", False)), idle, per_file, batch, max(1, pending), retained, output_bytes, output_count, context_messages, context_age, enabled, voice_profile, str(voice.get("language") or ""), str(voice.get("voice") or ""), float(voice.get("speed") or 1.0), voice_format, voice_text, auto_off, bool(voice.get("fallback_to_text", True)), outbound_media, bool(totp.get("enabled", False)), bool(telegram.get("default_share_thoughts", True)), bool(telegram.get("default_delete_thoughts", True)))
 
 
 class CodexProtocolError(RuntimeError): pass
@@ -392,7 +394,7 @@ class Gateway(TelegramChannels):
     def _ensure_conversation(self, conversation_id: str) -> str:
         now = time.time()
         with self.database_lock:
-            self.database.execute("INSERT OR IGNORE INTO conversations(chat_id, updated_at, conversation_uuid) VALUES (?, ?, ?)", (conversation_id, now, secrets.token_urlsafe(18)))
+            self.database.execute("INSERT OR IGNORE INTO conversations(chat_id, updated_at, share_thoughts, delete_thoughts, conversation_uuid) VALUES (?, ?, ?, ?, ?)", (conversation_id, now, self.settings.default_share_thoughts, self.settings.default_delete_thoughts, secrets.token_urlsafe(18)))
             row = self.database.execute("SELECT conversation_uuid FROM conversations WHERE chat_id=?", (conversation_id,)).fetchone()
             if not row or not row[0]:
                 value = secrets.token_urlsafe(18); self.database.execute("UPDATE conversations SET conversation_uuid=? WHERE chat_id=?", (value, conversation_id)); self.database.commit(); return value
@@ -463,7 +465,7 @@ class Gateway(TelegramChannels):
     def _channel_state(self, chat_id: int, renew: bool = False) -> dict[str, Any]:
         now = time.time()
         with self.database_lock:
-            self.database.execute("INSERT OR IGNORE INTO conversations(chat_id, updated_at, last_interaction_at) VALUES (?, ?, ?)", (str(chat_id), now, now))
+            self.database.execute("INSERT OR IGNORE INTO conversations(chat_id, updated_at, share_thoughts, delete_thoughts, last_interaction_at) VALUES (?, ?, ?, ?, ?)", (str(chat_id), now, self.settings.default_share_thoughts, self.settings.default_delete_thoughts, now))
             row = self.database.execute("SELECT reply_mode, voice_expires_at, settings_revision FROM conversations WHERE chat_id=?", (str(chat_id),)).fetchone()
             mode, expiry, revision = str(row[0] or "text"), row[1], int(row[2] or 0)
             expired = mode == "audio" and (not expiry or float(expiry) <= now)
@@ -476,7 +478,7 @@ class Gateway(TelegramChannels):
         if mode not in {"text", "audio"}: raise RuntimeError("Modo de resposta inválido.")
         if mode == "audio" and not self.settings.voice_enabled: raise RuntimeError("Respostas em áudio não estão configuradas para esta instância.")
         now = time.time(); expiry = now + self.settings.voice_auto_off_minutes * 60 if mode == "audio" else None
-        with self.database_lock: self.database.execute("INSERT OR IGNORE INTO conversations(chat_id, updated_at, last_interaction_at) VALUES (?, ?, ?)", (str(chat_id), now, now)); self.database.execute("UPDATE conversations SET reply_mode=?, voice_expires_at=?, settings_revision=settings_revision+1, updated_at=? WHERE chat_id=?", (mode, expiry, now, str(chat_id))); self.database.commit()
+        with self.database_lock: self.database.execute("INSERT OR IGNORE INTO conversations(chat_id, updated_at, share_thoughts, delete_thoughts, last_interaction_at) VALUES (?, ?, ?, ?, ?)", (str(chat_id), now, self.settings.default_share_thoughts, self.settings.default_delete_thoughts, now)); self.database.execute("UPDATE conversations SET reply_mode=?, voice_expires_at=?, settings_revision=settings_revision+1, updated_at=? WHERE chat_id=?", (mode, expiry, now, str(chat_id))); self.database.commit()
         return self._channel_state(chat_id)
 
     def _outbox(self, chat_id: int, turn_id: str) -> Path:
@@ -500,7 +502,7 @@ class Gateway(TelegramChannels):
 
     def _generation(self, chat_id: int) -> int:
         with self.database_lock:
-            self.database.execute("INSERT OR IGNORE INTO conversations(chat_id, updated_at) VALUES (?, ?)", (str(chat_id), time.time()))
+            self.database.execute("INSERT OR IGNORE INTO conversations(chat_id, updated_at, share_thoughts, delete_thoughts) VALUES (?, ?, ?, ?)", (str(chat_id), time.time(), self.settings.default_share_thoughts, self.settings.default_delete_thoughts))
             row = self.database.execute("SELECT generation FROM conversations WHERE chat_id=?", (str(chat_id),)).fetchone(); self.database.commit()
         return int(row[0]) if row else 0
 
@@ -987,14 +989,14 @@ class Gateway(TelegramChannels):
             self.database.execute("DELETE FROM inbox_items WHERE chat_id=?", (str(chat_id),))
             self.database.execute("DELETE FROM telegram_external_messages WHERE conversation_id=?", (str(chat_id),))
             self.database.commit()
-        self.database.execute("INSERT OR IGNORE INTO conversations(chat_id, updated_at) VALUES (?, ?)", (str(chat_id), time.time()))
-        self.database.execute("UPDATE conversations SET generation=generation+1, codex_thread_id=NULL, owner_model=NULL, owner_effort=NULL, updated_at=? WHERE chat_id=?", (time.time(), str(chat_id))); self.database.commit()
+        self.database.execute("INSERT OR IGNORE INTO conversations(chat_id, updated_at, share_thoughts, delete_thoughts) VALUES (?, ?, ?, ?)", (str(chat_id), time.time(), self.settings.default_share_thoughts, self.settings.default_delete_thoughts))
+        self.database.execute("UPDATE conversations SET generation=generation+1, codex_thread_id=NULL, owner_model=NULL, owner_effort=NULL, share_thoughts=?, delete_thoughts=?, updated_at=? WHERE chat_id=?", (self.settings.default_share_thoughts, self.settings.default_delete_thoughts, time.time(), str(chat_id))); self.database.commit()
         if old and self.app_server and self.app_server.running():
             try: self.app_server.request("thread/delete", {"threadId": old})
             except Exception: pass
 
     def _conversation_settings(self, chat_id: int) -> dict[str, Any]:
-        self.database.execute("INSERT OR IGNORE INTO conversations(chat_id, updated_at) VALUES (?, ?)", (str(chat_id), time.time())); self.database.commit()
+        self.database.execute("INSERT OR IGNORE INTO conversations(chat_id, updated_at, share_thoughts, delete_thoughts) VALUES (?, ?, ?, ?)", (str(chat_id), time.time(), self.settings.default_share_thoughts, self.settings.default_delete_thoughts)); self.database.commit()
         row = self.database.execute("SELECT share_thoughts, delete_thoughts, reply_mode, voice_expires_at, owner_model, owner_effort FROM conversations WHERE chat_id=?", (str(chat_id),)).fetchone()
         return {"share_thoughts": bool(row[0]), "delete_thoughts": bool(row[1]), "reply_mode": str(row[2] or "text"), "voice_expires_at": row[3], "owner_model": str(row[4] or ""), "owner_effort": str(row[5] or "")} if row else {"share_thoughts": True, "delete_thoughts": True, "reply_mode": "text", "voice_expires_at": None, "owner_model": "", "owner_effort": ""}
 

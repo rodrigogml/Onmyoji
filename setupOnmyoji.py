@@ -1932,6 +1932,27 @@ def daemon_menu(root: Path) -> None:
         changed = command(arguments, quiet=True); result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
         if changed.returncode == 0: offer_restart()
 
+    def configure_default_thoughts() -> None:
+        """Define o comportamento inicial de pensamentos para novas conversas."""
+        telegram_path = telegram_configuration_path(root)
+        command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "bootstrap"], quiet=True)
+        try:
+            telegram = tomllib.loads(telegram_path.read_text(encoding="utf-8")).get("telegram", {})
+            share, delete = bool(telegram.get("default_share_thoughts", True)), bool(telegram.get("default_delete_thoughts", True))
+        except (OSError, tomllib.TOMLDecodeError, TypeError):
+            share, delete = True, True
+        sharing = flow_choice("Pensamentos nas novas conversas", ["Compartilhar durante o turno", "Não compartilhar"], "Compartilhar durante o turno" if share else "Não compartilhar")
+        if sharing is None:
+            return
+        retention = flow_choice("Após concluir o turno", ["Excluir pensamentos compartilhados", "Manter pensamentos compartilhados"], "Excluir pensamentos compartilhados" if delete else "Manter pensamentos compartilhados")
+        if retention is None:
+            return
+        changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-default-thought-preferences", "--share-thoughts", str(sharing.startswith("Compartilhar")).lower(), "--delete-thoughts", str(retention.startswith("Excluir")).lower()], quiet=True)
+        result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
+        if changed.returncode == 0:
+            note("O padrão será aplicado em novas conversas e ao usar /new; a conversa atual preserva sua escolha própria.")
+            offer_restart()
+
     def telegram_section_menu(section: str) -> None:
         while True:
             telegram_path = telegram_configuration_path(root)
@@ -2303,6 +2324,7 @@ def daemon_menu(root: Path) -> None:
             item("5.", "Segurança e instruções", "TOTP e instruções particulares")
             item("6.", "Respostas em áudio", "Perfil EccoVox e duração da resposta por voz")
             item("7.", "Arquivos e fotos do agente", "Permissão de mídia enviada pelo gateway Telegram")
+            item("8.", "Padrão de pensamentos", "Comportamento inicial de novas conversas e /new")
             print()
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
@@ -2316,6 +2338,7 @@ def daemon_menu(root: Path) -> None:
             elif choice == "5": telegram_section_menu("security")
             elif choice == "6": configure_voice_replies()
             elif choice == "7": telegram_section_menu("media")
+            elif choice == "8": configure_default_thoughts()
             else: result(False, "Opção inválida.")
 
     def miniapps_command(*arguments: str) -> subprocess.CompletedProcess[str]:

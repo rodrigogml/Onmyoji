@@ -25,6 +25,21 @@ def test_settings_bind_to_instance_codex_home_and_workspace(tmp_path):
     assert settings.root == tmp_path.resolve() and settings.project == tmp_path.resolve()
 
 
+def test_new_and_reset_conversations_use_configured_thought_defaults(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    config = data / "config.toml"
+    config.write_text(config.read_text(encoding="utf-8") + 'default_share_thoughts = false\ndefault_delete_thoughts = false\n', encoding="utf-8")
+    gateway = Gateway(Settings.load(tmp_path, data))
+
+    assert gateway._conversation_settings(9)["share_thoughts"] is False
+    assert gateway._conversation_settings(9)["delete_thoughts"] is False
+    gateway.database.execute("UPDATE conversations SET share_thoughts=1, delete_thoughts=1 WHERE chat_id='9'"); gateway.database.commit()
+    gateway._new_conversation(9)
+
+    assert gateway._conversation_settings(9)["share_thoughts"] is False
+    assert gateway._conversation_settings(9)["delete_thoughts"] is False
+
+
 def test_app_server_settings_come_only_from_daemon_platform_configuration(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
     settings = Settings.load(tmp_path, data)
