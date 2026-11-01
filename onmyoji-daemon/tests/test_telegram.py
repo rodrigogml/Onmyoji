@@ -11,6 +11,7 @@ from unittest.mock import patch
 from onmyoji_daemon.telegram import AppServerTurn, CodexAppServer, Contacts, Gateway, McpVault, Settings, TelegramApi, TelegramMediaUploadError
 from onmyoji_daemon.launcher import _approval_policy, _sandbox_policy
 from onmyoji_daemon.telegram_formatting import MAX_MESSAGE_LENGTH, plain_text, render_html, split_html, visible_text
+from onmyoji_daemon.telegram_stickers import load as load_sticker_catalog
 
 
 def write_settings(root: Path, data_dir: Path) -> None:
@@ -468,6 +469,57 @@ def test_agent_can_send_photo_and_document_created_in_the_reserved_outbox(tmp_pa
     assert [(item["method"], item["chat_id"], item["path"], item["field"]) for item in sent] == [("sendPhoto", 9, picture, "photo"), ("sendDocument", 9, picture, "document")]
 
 
+def test_sticker_catalog_accepts_supported_files_and_hides_entries_without_context(tmp_path):
+    folder = tmp_path / "configs" / "daemon" / "services" / "telegram" / "stickers"; folder.mkdir(parents=True)
+    for suffix in ("webp", "tgs", "webm"): (folder / f"sticker.{suffix}").write_bytes(b"sticker")
+    (folder / "catalog.toml").write_text('schema_version = 1\n\n[stickers.static]\nfile = "sticker.webp"\ncontext = "Aprovação."\n\n[stickers.missing_context]\nfile = "sticker.tgs"\ncontext = ""\n\n[stickers.video]\nfile = "sticker.webm"\ncontext = "Celebração."\n', encoding="utf-8")
+
+    catalog = load_sticker_catalog(tmp_path, 1024)
+
+    assert [item.identifier for item in catalog.stickers] == ["static", "video"]
+    assert any("missing_context" in issue for issue in catalog.issues)
+
+
+def test_sticker_catalog_rejects_external_paths_missing_files_and_extensions(tmp_path):
+    folder = tmp_path / "configs" / "daemon" / "services" / "telegram" / "stickers"; folder.mkdir(parents=True)
+    (folder / "wrong.png").write_bytes(b"not-a-sticker")
+    (folder / "catalog.toml").write_text('schema_version = 1\n\n[stickers.external]\nfile = "../outside.webp"\ncontext = "Nunca."\n\n[stickers.extension]\nfile = "wrong.png"\ncontext = "Nunca."\n\n[stickers.missing]\nfile = "missing.webp"\ncontext = "Nunca."\n', encoding="utf-8")
+
+    catalog = load_sticker_catalog(tmp_path, 1024)
+
+    assert catalog.stickers == ()
+    assert len(catalog.issues) == 3
+
+
+def test_agent_lists_and_sends_only_cataloged_stickers(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    folder = data / "stickers"; folder.mkdir(); image = folder / "celebrar.webp"; image.write_bytes(b"sticker")
+    (folder / "catalog.toml").write_text('schema_version = 1\n\n[stickers.celebrar]\nfile = "celebrar.webp"\ncontext = "Comemoração por uma conquista."\n', encoding="utf-8")
+    gateway = Gateway(replace(Settings.load(tmp_path, data), agent_outbound_media=True)); sent = []
+    gateway.api = type("Api", (), {"send_file": lambda _self, method, chat, path, field, **values: sent.append((method, chat, path, field, values)) or {"message_id": 12}})()
+    active = AppServerTurn(9, "sticker-turn", threading.Event(), conversation_id="private:9", source_trust="OWNER")
+    gateway.app_turns[active.thread_id] = active
+    request = {"namespace": "telegram_gateway", "threadId": active.thread_id}
+
+    listed = gateway._app_server_request("item/tool/call", {**request, "tool": "list_stickers", "arguments": {}})
+    delivered = gateway._app_server_request("item/tool/call", {**request, "tool": "send_sticker", "arguments": {"sticker_id": "celebrar"}})
+
+    assert json.loads(listed["contentItems"][0]["text"]) == [{"id": "celebrar", "context": "Comemoração por uma conquista."}]
+    assert json.loads(delivered["contentItems"][0]["text"])["sent"] is True
+    assert sent == [("sendSticker", 9, image.resolve(), "sticker", {})]
+
+
+def test_agent_cannot_send_unknown_sticker_or_sticker_for_untrusted_user(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(replace(Settings.load(tmp_path, data), agent_outbound_media=True))
+    active = AppServerTurn(9, "sticker-turn", threading.Event(), conversation_id="private:9", source_trust="UNTRUSTED_USER")
+    gateway.app_turns[active.thread_id] = active
+    response = gateway._app_server_request("item/tool/call", {"namespace": "telegram_gateway", "threadId": active.thread_id, "tool": "send_sticker", "arguments": {"sticker_id": "inexistente"}})
+
+    payload = json.loads(response["contentItems"][0]["text"])
+    assert payload["sent"] is False and payload["stage"] == "authorization"
+
+
 def test_agent_receives_a_structured_media_upload_failure(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
     gateway = Gateway(replace(Settings.load(tmp_path, data), agent_outbound_media=True))
@@ -540,6 +592,7 @@ def test_group_dynamic_tools_do_not_publish_interactive_menu(tmp_path):
     gateway._app_thread("group:-100:1", Client(), {"conversation_kind": "group", "source_trust": "OWNER"})
     tools = calls[-1][1]["dynamicTools"][0]["tools"]
     assert "ask_menu" not in {tool["name"] for tool in tools}
+    assert {"list_stickers", "send_sticker"} <= {tool["name"] for tool in tools}
     assert next(tool for tool in tools if tool["name"] == "send_message")["description"].startswith("Envia mensagem adicional à conversa")
 
 

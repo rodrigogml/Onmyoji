@@ -32,6 +32,7 @@ from onmyoji_daemon.mcp.configuration import McpConfiguration
 from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialResolver
 from onmyoji_daemon.mcp.eccovox import EccoVoxError, EccoVoxService
 from onmyoji_daemon import runtime as python_runtime
+from onmyoji_daemon.telegram_stickers import STICKER_ID, discover as discover_stickers, load as load_sticker_catalog, save as save_sticker_catalog, sticker_folder, suggested_identifier
 from onmyoji_daemon import management as daemon_management
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
 from onmyoji_daemon.mcp.ocr.runtime import DocumentError, install_runtime as install_document_runtime
@@ -1959,6 +1960,78 @@ def daemon_menu(root: Path) -> None:
             note("O padrão será aplicado em novas conversas e ao usar /new; a conversa atual preserva sua escolha própria.")
             offer_restart()
 
+    def configure_stickers() -> None:
+        """Administra os ativos versionáveis de figurinha sem expor caminhos ao agente."""
+        folder = sticker_folder(root)
+        while True:
+            catalog = load_sticker_catalog(root, 20 * 1024 * 1024)
+            registered = {value["file"] for value in catalog.raw_entries.values()}
+            pending = [path for path in discover_stickers(root) if path.name not in registered]
+            screen("Figurinhas do agente", "Catálogo versionável de mídia permitida para a conversa Telegram ativa")
+            note(f"Pasta: {folder}")
+            item("1.", "Cadastrar arquivos encontrados", f"{len(pending)} sem explicação")
+            item("2.", "Editar explicação de uma figurinha", f"{len(catalog.raw_entries)} cadastrada(s)")
+            item("3.", "Exibir catálogo e pendências", f"{len(catalog.stickers)} disponível(is) ao agente")
+            item("4.", "Abrir pasta de figurinhas", "Explorer no Windows")
+            item("X.", "Voltar")
+            choice = prompt("Opção: ").strip().casefold()
+            if choice in {"x", "\x1b"}:
+                return
+            if choice == "1":
+                if not pending:
+                    result(True, "Todos os arquivos suportados já possuem cadastro.")
+                    continue
+                entries = dict(catalog.raw_entries)
+                for path in pending:
+                    identifier = prompt(f"ID para {path.name} [{suggested_identifier(path)}]: ").strip() or suggested_identifier(path)
+                    if identifier.casefold() in {"x", "\x1b"}:
+                        break
+                    if not STICKER_ID.fullmatch(identifier) or identifier in entries:
+                        result(False, "ID inválido ou já utilizado; use letras minúsculas, números, _ ou -.")
+                        continue
+                    context = prompt(f"Quando usar a figurinha {identifier}: ").strip()
+                    if context.casefold() in {"x", "\x1b"}:
+                        break
+                    if not context:
+                        result(False, "A explicação de uso é obrigatória; o arquivo não será disponibilizado ao agente.")
+                        continue
+                    entries[identifier] = {"file": path.name, "context": context}
+                try:
+                    save_sticker_catalog(root, entries); result(True, "Catálogo de figurinhas atualizado.")
+                except ValueError as error:
+                    result(False, str(error))
+            elif choice == "2":
+                names = sorted(catalog.raw_entries)
+                identifier = flow_choice("Figurinha para editar", names, names[0] if names else "") if names else None
+                if identifier is None:
+                    result(False, "Nenhuma figurinha cadastrada." if not names else "Edição cancelada.")
+                    continue
+                current = catalog.raw_entries[identifier]
+                context = prompt(f"Quando usar a figurinha {identifier} [{current['context']}]: ").strip() or current["context"]
+                if context.casefold() in {"x", "\x1b"}:
+                    continue
+                entries = dict(catalog.raw_entries); entries[identifier] = {"file": current["file"], "context": context}
+                try:
+                    save_sticker_catalog(root, entries); result(True, "Explicação da figurinha atualizada.")
+                except ValueError as error:
+                    result(False, str(error))
+            elif choice == "3":
+                if catalog.stickers:
+                    for sticker in catalog.stickers: print(f"    {sticker.identifier:<20} {sticker.path.name} · {sticker.context}")
+                else:
+                    note("Nenhuma figurinha disponível ao agente.")
+                for issue in catalog.issues: result(False, issue)
+                for path in pending: note(f"{path.name}: sem explicação de uso.")
+            elif choice == "4":
+                folder.mkdir(parents=True, exist_ok=True)
+                try:
+                    if os.name == "nt": os.startfile(str(folder))
+                    else: note(f"Coloque as figurinhas em: {folder}")
+                except OSError as error:
+                    result(False, f"Não foi possível abrir a pasta: {error}")
+            else:
+                result(False, "Opção inválida.")
+
     def telegram_section_menu(section: str) -> None:
         while True:
             telegram_path = telegram_configuration_path(root)
@@ -2331,6 +2404,7 @@ def daemon_menu(root: Path) -> None:
             item("6.", "Respostas em áudio", "Perfil EccoVox e duração da resposta por voz")
             item("7.", "Arquivos e fotos do agente", "Permissão de mídia enviada pelo gateway Telegram")
             item("8.", "Padrão de pensamentos", "Comportamento inicial de novas conversas e /new")
+            item("9.", "Figurinhas do agente", "Catálogo e explicações de uso")
             print()
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
@@ -2345,6 +2419,7 @@ def daemon_menu(root: Path) -> None:
             elif choice == "6": configure_voice_replies()
             elif choice == "7": telegram_section_menu("media")
             elif choice == "8": configure_default_thoughts()
+            elif choice == "9": configure_stickers()
             else: result(False, "Opção inválida.")
 
     def miniapps_command(*arguments: str) -> subprocess.CompletedProcess[str]:

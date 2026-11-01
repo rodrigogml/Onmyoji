@@ -29,6 +29,7 @@ from .codex_execution import CodexExecutionError, CodexLaunch
 from .mcp.credentials import CredentialError, KeePassCredentialResolver
 from .mcp.eccovox import EccoVoxError, EccoVoxService
 from .mcp.reconciliation import mcp_reconciliation_pending
+from .telegram_stickers import load as load_sticker_catalog
 from .mcp.artifacts import ArtifactPathError, authorized_file, transfer_roots
 from .telegram_formatting import MAX_MESSAGE_LENGTH, plain_text, render_html, split_html
 
@@ -410,6 +411,10 @@ class Gateway(TelegramChannels):
         state = json_file(self.settings.data_dir / "state" / "gateway-status.json", {})
         now = time.time()
         state.update({"last_error": self.last_error, "last_error_at": now, "updated_at": now}); write_json(self.settings.data_dir / "state" / "gateway-status.json", state)
+
+    def _stickers(self):
+        """Lê o catálogo atual sem manter caminhos ou IDs remotos em cache."""
+        return load_sticker_catalog(self.settings.root, self.settings.max_outbound_media_bytes)
     def _diagnostic(self, event: str, **values: Any) -> None:
         state = json_file(self.settings.data_dir / "state" / "gateway-status.json", {})
         entries = state.setdefault("diagnostics", [])
@@ -682,6 +687,30 @@ class Gateway(TelegramChannels):
             if not self.settings.agent_outbound_media: raise RuntimeError("Envio de mídia pelo agente está desabilitado.")
             active.outbox = active.outbox or self._outbox(active.conversation_id, active.thread_id)
             return {"contentItems": [{"type": "inputText", "text": json.dumps({"outbox": str(active.outbox)}, ensure_ascii=False)}], "success": True}
+        if tool == "list_stickers":
+            if not self.settings.agent_outbound_media: raise RuntimeError("Envio de mídia pelo agente está desabilitado.")
+            if active.source_trust not in {"OWNER", "AUTHORIZED_USER"}: raise RuntimeError("Somente owner ou usuário autorizado pode consultar figurinhas.")
+            catalog = self._stickers()
+            payload = [{"id": sticker.identifier, "context": sticker.context} for sticker in catalog.stickers]
+            return {"contentItems": [{"type": "inputText", "text": json.dumps(payload, ensure_ascii=False)}], "success": True}
+        if tool == "send_sticker":
+            def failed(stage: str, error: Exception | str) -> dict[str, Any]:
+                self._record_error(error)
+                self._diagnostic("sticker.send_failed", conversation=active.conversation_id, sticker_id=str(arguments.get("sticker_id") or "")[:64], stage=stage, error=self.last_error)
+                return {"contentItems": [{"type": "inputText", "text": json.dumps({"sent": False, "stage": stage, "error": self.last_error}, ensure_ascii=False)}], "success": True}
+            if not self.settings.agent_outbound_media: return failed("capability", "Envio de mídia pelo agente está desabilitado.")
+            if active.source_trust not in {"OWNER", "AUTHORIZED_USER"}: return failed("authorization", "Somente owner ou usuário autorizado pode enviar figurinha.")
+            identifier = str(arguments.get("sticker_id") or "")
+            sticker = next((item for item in self._stickers().stickers if item.identifier == identifier), None)
+            if sticker is None: return failed("catalog", "Figurinha desconhecida ou indisponível no catálogo.")
+            if not self.api: return failed("gateway", "Gateway Telegram indisponível.")
+            self._diagnostic("sticker.send_started", conversation=active.conversation_id, sticker_id=sticker.identifier, file_name=sticker.path.name, size=sticker.path.stat().st_size, method="sendSticker")
+            try:
+                sent = self.api.send_file("sendSticker", active.chat_id, sticker.path, "sticker", **active.telegram_topic_values)
+            except Exception as error:
+                return failed("telegram_api", error)
+            self._diagnostic("sticker.sent", conversation=active.conversation_id, sticker_id=sticker.identifier, file_name=sticker.path.name, size=sticker.path.stat().st_size, method="sendSticker", message_id=sent.get("message_id"))
+            return {"contentItems": [{"type": "inputText", "text": json.dumps({"sent": True, "message_id": sent.get("message_id")}, ensure_ascii=False)}], "success": True}
         if tool == "send_file":
             def failed(stage: str, error: Exception | str) -> dict[str, Any]:
                 self._record_error(error)
@@ -783,8 +812,9 @@ class Gateway(TelegramChannels):
 
     def _app_thread(self, chat_id: int, client: CodexAppServer, turn_context: dict[str, Any] | None = None) -> str:
         state = self._channel_state(chat_id); bundle = self.instructions.compose(identity=self.identity, telegram=True, reply_mode=str(state["reply_mode"]), outbound_media=self.settings.agent_outbound_media, telegram_context=TelegramTurnContext.from_value(turn_context))
+        tool_contract = f"{bundle.baseline_hash}:telegram-tools-v2"
         row = self.database.execute("SELECT codex_thread_id, instruction_baseline_hash FROM conversations WHERE chat_id=?", (str(chat_id),)).fetchone(); thread_id = str(row[0]) if row and row[0] else ""
-        if thread_id and str(row[1] or "") != bundle.baseline_hash:
+        if thread_id and str(row[1] or "") != tool_contract:
             self.database.execute("UPDATE conversations SET codex_thread_id=NULL, instruction_baseline_hash=NULL, updated_at=? WHERE chat_id=?", (time.time(), str(chat_id))); self.database.commit(); thread_id = ""
         params = {"cwd": str(self.settings.project), "approvalPolicy": self.settings.approval, "sandbox": self.settings.sandbox, "developerInstructions": bundle.text}
         model, _effort = self._execution_preferences(chat_id)
@@ -792,7 +822,7 @@ class Gateway(TelegramChannels):
         if thread_id:
             try: client.request("thread/resume", {"threadId": thread_id, **params}); return thread_id
             except CodexProtocolError: self.database.execute("UPDATE conversations SET codex_thread_id=NULL WHERE chat_id=?", (str(chat_id),)); self.database.commit()
-        tools = [{"type": "namespace", "name": "telegram_gateway", "description": "Interface restrita à DM Telegram ativa.", "tools": [{"type": "function", "name": "get_channel_state", "description": "Consulta o modo de resposta da conversa ativa.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "set_reply_mode", "description": "Define a resposta final como texto ou áudio nesta conversa.", "inputSchema": {"type": "object", "properties": {"mode": {"type": "string", "enum": ["text", "audio"]}}, "required": ["mode"], "additionalProperties": False}}, {"type": "function", "name": "get_outbox", "description": "Reserva o diretório exclusivo deste turno para mídia recém-criada.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "send_file", "description": "Envia arquivo do outbox por file_name ou arquivo existente em raiz autorizada por file_path. Caminho direto exige owner autorizado.", "inputSchema": {"type": "object", "properties": {"file_name": {"type": "string"}, "file_path": {"type": "string"}, "kind": {"type": "string", "enum": ["photo", "document", "audio"]}, "caption": {"type": "string"}}, "required": ["kind"], "additionalProperties": False}}, {"type": "function", "name": "list_attachments", "description": "Lista os metadados dos anexos retidos na conversa atual.", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False}}, {"type": "function", "name": "materialize_attachment", "description": "Copia um anexo retido para o staging seguro do turno atual.", "inputSchema": {"type": "object", "properties": {"attachment_id": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["attachment_id"], "additionalProperties": False}}]}]
+        tools = [{"type": "namespace", "name": "telegram_gateway", "description": "Interface restrita à DM Telegram ativa.", "tools": [{"type": "function", "name": "get_channel_state", "description": "Consulta o modo de resposta da conversa ativa.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "set_reply_mode", "description": "Define a resposta final como texto ou áudio nesta conversa.", "inputSchema": {"type": "object", "properties": {"mode": {"type": "string", "enum": ["text", "audio"]}}, "required": ["mode"], "additionalProperties": False}}, {"type": "function", "name": "get_outbox", "description": "Reserva o diretório exclusivo deste turno para mídia recém-criada.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "send_file", "description": "Envia arquivo do outbox por file_name ou arquivo existente em raiz autorizada por file_path. Caminho direto exige owner autorizado.", "inputSchema": {"type": "object", "properties": {"file_name": {"type": "string"}, "file_path": {"type": "string"}, "kind": {"type": "string", "enum": ["photo", "document", "audio"]}, "caption": {"type": "string"}}, "required": ["kind"], "additionalProperties": False}}, {"type": "function", "name": "list_stickers", "description": "Lista IDs e contextos das figurinhas pré-cadastradas para a conversa ativa.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "send_sticker", "description": "Envia uma figurinha pré-cadastrada pelo seu ID, sem legenda.", "inputSchema": {"type": "object", "properties": {"sticker_id": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["sticker_id"], "additionalProperties": False}}, {"type": "function", "name": "list_attachments", "description": "Lista os metadados dos anexos retidos na conversa atual.", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False}}, {"type": "function", "name": "materialize_attachment", "description": "Copia um anexo retido para o staging seguro do turno atual.", "inputSchema": {"type": "object", "properties": {"attachment_id": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["attachment_id"], "additionalProperties": False}}]}]
         tools[0]["tools"].extend([{"type": "function", "name": "send_message", "description": "Envia mensagem adicional somente à DM Telegram ativa; pode expirar automaticamente.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "minLength": 1, "maxLength": 4000}, "ttl_seconds": {"type": "integer", "minimum": 0, "maximum": 86400}, "protect_content": {"type": "boolean"}}, "required": ["text"], "additionalProperties": False}}, {"type": "function", "name": "ask_menu", "description": "Exibe opções ao owner da DM ativa e aguarda a seleção com prazo limitado.", "inputSchema": {"type": "object", "properties": {"question": {"type": "string", "minLength": 1, "maxLength": 4000}, "options": {"type": "array", "minItems": 2, "maxItems": 20, "items": {"type": "object", "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 64}, "label": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["id", "label"], "additionalProperties": False}}, "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": 300}, "protect_content": {"type": "boolean"}}, "required": ["question", "options"], "additionalProperties": False}}])
         tools[0]["description"] = "Interface restrita à conversa Telegram ativa. Cada ferramenta declara o escopo em que funciona."
         for tool in tools[0]["tools"]:
@@ -802,7 +832,7 @@ class Gateway(TelegramChannels):
             tools[0]["tools"] = [tool for tool in tools[0]["tools"] if tool["name"] != "ask_menu"]
         started = client.request("thread/start", {**params, "serviceName": "onmyoji_telegram", "dynamicTools": tools}); thread = started.get("thread") if isinstance(started.get("thread"), dict) else started; thread_id = str(thread.get("id") or "") if isinstance(thread, dict) else ""
         if not thread_id: raise CodexProtocolError("Codex App Server não retornou uma thread")
-        self.database.execute("UPDATE conversations SET codex_thread_id=?, instruction_baseline_hash=?, updated_at=? WHERE chat_id=?", (thread_id, bundle.baseline_hash, time.time(), str(chat_id))); self.database.commit(); return thread_id
+        self.database.execute("UPDATE conversations SET codex_thread_id=?, instruction_baseline_hash=?, updated_at=? WHERE chat_id=?", (thread_id, tool_contract, time.time(), str(chat_id))); self.database.commit(); return thread_id
 
     def _app_sandbox_policy(self) -> dict[str, Any]:
         if self.settings.sandbox == "danger-full-access": return {"type": "dangerFullAccess"}
