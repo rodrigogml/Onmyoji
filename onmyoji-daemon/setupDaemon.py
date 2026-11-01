@@ -468,7 +468,7 @@ def daemon_validation(root: Path) -> list[dict[str, str]]:
     add("ok", "Instalação do daemon", "Manifesto local encontrado.")
     python = daemon_python(root)
     ready = runtime_ready(root)
-    add("ok" if ready else "error", "Runtime Python do daemon", str(python) if ready else "O runtime escolhido ou suas dependências não estão prontos; use Instalar/validar daemon ou Reparar ambiente Python.")
+    add("ok" if ready else "error", "Runtime Python do daemon", str(python) if ready else "O runtime escolhido ou suas dependências não estão prontos; use Python e bibliotecas para repará-los.")
     service = service_info(root)
     if not service:
         add("pending", "Serviço do sistema operacional", "Não instalado; use Operação do daemon para registrar a inicialização persistente.")

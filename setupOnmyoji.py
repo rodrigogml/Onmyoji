@@ -30,12 +30,38 @@ from onmyoji_daemon.codex_execution import CodexExecutionError, CodexLaunch
 from onmyoji_daemon.instance import telegram_configuration_path
 from onmyoji_daemon.mcp.configuration import McpConfiguration
 from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialResolver
+from onmyoji_daemon import runtime as python_runtime
+from onmyoji_daemon import management as daemon_management
+from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
+from onmyoji_daemon.mcp.ocr.runtime import DocumentError, install_runtime as install_document_runtime
 SYSTEM_BEGIN = "# BEGIN ONMYOJI MANAGED CODEX SETTINGS"
 SYSTEM_END = "# END ONMYOJI MANAGED CODEX SETTINGS"
 INSTANCE_SKILLS_DIRECTORY = "shikigami-skills"
 SHIKIGAMI_SKILLS_STATE = "configs/shikigami/skills.toml"
 SANDBOXES = ["read-only", "workspace-write", "danger-full-access"]
 APPROVALS = ["on-request", "never"]
+PYTHON_COMPONENTS = (
+    ("aiohttp", "Daemon", "Daemon, Telegram e Mini Apps"),
+    ("cryptography", "Daemon", "Daemon e certificados locais"),
+    ("pywin32", "Daemon (Windows)", "Serviço do Windows"),
+    ("boto3", "Daemon", "MCP AWS"),
+    ("paramiko", "Daemon", "MCP SSH"),
+    ("setuptools", "Base MCP", "Host MCP e instalação de componentes"),
+    ("mcp", "Base MCP", "Host de todas as integrações MCP"),
+    ("pykeepass", "Base MCP", "Vault, OAuth e integrações com credenciais"),
+    ("IMAPClient", "Base MCP", "MCP E-mail"),
+    ("jsonschema", "Base MCP", "Validação de dados e schemas MCP"),
+    ("PyMuPDF", "Documentos", "MCP PDF e OCR"),
+    ("pypdf", "Documentos", "MCP PDF"),
+    ("reportlab", "Documentos", "MCP PDF"),
+    ("Pillow", "Documentos", "MCP PDF e OCR"),
+    ("openpyxl", "Documentos", "MCP PDF e OCR"),
+    ("pyHanko", "Documentos", "MCP PDF e PDF/A"),
+    ("ocrmypdf", "OCR básico", "MCP OCR e PDF pesquisável"),
+    ("paddleocr", "OCR avançado", "MCP OCR avançado"),
+    ("paddlepaddle", "OCR avançado", "MCP OCR avançado CPU ou NVIDIA"),
+    ("paddlepaddle-gpu", "OCR avançado", "MCP OCR avançado NVIDIA"),
+)
 TEXT_LOGO = """⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢰⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⡀⣚⡀⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣀⣤⣴⡶⠿⠍⠛⠓⣸⡀⠛⠻⠽⠷⣶⣤⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
@@ -1249,6 +1275,143 @@ def diagnostics_menu(root: Path) -> None:
     prompt("Pressione Enter para voltar: ")
 
 
+def _runtime_versions(root: Path) -> dict[str, str | None]:
+    """Consulta versões no único interpretador selecionado, sem usar o Python do setup."""
+    executable = python_runtime.python(root)
+    names = [component[0] for component in PYTHON_COMPONENTS]
+    program = (
+        "import importlib.metadata as metadata, json; names=" + repr(names) + "; result={}\n"
+        "for name in names:\n"
+        " try: result[name]=metadata.version(name)\n"
+        " except metadata.PackageNotFoundError: result[name]=None\n"
+        "print(json.dumps(result))"
+    )
+    completed = subprocess.run([str(executable), "-I", "-B", "-c", program], text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=15, check=False)
+    if completed.returncode:
+        raise RuntimeError("Não foi possível consultar os componentes do runtime Python selecionado.")
+    values = json.loads(completed.stdout)
+    if not isinstance(values, dict):
+        raise RuntimeError("O runtime Python retornou uma lista de componentes inválida.")
+    return {name: value if isinstance(value, str) else None for name, value in values.items()}
+
+
+def _show_python_components(root: Path) -> None:
+    """Exibe pacotes Python e seus consumidores lógicos sem instalar nada."""
+    flow_heading("Python e bibliotecas", "Componentes instalados e seus consumidores")
+    try:
+        configuration = python_runtime.configuration(root)
+        executable = python_runtime.python(root)
+        print(f"  Runtime: {configuration['mode']} · {executable}")
+        versions = _runtime_versions(root)
+    except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired, python_runtime.RuntimeError, RuntimeError) as error:
+        result(False, str(error))
+        return
+    for package, group, consumers in PYTHON_COMPONENTS:
+        if package == "pywin32" and os.name != "nt":
+            continue
+        version = versions.get(package)
+        item("·", package, f"{version or 'não instalado'} · {group} · {consumers}")
+
+
+def _configure_python_runtime(root: Path, data: dict[str, object]) -> dict[str, object]:
+    """Atualiza a seleção central do runtime, sem instalar componentes."""
+    flow_heading("Python e bibliotecas", "Runtime único do Shikigami")
+    print("  1. Ambiente isolado — cria e usa /venv na raiz da instância.")
+    print("  2. Python global — instala e usa componentes no interpretador escolhido.")
+    default = "1" if data["python_mode"] == "isolated" else "2"
+    mode = prompt(f"Modo [{default}]: ").strip().casefold() or default
+    if mode in {"x", "\x1b"}:
+        return data
+    if mode not in {"1", "2"}:
+        result(False, "Escolha 1 ou 2.")
+        return data
+    default_python = str(data["python_base_executable"] if mode == "1" else data["python_executable"]) or sys.executable
+    executable = prompt(f"Python [{default_python}]: ").strip() or default_python
+    candidate_path = Path(executable).expanduser()
+    if not candidate_path.is_file():
+        result(False, "Informe um executável Python existente.")
+        return data
+    try:
+        checked = subprocess.run([str(candidate_path), "-I", "-B", "-c", "import sys; assert sys.version_info >= (3, 11)"], text=True, capture_output=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        checked = None
+    if checked is None or checked.returncode:
+        result(False, "O executável deve ser um Python funcional na versão 3.11 ou superior.")
+        return data
+    candidate = dict(data)
+    candidate["python_mode"] = "isolated" if mode == "1" else "global"
+    candidate["python_base_executable"] = str(candidate_path) if mode == "1" else ""
+    candidate["python_executable"] = str(candidate_path) if mode == "2" else ""
+    ok, message = save_system(root, candidate)
+    result(ok, message)
+    return candidate if ok else data
+
+
+def python_menu(root: Path) -> None:
+    """Centraliza o runtime único e a manutenção explícita de bibliotecas."""
+    data = load_system(root)
+    while True:
+        configuration = python_runtime.configuration(root)
+        executable = python_runtime.python(root)
+        location = "/venv" if configuration["mode"] == "isolated" else str(executable)
+        screen("Python e bibliotecas", "Runtime compartilhado pelo daemon, MCPs e serviços")
+        item("1.", "Selecionar runtime Python", f"{configuration['mode']} · {location}")
+        item("2.", "Listar componentes instalados", "Versões, grupos e consumidores")
+        print()
+        item("3.", "Instalar ou reparar componentes do daemon", "Daemon, Telegram, Mini Apps, AWS e SSH")
+        item("4.", "Instalar ou reparar componentes MCP", "Host MCP, vault/OAuth, E-mail e schemas")
+        item("5.", "Instalar ou reparar PDF e OCR básico", "PDF, OCRmyPDF e bibliotecas documentais")
+        item("6.", "Preparar OCR avançado", "CPU ou GPU NVIDIA; também prepara modelos")
+        item("7.", "Instalar ou reparar todos os componentes básicos", "Daemon, MCP, PDF e OCR básico")
+        item("8.", "Diagnóstico de runtime", "Interpretador e componentes Python instalados")
+        item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
+        if choice in {"x", "\x1b"}:
+            return
+        if choice == "1":
+            data = _configure_python_runtime(root, data)
+        elif choice in {"2", "8"}:
+            _show_python_components(root)
+        elif choice == "3":
+            try:
+                ok, message = daemon_management.ensure_runtime(root, show_progress=True)
+                result(ok, message)
+            except (OSError, ValueError, python_runtime.RuntimeError) as error:
+                result(False, str(error))
+        elif choice == "4":
+            try:
+                note(ensure_mcp_runtime(root, progress=note))
+                result(True, "Componentes MCP preparados no runtime único.")
+            except McpRuntimeError as error:
+                result(False, str(error))
+        elif choice in {"5", "6"}:
+            if choice == "6":
+                variant = flow_choice("OCR avançado", ["CPU", "GPU NVIDIA"], "CPU")
+                if variant is None:
+                    continue
+                tier, gpu = "advanced", variant == "GPU NVIDIA"
+            else:
+                tier, gpu = "base", False
+            try:
+                install_document_runtime(root, tier=tier, gpu=gpu, progress=note)
+                result(True, "Componentes documentais preparados no runtime único.")
+            except (DocumentError, McpRuntimeError, OSError, ValueError) as error:
+                result(False, str(error))
+        elif choice == "7":
+            try:
+                ok, message = daemon_management.ensure_runtime(root, show_progress=True)
+                if not ok:
+                    result(False, message)
+                    continue
+                note(ensure_mcp_runtime(root, progress=note))
+                install_document_runtime(root, tier="base", progress=note)
+                result(True, "Todos os componentes básicos foram preparados no runtime único.")
+            except (DocumentError, McpRuntimeError, OSError, ValueError, python_runtime.RuntimeError) as error:
+                result(False, str(error))
+        else:
+            result(False, "Opção inválida.")
+
+
 def codex_menu(root: Path) -> None:
     data = load_system(root)
     while True:
@@ -1262,8 +1425,6 @@ def codex_menu(root: Path) -> None:
         item("6.", "Sandbox", str(data["sandbox_mode"]))
         item("7.", "Política de aprovação", str(data["approval_policy"]))
         item("8.", "Diretórios adicionais de escrita", f"{len(data['additional_writable_directories'])} configurado(s)")
-        print()
-        item("R.", "Runtime Python", f"{data['python_mode']} · {'/venv' if data['python_mode'] == 'isolated' else data['python_executable']}")
         print()
         item("C.", "Executar Codex-CLI", "CLI nativo com modelo, sandbox e diretórios configurados")
         item("I.", "Console interativo Onmyōji", "App Server com developer instructions compostas")
@@ -1319,15 +1480,6 @@ def codex_menu(root: Path) -> None:
             value = choose_approval_policy(root, workspace, str(data["sandbox_mode"]), str(data["approval_policy"]))
             if value: data = update_system(root, data, "approval_policy", value)
         elif choice == "8": data = manage_writable_directories(root, data)
-        elif choice == "r":
-            mode = prompt("Modo [1 isolado / 2 global]: ").strip() or ("1" if data["python_mode"] == "isolated" else "2")
-            if mode in {"1", "2"}:
-                executable = prompt(f"Python [{sys.executable}]: ").strip() or sys.executable
-                if Path(executable).expanduser().is_file():
-                    candidate = dict(data); candidate["python_mode"] = "isolated" if mode == "1" else "global"; candidate["python_base_executable"] = executable if mode == "1" else ""; candidate["python_executable"] = executable if mode == "2" else ""
-                    ok, message = save_system(root, candidate); result(ok, message); data = candidate if ok else data
-                else: result(False, "Informe um executável Python existente.")
-            else: result(False, "Escolha 1 ou 2.")
         elif choice == "c": launch_codex(root, data)
         elif choice == "i": launch_onmyoji_interactive(root, data)
         else: result(False, "Opção inválida.")
@@ -1351,68 +1503,6 @@ def daemon_menu(root: Path) -> None:
         result(completed.returncode == 0, (completed.stdout or completed.stderr or "Operação concluída.").strip())
         return completed.returncode == 0
 
-    def inspect_python(executable: str) -> tuple[bool, str]:
-        try:
-            checked = subprocess.run([executable, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"], text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=10)
-            version = (checked.stdout or "").strip()
-            major, minor, *_ = (int(value) for value in version.split("."))
-            return (checked.returncode == 0 and (major, minor) >= (3, 11), version)
-        except (OSError, ValueError, subprocess.TimeoutExpired): return False, "indisponível"
-
-    def discovered_pythons() -> list[tuple[str, str]]:
-        candidates = [sys.executable, shutil.which("python") or ""]
-        if os.name == "nt":
-            try:
-                listed = subprocess.run(["py", "-0p"], text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=10)
-                for line in listed.stdout.splitlines():
-                    match = re.search(r"([A-Za-z]:\\[^\r\n]+?\.exe)\s*$", line.strip(), re.IGNORECASE)
-                    if match: candidates.append(match.group(1))
-            except (OSError, subprocess.TimeoutExpired): pass
-        found: list[tuple[str, str]] = []
-        for candidate in candidates:
-            if not candidate or any(Path(candidate).resolve() == Path(item[0]).resolve() for item in found): continue
-            valid, version = inspect_python(candidate)
-            if valid: found.append((str(Path(candidate).resolve()), version))
-        return found
-
-    def choose_daemon_runtime() -> bool:
-        try:
-            stored = tomllib.loads((root / "configs" / "daemon" / "daemon.toml").read_text(encoding="utf-8")).get("runtime", {})
-        except (OSError, tomllib.TOMLDecodeError): stored = {}
-        mode = str(stored.get("mode") or "dedicated") if isinstance(stored, dict) else "dedicated"
-        default = {"dedicated": "1", "existing": "2", "global": "3"}.get(mode, "1")
-        screen("Runtime Python do daemon", "Escolha onde o daemon executará suas dependências")
-        print("  1. Ambiente dedicado — recomendado; isola os pacotes desta instância.")
-        print("  2. Ambiente virtual existente — usa um venv já preparado.")
-        print("  3. Python global da máquina — avançado; pode alterar pacotes compartilhados.\n")
-        while True:
-            selected = prompt(f"Modo [{default}]: ").strip() or default
-            if selected in {"x", "X", "\x1b"}: return False
-            if selected in {"1", "2", "3"}: break
-            result(False, "Escolha 1, 2 ou 3.")
-        selected_mode = {"1": "dedicated", "2": "existing", "3": "global"}[selected]
-        if selected_mode == "global": note("O setup poderá instalar componentes no Python global escolhido somente após sua confirmação.")
-        candidates = discovered_pythons()
-        if not candidates: result(False, "Nenhum Python 3.11 ou superior foi encontrado. Informe um caminho manual.")
-        else:
-            print("\n  Interpretadores compatíveis encontrados:")
-            for index, (executable, version) in enumerate(candidates, 1): item(f"{index}.", executable, f"Python {version}")
-        item("M.", "Informar caminho manual")
-        item("X.", "Cancelar")
-        while True:
-            answer = prompt("Python: ").strip()
-            if answer.casefold() in {"x", "\x1b"}: return False
-            if answer.casefold() == "m": candidate = prompt("Caminho completo do Python: ").strip()
-            elif answer.isdigit() and 1 <= int(answer) <= len(candidates): candidate = candidates[int(answer) - 1][0]
-            else: result(False, "Escolha um interpretador listado, M ou X."); continue
-            valid, version = inspect_python(candidate)
-            if not valid: result(False, "O executável deve ser um Python funcional na versão 3.11 ou superior."); continue
-            if prompt(f"Usar {candidate} (Python {version})? [S/n]: ").strip().casefold() not in {"", "s", "sim"}: continue
-            saved = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-runtime", "--runtime-mode", selected_mode, "--python", candidate, "--base-python", candidate], quiet=True)
-            detail = (saved.stdout if saved.returncode == 0 else (saved.stderr or saved.stdout)).strip()
-            result(saved.returncode == 0, detail or "Não foi possível salvar o runtime do daemon.")
-            return saved.returncode == 0
-
     def install_daemon() -> bool:
         """Prepara, configura e valida o runtime escolhido pelo usuário."""
         print()
@@ -1421,16 +1511,13 @@ def daemon_menu(root: Path) -> None:
         result(prepared.returncode == 0, (prepared.stdout or prepared.stderr).strip())
         if prepared.returncode != 0: return False
         print("\n  [2/4] Runtime Python do Shikigami")
-        note("O daemon usará a escolha central configurada em Codex-CLI > Runtime Python.")
+        note("O daemon usará a escolha central configurada em Python e bibliotecas.")
         print("\n  [3/4] Componentes necessários")
         print("    • aiohttp — comunicação HTTP do daemon e seus gateways.")
         print("    • cryptography — recursos criptográficos e certificados locais.")
         if os.name == "nt": print("    • pywin32 — integração opcional com Serviço do Windows.")
-        if prompt("\n  Verificar e instalar/atualizar esses componentes no runtime escolhido? [S/n]: ").strip().casefold() not in {"", "s", "sim"}:
-            result(False, "Instalação cancelada antes de alterar componentes Python.")
-            return False
         print("\n  [4/4] Preparando o runtime e os componentes")
-        note("A saída do instalador Python será exibida abaixo; downloads podem levar alguns minutos.")
+        note("O daemon instala automaticamente os componentes necessários no runtime único; a manutenção manual fica em Python e bibliotecas.")
         completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "install-runtime"], quiet=False)
         result(completed.returncode == 0, "Daemon instalado e runtime Python validado." if completed.returncode == 0 else "A instalação do daemon não foi concluída.")
         return completed.returncode == 0
@@ -1543,7 +1630,7 @@ def daemon_menu(root: Path) -> None:
             if not install_daemon(): return
         else:
             print("    " + Ui.text("✓", Ui.bold, Ui.green) + "  Runtime Python do daemon — instalado e validado.")
-            if prompt("  Revisar ou alterar o runtime Python agora? [s/N]: ").strip().casefold() in {"s", "sim"}:
+            if prompt("  Reinstalar ou validar componentes do daemon agora? [s/N]: ").strip().casefold() in {"s", "sim"}:
                 if not install_daemon(): return
         print("\n  3. Configuração compartilhada do daemon")
         bootstrapped = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "daemon-bootstrap"], quiet=True)
@@ -2327,15 +2414,13 @@ def daemon_menu(root: Path) -> None:
         while True:
             screen("Utilitários e manutenção", "Ferramentas técnicas da instância do daemon")
             if installed():
-                item("1.", "Reparar ambiente Python", "Dependências privadas do daemon")
-                item("2.", "Desinstalar daemon da instância", "Remove configurações e estado locais")
+                item("1.", "Desinstalar daemon da instância", "Remove configurações e estado locais")
             else:
                 note("Instale primeiro o daemon pela opção 1 do menu anterior.")
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
-            if installed() and choice == "1": lifecycle("install-runtime")
-            elif installed() and choice == "2":
+            if installed() and choice == "1":
                 confirmation = prompt("ATENÇÃO: isto apagará todas as configurações, credenciais referenciadas, pareamentos, conversas e estado do daemon desta instância. Uma reinstalação exigirá configurar tudo novamente. Digite desinstalar para confirmar: ").strip()
                 if confirmation == "desinstalar": lifecycle("remove-instance")
                 else: result(False, "Desinstalação cancelada; a confirmação deve ser exatamente desinstalar.")
@@ -2349,7 +2434,7 @@ def daemon_menu(root: Path) -> None:
         print()
         item("1.", "Preparar e instalar daemon" if not installed() else "Validar runtime do daemon", status)
         item("2.", "Processo/Serviço do Daemon", "Processo local e serviço do sistema operacional")
-        item("3.", "Utilitários e manutenção", "Ambiente Python e remoção")
+        item("3.", "Utilitários e manutenção", "Remoção da instância do daemon")
         print()
         item("T.", "Telegram", "Configuração, teste e pareamento")
         item("M.", "MiniApps", "Gateway HTTPS e Cloudflare Tunnel")
@@ -2404,7 +2489,8 @@ def menu(skills: list[Skill], root: Path) -> int:
     while True:
         screen("Central de configuração", "Onmyōji · integrações do Shikigami")
         item("!.", "Diagnóstico", "Valida nome, executável e modelo do Codex-CLI")
-        item("A.", "Codex-CLI", "Modelo, projeto, sandbox e permissões")
+        item("P.", "Python e bibliotecas", "Runtime único e componentes compartilhados")
+        item("C.", "Codex-CLI", "Modelo, projeto, sandbox e permissões")
         item("D.", "Daemon", "Supervisor local e serviços da instância")
         item("M.", "MCP", "Perfis de vault e integrações MCP")
         conflicts = conflicting_skill_ids(skills)
@@ -2422,7 +2508,8 @@ def menu(skills: list[Skill], root: Path) -> int:
         choice = prompt("Selecione uma opção: ").strip().casefold()
         if choice == "x": return 0
         if choice == "!": diagnostics_menu(root); continue
-        if choice == "a": codex_menu(root); continue
+        if choice == "p": python_menu(root); continue
+        if choice == "c": codex_menu(root); continue
         if choice == "d": daemon_menu(root); continue
         if choice == "m": subprocess.run([sys.executable, str(root / "onmyoji-daemon" / "setupMcp.py")], check=False); continue
         if choice.isdigit() and 1 <= int(choice) <= len(skills): skill_menu(skills[int(choice) - 1], root, skills)

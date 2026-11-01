@@ -68,7 +68,6 @@ def _edit(config, ui, namespace, name):
             _configured_item(ui, f"{index}.", "Alterar " + LABELS[fields[0]].lower(), [(field, profile.get(field, "")) for field in fields])
         ui.render_item("H.", "Desabilitar" if profile["enabled"] else "Habilitar")
         ui.render_item("D.", "Diagnóstico e teste", "Motores, versões, idiomas e modelos")
-        ui.render_item("I.", "Instalar ou reparar componentes")
         ui.render_item("R.", "Remover perfil")
         ui.render_item("X.", "Voltar")
         action = ui.prompt("Opção: ").strip().casefold()
@@ -77,8 +76,6 @@ def _edit(config, ui, namespace, name):
         try:
             if action == "d":
                 _diagnostics(config, ui, profile); continue
-            if action == "i":
-                _install(config, ui); continue
             if action == "r":
                 if (ui.ask("Digite REMOVER para confirmar", required=True) or "").casefold() != "remover":
                     continue
@@ -115,24 +112,6 @@ def _edit(config, ui, namespace, name):
         except (ValueError, OSError) as error:
             ui.result(False, str(error))
 
-
-def _install(config, ui):
-    from ..ocr.runtime import install_runtime
-    tier = ui.flow_choice("Componentes documentais", ["Básico PDF e OCR", "OCR avançado CPU", "OCR avançado GPU NVIDIA", "PDF/A"], "Básico PDF e OCR")
-    if tier is None:
-        return
-    ui.flow_heading("Preparação de componentes", tier)
-    ui.note("Cada etapa será exibida. Dependências e modelos podem levar alguns minutos, mas o setup informará que continua trabalhando.")
-    try:
-        install_runtime(config.root, "advanced" if "avançado" in tier else "pdfa" if tier == "PDF/A" else "base", gpu="GPU" in tier, progress=ui.note)
-    except (RuntimeError, ValueError, OSError) as error:
-        ui.result(False, f"Preparação interrompida. {error}")
-        ui.note("Corrija o problema informado e escolha 'Instalar ou reparar componentes' novamente.")
-        return
-    ui.result(True, "Bibliotecas Python preparadas e validadas.")
-    _diagnostics(config, ui)
-
-
 def document_menu(config, ui, namespace):
     """Cria perfis com caminhos efetivos em Enter e opções de edição associadas."""
     while True:
@@ -140,8 +119,7 @@ def document_menu(config, ui, namespace):
         ui.screen("MCP · " + namespace.upper(), "Documentos locais e processamento isolado")
         ui.render_item("1.", "Criar perfil")
         ui.render_item("2.", "Gerenciar perfil", f"{len(data['profiles'])} configurado(s)")
-        ui.render_item("3.", "Instalar ou reparar componentes")
-        ui.render_item("4.", "Limites e retenção", _limits_summary(data["defaults"]))
+        ui.render_item("3.", "Limites e retenção", _limits_summary(data["defaults"]))
         ui.render_item("X.", "Voltar")
         choice = ui.prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
@@ -181,8 +159,6 @@ def document_menu(config, ui, namespace):
                 name = ui.select("Perfil " + namespace.upper(), sorted(data["profiles"]))
                 if name: _edit(config, ui, namespace, name)
             elif choice == "3":
-                _install(config, ui)
-            elif choice == "4":
                 key = ui.flow_choice("Limite para alterar", list(data["defaults"]), "timeout_seconds")
                 if key is None: continue
                 value = ui.ask(key, str(data["defaults"][key]), True)

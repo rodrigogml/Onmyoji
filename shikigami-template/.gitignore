@@ -2,6 +2,8 @@
 /config.toml
 /*.config.toml
 /venv/
+/installation_id
+/models_cache.json
 
 # Arquivosd e Backup
 /*.bak

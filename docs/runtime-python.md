@@ -12,4 +12,4 @@ Daemon, MCP, OAuth, e-mail, BTG, Mini Apps e OCR resolvem o mesmo interpretador.
 > [!IMPORTANT]
 > Ambientes antigos em `configs/daemon/venv`, `configs/mcp/venv` e `configs/mcp/ocr/advanced` não são removidos automaticamente, mas não são mais selecionados pelo Onmyōji.
 
-O setup inicial solicita o modo e o Python. A opção **Codex-CLI > Runtime Python** permite alterar a escolha; depois da troca, execute a instalação ou reparação do runtime para instalar as dependências exigidas no novo destino.
+O setup inicial solicita o modo e o Python. A opção **Python e bibliotecas** permite alterar a escolha, consultar os pacotes instalados e instalar ou reparar os grupos de componentes usados pelo daemon, MCPs, PDF e OCR. Depois da troca de runtime, use esse mesmo menu para preparar os componentes exigidos no novo destino.

@@ -478,6 +478,20 @@ class SystemSetupTests(unittest.TestCase):
                 self.assertEqual(MODULE.menu([skill], root), 0)
             self.assertIn("SKILLS DO SHIKIGAMI", output.getvalue())
 
+    def test_main_menu_exposes_python_before_codex_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = io.StringIO()
+            with patch("builtins.input", return_value="x"), patch.object(MODULE.sys, "stdout", output):
+                self.assertEqual(MODULE.menu([], Path(temporary)), 0)
+            rendered = output.getvalue()
+        self.assertLess(rendered.index("P.  Python e bibliotecas"), rendered.index("C.  Codex-CLI"))
+
+    def test_python_component_catalog_identifies_consumers(self) -> None:
+        components = {name: (group, consumers) for name, group, consumers in MODULE.PYTHON_COMPONENTS}
+        self.assertEqual(components["IMAPClient"], ("Base MCP", "MCP E-mail"))
+        self.assertIn("Telegram", components["aiohttp"][1])
+        self.assertIn("MCP OCR avançado", components["paddleocr"][1])
+
     def test_skill_status_badges_keep_the_menu_column_width(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE.Ui, "enabled", False):
             root = Path(temporary)
