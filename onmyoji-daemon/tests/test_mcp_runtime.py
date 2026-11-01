@@ -24,3 +24,13 @@ def test_mcp_uses_selected_global_python_without_venv(tmp_path: Path) -> None:
     configure(tmp_path, "global", sys.executable)
     assert runtime.mcp_runtime_python(tmp_path) == Path(sys.executable)
     assert not runtime.mcp_runtime_python(tmp_path).is_relative_to(tmp_path / "venv")
+
+
+def test_mcp_runtime_requires_setuptools_for_advanced_ocr(tmp_path: Path, monkeypatch) -> None:
+    configure(tmp_path, "isolated")
+    captured = {}
+    monkeypatch.setattr(runtime.shared_runtime, "ensure", lambda _root, requirements, probe, _progress: captured.update(requirements=requirements, probe=probe) or "pronto")
+
+    assert runtime.ensure_mcp_runtime(tmp_path) == "pronto"
+    assert runtime.SETUPTOOLS_REQUIREMENT in captured["requirements"]
+    assert "import setuptools" in captured["probe"]

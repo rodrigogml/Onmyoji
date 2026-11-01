@@ -12,6 +12,7 @@ MCP_REQUIREMENT = "mcp>=2,<3"
 OAUTH_REQUIREMENT = "pykeepass>=4.1,<5"
 EMAIL_REQUIREMENT = "IMAPClient>=3,<4"
 VALIDATION_REQUIREMENT = "jsonschema>=4,<5"
+SETUPTOOLS_REQUIREMENT = "setuptools>=65"
 
 
 class McpRuntimeError(RuntimeError):
@@ -28,7 +29,7 @@ def mcp_runtime_python(root: Path) -> Path:
 
 
 def _probe() -> str:
-    return "from importlib.metadata import version; from pykeepass import PyKeePass; from imapclient import IMAPClient; from jsonschema import Draft202012Validator; value=tuple(map(int, version('mcp').split('.')[:2])); assert (2, 0) <= value < (3, 0)"
+    return "import setuptools; from importlib.metadata import version; from pykeepass import PyKeePass; from imapclient import IMAPClient; from jsonschema import Draft202012Validator; value=tuple(map(int, version('mcp').split('.')[:2])); assert (2, 0) <= value < (3, 0)"
 
 
 def mcp_runtime_ready(root: Path) -> bool:
@@ -44,6 +45,6 @@ def mcp_runtime_ready(root: Path) -> bool:
 
 def ensure_mcp_runtime(root: Path, progress: Callable[[str], None] | None = None) -> str:
     try:
-        return shared_runtime.ensure(root, [MCP_REQUIREMENT, OAUTH_REQUIREMENT, EMAIL_REQUIREMENT, VALIDATION_REQUIREMENT], _probe(), progress)
+        return shared_runtime.ensure(root, [SETUPTOOLS_REQUIREMENT, MCP_REQUIREMENT, OAUTH_REQUIREMENT, EMAIL_REQUIREMENT, VALIDATION_REQUIREMENT], _probe(), progress)
     except shared_runtime.RuntimeError as error:
         raise McpRuntimeError(str(error)) from error
