@@ -265,6 +265,13 @@ def validate_codex_executable(executable: str) -> tuple[bool, str]:
     return True, diagnostic_detail(completed) or "Codex-CLI respondeu à consulta de versão."
 
 
+def codex_setup_directory(root: Path) -> Path:
+    """Retorna a área temporária para comandos auxiliares do Codex-CLI."""
+    directory = root.resolve() / "tmp" / "codex-cli"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
 def validate_codex_login(root: Path, data: dict[str, object]) -> tuple[bool, str]:
     """Confirma a autenticação do CODEX_HOME da instância sem revelar credenciais."""
     executable_ok, executable_detail = validate_codex_executable(str(data["executable"]))
@@ -272,7 +279,7 @@ def validate_codex_login(root: Path, data: dict[str, object]) -> tuple[bool, str
         return False, executable_detail
     environment = dict(os.environ); environment["CODEX_HOME"] = str(root)
     try:
-        completed = subprocess.run([str(data["executable"]), "login", "status"], cwd=str(root), env=environment, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=20)
+        completed = subprocess.run([str(data["executable"]), "login", "status"], cwd=str(codex_setup_directory(root)), env=environment, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=20)
     except OSError as error:
         return False, f"Não foi possível consultar o login do Codex-CLI: {error}"
     except subprocess.TimeoutExpired:
@@ -286,7 +293,7 @@ def fetch_codex_model_catalog(root: Path, executable: str) -> tuple[list[dict[st
     """Consulta o catálogo visível da conta pelo protocolo JSON-RPC do App Server."""
     environment = dict(os.environ); environment["CODEX_HOME"] = str(root)
     try:
-        process = subprocess.Popen([executable, "app-server"], cwd=str(root), env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+        process = subprocess.Popen([executable, "app-server"], cwd=str(codex_setup_directory(root)), env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
     except OSError as error:
         return None, f"Não foi possível iniciar o App Server do Codex: {error}"
     assert process.stdin and process.stdout
@@ -379,8 +386,7 @@ def validate_codex_model(root: Path, data: dict[str, object]) -> tuple[bool, str
     model = str(data["model"]).strip()
     effort = str(data["model_reasoning_effort"])
     environment = dict(os.environ); environment["CODEX_HOME"] = str(root)
-    temporary = root / "tmp" / "codex-model-validation"
-    temporary.mkdir(parents=True, exist_ok=True)
+    temporary = codex_setup_directory(root)
     command = [executable, "exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "--model", model, "--config", f"model_reasoning_effort={json.dumps(effort)}", "Responda exatamente: OK"]
     try:
         completed = subprocess.run(command, cwd=str(temporary), env=environment, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=120)
@@ -1038,7 +1044,7 @@ def configure_codex_login(root: Path, data: dict[str, object], device_auth: bool
     command = [str(data["executable"]), "login", *(["--device-auth"] if device_auth else [])]
     environment = dict(os.environ); environment["CODEX_HOME"] = str(root)
     try:
-        completed = subprocess.run(command, cwd=str(root), env=environment, check=False)
+        completed = subprocess.run(command, cwd=str(codex_setup_directory(root)), env=environment, check=False)
     except OSError as error:
         result(False, f"Não foi possível iniciar o login do Codex-CLI: {error}")
         return False

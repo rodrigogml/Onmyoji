@@ -109,6 +109,7 @@ class SystemSetupTests(unittest.TestCase):
         self.assertEqual(catalog, [model])
         self.assertIn("1 modelo", detail)
         self.assertEqual(popen.call_args.args[0], ["codex", "app-server"])
+        self.assertEqual(popen.call_args.kwargs["cwd"], str(Path(temporary) / "tmp" / "codex-cli"))
         self.assertEqual(process.stdin.write.call_count, 3)
 
     def test_reasoning_effort_is_selected_from_the_catalog_compatible_options(self) -> None:
@@ -202,6 +203,7 @@ class SystemSetupTests(unittest.TestCase):
             self.assertTrue(MODULE.validate_codex_login(Path(temporary), MODULE.default_system() | {"executable": "codex"})[0])
         self.assertEqual(run.call_args.args[0], ["codex", "login", "status"])
         self.assertEqual(run.call_args.kwargs["env"]["CODEX_HOME"], temporary)
+        self.assertEqual(run.call_args.kwargs["cwd"], str(Path(temporary) / "tmp" / "codex-cli"))
 
     def test_initial_codex_configuration_requires_login_before_catalog(self) -> None:
         model = {"id": "gpt-current", "defaultReasoningEffort": "medium", "supportedReasoningEfforts": [{"reasoningEffort": "medium"}]}
@@ -223,7 +225,7 @@ class SystemSetupTests(unittest.TestCase):
             data = MODULE.default_system() | {"executable": "codex"}
             self.assertTrue(MODULE.validate_codex_model(Path(temporary), data)[0])
         self.assertEqual(run.call_args.args[0], ["codex", "exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "--model", "gpt-6.1-sol", "--config", 'model_reasoning_effort="medium"', "Responda exatamente: OK"])
-        self.assertEqual(run.call_args.kwargs["cwd"], str(Path(temporary) / "tmp" / "codex-model-validation"))
+        self.assertEqual(run.call_args.kwargs["cwd"], str(Path(temporary) / "tmp" / "codex-cli"))
 
     def test_model_validation_rejects_an_incompatible_reasoning_effort_before_execution(self) -> None:
         data = MODULE.default_system() | {"executable": "codex", "model": "gpt-6-luna", "model_reasoning_effort": "ultra"}
@@ -390,6 +392,7 @@ class SystemSetupTests(unittest.TestCase):
             with patch.object(MODULE, "validate_codex_executable", return_value=(True, "versão")), patch.object(MODULE, "validate_codex_login", return_value=(True, "login")), patch.object(MODULE.subprocess, "run", return_value=completed) as run:
                 self.assertTrue(MODULE.configure_codex_login(root, data, device_auth=True))
             self.assertEqual(run.call_args.args[0], [sys.executable, "login", "--device-auth"])
+            self.assertEqual(run.call_args.kwargs["cwd"], str(root / "tmp" / "codex-cli"))
 
     def test_launches_onmyoji_console_separately_from_native_codex(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
