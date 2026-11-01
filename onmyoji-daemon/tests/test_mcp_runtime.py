@@ -1,61 +1,26 @@
-"""Instalação de bibliotecas limitada ao ambiente privado da instância."""
-import subprocess
+"""Contrato do MCP com o runtime central do Shikigami."""
+from __future__ import annotations
 
-import pytest
+import json
+import sys
+from pathlib import Path
 
 from onmyoji_daemon.mcp import runtime
 
 
-def test_mcp_install_targets_private_interpreter_and_uses_local_temporary_files(tmp_path, monkeypatch):
-    monkeypatch.setenv("PYTHONPATH", "external-packages")
-    monkeypatch.setenv("PYTHONHOME", "external-python")
-    monkeypatch.setenv("PIP_TARGET", "external-installation")
-    monkeypatch.setenv("PIP_PREFIX", "external-prefix")
-    ready = iter([False, True])
-    monkeypatch.setattr(runtime, "mcp_runtime_ready", lambda _root: next(ready))
-    monkeypatch.setattr(runtime, "_pip_entrypoint", lambda: "pip-entry.py")
-    calls = []
-    monkeypatch.setattr(runtime.subprocess, "run", lambda command, **kwargs: calls.append((command, kwargs)) or subprocess.CompletedProcess(command, 0))
-
-    assert "instalado" in runtime.ensure_mcp_runtime(tmp_path)
-
-    assert len(calls) == 2
-    assert str(runtime.mcp_runtime_directory(tmp_path)) == calls[0][0][-1]
-    assert calls[1][0][calls[1][0].index("--python") + 1] == str(runtime.mcp_runtime_python(tmp_path))
-    for command, options in calls:
-        assert "-I" in command and "-B" in command
-        assert options["cwd"] == str(tmp_path / "tmp" / "mcp-install")
-        environment = options["env"]
-        assert environment["TEMP"] == environment["TMP"] == environment["TMPDIR"] == options["cwd"]
-        assert environment["PIP_CACHE_DIR"].startswith(options["cwd"])
-        assert not {"PYTHONPATH", "PYTHONHOME", "PIP_TARGET", "PIP_PREFIX"} & environment.keys()
+def configure(root: Path, mode: str, executable: str = "") -> None:
+    path = root / "configs" / "onmyoji-system.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text("[python]\nmode = " + json.dumps(mode) + "\nbase_python = \"\"\nexecutable = " + json.dumps(executable) + "\n", encoding="utf-8")
 
 
-def test_mcp_runtime_probe_ignores_host_packages(tmp_path, monkeypatch):
-    executable = runtime.mcp_runtime_python(tmp_path)
-    executable.parent.mkdir(parents=True); executable.touch()
-    monkeypatch.setenv("PYTHONPATH", "host-libraries")
-    calls = []
-    monkeypatch.setattr(runtime.subprocess, "run", lambda command, **kwargs: calls.append((command, kwargs)) or subprocess.CompletedProcess(command, 0))
-
-    assert runtime.mcp_runtime_ready(tmp_path)
-
-    command, options = calls[0]
-    assert command[0] == str(executable) and "-I" in command
-    assert "PYTHONPATH" not in options["env"]
+def test_mcp_uses_root_venv_for_isolated_instances(tmp_path: Path) -> None:
+    configure(tmp_path, "isolated")
+    assert runtime.mcp_runtime_directory(tmp_path) == tmp_path / "venv"
+    assert runtime.mcp_runtime_python(tmp_path).is_relative_to(tmp_path / "venv")
 
 
-def test_mcp_setup_progress_exposes_stages_and_sanitizes_installer_details(tmp_path, monkeypatch):
-    ready = iter([False, True])
-    messages = []
-    monkeypatch.setattr(runtime, "mcp_runtime_ready", lambda _root: next(ready))
-    monkeypatch.setattr(runtime, "_pip_entrypoint", lambda: "pip-entry.py")
-    monkeypatch.setattr(runtime.subprocess, "run", lambda command, **_kwargs: subprocess.CompletedProcess(command, 1, stderr="token=private-value"))
-
-    with pytest.raises(runtime.McpRuntimeError) as error:
-        runtime.ensure_mcp_runtime(tmp_path, progress=messages.append)
-
-    assert any("Verificando" in message for message in messages)
-    assert any("Criando" in message for message in messages)
-    assert "private-value" not in str(error.value)
-    assert "[redacted]" in str(error.value)
+def test_mcp_uses_selected_global_python_without_venv(tmp_path: Path) -> None:
+    configure(tmp_path, "global", sys.executable)
+    assert runtime.mcp_runtime_python(tmp_path) == Path(sys.executable)
+    assert not runtime.mcp_runtime_python(tmp_path).is_relative_to(tmp_path / "venv")

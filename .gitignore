@@ -30,6 +30,7 @@
 # Configuração local de uma instância do Onmyōji (CODEX_HOME)
 /config.toml
 /*.config.toml
+/venv/
 !/configs/
 /configs/*
 !/configs/.gitkeep

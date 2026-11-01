@@ -22,6 +22,7 @@ from .rpc import call
 from .registry import SERVICES
 from .instance import identity
 from .supervisor import endpoint
+from . import runtime as shared_runtime
 
 
 def daemon_root(root: Path) -> Path: return root.resolve() / "configs" / "daemon"
@@ -30,22 +31,12 @@ def runtime_path(root: Path) -> Path: return daemon_root(root) / "runtime"
 def process_path(root: Path) -> Path: return runtime_path(root) / "process.json"
 def service_path(root: Path) -> Path: return daemon_root(root) / "service.json"
 def runtime_configuration(root: Path) -> dict[str, str]:
-    """Lê a escolha de runtime; instalações antigas continuam dedicadas."""
-    try: data = tomllib.loads(manifest_path(root).read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError): data = {}
-    runtime = data.get("runtime", {}) if isinstance(data, dict) else {}
-    runtime = runtime if isinstance(runtime, dict) else {}
-    mode = str(runtime.get("mode") or "dedicated")
-    if mode not in {"dedicated", "existing", "global"}: mode = "dedicated"
-    return {"mode": mode, "base_python": str(runtime.get("base_python") or ""), "executable": str(runtime.get("executable") or "")}
+    """Expõe a configuração central para compatibilidade dos chamadores."""
+    return shared_runtime.configuration(root)
 
 
 def daemon_python(root: Path) -> Path:
-    runtime = runtime_configuration(root)
-    if runtime["mode"] == "dedicated":
-        environment = daemon_root(root) / "venv"
-        return environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    return Path(runtime["executable"]).expanduser()
+    return shared_runtime.python(root)
 
 
 def _runtime_ready(executable: Path) -> bool:
@@ -100,66 +91,17 @@ def pip_invocation(executable: Path, arguments: list[str]) -> list[str]:
 
 
 def ensure_runtime(root: Path, show_progress: bool = False, allow_install: bool = True) -> tuple[bool, str]:
-    """Prepara o runtime escolhido e instala as dependências do daemon."""
-    runtime = runtime_configuration(root); executable = daemon_python(root)
-    if _runtime_ready(executable): return True, "Ambiente Python do daemon está pronto."
-    if not allow_install:
-        return False, "O runtime escolhido não possui os componentes necessários. Use Instalar/validar daemon e confirme a instalação dos componentes."
-    package_python = executable
-    package_target: Path | None = None
-    if runtime["mode"] == "dedicated":
-        environment = executable.parent.parent
-        environment.parent.mkdir(parents=True, exist_ok=True)
-        creator = runtime["base_python"] or sys.executable
-        if not executable.is_file():
-            if show_progress: print(f"[1/3] Criando ambiente dedicado com {creator} (sem pacotes)...")
-            try:
-                created = subprocess.run([creator, "-m", "venv", "--without-pip", str(environment)], text=True, capture_output=not show_progress, check=False, timeout=120)
-            except subprocess.TimeoutExpired:
-                return False, "A criação do ambiente Python excedeu 2 minutos. O ambiente parcial foi preservado para diagnóstico."
-            except OSError as error:
-                return False, "Não foi possível iniciar o Python para criar o ambiente: " + str(error)
-            if created.returncode != 0:
-                detail = ((created.stderr or created.stdout) if not show_progress else "").strip()
-                return False, "Não foi possível criar o ambiente Python do daemon: " + (detail or "venv falhou")
-            if show_progress: print("✓ Ambiente Python dedicado criado.")
-        # O pip do Python-base instala somente no site-packages deste venv. Isso
-        # evita o ensurepip, que pode travar em algumas instalações do Windows.
-        package_python = Path(creator)
-        package_target = environment / ("Lib/site-packages" if os.name == "nt" else f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages")
-    elif not executable.is_file():
-        return False, "O executável Python escolhido não existe. Escolha outro runtime no instalador do daemon."
-    if show_progress: print("[2/3] Verificando o instalador de pacotes (pip)...")
+    """Prepara as dependências do daemon no runtime único da instância."""
     try:
-        pip_available = subprocess.run(pip_invocation(package_python, ["--version"]), text=True, capture_output=not show_progress, check=False, timeout=30)
-    except subprocess.TimeoutExpired:
-        return False, "A verificação do pip excedeu 30 segundos. O runtime Python não respondeu."
-    except OSError as error:
-        return False, "Não foi possível executar o runtime Python escolhido: " + str(error)
-    if pip_available.returncode != 0:
-        detail = ((pip_available.stderr or pip_available.stdout) if not show_progress else "").strip().splitlines()
-        return False, "O Python escolhido para preparar o ambiente não possui pip funcional: " + (detail[-1] if detail else str(package_python))
-    try:
-        requirements = runtime_requirements()
-    except (OSError, KeyError, TypeError, ValueError, tomllib.TOMLDecodeError):
-        return False, "Não foi possível ler as dependências do daemon em pyproject.toml."
-    if show_progress:
-        print("[3/3] Instalando os componentes do daemon...")
-        print("Componentes que serão verificados/instalados:")
-        for requirement in requirements: print("  • " + requirement)
-        print("Instalando componentes; a saída do pip será exibida abaixo...")
-    try:
-        target_option = ["--target", str(package_target)] if package_target else []
-        installed = subprocess.run(pip_invocation(package_python, ["install", "--disable-pip-version-check", "--no-input", "--upgrade", *target_option, *requirements]), text=True, capture_output=not show_progress, check=False, timeout=600)
-    except subprocess.TimeoutExpired:
-        return False, "A instalação dos componentes excedeu 10 minutos. Verifique a conexão e o índice de pacotes Python."
-    except OSError as error:
-        return False, "Não foi possível iniciar o pip: " + str(error)
-    if installed.returncode != 0:
-        detail = ((installed.stderr or installed.stdout) if not show_progress else "").strip().splitlines()
-        return False, "Não foi possível instalar as dependências do daemon: " + (detail[-1] if detail else "pip falhou")
-    if not _runtime_ready(executable): return False, "O ambiente Python foi criado, mas as dependências do daemon não puderam ser validadas."
-    return True, "Ambiente Python do daemon instalado e validado."
+        executable = daemon_python(root)
+        if _runtime_ready(executable):
+            return True, "Runtime Python do Shikigami está pronto."
+        if not allow_install:
+            return False, "O runtime Python do Shikigami não possui os componentes necessários. Use a manutenção para instalá-los."
+        message = shared_runtime.ensure(root, runtime_requirements(), "from importlib.metadata import version; import sys; assert sys.version_info >= (3, 11); assert (3, 10) <= tuple(map(int, version('aiohttp').split('.')[:2])) < (4, 0); assert (42, 0) <= tuple(map(int, version('cryptography').split('.')[:2])) < (47, 0)", print if show_progress else None)
+        return True, message
+    except (OSError, ValueError, tomllib.TOMLDecodeError, shared_runtime.RuntimeError) as error:
+        return False, str(error)
 
 
 def _write_json(path: Path, value: dict) -> None:
@@ -211,11 +153,6 @@ def prepare_instance(root: Path) -> tuple[bool, str]:
             "[instructions]",
             "enabled = true",
             'shikigami_file = "instructions.md"',
-            "",
-            "[runtime]",
-            'mode = "dedicated"',
-            'base_python = ""',
-            'executable = ""',
             "",
         ]) , encoding="utf-8", newline="\n")
     return True, "Manifesto do daemon preparado." if created else "Manifesto do daemon já existe."

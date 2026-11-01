@@ -143,6 +143,9 @@ def default_system() -> dict[str, object]:
     return {
         "shikigami_identity": "",
         "shikigami_installed": False,
+        "python_mode": "isolated",
+        "python_base_executable": "",
+        "python_executable": "",
         "executable": "",
         "model": "gpt-6.1-sol",
         "model_reasoning_effort": "medium",
@@ -409,6 +412,23 @@ def load_system(root: Path) -> dict[str, object]:
     if isinstance(shikigami, dict):
         if isinstance(shikigami.get("identity"), str): values["shikigami_identity"] = shikigami["identity"].strip()
         if isinstance(shikigami.get("installed"), bool): values["shikigami_installed"] = shikigami["installed"]
+    python = raw.get("python", {})
+    if isinstance(python, dict):
+        if python.get("mode") in {"isolated", "global"}: values["python_mode"] = python["mode"]
+        if isinstance(python.get("base_python"), str): values["python_base_executable"] = python["base_python"]
+        if isinstance(python.get("executable"), str): values["python_executable"] = python["executable"]
+    else:
+        # Migração sem remoção: o próximo salvamento centraliza a escolha antiga.
+        try:
+            legacy = tomllib.loads((root / "configs" / "daemon" / "daemon.toml").read_text(encoding="utf-8")).get("runtime", {})
+        except (OSError, tomllib.TOMLDecodeError):
+            legacy = {}
+        if isinstance(legacy, dict):
+            legacy_mode = str(legacy.get("mode") or "dedicated")
+            if legacy_mode == "global":
+                values["python_mode"] = "global"; values["python_executable"] = str(legacy.get("executable") or "")
+            else:
+                values["python_mode"] = "isolated"; values["python_base_executable"] = str(legacy.get("base_python") or legacy.get("executable") or sys.executable)
     for key, value in raw.get("codex", {}).items():
         if key in values and isinstance(value, str): values[key] = value
         if key == "additional_writable_directories" and isinstance(value, list) and all(isinstance(item, str) for item in value): values[key] = value
@@ -416,8 +436,11 @@ def load_system(root: Path) -> dict[str, object]:
 
 
 def render_system(data: dict[str, object]) -> str:
-    codex_keys = tuple(key for key in default_system() if not key.startswith("shikigami_"))
-    return "\n".join(["schema_version = 1", "", "[shikigami]", f"identity = {json.dumps(data['shikigami_identity'], ensure_ascii=False)}", f"installed = {str(bool(data['shikigami_installed'])).lower()}", "", "[codex]", *[f"{key} = {json.dumps(data[key], ensure_ascii=False)}" for key in codex_keys]]) + "\n"
+    codex_keys = tuple(key for key in default_system() if not key.startswith(("shikigami_", "python_")))
+    mode = data.get("python_mode", "isolated")
+    base = data.get("python_base_executable", "") if mode == "isolated" else ""
+    executable = data.get("python_executable", "") if mode == "global" else ""
+    return "\n".join(["schema_version = 2", "", "[shikigami]", f"identity = {json.dumps(data['shikigami_identity'], ensure_ascii=False)}", f"installed = {str(bool(data['shikigami_installed'])).lower()}", "", "[python]", f"mode = {json.dumps(mode)}", f"base_python = {json.dumps(base)}", f"executable = {json.dumps(executable)}", "", "[codex]", *[f"{key} = {json.dumps(data[key], ensure_ascii=False)}" for key in codex_keys]]) + "\n"
 
 
 def replace_block(text: str, begin: str, end: str, block: str) -> str:
@@ -538,7 +561,7 @@ def ensure_shikigami_configuration(root: Path) -> tuple[dict[str, object] | None
     try: raw = tomllib.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     except tomllib.TOMLDecodeError: raw = {}
     section = raw.get("shikigami", {}) if isinstance(raw, dict) else {}
-    needs_save = not isinstance(section, dict) or not isinstance(section.get("identity"), str) or not isinstance(section.get("installed"), bool)
+    needs_save = not isinstance(section, dict) or not isinstance(section.get("identity"), str) or not isinstance(section.get("installed"), bool) or not isinstance(raw.get("python") if isinstance(raw, dict) else None, dict)
     if needs_save:
         ok, message = save_system(root, data, validate=False)
         if not ok: return None, message
@@ -688,6 +711,22 @@ def initial_installation_wizard(root: Path, data: dict[str, object]) -> dict[str
             result(False, "Informe um nome não vazio.")
             continue
         candidate = dict(data); candidate["shikigami_identity"] = identity
+        flow_heading("Instalação inicial", "Runtime Python do Shikigami")
+        print("  1. Ambiente isolado — cria /venv na raiz da instância.")
+        print("  2. Python global — instala dependências no interpretador selecionado.")
+        mode = prompt("Opção [1]: ").strip().casefold() or "1"
+        if mode in {"x", "\x1b"}:
+            return None
+        if mode not in {"1", "2"}:
+            result(False, "Escolha 1 ou 2.")
+            continue
+        selected_python = prompt(f"Python [{sys.executable}]: ").strip() or sys.executable
+        if not Path(selected_python).expanduser().is_file():
+            result(False, "Informe um executável Python existente.")
+            continue
+        candidate["python_mode"] = "isolated" if mode == "1" else "global"
+        candidate["python_base_executable"] = str(Path(selected_python).expanduser()) if mode == "1" else ""
+        candidate["python_executable"] = str(Path(selected_python).expanduser()) if mode == "2" else ""
         candidate = configure_initial_codex(root, candidate)
         if candidate is None:
             return None
@@ -1223,6 +1262,7 @@ def codex_menu(root: Path) -> None:
         item("6.", "Sandbox", str(data["sandbox_mode"]))
         item("7.", "Política de aprovação", str(data["approval_policy"]))
         item("8.", "Diretórios adicionais de escrita", f"{len(data['additional_writable_directories'])} configurado(s)")
+        item("R.", "Runtime Python", f"{data['python_mode']} · {'/venv' if data['python_mode'] == 'isolated' else data['python_executable']}")
         item("9.", "Executar Codex-CLI", "CLI nativo com modelo, sandbox e diretórios configurados")
         item("10.", "Console interativo Onmyōji", "App Server com developer instructions compostas")
         print(f"\n  Estado: {'✓ PRONTO' if ready else '○ ' + message}")
@@ -1277,6 +1317,15 @@ def codex_menu(root: Path) -> None:
             value = choose_approval_policy(root, workspace, str(data["sandbox_mode"]), str(data["approval_policy"]))
             if value: data = update_system(root, data, "approval_policy", value)
         elif choice == "8": data = manage_writable_directories(root, data)
+        elif choice == "r":
+            mode = prompt("Modo [1 isolado / 2 global]: ").strip() or ("1" if data["python_mode"] == "isolated" else "2")
+            if mode in {"1", "2"}:
+                executable = prompt(f"Python [{sys.executable}]: ").strip() or sys.executable
+                if Path(executable).expanduser().is_file():
+                    candidate = dict(data); candidate["python_mode"] = "isolated" if mode == "1" else "global"; candidate["python_base_executable"] = executable if mode == "1" else ""; candidate["python_executable"] = executable if mode == "2" else ""
+                    ok, message = save_system(root, candidate); result(ok, message); data = candidate if ok else data
+                else: result(False, "Informe um executável Python existente.")
+            else: result(False, "Escolha 1 ou 2.")
         elif choice == "9": launch_codex(root, data)
         elif choice == "10": launch_onmyoji_interactive(root, data)
         else: result(False, "Opção inválida.")
@@ -1369,8 +1418,8 @@ def daemon_menu(root: Path) -> None:
         prepared = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "prepare-instance"], quiet=True)
         result(prepared.returncode == 0, (prepared.stdout or prepared.stderr).strip())
         if prepared.returncode != 0: return False
-        print("\n  [2/4] Escolha do runtime Python")
-        if not choose_daemon_runtime(): return False
+        print("\n  [2/4] Runtime Python do Shikigami")
+        note("O daemon usará a escolha central configurada em Codex-CLI > Runtime Python.")
         print("\n  [3/4] Componentes necessários")
         print("    • aiohttp — comunicação HTTP do daemon e seus gateways.")
         print("    • cryptography — recursos criptográficos e certificados locais.")

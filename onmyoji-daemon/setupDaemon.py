@@ -85,14 +85,10 @@ def bootstrap_daemon(root: Path) -> Path:
     data = daemon_data(root)
     app_server = data.setdefault("app_server", {})
     instructions = data.setdefault("instructions", {})
-    runtime = data.setdefault("runtime", {})
     app_server.setdefault("enabled", False)
     app_server.setdefault("idle_timeout_seconds", 1800)
     instructions.setdefault("enabled", True)
     instructions.setdefault("shikigami_file", "instructions.md")
-    runtime.setdefault("mode", "dedicated")
-    runtime.setdefault("base_python", "")
-    runtime.setdefault("executable", "")
     save_daemon_data(root, data)
     return daemon_target(root)
 
@@ -191,12 +187,21 @@ def save_app_server(root: Path, enabled: bool | None, idle_timeout: int | None) 
 
 
 def save_runtime(root: Path, mode: str, executable: str, base_python: str = "") -> None:
-    if mode not in {"dedicated", "existing", "global"}: raise ValueError("Modo de runtime inválido.")
+    if mode not in {"isolated", "global"}: raise ValueError("Modo de runtime inválido.")
     candidate = Path(executable).expanduser()
     if not candidate.is_file(): raise ValueError("O executável Python escolhido não existe.")
-    data = daemon_data(root); runtime = data.setdefault("runtime", {})
-    runtime.update({"mode": mode, "base_python": str(Path(base_python).expanduser()) if mode == "dedicated" else "", "executable": str(candidate) if mode != "dedicated" else ""})
-    save_daemon_data(root, data)
+    system = root / "configs" / "onmyoji-system.toml"
+    try: data = tomllib.loads(system.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError): data = {"schema_version": 2}
+    data["python"] = {"mode": mode, "base_python": str(Path(base_python or executable).expanduser()) if mode == "isolated" else "", "executable": str(candidate) if mode == "global" else ""}
+    lines = ["schema_version = 2", ""]
+    for section in ("shikigami", "python", "codex"):
+        values = data.get(section, {})
+        if isinstance(values, dict):
+            lines.append(f"[{section}]")
+            lines.extend(f"{key} = {json.dumps(value, ensure_ascii=False)}" for key, value in values.items())
+            lines.append("")
+    system.parent.mkdir(parents=True, exist_ok=True); system.write_text("\n".join(lines), encoding="utf-8", newline="\n")
 
 
 def save_owner_execution_preferences(root: Path, enabled: bool, models: str, efforts: str) -> None:

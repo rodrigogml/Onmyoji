@@ -176,7 +176,7 @@ def test_daemon_configuration_preserves_unknown_sections(tmp_path):
     assert complete["app_server"]["enabled"] is True
 
 
-def test_runtime_selection_is_saved_in_daemon_manifest(tmp_path):
+def test_runtime_selection_is_saved_in_central_system_configuration(tmp_path):
     module = setup_module(); executable = tmp_path / "python.exe"; executable.touch()
     manifest = tmp_path / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True)
     manifest.write_text('schema_version = 1\ninstance_id = "test"\ninstance_name = "Exemplo"\n', encoding="utf-8")
@@ -184,7 +184,7 @@ def test_runtime_selection_is_saved_in_daemon_manifest(tmp_path):
 
     module.save_runtime(tmp_path, "global", str(executable))
 
-    runtime = tomllib.loads((tmp_path / "configs" / "daemon" / "daemon.toml").read_text(encoding="utf-8"))["runtime"]
+    runtime = tomllib.loads((tmp_path / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8"))["python"]
     assert runtime == {"mode": "global", "base_python": "", "executable": str(executable)}
 
 
@@ -194,7 +194,7 @@ def test_set_runtime_cli_exits_successfully_after_saving(tmp_path):
     manifest.write_text('schema_version = 1\ninstance_id = "test"\ninstance_name = "Exemplo"\n', encoding="utf-8")
     module.bootstrap_daemon(tmp_path)
 
-    completed = subprocess.run([sys.executable, str(Path(__file__).parents[1] / "setupDaemon.py"), "--onmyoji-root", str(tmp_path), "--action", "set-runtime", "--runtime-mode", "dedicated", "--python", str(executable), "--base-python", str(executable)], text=True, encoding="utf-8", errors="replace", capture_output=True, check=False)
+    completed = subprocess.run([sys.executable, str(Path(__file__).parents[1] / "setupDaemon.py"), "--onmyoji-root", str(tmp_path), "--action", "set-runtime", "--runtime-mode", "isolated", "--python", str(executable), "--base-python", str(executable)], text=True, encoding="utf-8", errors="replace", capture_output=True, check=False)
 
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip() == "Runtime do daemon salvo."

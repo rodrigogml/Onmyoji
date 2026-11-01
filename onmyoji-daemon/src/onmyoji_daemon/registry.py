@@ -20,9 +20,8 @@ def runtime_python(data_dir: Path) -> str:
     configured = Path(os.environ.get("ONMYOJI_DAEMON_PYTHON") or "")
     if configured.is_file():
         return str(configured)
-    environment = data_dir.parent.parent / "venv"
-    executable = environment / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
-    return str(executable if executable.is_file() else Path(sys.executable))
+    # O supervisor já executa no runtime central; nunca recupere venvs legados.
+    return str(Path(sys.executable))
 
 
 def telegram_command(data_dir: Path) -> list[str]:

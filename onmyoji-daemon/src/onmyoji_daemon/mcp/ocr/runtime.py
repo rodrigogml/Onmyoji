@@ -23,14 +23,14 @@ ADVANCED_REQUIREMENTS = ("paddleocr[doc-parser]==3.7.0", "paddlepaddle==3.2.0")
 
 
 def advanced_directory(root: Path) -> Path:
-    path = root.resolve() / "configs" / "mcp" / "ocr" / "advanced"
-    from ..document_processing.paths import reject_links
-    reject_links(path)
-    return path
+    """Compatibilidade: OCR avançado compartilha o runtime único da instância."""
+    from ...runtime import venv_path
+    return venv_path(root)
 
 
 def advanced_python(root: Path) -> Path:
-    return advanced_directory(root) / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    from ..runtime import mcp_runtime_python
+    return mcp_runtime_python(root)
 
 
 def model_directory(root: Path, profile: dict | None = None) -> Path:
@@ -238,7 +238,11 @@ def install_runtime(root: Path, tier: str = "base", gpu: bool = False, progress:
     if tier == "advanced":
         executable = advanced_python(root)
         if not executable.is_file():
-            _run_install([sys.executable, "-I", "-B", "-m", "venv", "--without-pip", str(advanced_directory(root))], timeout=120, environment=environment, cwd=preparation, stage="Criando ambiente isolado para OCR avançado.", progress=progress)
+            if progress:
+                ensure_mcp_runtime(root, progress=progress)
+            else:
+                ensure_mcp_runtime(root)
+            executable = advanced_python(root)
         requirements = list(ADVANCED_REQUIREMENTS)
         # CPU e GPU compartilham o pacote importável paddle; não manter ambos.
         _run_install([*pip_command(), "--python", str(executable), "uninstall", "--yes", "paddlepaddle", "paddlepaddle-gpu"], environment=environment, cwd=preparation, stage="Removendo a variante OCR avançada anterior.", progress=progress)

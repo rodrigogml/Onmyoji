@@ -1,6 +1,13 @@
 # Configuração do Shikigami e cofre KDBX criptografado
 /config.toml
 /*.config.toml
+/venv/
+
+# Ambientes Python reconstruíveis; não fazem parte do backup de definições.
+/configs/daemon/venv/
+/configs/mcp/venv/
+/configs/mcp/ocr/advanced/
+/configs/mcp/ocr/models/
 
 # Arquivosd e Backup
 /*.bak
@@ -10,6 +17,7 @@
 /auth.json
 /sessions/
 /state/
+/skills/
 /log/
 /tmp/
 /plugins/

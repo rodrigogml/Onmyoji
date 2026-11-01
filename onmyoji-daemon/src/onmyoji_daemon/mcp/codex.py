@@ -30,7 +30,7 @@ class CodexMcpError(RuntimeError):
 class CodexMcpRegistration:
     """Garante a configuração stdio do MCP para uma instância Onmyōji.
 
-    O processo MCP usa seu runtime privado em ``configs/mcp/venv`` e recebe
+    O processo MCP usa o runtime único configurado para o Shikigami e recebe
     apenas a raiz da instância e o código-fonte por ambiente. Credenciais
     continuam exclusivamente nos perfis em ``configs/mcp``.
     """
