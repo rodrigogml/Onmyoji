@@ -26,7 +26,7 @@ def test_voice_setup_authorizes_only_telegram_staging(tmp_path):
     (tmp_path / "config.toml").write_text("", encoding="utf-8")
     target = module.bootstrap(tmp_path); data = module.telegram_data(tmp_path); module.save_telegram(tmp_path, "vault", "APIs/Telegram:Bot", data)
 
-    staging = module.save_voice_reply(tmp_path, True, "eccovox", 15)
+    staging = module.save_voice_reply(tmp_path, True, "eccovox", 15, "pm_alex", "pt-BR")
 
     assert staging == workspace / ".onmyoji" / "telegram" / "staging" and staging.is_dir()
     ecco = tomllib.loads((configs / "mcp" / "eccovox.toml").read_text(encoding="utf-8"))["profiles"]["eccovox"]
@@ -35,7 +35,8 @@ def test_voice_setup_authorizes_only_telegram_staging(tmp_path):
     assert complete_system["shikigami"] == {"identity": "Exemplo", "installed": True}
     system = complete_system["codex"]
     assert system["additional_writable_directories"] == []
-    assert tomllib.loads(target.read_text(encoding="utf-8"))["voice_reply"]["enabled"]
+    voice = tomllib.loads(target.read_text(encoding="utf-8"))["voice_reply"]
+    assert voice["enabled"] and voice["voice"] == "pm_alex" and voice["language"] == "pt-BR"
 
 
 def test_outbound_media_does_not_require_an_eccovox_profile(tmp_path):

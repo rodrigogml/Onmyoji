@@ -30,6 +30,7 @@ from onmyoji_daemon.codex_execution import CodexExecutionError, CodexLaunch
 from onmyoji_daemon.instance import telegram_configuration_path
 from onmyoji_daemon.mcp.configuration import McpConfiguration
 from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialResolver
+from onmyoji_daemon.mcp.eccovox import EccoVoxError, EccoVoxService
 from onmyoji_daemon import runtime as python_runtime
 from onmyoji_daemon import management as daemon_management
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
@@ -933,6 +934,28 @@ def flow_choice(label: str, values: list[str], current: str = "", cancel_label: 
         if not choice: return values[default_index - 1]
         if choice.isdigit() and 1 <= int(choice) <= len(values): return values[int(choice) - 1]
         result(False, "Opção inválida.")
+
+
+def choose_eccovox_tts_capability(root: Path, profile: str, key: str, title: str, current: str = "") -> str | None:
+    """Consulta o catálogo do EccoVox e evita gravar identificadores livres."""
+    try:
+        tts = EccoVoxService(root).capabilities(profile)["capabilities"]["tts"]
+        if tts.get("status") not in {"ready", "degraded"}:
+            raise EccoVoxError("runtime_unavailable", "A síntese de voz não está disponível no EccoVox.")
+        values = tts[key]
+        if not isinstance(values, list):
+            raise ValueError
+        options = [(str(value["id"]).strip(), str(value.get("label") or value["id"]).strip()) for value in values if isinstance(value, dict) and isinstance(value.get("id"), str) and value["id"].strip()]
+    except (EccoVoxError, KeyError, TypeError, ValueError) as error:
+        result(False, f"Não foi possível consultar as capacidades do EccoVox: {error}")
+        return None
+    default = "Herdar o perfil MCP EccoVox"
+    labels = [default, *(f"{label} ({identifier})" for identifier, label in options)]
+    selected = next((f"{label} ({identifier})" for identifier, label in options if identifier == current), default)
+    choice = flow_choice(title, labels, selected)
+    if choice is None:
+        return None
+    return "" if choice == default else next(identifier for identifier, label in options if choice == f"{label} ({identifier})")
 
 
 def configure_mcp_password_reference(root: Path, integration: str, default_entry: str, current_profile: str = "", current_entry: str = "") -> tuple[str, str] | None:
@@ -1874,10 +1897,11 @@ def daemon_menu(root: Path) -> None:
                 voice_enabled = bool(telegram_settings.get("voice_reply", {}).get("enabled", False))
                 voice_profile = str(telegram_settings.get("voice_reply", {}).get("eccovox_profile") or "")
                 voice_name = str(telegram_settings.get("voice_reply", {}).get("voice") or "")
+                voice_language = str(telegram_settings.get("voice_reply", {}).get("language") or "")
                 voice_auto_off = int(telegram_settings.get("voice_reply", {}).get("auto_off_minutes") or 15)
                 outbound_media = bool(telegram_settings.get("telegram", {}).get("agent_outbound_media", telegram_settings.get("voice_reply", {}).get("agent_outbound_media", False)))
             except (OSError, tomllib.TOMLDecodeError):
-                telegram_settings = {}; totp_enabled, voice_enabled, voice_profile, voice_name, voice_auto_off, outbound_media = False, False, "", "", 15, False
+                telegram_settings = {}; totp_enabled, voice_enabled, voice_profile, voice_name, voice_language, voice_auto_off, outbound_media = False, False, "", "", "", 15, False
             try:
                 daemon_settings = tomllib.loads((root / "configs" / "daemon" / "daemon.toml").read_text(encoding="utf-8"))
                 daemon_app_server = daemon_settings.get("app_server", {})
@@ -1917,7 +1941,7 @@ def daemon_menu(root: Path) -> None:
                 item("1.", "Desabilitar TOTP" if totp_enabled else "Configurar e habilitar TOTP")
                 item("2.", "Instruções do Shikigami", instruction_file)
             elif section == "audio":
-                item("1.", "Desabilitar respostas em áudio" if voice_enabled else "Configurar e habilitar respostas em áudio", f"EccoVox: {voice_profile} · voz: {voice_name or 'herdada do perfil MCP'} · auto-off: {voice_auto_off} min" if voice_enabled else "Desabilitadas")
+                item("1.", "Desabilitar respostas em áudio" if voice_enabled else "Configurar e habilitar respostas em áudio", f"EccoVox: {voice_profile} · voz: {voice_name or 'herdada'} · idioma: {voice_language or 'herdado'} · auto-off: {voice_auto_off} min" if voice_enabled else "Desabilitadas")
             else:
                 item("1.", "Desabilitar envio pelo agente" if outbound_media else "Habilitar envio pelo agente", "Arquivos, fotos e áudio na conversa Telegram ativa")
             item("X.", "Voltar")
@@ -2057,13 +2081,16 @@ def daemon_menu(root: Path) -> None:
                     profile = flow_choice("Perfil MCP EccoVox", profiles, voice_profile if voice_profile in profiles else profiles[0])
                     if profile is None:
                         continue
-                selected_voice = prompt(f"Voz Telegram [vazio = herdar perfil MCP; atual: {voice_name or 'herdada'}]: ").strip()
-                if selected_voice.casefold() in {"x", "\x1b"}:
-                    continue
+                selected_voice, selected_language = voice_name, voice_language
+                if active:
+                    selected_voice = choose_eccovox_tts_capability(root, profile, "voices", "Voz das respostas Telegram", voice_name)
+                    if selected_voice is None: continue
+                    selected_language = choose_eccovox_tts_capability(root, profile, "languages", "Idioma das respostas Telegram", voice_language)
+                    if selected_language is None: continue
                 raw = prompt(f"Desligar áudio após minutos sem interação [{voice_auto_off}]: ").strip()
                 try: minutes = int(raw) if raw else voice_auto_off
                 except ValueError: result(False, "Informe minutos inteiros."); continue
-                arguments = [sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-voice-reply", "--profile", profile, "--voice", selected_voice, "--auto-off-minutes", str(minutes)] + (["--enabled"] if active else [])
+                arguments = [sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-voice-reply", "--profile", profile, "--voice", selected_voice, "--language", selected_language, "--auto-off-minutes", str(minutes)] + (["--enabled"] if active else [])
                 changed = command(arguments, quiet=True); result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
                 if changed.returncode == 0: offer_restart()
             elif choice == "12":

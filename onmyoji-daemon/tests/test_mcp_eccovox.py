@@ -39,14 +39,15 @@ def test_eccovox_configuration_is_kept_in_mcp_subdirectory(tmp_path):
 
 
 def test_eccovox_profile_persists_its_default_voice(tmp_path):
-    config = configured(tmp_path); data = config.eccovox(); data["profiles"]["voz"]["voice"] = "pm_alex"; config.save_eccovox(data)
+    config = configured(tmp_path); data = config.eccovox(); data["profiles"]["voz"].update({"voice": "pm_alex", "language": "pt-BR"}); config.save_eccovox(data)
 
     assert McpConfiguration(tmp_path).eccovox()["profiles"]["voz"]["voice"] == "pm_alex"
     assert 'voice = "pm_alex"' in config.eccovox_path.read_text(encoding="utf-8")
+    assert 'language = "pt-BR"' in config.eccovox_path.read_text(encoding="utf-8")
 
 
 def test_synthesis_uses_the_profile_default_voice_when_not_overridden(tmp_path, monkeypatch):
-    config = configured(tmp_path); data = config.eccovox(); data["profiles"]["voz"]["voice"] = "pm_alex"; config.save_eccovox(data)
+    config = configured(tmp_path); data = config.eccovox(); data["profiles"]["voz"].update({"voice": "pm_alex", "language": "pt-BR"}); config.save_eccovox(data)
     captured = {}
 
     def request(_self, _config, path, body, _content_type):
@@ -57,7 +58,14 @@ def test_synthesis_uses_the_profile_default_voice_when_not_overridden(tmp_path, 
     output = tmp_path / "write" / "answer.mp3"
     EccoVoxService(tmp_path).synthesize("voz", "Olá", str(output), "mp3")
 
-    assert captured == {"path": "/v1/audio/speech", "payload": {"input": "Olá", "responseFormat": "mp3", "voice": "pm_alex"}}
+    assert captured == {"path": "/v1/audio/speech", "payload": {"input": "Olá", "responseFormat": "mp3", "voice": "pm_alex", "language": "pt-BR"}}
+
+
+def test_capabilities_are_read_from_the_local_runtime(monkeypatch):
+    payload = {"capabilities": {"tts": {"status": "ready", "voices": [{"id": "pm_alex"}], "languages": [{"id": "pt-BR"}]}}}
+    monkeypatch.setattr(EccoVoxService, "_request", lambda *_args: (json.dumps(payload).encode(), "application/json"))
+
+    assert EccoVoxService.capabilities_at("http://127.0.0.1:8870") == payload
 
 
 def test_synthesis_without_output_path_uses_profile_default_directory(tmp_path, monkeypatch):

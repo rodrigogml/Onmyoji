@@ -4,9 +4,9 @@ O módulo `eccovox` oferece transcrição de áudio e síntese de fala pelo runt
 
 ## Configuração
 
-Use **MCP > EccoVox**. Cada perfil tem nome, descrição de contexto, habilitação, endpoint HTTP local, voz padrão, pasta padrão de saída e raízes autorizadas de leitura e escrita. As raízes padrão são o Work inteiro; a saída automática fica em `<Work>/.onmyoji/eccovox/output`. A voz é um identificador aceito pelo runtime EccoVox; deixá-la vazia usa o padrão configurado no próprio runtime. O endpoint sugerido é `http://127.0.0.1:8870`; somente endereços de loopback são aceitos.
+Use **MCP > EccoVox**. Cada perfil tem nome, descrição de contexto, habilitação, endpoint HTTP local, voz e idioma padrão, pasta padrão de saída e raízes autorizadas de leitura e escrita. As raízes padrão são o Work inteiro; a saída automática fica em `<Work>/.onmyoji/eccovox/output`. O endpoint sugerido é `http://127.0.0.1:8870`; somente endereços de loopback são aceitos.
 
-A configuração fica em `configs/mcp/eccovox.toml`. O menu permite alterar descrição, endpoint e raízes, testar a conexão, habilitar, desabilitar e remover o perfil. Esta integração local não utiliza credenciais de vault.
+A configuração fica em `configs/mcp/eccovox.toml`. Antes de criar um perfil — e ao alterar voz ou idioma — o setup consulta `GET /v1/capabilities` no runtime e apresenta apenas as opções que ele anuncia. Escolher o padrão deixa o respectivo campo vazio e herda o runtime. Esta integração local não utiliza credenciais de vault.
 
 Sem perfil habilitado, nenhuma ferramenta é publicada. Um único perfil é selecionado implicitamente; com vários, `eccovox.list_profiles` apresenta os contextos e as chamadas exigem `profile`.
 
@@ -24,4 +24,4 @@ Na transcrição, os formatos aceitos são WAV, MP3, M4A, MP4, OGG, Opus, WebM e
 
 O serviço confere os caminhos resolvidos contra `readable_roots` e `writable_roots` e aplica os limites configurados de áudio, texto e timeout. A síntese pode substituir o arquivo de saída existente dentro da raiz autorizada.
 
-O [Gateway Telegram](Telegram.md) também usa esse serviço internamente para voz. A configuração do Telegram pode informar uma voz própria; vazia, ela herda a voz do perfil MCP selecionado. Permissões de envio de fotos e documentos são independentes da integração EccoVox. Ao configurar voz, o setup autoriza o staging do Telegram nas raízes do perfil escolhido.
+O [Gateway Telegram](Telegram.md) também usa esse serviço internamente para voz. A configuração do Telegram consulta o mesmo catálogo e pode selecionar voz e idioma próprios; vazios, eles herdam o perfil MCP selecionado. Permissões de envio de fotos e documentos são independentes da integração EccoVox. Ao configurar voz, o setup autoriza o staging do Telegram nas raízes do perfil escolhido.

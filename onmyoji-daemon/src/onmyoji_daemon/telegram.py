@@ -142,7 +142,7 @@ class Settings:
                         raise ValueError("TOTP habilitado exige senhas real e falsa existentes no vault MCP.")
             except CredentialError as error:
                 raise ValueError("Não foi possível validar as senhas TOTP no vault MCP.") from error
-        return cls(root, data_dir, profile, entry, project, str(system.get("executable") or "codex"), str(system.get("model") or ""), str(system.get("model_reasoning_effort") or "medium"), str(system.get("sandbox_mode") or "workspace-write"), str(system.get("approval_policy") or "never"), int(telegram.get("poll_timeout_seconds") or 30), int(agent.get("turn_timeout_seconds") or 900), max(1, int(agent.get("max_parallel_conversations") or 1)), str(instructions.get("shikigami_file") or "instructions.md"), bool(instructions.get("enabled", True)), bool(agent.get("owner_execution_preferences", True)), permitted_models, permitted_efforts, bool(app_server.get("enabled", False)), idle, per_file, batch, max(1, pending), retained, output_bytes, output_count, context_messages, context_age, enabled, voice_profile, str(voice.get("language") or "pt-BR"), str(voice.get("voice") or ""), float(voice.get("speed") or 1.0), voice_format, voice_text, auto_off, bool(voice.get("fallback_to_text", True)), outbound_media, bool(totp.get("enabled", False)))
+        return cls(root, data_dir, profile, entry, project, str(system.get("executable") or "codex"), str(system.get("model") or ""), str(system.get("model_reasoning_effort") or "medium"), str(system.get("sandbox_mode") or "workspace-write"), str(system.get("approval_policy") or "never"), int(telegram.get("poll_timeout_seconds") or 30), int(agent.get("turn_timeout_seconds") or 900), max(1, int(agent.get("max_parallel_conversations") or 1)), str(instructions.get("shikigami_file") or "instructions.md"), bool(instructions.get("enabled", True)), bool(agent.get("owner_execution_preferences", True)), permitted_models, permitted_efforts, bool(app_server.get("enabled", False)), idle, per_file, batch, max(1, pending), retained, output_bytes, output_count, context_messages, context_age, enabled, voice_profile, str(voice.get("language") or ""), str(voice.get("voice") or ""), float(voice.get("speed") or 1.0), voice_format, voice_text, auto_off, bool(voice.get("fallback_to_text", True)), outbound_media, bool(totp.get("enabled", False)))
 
 
 class CodexProtocolError(RuntimeError): pass
@@ -493,7 +493,7 @@ class Gateway(TelegramChannels):
     def _tts(self, text: str, output: Path) -> None:
         if not self.settings.voice_enabled: raise RuntimeError("Resposta em áudio não está disponível.")
         try:
-            EccoVoxService(self.settings.root).synthesize(self.settings.voice_profile, text[:self.settings.voice_max_text], str(output), self.settings.voice_format, voice=self.settings.voice_name or None, language=self.settings.voice_language, speed=self.settings.voice_speed)
+            EccoVoxService(self.settings.root).synthesize(self.settings.voice_profile, text[:self.settings.voice_max_text], str(output), self.settings.voice_format, voice=self.settings.voice_name or None, language=self.settings.voice_language or None, speed=self.settings.voice_speed)
         except EccoVoxError as error:
             raise RuntimeError(str(error)) from error
         if not output.is_file() or output.is_symlink(): raise RuntimeError("EccoVox não gerou o áudio.")

@@ -42,6 +42,29 @@ class EccoVoxService:
         payload = self._json(config, "/v1/health", None, None)
         return {key: payload[key] for key in ("status", "version", "capabilities") if key in payload}
 
+    def capabilities(self, profile_name: str) -> dict[str, Any]:
+        """Consulta o catálogo público anunciado pelo runtime do perfil."""
+        config = self._profile(profile_name)
+        return self.capabilities_at(config["base_url"], config["timeout"])
+
+    @classmethod
+    def capabilities_at(cls, base_url: str, timeout: int = 15) -> dict[str, Any]:
+        """Consulta capacidades antes que um perfil MCP tenha sido salvo."""
+        parsed = parse.urlsplit(base_url)
+        if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"} or not parsed.port or parsed.path not in {"", "/"} or parsed.query or parsed.fragment or parsed.username or parsed.password:
+            raise EccoVoxError("invalid_config", "Endpoint EccoVox inválido.")
+        raw, content_type = cls._request({"base_url": base_url.rstrip("/"), "timeout": timeout}, "/v1/capabilities", None, None)
+        if content_type != "application/json":
+            raise EccoVoxError("runtime_error", "EccoVox retornou capacidades inválidas.")
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+            tts = payload["capabilities"]["tts"]
+            if not isinstance(payload, dict) or not isinstance(tts, dict) or not isinstance(tts.get("status"), str) or not isinstance(tts.get("voices"), list) or not isinstance(tts.get("languages"), list):
+                raise ValueError
+        except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            raise EccoVoxError("runtime_error", "EccoVox retornou capacidades inválidas.") from exc
+        return payload
+
     def transcribe(self, profile_name: str, audio_path: str, *, language: str | None = None, runtime_profile: str | None = None) -> dict[str, Any]:
         config = self._profile(profile_name)
         audio = self._contained(audio_path, config["readable_roots"], "audio_path", True)
@@ -75,8 +98,8 @@ class EccoVoxService:
         if media_format not in ALLOWED_TTS_FORMATS or output.suffix.lower() != f".{media_format}":
             raise EccoVoxError("invalid_request", "A extensão do arquivo deve corresponder a um formato de áudio suportado.")
         payload: dict[str, Any] = {"input": text, "responseFormat": media_format}
-        effective_voice = voice if voice is not None else config["voice"]
-        for key, value in (("voice", effective_voice), ("language", language), ("profile", runtime_profile)):
+        effective_voice, effective_language = voice if voice is not None else config["voice"], language if language is not None else config["language"]
+        for key, value in (("voice", effective_voice), ("language", effective_language), ("profile", runtime_profile)):
             if value is not None:
                 if not isinstance(value, str) or not value.strip():
                     raise EccoVoxError("invalid_request", f"{key} deve ser informado quando usado.")
@@ -115,6 +138,9 @@ class EccoVoxService:
         voice = profile.get("voice", "")
         if not isinstance(voice, str) or len(voice) > 120:
             raise EccoVoxError("invalid_config", "Perfil EccoVox inválido.")
+        language = profile.get("language", "")
+        if not isinstance(language, str) or len(language) > 40:
+            raise EccoVoxError("invalid_config", "Perfil EccoVox inválido.")
         output_value = profile.get("default_output_directory", "")
         if not isinstance(output_value, str):
             raise EccoVoxError("invalid_config", "Perfil EccoVox inválido.")
@@ -126,7 +152,7 @@ class EccoVoxService:
                 output_directory = writable[0] / ".onmyoji" / "eccovox" / "output"
         if not any(output_directory.is_relative_to(root) for root in writable):
             raise EccoVoxError("invalid_config", "A pasta padrão de saída do EccoVox não está autorizada para escrita.")
-        return {"base_url": base_url.rstrip("/"), "timeout": timeout, "max_audio_bytes": max_audio, "max_text_characters": max_text, "voice": voice.strip() or None, "default_output_directory": output_directory, "readable_roots": readable, "writable_roots": writable}
+        return {"base_url": base_url.rstrip("/"), "timeout": timeout, "max_audio_bytes": max_audio, "max_text_characters": max_text, "voice": voice.strip() or None, "language": language.strip() or None, "default_output_directory": output_directory, "readable_roots": readable, "writable_roots": writable}
 
     def _default_output(self, config: dict[str, Any], media_format: str) -> Path:
         directory = config["default_output_directory"]

@@ -810,6 +810,8 @@ class McpConfiguration:
                 raise McpConfigurationError("Endpoint EccoVox inválido.")
             if not isinstance(profile.get("voice", ""), str) or len(str(profile.get("voice", ""))) > 120:
                 raise McpConfigurationError("Voz padrão do perfil EccoVox inválida.")
+            if not isinstance(profile.get("language", ""), str) or len(str(profile.get("language", ""))) > 40:
+                raise McpConfigurationError("Idioma padrão do perfil EccoVox inválido.")
             if not isinstance(profile.get("default_output_directory", ""), str):
                 raise McpConfigurationError("Pasta padrão de saída do perfil EccoVox inválida.")
             for key in ("readable_roots", "writable_roots"):
@@ -926,7 +928,7 @@ class McpConfiguration:
         defaults = data["defaults"]
         lines = ["schema_version = 1", "", "[defaults]", f"request_timeout_seconds = {defaults['request_timeout_seconds']}", f"max_audio_bytes = {defaults['max_audio_bytes']}", f"max_text_characters = {defaults['max_text_characters']}"]
         for name, profile in sorted(data["profiles"].items()):
-            lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"base_url = {_quote(profile['base_url'])}", f"voice = {_quote(profile.get('voice', ''))}", f"default_output_directory = {_quote(profile.get('default_output_directory', ''))}", f"readable_roots = {_array(profile['readable_roots'])}", f"writable_roots = {_array(profile['writable_roots'])}"]
+            lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"base_url = {_quote(profile['base_url'])}", f"voice = {_quote(profile.get('voice', ''))}", f"language = {_quote(profile.get('language', ''))}", f"default_output_directory = {_quote(profile.get('default_output_directory', ''))}", f"readable_roots = {_array(profile['readable_roots'])}", f"writable_roots = {_array(profile['writable_roots'])}"]
         return "\n".join(lines) + "\n"
 
     @staticmethod
