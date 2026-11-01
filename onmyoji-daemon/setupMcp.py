@@ -19,7 +19,7 @@ if hasattr(sys.stderr, "reconfigure"):
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from setupOnmyoji import Ui, flow_choice, instance_identity, item as render_item, note, prompt, result, screen as render_screen
+from setupOnmyoji import Ui, flow_choice, flow_heading, instance_identity, item as render_item, note, prompt, result, screen as render_screen
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 

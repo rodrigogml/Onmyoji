@@ -114,6 +114,20 @@ def test_document_limits_are_rendered_as_an_operational_summary():
     assert _limits_summary(empty_configuration()["defaults"]) == "Entrada 250 MiB · 2.000 páginas · 30 min"
 
 
+def test_setup_mcp_exports_the_flow_heading_required_by_document_setup():
+    """O módulo usado como UI pelo menu documental expõe todos os helpers de fluxo."""
+    import importlib.util
+    from pathlib import Path
+
+    source = Path(__file__).parents[1] / "setupMcp.py"
+    specification = importlib.util.spec_from_file_location("setup_mcp_for_document_test", source)
+    assert specification is not None and specification.loader is not None
+    module = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(module)
+
+    assert callable(module.flow_heading)
+
+
 def test_pdf_worker_publishes_new_artifact_and_keeps_source(tmp_path):
     fitz = pytest.importorskip("pymupdf")
     config, data, workspace = configured(tmp_path)

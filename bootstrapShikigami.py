@@ -191,7 +191,7 @@ def create_instance(name: str, instance_directory: Path, workspace_directory: Pa
         write_initial_configuration(instance_directory, name)
         configure_identity(instance_directory, ask)
         configure_merge_protection(instance_directory)
-        git(["add", "--", *PROTECTED_FILES], cwd=instance_directory)
+        git(["add", "--", *PROTECTED_FILES, "configs"], cwd=instance_directory)
         git(["commit", "-m", f"Cria a instância {name}"], cwd=instance_directory)
         if origin_url:
             git(["remote", "add", "origin", origin_url], cwd=instance_directory)
