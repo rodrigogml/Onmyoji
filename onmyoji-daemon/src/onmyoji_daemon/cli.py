@@ -54,6 +54,12 @@ def main(argv: list[str] | None = None) -> int:
     install_cloudflared = tunnel_sub.add_parser("install-cloudflared"); install_cloudflared.add_argument("--confirm", action="store_true")
     tls = miniapps_sub.add_parser("tls"); tls_sub = tls.add_subparsers(dest="tls_action", required=True); tls_sub.add_parser("status"); trust = tls_sub.add_parser("install-trust"); trust.add_argument("--confirm", action="store_true")
     args = parser.parse_args(argv); root = args.onmyoji_root.resolve()
+    def install_service_action():
+        print("› Preparando o host do Serviço do Windows e validando o runtime.", flush=True)
+        print("› Registrando o serviço no sistema operacional.", flush=True)
+        if args.windows_account:
+            print("› Configurando a conta Windows selecionada; a senha não será exibida nem armazenada.", flush=True)
+        return management.install_service(root, args.name, args.description, args.scope, args.run_as_user, args.run_as_group, args.use_sudo, args.windows_account, sys.stdin.read().rstrip("\r\n") if args.password_stdin else "")
     if args.action == "run": Supervisor(root).run_forever(); return 0
     if args.action == "interactive": return interactive_main(["--onmyoji-root", str(root)])
     direct = {
@@ -66,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
         "process-start": lambda: management.start_background(root),
         "process-stop": lambda: management.stop_background(root),
         "process-force-stop": lambda: management.stop_background(root, True),
-        "install-service": lambda: management.install_service(root, args.name, args.description, args.scope, args.run_as_user, args.run_as_group, args.use_sudo, args.windows_account, sys.stdin.read().rstrip("\r\n") if args.password_stdin else ""),
+        "install-service": install_service_action,
         "configure-windows-service-account": lambda: management.configure_windows_service_account(root, args.account, sys.stdin.read().rstrip("\r\n") if args.password_stdin else ""),
         "remove-service": lambda: management.remove_service(root, args.use_sudo),
         "service-status": lambda: management.service_status(root),

@@ -1516,7 +1516,8 @@ def daemon_menu(root: Path) -> None:
         return subprocess.run(arguments, cwd=str(project), env=environment, text=True, encoding="utf-8", errors="replace", capture_output=quiet, input=input_value)
 
     def lifecycle(action: str, extra: list[str] | None = None, input_value: str | None = None) -> bool:
-        completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), action, *(extra or [])], quiet=True, input_value=input_value)
+        visible = action in {"install-service", "configure-windows-service-account", "remove-service", "service-start", "service-stop", "service-restart", "service-force-stop"}
+        completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), action, *(extra or [])], quiet=not visible, input_value=input_value)
         result(completed.returncode == 0, (completed.stdout or completed.stderr or "Operação concluída.").strip())
         return completed.returncode == 0
 
