@@ -88,6 +88,22 @@ class BootstrapShikigamiTests(unittest.TestCase):
         self.assertIn("onmyoji-daemon/setupDaemon.py", hook)
         self.assertTrue(any(call.args[0][:2] == ["config", "merge.shikigami-upstream.driver"] for call in command.call_args_list))
 
+    def test_setup_guard_rejects_an_instance_commit_that_changes_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            for path in MODULE.UPSTREAM_SETUP_FILES:
+                target = repository / path; target.parent.mkdir(parents=True, exist_ok=True); target.write_text("base\n", encoding="utf-8")
+            for arguments in (["init"], ["config", "user.name", "Teste"], ["config", "user.email", "teste@example.test"], ["add", "."], ["commit", "-m", "Base"]):
+                subprocess.run(["git", *arguments], cwd=repository, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            MODULE.configure_merge_protection(repository)
+            target = repository / "onmyoji-daemon" / "setupMcp.py"; target.write_text("alterado\n", encoding="utf-8")
+            subprocess.run(["git", "add", str(target.relative_to(repository))], cwd=repository, check=True, capture_output=True, text=True)
+
+            completed = subprocess.run(["git", "commit", "-m", "Alteração indevida"], cwd=repository, check=False, capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("pertence ao Onmyōji", completed.stderr)
+
     def test_interactive_cancellation_does_not_create_instance(self) -> None:
         answers = iter(["Akuma", "", "", "", "", "", "n"])
         output: list[str] = []
