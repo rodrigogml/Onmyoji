@@ -379,9 +379,11 @@ def validate_codex_model(root: Path, data: dict[str, object]) -> tuple[bool, str
     model = str(data["model"]).strip()
     effort = str(data["model_reasoning_effort"])
     environment = dict(os.environ); environment["CODEX_HOME"] = str(root)
+    temporary = root / "tmp" / "codex-model-validation"
+    temporary.mkdir(parents=True, exist_ok=True)
     command = [executable, "exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "--model", model, "--config", f"model_reasoning_effort={json.dumps(effort)}", "Responda exatamente: OK"]
     try:
-        completed = subprocess.run(command, cwd=str(root), env=environment, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=120)
+        completed = subprocess.run(command, cwd=str(temporary), env=environment, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=120)
     except OSError as error:
         return False, f"Não foi possível iniciar a validação do modelo: {error}"
     except subprocess.TimeoutExpired:

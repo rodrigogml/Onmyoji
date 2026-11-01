@@ -223,6 +223,7 @@ class SystemSetupTests(unittest.TestCase):
             data = MODULE.default_system() | {"executable": "codex"}
             self.assertTrue(MODULE.validate_codex_model(Path(temporary), data)[0])
         self.assertEqual(run.call_args.args[0], ["codex", "exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "--model", "gpt-6.1-sol", "--config", 'model_reasoning_effort="medium"', "Responda exatamente: OK"])
+        self.assertEqual(run.call_args.kwargs["cwd"], str(Path(temporary) / "tmp" / "codex-model-validation"))
 
     def test_model_validation_rejects_an_incompatible_reasoning_effort_before_execution(self) -> None:
         data = MODULE.default_system() | {"executable": "codex", "model": "gpt-6-luna", "model_reasoning_effort": "ultra"}
