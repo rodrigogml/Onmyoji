@@ -22,7 +22,7 @@ Sem perfil habilitado, o namespace OCR não é publicado. Com um perfil, ele é 
 
 ## Perfis e instalação
 
-Use **MCP > Integrações MCP > OCR**. O roteiro oferece entrada, saída e trabalho em `<workspace>/.onmyoji/ocr/`, português e inglês (`por;eng`) e 300 DPI. Enter aceita os valores mostrados. O workspace deve ser externo e disjunto da instância; raízes e trabalho ficam exclusivamente nele, sem links simbólicos ou junctions nos caminhos. A edição associa cada atributo à opção que permite alterá-lo. A [regra de diretórios compartilhada com PDF](mcp-pdf.md#diretórios-e-recursos) também se aplica ao OCR, inclusive à revalidação quando o workspace muda e à proibição de entradas e saídas finais no diretório temporário de trabalho.
+Use **MCP > OCR**. O roteiro oferece entrada, saída e trabalho em `<workspace>/.onmyoji/ocr/`, português e inglês (`por;eng`) e 300 DPI. Enter aceita os valores mostrados. O workspace deve ser externo e disjunto da instância; raízes e trabalho ficam exclusivamente nele, sem links simbólicos ou junctions nos caminhos. A edição associa cada atributo à opção que permite alterá-lo. A [regra de diretórios compartilhada com PDF](mcp-pdf.md#diretórios-e-recursos) também se aplica ao OCR, inclusive à revalidação quando o workspace muda e à proibição de entradas e saídas finais no diretório temporário de trabalho.
 
 Para começar:
 

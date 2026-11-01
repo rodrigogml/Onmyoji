@@ -4,7 +4,7 @@ A integração Google publica Gmail, People/Contatos, Drive e Calendar pelo serv
 
 ## Configuração e OAuth
 
-No setup, acesse `MCP > Integrações MCP > Google`. Cada perfil define a descrição que orienta o agente, um perfil de vault, uma entrada KeePass dedicada, o identificador interno do token OAuth, o usuário Gmail e raízes locais de leitura e escrita.
+No setup, acesse `MCP > Google`. Cada perfil define a descrição que orienta o agente, um perfil de vault, uma entrada KeePass dedicada, o identificador interno do token OAuth, o usuário Gmail e raízes locais de leitura e escrita.
 
 O Client ID é armazenado em `username`, o Client Secret em `password` e o estado OAuth versionado em `notes`. A ação `Autorizar conta no Google` inicia um callback temporário em `127.0.0.1`, abre o consentimento no navegador e grava somente o refresh token no vault. O callback não exige Gateway, túnel ou daemon ativo.
 

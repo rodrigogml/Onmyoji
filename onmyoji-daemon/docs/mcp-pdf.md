@@ -4,7 +4,7 @@ O módulo `pdf` oferece leitura e processamento documental sob demanda, no servi
 
 ## Preparação
 
-Use **MCP > Integrações MCP > PDF** para criar um perfil. O setup sugere entrada, saída e trabalho em `<workspace>/.onmyoji/pdf/`, mostra o valor adotado por Enter e cria as pastas após validar a configuração. Autorize pastas adicionais do workspace de onde o agente recebe anexos quando necessário.
+Use **MCP > PDF** para criar um perfil. O setup sugere entrada, saída e trabalho em `<workspace>/.onmyoji/pdf/`, mostra o valor adotado por Enter e cria as pastas após validar a configuração. Autorize pastas adicionais do workspace de onde o agente recebe anexos quando necessário.
 
 Cada opção de edição mostra seus atributos na segunda coluna. É possível alterar diretórios, descrição, perfil OCR, executáveis de PDF/A, habilitação e limites. Configurações ficam em `configs/mcp/pdf.toml`; documentos nunca são guardados ali. A opção de instalação prepara as bibliotecas no runtime privado do MCP, em `configs/mcp/venv`, dentro do domínio da instância. A dependência PyMuPDF usa AGPL/comercial; distribuições devem observar seus termos e os das demais dependências.
 
@@ -12,7 +12,7 @@ Sem perfil habilitado, nenhuma ferramenta PDF é publicada. Um perfil é implíc
 
 ### Configurar e conferir um perfil
 
-1. Execute `python setupOnmyoji.py` na instância e abra **MCP > Integrações MCP > PDF > Criar perfil**.
+1. Execute `python setupOnmyoji.py` na instância e abra **MCP > PDF > Criar perfil**.
 2. Informe nome e descrição de uso. Aceite ou ajuste entrada, saída e trabalho; Enter usa o caminho exibido e o setup cria os diretórios validados.
 3. Selecione o perfil OCR habilitado que atenderá o PDF, ou **Nenhum** para usar somente operações digitais. Prepare o OCR pelo [manual próprio](mcp-ocr.md).
 4. Prepare os componentes básicos quando solicitado. Em **Gerenciar perfil > Diagnóstico e teste**, confira os motores disponíveis. A instalação de pacotes Python não instala os executáveis nativos.

@@ -35,7 +35,7 @@ O wizard e a opção Política de aprovação explicam as duas políticas aceita
 
 Cada `setupSkill.py` de `shikigami-skills/` é responsável exclusivamente pela configuração da sua skill. Ele recebe a pasta da instância do Onmyōji, apresenta seu próprio menu e preserva perfis existentes até haver confirmação explícita. Todo novo ou alterado fluxo de gravação deve validar o resultado, manter backup temporário quando substituir dados e restaurar a configuração anterior em caso de falha. Wizards aceitam `X` ou `Esc` (quando o terminal o transmite, normalmente seguido de Enter) para cancelar sem gravar alterações parciais.
 
-Quando uma skill precisa da referência `vault_profile`, o configurador lê os perfis em `configs/mcp/credentials.toml` e oferece um seletor numérico. Não solicite esse identificador como texto livre; se ainda não houver perfis de vault MCP, informe que o operador deve criar um no menu `MCP > Perfis de vault`.
+Quando uma skill precisa da referência `vault_profile`, o configurador lê os perfis em `configs/mcp/credentials.toml` e oferece um seletor numérico. Não solicite esse identificador como texto livre; se ainda não houver perfis de vault MCP, informe que o operador deve criar um no menu `MCP > V. Perfis de vault`.
 
 As novas referências KeePass sugeridas pelo setup usam somente os grupos `<Shikigami>/Serviço` ou `<Shikigami>/MCP`; o título da entrada é formado por `<Integração>:<perfil>:<finalidade>`. Referências já configuradas e caminhos personalizados permanecem válidos e não são migrados automaticamente.
 

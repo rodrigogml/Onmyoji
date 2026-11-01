@@ -4,7 +4,7 @@ O módulo `todoist` consulta e gerencia a conta Todoist pelo servidor MCP local.
 
 ## Configuração
 
-Use **MCP > Perfis de vault** para preparar o cofre e depois **MCP > Integrações MCP > Todoist** para criar um perfil. Informe nome, perfil de vault e entrada da chave; o roteiro verifica a credencial existente e permite utilizá-la, substituí-la ou escolher outra entrada. A descrição define quando o agente deve escolher esse perfil.
+Use **MCP > V. Perfis de vault** para preparar o cofre e depois **MCP > Todoist** para criar um perfil. Informe nome, perfil de vault e entrada da chave; o roteiro verifica a credencial existente e permite utilizá-la, substituí-la ou escolher outra entrada. A descrição define quando o agente deve escolher esse perfil.
 
 As referências da credencial e a habilitação ficam em `configs/mcp/todoist.toml`. O menu de gestão permite alterar o vault, a entrada, a chave e a descrição, testar a conexão, habilitar, desabilitar e remover o perfil.
 

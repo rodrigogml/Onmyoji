@@ -2146,7 +2146,7 @@ def data_tables_menu(config: McpConfiguration) -> None:
 
 
 def integrations_menu(config: McpConfiguration) -> None:
-    """Lista integrações MCP e mantém cada configurador em seu próprio menu."""
+    """Lista vault e integrações MCP em uma única tela de navegação."""
     while True:
         todoist_profiles = config.todoist()["profiles"]
         omie_profiles = config.omie()["profiles"]
@@ -2164,7 +2164,9 @@ def integrations_menu(config: McpConfiguration) -> None:
         spotify_profiles = config.spotify()["profiles"]
         memory_enabled = config.memory_tool_available()
         data_tables_enabled = config.data_tables_tool_available()
-        screen("MCP · Integrações", "Selecione uma integração para configurar")
+        screen("MCP", "Perfis de vault e integrações MCP locais")
+        item("V.", "Perfis de vault", "KeePassXC e autenticação local")
+        print("\n  INTEGRAÇÕES DISPONÍVEIS")
         integration_item("1.", "Todoist", todoist_profiles)
         integration_item("2.", "Omie", omie_profiles)
         integration_item("3.", "BTG Empresas", btg_profiles)
@@ -2188,7 +2190,9 @@ def integrations_menu(config: McpConfiguration) -> None:
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}:
             return
-        if choice == "1":
+        if choice == "v":
+            vault_profiles_menu(config)
+        elif choice == "1":
             todoist_menu(config)
         elif choice == "2":
             omie_menu(config)
@@ -2230,15 +2234,8 @@ def integrations_menu(config: McpConfiguration) -> None:
 
 def menu(root: Path) -> int:
     config = McpConfiguration(root)
-    while True:
-        screen("MCP", "Perfis de vault e integrações MCP locais")
-        item("1.", "Perfis de vault", "KeePassXC e autenticação local")
-        item("2.", "Integrações MCP")
-        item("X.", "Voltar")
-        choice = prompt("Opção: ").strip().casefold()
-        if choice == "x": return 0
-        if choice == "1": vault_profiles_menu(config)
-        elif choice == "2": integrations_menu(config)
+    integrations_menu(config)
+    return 0
 
 
 if __name__ == "__main__": raise SystemExit(menu(ROOT))

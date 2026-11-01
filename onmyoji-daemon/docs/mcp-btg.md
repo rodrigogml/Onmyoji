@@ -2,7 +2,7 @@
 
 ## Etapa implementada
 
-**MCP → Integrações MCP → BTG Empresas** administra perfis com nome livre,
+**MCP → BTG Empresas** administra perfis com nome livre,
 descrição, habilitação individual, ambiente, CNPJ e referência ao perfil de vault
 compartilhado. A configuração fica em `configs/mcp/btg-empresas.toml`.
 

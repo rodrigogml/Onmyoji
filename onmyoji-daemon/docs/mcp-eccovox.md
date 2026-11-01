@@ -4,7 +4,7 @@ O módulo `eccovox` oferece transcrição de áudio e síntese de fala pelo runt
 
 ## Configuração
 
-Use **MCP > Integrações MCP > EccoVox**. Cada perfil tem nome, descrição de contexto, habilitação, endpoint HTTP local, voz padrão e raízes autorizadas de leitura e escrita. A voz é um identificador aceito pelo runtime EccoVox; deixá-la vazia usa o padrão configurado no próprio runtime. O endpoint sugerido é `http://127.0.0.1:8870`; somente endereços de loopback são aceitos.
+Use **MCP > EccoVox**. Cada perfil tem nome, descrição de contexto, habilitação, endpoint HTTP local, voz padrão e raízes autorizadas de leitura e escrita. A voz é um identificador aceito pelo runtime EccoVox; deixá-la vazia usa o padrão configurado no próprio runtime. O endpoint sugerido é `http://127.0.0.1:8870`; somente endereços de loopback são aceitos.
 
 A configuração fica em `configs/mcp/eccovox.toml`. O menu permite alterar descrição, endpoint e raízes, testar a conexão, habilitar, desabilitar e remover o perfil. Esta integração local não utiliza credenciais de vault.
 

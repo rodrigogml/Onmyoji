@@ -22,7 +22,7 @@ Na primeira versão, migrations só aceitam `create_table`, `add_column` e `crea
 
 ## Instalação e armazenamento
 
-O operador instala e atualiza schemas em `MCP > Integrações MCP > Tabelas de dados`. O Setup mostra migrations pendentes e exige a palavra `APLICAR`. O agente MCP não possui ferramenta equivalente.
+O operador instala e atualiza schemas em `MCP > Tabelas de dados`. O Setup mostra migrations pendentes e exige a palavra `APLICAR`. O agente MCP não possui ferramenta equivalente.
 
 Os bancos ficam em `configs/mcp/data-tables/<schema>.sqlite3`. A configuração local `configs/mcp/data-tables.toml` define quais schemas instalados estão habilitados. Sem schema habilitado, nenhuma ferramenta `data_tables.*` é publicada.
 

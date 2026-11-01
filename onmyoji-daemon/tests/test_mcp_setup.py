@@ -64,6 +64,23 @@ def test_integrations_menu_opens_btg_as_third_option(monkeypatch):
     btg_menu.assert_called_once_with(config)
 
 
+def test_integrations_menu_opens_vault_profiles_from_v_shortcut(monkeypatch, capsys):
+    module = setup_module()
+    config = mock_configuration()
+    for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion", "aws", "mysql", "ssh", "bis2cmd", "bis10cmd", "google", "spotify"):
+        getattr(config, integration).return_value = {"profiles": {}}
+    answers = iter(["v", "x"])
+    monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
+    vault_profiles_menu = Mock()
+    monkeypatch.setattr(module, "vault_profiles_menu", vault_profiles_menu)
+
+    module.integrations_menu(config)
+
+    vault_profiles_menu.assert_called_once_with(config)
+    output = capsys.readouterr().out
+    assert "V." in output and "INTEGRAÇÕES DISPONÍVEIS" in output
+
+
 def test_integrations_menu_opens_forward_email_as_sixth_option(monkeypatch):
     module = setup_module()
     config = mock_configuration()

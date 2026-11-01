@@ -4,7 +4,7 @@ A integração Spotify publica catálogo, biblioteca, playlists, seguimento e pl
 
 ## Configuração e OAuth
 
-No setup, acesse `MCP > Integrações MCP > Spotify`. Cada perfil define uma descrição de uso, perfil de vault, entrada KeePass e porta do callback local. O Client ID fica em `username` e o fluxo OAuth grava o refresh token em `password`.
+No setup, acesse `MCP > Spotify`. Cada perfil define uma descrição de uso, perfil de vault, entrada KeePass e porta do callback local. O Client ID fica em `username` e o fluxo OAuth grava o refresh token em `password`.
 
 Cadastre no Spotify Dashboard a Redirect URI exibida pelo perfil, por padrão `http://127.0.0.1:8888/callback`. Depois use `Autorizar conta no Spotify`. O fluxo usa Authorization Code com PKCE, abre o navegador e não exige Client Secret, Gateway, túnel ou daemon ativo.
 
