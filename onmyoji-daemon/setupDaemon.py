@@ -363,6 +363,23 @@ def instruction_status(root: Path) -> dict[str, object]:
     return {"ok": True, "sources": list(bundle.sources), "baseline_hash": bundle.baseline_hash[:12], "local_file": str(instructions_path(root))}
 
 
+def recorded_timestamp(values: dict, *names: str) -> float:
+    """Retorna o primeiro instante válido registrado no estado do gateway."""
+    for name in names:
+        try:
+            value = float(values.get(name, 0))
+            if value > 0:
+                return value
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+def recorded_time(value: float) -> str:
+    """Formata um instante persistido para apresentação no diagnóstico."""
+    return time.strftime("%d/%m/%Y às %H:%M", time.localtime(value))
+
+
 def validation(root: Path) -> list[dict[str, str]]:
     checks: list[dict[str, str]] = []
     def add(state: str, label: str, detail: str = "") -> None: checks.append({"state": state, "label": label, "detail": detail})
@@ -441,16 +458,30 @@ def validation(root: Path) -> list[dict[str, str]]:
         marker = json.loads((root / "configs" / "daemon" / "runtime" / "codex-test.json").read_text(encoding="utf-8")); age = time.time() - float(marker.get("tested_at", 0)); passed = bool(marker.get("ok")) and age < 86_400
         add("ok" if passed else "error", "Execução do agente Codex", "Teste controlado aprovado nas últimas 24 horas." if passed else str(marker.get("detail") or "Teste do agente falhou; execute Testar agente Codex."))
     except (OSError, ValueError, TypeError): add("pending", "Execução do agente Codex", "Execute Testar agente Codex antes de habilitar o gateway.")
+    telegram_test: dict = {}
+    try:
+        telegram_test = json.loads((root / "configs" / "daemon" / "runtime" / "telegram-test.json").read_text(encoding="utf-8"))
+        if not isinstance(telegram_test, dict): telegram_test = {}
+    except (OSError, ValueError, AttributeError):
+        pass
     try:
         gateway = json.loads((root / "configs" / "daemon" / "services" / "telegram" / "state" / "gateway-status.json").read_text(encoding="utf-8")); last_error = str(gateway.get("last_error") or "")
-        if last_error: add("error", "Último erro do gateway", last_error)
+        error_at = recorded_timestamp(gateway, "last_error_at", "updated_at")
+        tested_at = recorded_timestamp(telegram_test, "tested_at")
+        test_succeeded = bool(tested_at) and not bool(telegram_test.get("failed"))
+        if last_error and test_succeeded and tested_at > error_at > 0:
+            detail = f"Erro anterior em {recorded_time(error_at)}, superado pela validação do token em {recorded_time(tested_at)}: {last_error}"
+            add("ok", "Último erro do gateway", detail)
+        elif last_error:
+            add("error", "Último erro do gateway", last_error)
         commands = gateway.get("commands", {})
         if isinstance(commands, dict):
             owners, verified, failed = int(commands.get("owners", 0)), int(commands.get("verified", 0)), int(commands.get("failed", 0))
             add("ok" if owners and verified == owners and not failed else "pending", "Comandos privados do owner", f"{verified}/{owners} owner(s) confirmados pelo Telegram." if owners else "Reinicie o gateway ou escolha Atualizar comandos privados.")
     except (OSError, ValueError, AttributeError): pass
     try:
-        marker = json.loads((root / "configs" / "daemon" / "runtime" / "telegram-test.json").read_text(encoding="utf-8"))
+        marker = telegram_test
+        if not marker: raise ValueError("Marcador de teste ausente.")
         age = time.time() - float(marker.get("tested_at", 0))
         failed = bool(marker.get("failed"))
         add("error" if failed else ("ok" if age < 86_400 else "pending"), "Conexão Telegram", str(marker.get("detail") or "Teste de conexão falhou; revise o KeePass e o token.") if failed else ("Token validado nas últimas 24 horas." if age < 86_400 else "Repita o teste de conexão; a validação anterior expirou."))

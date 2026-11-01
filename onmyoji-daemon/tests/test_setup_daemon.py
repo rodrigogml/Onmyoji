@@ -126,6 +126,21 @@ def test_telegram_validation_marks_only_the_legacy_generic_entry_as_pending(tmp_
     assert reference == {"state": "ok", "label": "Referência do token", "detail": "APIs/Telegram:Lavelinha"}
 
 
+def test_telegram_validation_marks_a_gateway_error_as_superseded_by_a_later_token_test(tmp_path):
+    module = setup_module(); module.bootstrap(tmp_path)
+    now = module.time.time()
+    state = tmp_path / "configs" / "daemon" / "services" / "telegram" / "state" / "gateway-status.json"; state.parent.mkdir(parents=True)
+    state.write_text(json.dumps({"last_error": "O cofre MCP não disponibilizou a credencial solicitada.", "last_error_at": now - 60}), encoding="utf-8")
+    marker = tmp_path / "configs" / "daemon" / "runtime" / "telegram-test.json"; marker.parent.mkdir(parents=True)
+    marker.write_text(json.dumps({"tested_at": now, "bot": "example_bot"}), encoding="utf-8")
+
+    checks = module.validation(tmp_path)
+
+    error = next(check for check in checks if check["label"] == "Último erro do gateway")
+    assert error["state"] == "ok"
+    assert "Erro anterior" in error["detail"] and "superado pela validação do token" in error["detail"]
+
+
 def test_daemon_setup_uses_only_the_internal_mcp_vault() -> None:
     source = (Path(__file__).parents[1] / "setupDaemon.py").read_text(encoding="utf-8")
 

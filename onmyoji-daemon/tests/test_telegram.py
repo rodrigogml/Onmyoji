@@ -177,6 +177,16 @@ def test_vault_token_uses_mcp_credential_resolver_without_exposing_the_token(tmp
     resolve.assert_called_once_with("telegram", "APIs/Telegram:Example", "password")
 
 
+def test_gateway_records_the_instant_of_a_credential_error(tmp_path, monkeypatch):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data)); monkeypatch.setattr("onmyoji_daemon.telegram.time.time", lambda: 123.0)
+
+    gateway._record_error("O cofre MCP não disponibilizou a credencial solicitada.")
+
+    status = json.loads((data / "state" / "gateway-status.json").read_text(encoding="utf-8"))
+    assert status["last_error_at"] == 123.0 and status["updated_at"] == 123.0
+
+
 def test_totp_filter_supports_case_insensitive_wildcards():
     entries = ["APIs/MSN/Rodrigo", "APIs/msn/Outro", "Banco/Rodrigo"]
     assert Gateway._filter_totp(entries, "MSN*Rodrigo") == ["APIs/MSN/Rodrigo"]

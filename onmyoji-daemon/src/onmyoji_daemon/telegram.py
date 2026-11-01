@@ -387,7 +387,8 @@ class Gateway(TelegramChannels):
         message = str(error).replace("\n", " ")[-800:]
         self.last_error = __import__("re").sub(r"(?i)(token|password|secret)\s*[=:]\s*\S+", r"\1=[redacted]", message)
         state = json_file(self.settings.data_dir / "state" / "gateway-status.json", {})
-        state.update({"last_error": self.last_error, "updated_at": time.time()}); write_json(self.settings.data_dir / "state" / "gateway-status.json", state)
+        now = time.time()
+        state.update({"last_error": self.last_error, "last_error_at": now, "updated_at": now}); write_json(self.settings.data_dir / "state" / "gateway-status.json", state)
     def _diagnostic(self, event: str, **values: Any) -> None:
         state = json_file(self.settings.data_dir / "state" / "gateway-status.json", {})
         entries = state.setdefault("diagnostics", [])
