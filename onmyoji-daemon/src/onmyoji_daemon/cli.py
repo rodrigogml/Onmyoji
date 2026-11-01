@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -80,7 +81,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.action == "process-status":
         info = management.running_process(root); print(json.dumps(info or {"state": "stopped"}, ensure_ascii=False)); return 0
     if args.action in direct:
-        ok, message = direct[args.action](); print(message); return 0 if ok else 2
+        ok, message = direct[args.action](); print(message, flush=True)
+        code = 0 if ok else 2
+        if args.action == "install-service" and sys.platform == "win32":
+            # O registrador pywin32 pode manter threads nativas após concluir a
+            # instalação. Este CLI é somente o processo administrativo; o
+            # serviço real já foi delegado a pythonservice.exe.
+            os._exit(code)
+        return code
     try: host, port, token = endpoint(root)
     except (OSError, ValueError, KeyError) as error: parser.error(f"daemon não está em execução nesta instância: {error}")
     if args.action == "list-services": method, params = "list-services", {}
