@@ -187,11 +187,24 @@ def test_capabilities_probe_the_private_runtime_not_the_setup_interpreter(tmp_pa
 
 def test_model_directory_rejects_resources_outside_the_instance(tmp_path):
     from onmyoji_daemon.mcp.ocr.runtime import model_directory
-    expected = tmp_path / "configs" / "mcp" / "ocr" / "models"
+    expected = tmp_path / "state" / "mcp" / "ocr" / "models"
     assert model_directory(tmp_path) == expected
     assert model_directory(tmp_path, {"advanced_model_directory": str(expected / "latin")}) == expected / "latin"
+    legacy = tmp_path / "configs" / "mcp" / "ocr" / "models"
+    assert model_directory(tmp_path, {"advanced_model_directory": str(legacy / "latin")}) == expected / "latin"
     with pytest.raises(DocumentError, match="própria instância"):
         model_directory(tmp_path, {"advanced_model_directory": str(tmp_path / "external-models")})
+
+
+def test_prepare_migrates_legacy_models_only_during_explicit_setup(tmp_path):
+    from onmyoji_daemon.mcp.ocr.runtime import migrate_legacy_models
+    legacy = tmp_path / "configs" / "mcp" / "ocr" / "models"; legacy.mkdir(parents=True)
+    (legacy / "prepared.json").write_text('{"device":"cpu"}', encoding="utf-8")
+
+    models = migrate_legacy_models(tmp_path)
+
+    assert models == tmp_path / "state" / "mcp" / "ocr" / "models"
+    assert (models / "prepared.json").is_file() and not legacy.exists()
 
 
 def test_capabilities_do_not_use_host_libraries_when_instance_runtime_is_missing(tmp_path, monkeypatch):
@@ -235,7 +248,7 @@ def test_model_cache_copy_does_not_share_writable_model_files(tmp_path):
 def test_advanced_inference_uses_a_working_copy_of_prepared_resources(tmp_path, monkeypatch):
     source = image_file(tmp_path)
     executable = tmp_path / "advanced-python.exe"; executable.touch()
-    models = tmp_path / "configs" / "mcp" / "ocr" / "models"; models.mkdir(parents=True)
+    models = tmp_path / "state" / "mcp" / "ocr" / "models"; models.mkdir(parents=True)
     (models / "prepared.json").write_text('{"device":"cpu"}', encoding="utf-8")
     (models / "weights.bin").write_bytes(b"resource")
     monkeypatch.setattr(service, "advanced_python", lambda _root: executable)

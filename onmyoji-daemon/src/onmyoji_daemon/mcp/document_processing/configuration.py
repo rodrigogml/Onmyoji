@@ -44,7 +44,7 @@ def profile_defaults(root: Path, namespace: str) -> dict:
         profile.update(ocr_profile="", ghostscript_path="gswin64c" if os.name == "nt" else "gs", verapdf_path="verapdf", icc_profile_path="")
     else:
         profile.update(engine="tesseract", languages=["por", "eng"], dpi=300, tesseract_path="tesseract",
-                       tessdata_dir="", advanced_model_directory=str(root.resolve() / "configs" / "mcp" / "ocr" / "models"))
+                       tessdata_dir="", advanced_model_directory=str(root.resolve() / "state" / "mcp" / "ocr" / "models"))
     return profile
 
 

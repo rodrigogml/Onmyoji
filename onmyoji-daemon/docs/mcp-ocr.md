@@ -46,19 +46,19 @@ A configuração local é `configs/mcp/ocr.toml`. Cada perfil define engine, idi
 | `languages` | Códigos como `por` e `eng`; informe separados por `;` no setup. |
 | `dpi` | Referência de resolução OCR, entre 72 e 600; padrão 300. Em imagens, informar DPI não recupera detalhes ausentes nem aumenta a resolução da fonte. |
 | `tesseract_path`, `tessdata_dir` | Executável e dados de idioma. Pasta de dados vazia usa a descoberta do Tesseract. |
-| `advanced_model_directory` | `configs/mcp/ocr/models` da própria instância ou uma subpasta dessa área. |
+| `advanced_model_directory` | `state/mcp/ocr/models` da própria instância ou uma subpasta dessa área. |
 
 Há três opções de preparação pelo setup:
 
 | Nível | Preparação e finalidade |
 | --- | --- |
-| Básico | Bibliotecas PDF/OCRmyPDF no runtime privado `configs/mcp/venv`; Tesseract e seus modelos de idioma são dependências nativas locais. |
-| Avançado CPU/GPU | Ambiente Python separado em `configs/mcp/ocr/advanced`, com PaddleOCR/PP-StructureV3 e modelos preparados explicitamente; GPU exige instalação compatível e dispositivo disponível. |
+| Básico | Bibliotecas PDF/OCRmyPDF no runtime único `venv`; Tesseract e seus modelos de idioma são dependências nativas locais. |
+| Avançado CPU/GPU | PaddleOCR/PP-StructureV3 no runtime único `venv`, com modelos preparados explicitamente no estado local; GPU exige instalação compatível e dispositivo disponível. |
 | PDF/A | Bibliotecas de suporte e diagnóstico de Ghostscript/veraPDF; configure executáveis e perfil ICC no perfil PDF. |
 
 Tesseract, Ghostscript e veraPDF são programas nativos e podem usar instalações administrativas fora do workspace, assim como os dados de idioma do Tesseract. O diagnóstico deve indicar sua ausência; instalar pacotes Python não significa que esses programas foram instalados. No Windows, configure os executáveis completos quando eles não estiverem no PATH; no Linux utilize a instalação administrada pela distribuição. Esses recursos não ampliam as raízes autorizadas para documentos.
 
-Os modelos avançados persistentes ficam em `configs/mcp/ocr/models` ou em suas subpastas, sem links e sem documentos de atividade. O setup prepara os modelos explicitamente; staging, temporários e caches de instalação ficam em `tmp/document-install` da instância, com `tmp/mcp-install` reservado à preparação da base do runtime MCP. Na inferência, o serviço copia os modelos preparados para um cache dentro do job, preservando os originais. O job usa sua subpasta de trabalho como diretório corrente e direciona temporários e caches para ela. O processamento exige os modelos locais e não inicia downloads.
+Os modelos avançados persistentes ficam em `state/mcp/ocr/models` ou em suas subpastas, sem links e sem documentos de atividade. O setup prepara os modelos explicitamente; em instalações anteriores, a próxima preparação move os modelos de `configs/mcp/ocr/models` para essa área. Staging, temporários e caches de instalação ficam em `tmp/document-install` da instância, com `tmp/mcp-install` reservado à preparação da base do runtime MCP. Na inferência, o serviço copia os modelos preparados para um cache dentro do job, preservando os originais. O job usa sua subpasta de trabalho como diretório corrente e direciona temporários e caches para ela. O processamento exige os modelos locais e não inicia downloads.
 
 O backend avançado preparado usa um modelo de reconhecimento de escrita latina, incluindo português e inglês; idiomas com outras escritas devem usar Tesseract com os dados correspondentes. O dispositivo escolhido na preparação fica registrado nos modelos. Um conjunto preparado para GPU exige GPU compatível durante a inferência; não há troca automática para CPU. Ao trocar o dispositivo, refaça a preparação. O runtime avançado é compartilhado pelos perfis da instância, e cada job precisa de espaço no workspace para sua cópia dos modelos.
 

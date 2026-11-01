@@ -34,15 +34,43 @@ def advanced_python(root: Path) -> Path:
 
 
 def model_directory(root: Path, profile: dict | None = None) -> Path:
-    """Restringe modelos persistentes à área de recursos da própria instância."""
+    """Restringe modelos persistentes à área de estado da própria instância."""
     from ..document_processing.paths import reject_links
-    allowed = root.resolve() / "configs" / "mcp" / "ocr" / "models"
+    allowed = root.resolve() / "state" / "mcp" / "ocr" / "models"
+    legacy = root.resolve() / "configs" / "mcp" / "ocr" / "models"
     configured = (profile or {}).get("advanced_model_directory")
     path = Path(configured).expanduser() if configured else allowed
     reject_links(path)
-    if not path.is_absolute() or not path.resolve().is_relative_to(allowed):
-        raise DocumentError("invalid_config", "Modelos OCR devem ficar na área configs/mcp/ocr/models da própria instância.")
-    return path.resolve()
+    if not path.is_absolute():
+        raise DocumentError("invalid_config", "Modelos OCR devem ficar na área state/mcp/ocr/models da própria instância.")
+    resolved = path.resolve()
+    if resolved.is_relative_to(allowed):
+        return resolved
+    if resolved.is_relative_to(legacy):
+        return allowed / resolved.relative_to(legacy)
+    raise DocumentError("invalid_config", "Modelos OCR devem ficar na área state/mcp/ocr/models da própria instância.")
+
+
+def migrate_legacy_models(root: Path, profile: dict | None = None, progress: Callable[[str], None] | None = None) -> Path:
+    """Move modelos da localização legada somente durante a preparação explícita."""
+    from ..document_processing.paths import reject_links
+    destination = model_directory(root, profile)
+    legacy_root = root.resolve() / "configs" / "mcp" / "ocr" / "models"
+    configured = (profile or {}).get("advanced_model_directory")
+    source = Path(configured).expanduser().resolve() if configured else legacy_root
+    if not source.is_relative_to(legacy_root) or not source.exists() or destination.exists():
+        return destination
+    reject_links(source)
+    if progress:
+        progress("Movendo modelos OCR da área legada de configuração para o estado local.")
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(source), str(destination))
+    except OSError as error:
+        raise DocumentError("model_migration_failed", "Não foi possível mover os modelos OCR legados para o estado local.") from error
+    if progress:
+        progress("Movendo modelos OCR da área legada de configuração para o estado local. Concluída.")
+    return destination
 
 
 def local_process_environment(directory: Path, *, base: dict | None = None, source: str | None = None) -> dict:
@@ -260,7 +288,7 @@ def install_runtime(root: Path, tier: str = "base", gpu: bool = False, progress:
 
 def prepare_advanced_models(root: Path, device: str = "cpu", profile: dict | None = None, progress: Callable[[str], None] | None = None) -> None:
     """Permite download dos modelos exclusivamente durante o setup explícito."""
-    models = model_directory(root, profile)
+    models = migrate_legacy_models(root, profile, progress)
     models.mkdir(parents=True, exist_ok=True)
     source = str(Path(__file__).resolve().parents[3])
     preparation = installation_directory(root)
