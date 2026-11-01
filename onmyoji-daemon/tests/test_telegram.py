@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import io
+import threading
 from pathlib import Path
 from dataclasses import replace
 from unittest.mock import patch
@@ -426,6 +427,26 @@ def test_agent_text_uses_html_parse_mode_for_every_chunk(tmp_path):
     gateway.api = type("Api", (), {"send": lambda _self, chat, text, **values: sent.append((chat, text, values)) or {"message_id": len(sent)}})()
     gateway._send_agent_text(9, "**texto** " + ("longo " * 1000))
     assert len(sent) > 1 and all(values["parse_mode"] == "HTML" and len(text) <= MAX_MESSAGE_LENGTH for _chat, text, values in sent)
+
+
+def test_agent_can_send_a_photo_created_in_the_reserved_outbox(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(replace(Settings.load(tmp_path, data), agent_outbound_media=True)); sent = {}
+
+    class Api:
+        def send_file(_self, method, chat_id, path, field, caption, **values):
+            sent.update({"method": method, "chat_id": chat_id, "path": path, "field": field, "caption": caption, "values": values})
+            return {"message_id": 7}
+
+    active = AppServerTurn(9, "turn-1", threading.Event(), conversation_id="private:9")
+    gateway.api = Api(); gateway.app_turns[active.thread_id] = active
+    request = {"namespace": "telegram_gateway", "threadId": active.thread_id, "tool": "get_outbox", "arguments": {}}
+    response = gateway._app_server_request("item/tool/call", request)
+    outbox = Path(json.loads(response["contentItems"][0]["text"])["outbox"]); picture = outbox / "picture.png"; picture.write_bytes(b"image")
+
+    gateway._app_server_request("item/tool/call", {**request, "tool": "send_file", "arguments": {"file_name": picture.name, "kind": "photo", "caption": "Imagem"}})
+
+    assert sent["method"] == "sendPhoto" and sent["chat_id"] == 9 and sent["path"] == picture and sent["field"] == "photo"
 
 
 def test_group_dynamic_tools_do_not_publish_interactive_menu(tmp_path):
