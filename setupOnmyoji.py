@@ -1058,8 +1058,22 @@ def telegram_totp_entry(root: Path, kind: str) -> str:
 
 
 def configured_telegram_token_entry(root: Path, current_entry: str = "") -> str:
-    """Preserva uma escolha explícita, mas substitui somente o marcador legado genérico."""
-    return current_entry if current_entry and current_entry != "APIs/Telegram:Shikigami" else telegram_token_entry(root)
+    """Preserva escolha explícita, migrando somente padrões legados conhecidos."""
+    legacy_entries = {
+        "APIs/Telegram:Shikigami",
+        vault_entry_path(root, "Serviço", "Telegram", "default", "Bot"),
+    }
+    return current_entry if current_entry and current_entry not in legacy_entries else telegram_token_entry(root)
+
+
+def configured_telegram_totp_entry(root: Path, kind: str, current_entry: str = "") -> str:
+    """Preserva TOTP personalizado e migra referências geradas pelo padrão legado."""
+    normalized_kind = kind.title()
+    legacy_entries = {
+        f"APIs/TelegramTOTP:{instance_identity(root)}:{normalized_kind}",
+        vault_entry_path(root, "Serviço", "Telegram", "default", f"TOTP:{normalized_kind}"),
+    }
+    return current_entry if current_entry and current_entry not in legacy_entries else telegram_totp_entry(root, kind)
 
 
 def update_system(root: Path, data: dict[str, object], key: str, value: object) -> dict[str, object]:
@@ -2066,10 +2080,12 @@ def daemon_menu(root: Path) -> None:
                         result(False, "Configure primeiro a credencial do bot e seu perfil de vault MCP.")
                         continue
                     totp = telegram_settings.get("totp", {})
-                    real = configure_totp_password(root, profile, "real", telegram_totp_entry(root, "real"), str(totp.get("real_password_entry") or ""))
+                    real_entry = configured_telegram_totp_entry(root, "real", str(totp.get("real_password_entry") or ""))
+                    real = configure_totp_password(root, profile, "real", telegram_totp_entry(root, "real"), real_entry)
                     if real is None:
                         continue
-                    fake = configure_totp_password(root, profile, "falsa", telegram_totp_entry(root, "fake"), str(totp.get("fake_password_entry") or ""))
+                    fake_entry = configured_telegram_totp_entry(root, "fake", str(totp.get("fake_password_entry") or ""))
+                    fake = configure_totp_password(root, profile, "falsa", telegram_totp_entry(root, "fake"), fake_entry)
                     if fake is None:
                         continue
                     changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-totp", "--enabled", "--real-entry", real, "--fake-entry", fake], quiet=True)
