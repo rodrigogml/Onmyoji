@@ -203,6 +203,19 @@ def test_integrations_menu_opens_google_as_thirteenth_option(monkeypatch):
     module.integrations_menu(config); google_menu.assert_called_once_with(config)
 
 
+def test_google_profile_selection_cancels_without_invalid_option_error(monkeypatch, capsys):
+    module = setup_module(); config = mock_configuration()
+    config.google.return_value = {"profiles": {"rodrigogml": {}}}
+    config.google_tool_available.return_value = True
+    answers = iter(["2", "x"])
+    monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
+    monkeypatch.setattr(module, "flow_choice", lambda *_args: None)
+
+    module.google_menu(config)
+
+    assert "Opção inválida" not in capsys.readouterr().out
+
+
 def test_integrations_menu_opens_spotify_as_fourteenth_option(monkeypatch):
     module = setup_module(); config = mock_configuration()
     for integration in ("todoist", "omie", "btg", "eccovox", "cloudflare", "forward_email", "notion", "aws", "mysql", "ssh", "bis2cmd", "bis10cmd", "google", "spotify"):
