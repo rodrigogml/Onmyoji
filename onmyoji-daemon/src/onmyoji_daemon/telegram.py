@@ -29,6 +29,7 @@ from .codex_execution import CodexExecutionError, CodexLaunch
 from .mcp.credentials import CredentialError, KeePassCredentialResolver
 from .mcp.eccovox import EccoVoxError, EccoVoxService
 from .mcp.reconciliation import mcp_reconciliation_pending
+from .mcp.artifacts import ArtifactPathError, authorized_file, transfer_roots
 from .telegram_formatting import MAX_MESSAGE_LENGTH, plain_text, render_html, split_html
 
 SERVICE_MESSAGE_FIELDS = frozenset((
@@ -236,6 +237,7 @@ class AppServerTurn:
     telegram_topic_values: dict[str, int] = field(default_factory=dict)
     conversation_id: str = ""
     reply_to_message_id: int | None = None
+    source_trust: str = "UNTRUSTED_USER"
 
 
 @dataclass
@@ -685,9 +687,16 @@ class Gateway(TelegramChannels):
                 payload = {"sent": False, "stage": stage, "error": self.last_error}
                 return {"contentItems": [{"type": "inputText", "text": json.dumps(payload, ensure_ascii=False)}], "success": True}
             if not self.settings.agent_outbound_media: return failed("capability", "Envio de mídia pelo agente está desabilitado.")
-            active.outbox = active.outbox or self._outbox(active.conversation_id, active.thread_id); name = safe_name(str(arguments.get("file_name") or ""), "")
-            path = (active.outbox / name).resolve()
-            if not name or not under(path, active.outbox) or not path.is_file() or path.is_symlink() or path.stat().st_size > self.settings.max_outbound_media_bytes: return failed("outbox_validation", "Arquivo do outbox inválido ou excede o limite.")
+            direct = str(arguments.get("file_path") or "").strip()
+            if direct:
+                if active.source_trust not in {"OWNER", "AUTHORIZED_USER"}: return failed("authorization", "Somente owner ou usuário autorizado pode enviar arquivo por caminho direto.")
+                try: path = authorized_file(direct, transfer_roots(self.settings.root), self.settings.max_outbound_media_bytes)
+                except ArtifactPathError as error: return failed("input_validation", error)
+                name = path.name
+            else:
+                active.outbox = active.outbox or self._outbox(active.conversation_id, active.thread_id); name = safe_name(str(arguments.get("file_name") or ""), "")
+                path = (active.outbox / name).resolve()
+                if not name or not under(path, active.outbox) or not path.is_file() or path.is_symlink() or path.stat().st_size > self.settings.max_outbound_media_bytes: return failed("outbox_validation", "Arquivo do outbox inválido ou excede o limite.")
             kind = str(arguments.get("kind") or "document")
             target = {"photo": ("sendPhoto", "photo"), "document": ("sendDocument", "document"), "audio": ("sendAudio", "audio")}.get(kind)
             if not target: return failed("argument_validation", "Tipo de mídia inválido.")
@@ -695,12 +704,12 @@ class Gateway(TelegramChannels):
             caption = render_html(str(arguments.get("caption") or ""))
             if len(caption) > 1024: return failed("caption_validation", "A legenda excede o limite do Telegram após a formatação.")
             if not self.api: return failed("gateway", "Gateway Telegram indisponível.")
-            self._diagnostic("media.send_started", conversation=active.conversation_id, kind=kind, file_name=name, size=path.stat().st_size, method=method)
+            self._diagnostic("media.send_started", conversation=active.conversation_id, kind=kind, file_name=name, size=path.stat().st_size, method=method, source="direct" if direct else "outbox")
             try:
                 result = self.api.send_file(method, active.chat_id, path, field, caption, parse_mode="HTML", **active.telegram_topic_values)
             except Exception as error:
                 return failed("telegram_api", error)
-            self._diagnostic("media.sent", conversation=active.conversation_id, kind=kind, file_name=name, size=path.stat().st_size, method=method, message_id=result.get("message_id"))
+            self._diagnostic("media.sent", conversation=active.conversation_id, kind=kind, file_name=name, size=path.stat().st_size, method=method, message_id=result.get("message_id"), source="direct" if direct else "outbox")
             return {"contentItems": [{"type": "inputText", "text": json.dumps({"sent": True, "message_id": result.get("message_id")}, ensure_ascii=False)}], "success": True}
         if tool == "list_attachments":
             entries = [{key: entry[key] for key in ("id", "kind", "name", "mime_type", "size", "created_at")} for entry in self._attachment_rows(active.conversation_id, int(arguments.get("limit", 20)))]
@@ -781,7 +790,7 @@ class Gateway(TelegramChannels):
         if thread_id:
             try: client.request("thread/resume", {"threadId": thread_id, **params}); return thread_id
             except CodexProtocolError: self.database.execute("UPDATE conversations SET codex_thread_id=NULL WHERE chat_id=?", (str(chat_id),)); self.database.commit()
-        tools = [{"type": "namespace", "name": "telegram_gateway", "description": "Interface restrita à DM Telegram ativa.", "tools": [{"type": "function", "name": "get_channel_state", "description": "Consulta o modo de resposta da conversa ativa.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "set_reply_mode", "description": "Define a resposta final como texto ou áudio nesta conversa.", "inputSchema": {"type": "object", "properties": {"mode": {"type": "string", "enum": ["text", "audio"]}}, "required": ["mode"], "additionalProperties": False}}, {"type": "function", "name": "get_outbox", "description": "Obrigatório antes de criar mídia: reserva o diretório exclusivo deste turno. Grave o arquivo diretamente nele e use seu nome em send_file.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "send_file", "description": "Envia à conversa ativa um arquivo regular criado no outbox reservado deste turno. Use somente o nome do arquivo; só confirme o envio após sucesso.", "inputSchema": {"type": "object", "properties": {"file_name": {"type": "string"}, "kind": {"type": "string", "enum": ["photo", "document", "audio"]}, "caption": {"type": "string"}}, "required": ["file_name", "kind"], "additionalProperties": False}}, {"type": "function", "name": "list_attachments", "description": "Lista os metadados dos anexos retidos na conversa atual.", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False}}, {"type": "function", "name": "materialize_attachment", "description": "Copia um anexo retido para o staging seguro do turno atual.", "inputSchema": {"type": "object", "properties": {"attachment_id": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["attachment_id"], "additionalProperties": False}}]}]
+        tools = [{"type": "namespace", "name": "telegram_gateway", "description": "Interface restrita à DM Telegram ativa.", "tools": [{"type": "function", "name": "get_channel_state", "description": "Consulta o modo de resposta da conversa ativa.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "set_reply_mode", "description": "Define a resposta final como texto ou áudio nesta conversa.", "inputSchema": {"type": "object", "properties": {"mode": {"type": "string", "enum": ["text", "audio"]}}, "required": ["mode"], "additionalProperties": False}}, {"type": "function", "name": "get_outbox", "description": "Reserva o diretório exclusivo deste turno para mídia recém-criada.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "send_file", "description": "Envia arquivo do outbox por file_name ou arquivo existente em raiz autorizada por file_path. Caminho direto exige owner autorizado.", "inputSchema": {"type": "object", "properties": {"file_name": {"type": "string"}, "file_path": {"type": "string"}, "kind": {"type": "string", "enum": ["photo", "document", "audio"]}, "caption": {"type": "string"}}, "required": ["kind"], "additionalProperties": False}}, {"type": "function", "name": "list_attachments", "description": "Lista os metadados dos anexos retidos na conversa atual.", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False}}, {"type": "function", "name": "materialize_attachment", "description": "Copia um anexo retido para o staging seguro do turno atual.", "inputSchema": {"type": "object", "properties": {"attachment_id": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["attachment_id"], "additionalProperties": False}}]}]
         tools[0]["tools"].extend([{"type": "function", "name": "send_message", "description": "Envia mensagem adicional somente à DM Telegram ativa; pode expirar automaticamente.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "minLength": 1, "maxLength": 4000}, "ttl_seconds": {"type": "integer", "minimum": 0, "maximum": 86400}, "protect_content": {"type": "boolean"}}, "required": ["text"], "additionalProperties": False}}, {"type": "function", "name": "ask_menu", "description": "Exibe opções ao owner da DM ativa e aguarda a seleção com prazo limitado.", "inputSchema": {"type": "object", "properties": {"question": {"type": "string", "minLength": 1, "maxLength": 4000}, "options": {"type": "array", "minItems": 2, "maxItems": 20, "items": {"type": "object", "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 64}, "label": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["id", "label"], "additionalProperties": False}}, "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": 300}, "protect_content": {"type": "boolean"}}, "required": ["question", "options"], "additionalProperties": False}}])
         tools[0]["description"] = "Interface restrita à conversa Telegram ativa. Cada ferramenta declara o escopo em que funciona."
         for tool in tools[0]["tools"]:
@@ -812,7 +821,7 @@ class Gateway(TelegramChannels):
 
     def _app_turn(self, chat_id: int, text: str, attachments: list[dict[str, Any]] | None = None, turn_context: dict[str, Any] | None = None) -> tuple[str, str]:
         context = TelegramTurnContext.from_value(turn_context)
-        telegram_chat_id, telegram_topic_values = self._telegram_address(str(chat_id)); client = self._app_client(); thread_id = self._app_thread(chat_id, client, turn_context); state = self._channel_state(chat_id); active = AppServerTurn(telegram_chat_id, thread_id, threading.Event(), reply_mode=state["reply_mode"], telegram_topic_values=telegram_topic_values, conversation_id=str(chat_id))
+        telegram_chat_id, telegram_topic_values = self._telegram_address(str(chat_id)); client = self._app_client(); thread_id = self._app_thread(chat_id, client, turn_context); state = self._channel_state(chat_id); active = AppServerTurn(telegram_chat_id, thread_id, threading.Event(), reply_mode=state["reply_mode"], telegram_topic_values=telegram_topic_values, conversation_id=str(chat_id), source_trust=context.source_trust)
         with self.app_server_lock: self.app_turns[thread_id] = active
         try:
             external_context, external_ids = self._pending_external(str(chat_id))

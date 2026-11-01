@@ -327,9 +327,11 @@ class TelegramChannels:
                   "audio": ("sendAudio", "audio"), "voice": ("sendVoice", "voice")}
         if path_string:
             path = Path(path_string).resolve(strict=True)
-            root = self.settings.project.resolve(strict=True)
-            if not path.is_relative_to(root) or not path.is_file():
-                raise ValueError("Arquivo fora do workspace autorizado.")
+            from .mcp.artifacts import ArtifactPathError, authorized_file, transfer_roots
+            try:
+                path = authorized_file(str(path), transfer_roots(self.settings.root), self.settings.max_outbound_media_bytes)
+            except ArtifactPathError as error:
+                raise ValueError(str(error)) from error
             size = path.stat().st_size
             if size > self.settings.max_outbound_media_bytes:
                 raise ValueError("Arquivo excede o limite de envio do gateway.")

@@ -92,7 +92,7 @@ def edit_endpoint(config, ui, current, kind, account_name, reuse_auth=None):
 def edit_roots(config, ui, account):
     try:
         document = tomllib.loads((config.root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8"))
-        suggested = str(Path(document["codex"]["project_directory"]) / ".onmyoji" / "email")
+        suggested = str(Path(document["codex"]["project_directory"]))
     except (OSError, ValueError, KeyError): suggested = ""
     ui.note("Arquivos e anexos ficam no workspace; raízes vazias bloqueiam operações com arquivos.")
     for key, label in (("readable_roots", "Raízes de leitura"), ("writable_roots", "Raízes de escrita")):

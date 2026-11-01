@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import atexit
 from copy import deepcopy
+import re
 
-from .configuration import load_configuration
+from .configuration import load_configuration, workspace_for
 from .contracts import DocumentError
 from .jobs import Jobs
 
@@ -73,6 +74,7 @@ OCR_SPECS = {
     "analyze_layout": ("Analisa layout e tabelas com PaddleOCR instalado; modelos locais são obrigatórios.", {**OCR_OPTIONS, "output_path": PATH}, []),
 }
 ALWAYS_WRITE = {"render_pages", "extract_images", "select_pages", "merge", "split", "transform_pages", "create", "stamp", "preview_redactions", "apply_redactions", "sanitize", "optimize", "protect", "repair", "make_searchable"}
+DEFAULT_OUTPUT = ALWAYS_WRITE | {"extract_text", "extract_tables", "recognize", "analyze_layout"}
 JOB_SPECS = {"get_job": ("Consulta estado e progresso do job.", {"job_id": string()}, ["job_id"]),
              "get_job_result": ("Obtém resultado paginado. encoding=json-fragments exige concatenar result_fragment por next_offset e decodificar JSON.", {"job_id": string(), "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}, ["job_id"]),
              "cancel_job": ("Cancela um job e remove somente suas saídas transitórias.", {"job_id": string()}, ["job_id"]),
@@ -103,6 +105,7 @@ class DocumentToolRegistry:
             result.append({"name": self.namespace + ".list_profiles", "description": "Lista perfis e contextos documentais habilitados.", "input_schema": object_schema({})})
         for operation, (description, fields, mandatory) in specs.items():
             properties, required = deepcopy(fields), list(mandatory)
+            required = [field for field in required if field not in {"output_path", "output_directory"}]
             if operation not in JOB_SPECS and operation not in {"get_capabilities", "list_languages"}:
                 if operation not in {"merge", "create"}:
                     properties.update(INPUT); required.append("input_path")
@@ -117,6 +120,25 @@ class DocumentToolRegistry:
             description += " Perfil: " + "; ".join(p["name"] + " — " + p["description"] for p in profiles)
             result.append({"name": self.namespace + "." + operation, "description": description, "input_schema": object_schema(properties, required)})
         return result
+
+    def _default_outputs(self, operation, arguments):
+        """Escolhe saída previsível no Work quando a ferramenta não a recebeu."""
+        if "output_path" in arguments or "output_directory" in arguments:
+            return arguments
+        directory_operations = {"render_pages", "extract_images", "split"}
+        extracting = operation == "attachments" and arguments.get("action") == "extract"
+        if operation not in DEFAULT_OUTPUT and not extracting and arguments.get("action") not in {"set", "fill", "flatten", "export", "add", "remove", "convert_pdfa"}:
+            return arguments
+        request = re.sub(r"[^A-Za-z0-9._-]+", "-", str(arguments["request_id"])).strip(".-") or "artifact"
+        base = workspace_for(self.configuration.root) / ".onmyoji" / self.namespace / "output"
+        if operation in directory_operations or extracting:
+            return {**arguments, "output_directory": str(base / request)}
+        suffix = ".pdf"
+        if operation in {"extract_text", "recognize"}:
+            suffix = {"json": ".json", "markdown": ".md"}.get(str(arguments.get("format") or "text"), ".txt")
+        elif operation == "extract_tables": suffix = "." + str(arguments.get("format") or "json")
+        elif operation == "analyze_layout": suffix = ".json"
+        return {**arguments, "output_path": str(base / (request + suffix))}
 
     def call(self, name, arguments):
         from jsonschema import Draft202012Validator
@@ -150,7 +172,8 @@ class DocumentToolRegistry:
                     effective = {**profile, **ocr}
             capabilities = get_capabilities(self.configuration.root, effective)
             return {"languages": capabilities.get("tesseract", {}).get("languages", [])} if operation == "list_languages" else capabilities
-        writing = operation in ALWAYS_WRITE or any(key in arguments for key in ("output_path", "output_directory")) or arguments.get("action") in {"set", "fill", "flatten", "export", "add", "remove", "extract", "convert_pdfa"}
+        writing = operation in DEFAULT_OUTPUT or any(key in arguments for key in ("output_path", "output_directory")) or arguments.get("action") in {"set", "fill", "flatten", "export", "add", "remove", "extract", "convert_pdfa"}
         if writing and arguments.get("confirm") is not True:
             raise DocumentError("confirmation_required", "A gravação exige confirm=true.")
+        arguments = self._default_outputs(operation, arguments)
         return self.jobs.submit(selected, profile, document["defaults"], operation, arguments, arguments["request_id"])

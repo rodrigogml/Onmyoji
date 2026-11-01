@@ -472,6 +472,34 @@ def test_agent_receives_a_structured_media_upload_failure(tmp_path):
     assert state["diagnostics"][-1]["event"] == "media.send_failed"
 
 
+def test_owner_can_send_a_work_file_without_copying_to_outbox(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    source = tmp_path / "email-attachment.pdf"; source.write_bytes(b"pdf")
+    gateway = Gateway(replace(Settings.load(tmp_path, data), agent_outbound_media=True)); sent = []
+
+    class Api:
+        def send_file(_self, _method, _chat, path, _field, _caption, **_values): sent.append(path); return {"message_id": 9}
+
+    active = AppServerTurn(9, "turn-1", threading.Event(), conversation_id="private:9", source_trust="OWNER")
+    gateway.api = Api(); gateway.app_turns[active.thread_id] = active
+    response = gateway._app_server_request("item/tool/call", {"namespace": "telegram_gateway", "threadId": active.thread_id, "tool": "send_file", "arguments": {"file_path": str(source), "kind": "document"}})
+
+    assert json.loads(response["contentItems"][0]["text"])["sent"] is True
+    assert sent == [source.resolve()] and active.outbox is None
+
+
+def test_untrusted_user_cannot_send_a_work_file_by_direct_path(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    source = tmp_path / "private.pdf"; source.write_bytes(b"pdf")
+    gateway = Gateway(replace(Settings.load(tmp_path, data), agent_outbound_media=True))
+    active = AppServerTurn(9, "turn-1", threading.Event(), conversation_id="private:9", source_trust="UNTRUSTED_USER")
+    gateway.app_turns[active.thread_id] = active
+
+    response = gateway._app_server_request("item/tool/call", {"namespace": "telegram_gateway", "threadId": active.thread_id, "tool": "send_file", "arguments": {"file_path": str(source), "kind": "document"}})
+
+    assert json.loads(response["contentItems"][0]["text"])["stage"] == "authorization"
+
+
 def test_media_upload_exposes_telegram_http_description(tmp_path):
     image = tmp_path / "picture.png"; image.write_bytes(b"image")
     error = HTTPError("https://api.telegram.org/bottoken/sendPhoto", 400, "Bad Request", None, io.BytesIO(b'{"ok":false,"description":"Bad Request: invalid photo"}'))

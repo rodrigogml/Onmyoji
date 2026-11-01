@@ -37,9 +37,9 @@ def workspace_for(root: Path) -> Path:
 
 
 def profile_defaults(root: Path, namespace: str) -> dict:
-    base = workspace_for(root) / ".onmyoji" / namespace
-    profile = {"enabled": True, "description": "Documentos do workspace", "readable_roots": [str(base / "input"), str(base / "output")],
-               "writable_roots": [str(base / "output")], "work_directory": str(base / "work")}
+    workspace = workspace_for(root); base = workspace / ".onmyoji" / namespace
+    profile = {"enabled": True, "description": "Documentos do workspace", "readable_roots": [str(workspace)],
+               "writable_roots": [str(workspace)], "work_directory": str(base / "work")}
     if namespace == "pdf":
         profile.update(ocr_profile="", ghostscript_path="gswin64c" if os.name == "nt" else "gs", verapdf_path="verapdf", icc_profile_path="")
     else:

@@ -8,6 +8,7 @@ from email.utils import getaddresses, make_msgid, formatdate
 from pathlib import Path
 
 from ..configuration import McpConfiguration
+from ..artifacts import ArtifactPathError, default_output
 from .configuration import validate_configuration, validate_roots
 from .connections import Connections
 from .contracts import EmailError, digest, identifier, require, text
@@ -81,7 +82,12 @@ class EmailService:
                     require(1 <= index <= len(parts), "attachment_not_found", "Anexo não encontrado.")
                     raw = messages.part_bytes(parts[index - 1])
                     require(len(raw) <= limits["max_attachment_bytes"], "attachment_too_large", "Anexo excede o limite configurado.")
-                path = messages.authorized_path(args["output_path"], account["writable_roots"], reading=False)
+                requested = args.get("output_path")
+                if not requested:
+                    name = parts[index - 1].get_filename() if operation == "download_attachment" else "message.eml"
+                    try: requested = str(default_output(self.root, "email", str(name or "attachment")))
+                    except ArtifactPathError as error: raise EmailError("path_not_allowed", str(error)) from error
+                path = messages.authorized_path(requested, account["writable_roots"], reading=False)
                 return messages.write_file(path, raw)
             if operation == "import_message":
                 path = messages.authorized_path(args["file_path"], account["readable_roots"], reading=True)

@@ -114,7 +114,7 @@ Todas as ferramentas documentais exigem `request_id`. Usam `input_path`, exceto 
 
 ## Manual de uso com exemplos
 
-Os exemplos pressupõem um único perfil habilitado, fontes existentes e destinos ainda livres em `C:/MeuWorkspace/.onmyoji/pdf/`. Ajuste os caminhos ao workspace real; no Linux, use caminhos absolutos como `/home/agente/work/.onmyoji/pdf/input/documento.pdf`. Cada bloco é o objeto de argumentos da ferramenta indicada. Para repetir uma tarefa com parâmetros diferentes, use outro `request_id`.
+Os exemplos pressupõem um único perfil habilitado e fontes existentes dentro das raízes de leitura. Novos perfis autorizam o Work inteiro como raiz comum e preservam perfis anteriores sem migração automática. Quando uma operação que produz arquivo não receber destino, ela publica em `Work/.onmyoji/pdf/output/` ou `Work/.onmyoji/ocr/output/`; destinos explícitos continuam exigindo uma raiz de escrita autorizada. Cada bloco é o objeto de argumentos da ferramenta indicada. Para repetir uma tarefa com parâmetros diferentes, use outro `request_id`.
 
 ### Inspecionar, ler e localizar conteúdo
 

@@ -63,12 +63,12 @@ def test_new_email_credential_uses_instance_mcp_entry_convention(tmp_path):
     assert ui.ask.call_args_list[3].args == ("Entrada KeePass dedicada", "Lavelinha/MCP/Email:default:SMTP", True)
 
 
-def test_attachment_roots_default_to_and_create_workspace_email_directory(tmp_path):
+def test_attachment_roots_default_to_and_create_workspace_root(tmp_path):
     workspace = tmp_path / "workspace"
     system = tmp_path / "configs" / "onmyoji-system.toml"; system.parent.mkdir(parents=True)
     system.write_text('[codex]\nproject_directory = "' + str(workspace).replace("\\", "\\\\") + '"\n', encoding="utf-8")
     config = Mock(root=tmp_path); ui = Mock()
-    root = str(workspace / ".onmyoji" / "email")
+    root = str(workspace)
     ui.ask.side_effect = [root, root]
     account = {"readable_roots": [], "writable_roots": []}
 
@@ -76,7 +76,7 @@ def test_attachment_roots_default_to_and_create_workspace_email_directory(tmp_pa
 
     assert account == {"readable_roots": [root], "writable_roots": [root]}
     assert [call.args[1] for call in ui.ask.call_args_list] == [root, root]
-    assert (workspace / ".onmyoji" / "email").is_dir()
+    assert workspace.is_dir()
 
 
 def test_attachment_roots_preserve_explicit_opt_out_without_creating_directory(tmp_path):

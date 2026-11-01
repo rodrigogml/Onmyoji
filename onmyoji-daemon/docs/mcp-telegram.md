@@ -20,6 +20,8 @@ Consulte os destinos antes de enviar quando o destinatário não for inequívoco
 
 ## Arquivos e contexto da conversa
 
-Arquivos enviados devem existir, ser regulares e usar caminho absoluto dentro do workspace permitido pelo gateway. Anexos recebidos permanecem em `<workspace>/.onmyoji/telegram/attachments/`, com staging em `<workspace>/.onmyoji/telegram/staging/`, para que o agente possa ler e editar o material.
+Arquivos enviados devem existir, ser regulares e usar caminho absoluto dentro do Work ou de uma raiz de arquivos declarada por um MCP ativo. O gateway rejeita links, junctions, caminhos fora dessas raízes e arquivos acima do limite. Assim, um anexo já baixado pelo E-mail ou uma saída documental pode seguir diretamente para o Telegram sem cópia intermediária.
+
+No gateway da conversa ativa, `telegram_gateway.send_file` aceita `file_name` para o outbox do turno ou `file_path` para um arquivo existente em raiz autorizada. O segundo modo exige pedido de owner ou usuário autorizado; o diagnóstico registra a origem, a validação e o resultado do envio. Anexos recebidos permanecem em `<workspace>/.onmyoji/telegram/attachments/`, com staging em `<workspace>/.onmyoji/telegram/staging/`, para que o agente possa ler e editar o material.
 
 As ferramentas `telegram.*` são a superfície MCP de destinos e envios. O Gateway também fornece recursos específicos da conversa ativa, como menus e respostas, conforme o contexto e a autorização do turno. Consulte a [documentação do Gateway Telegram](Telegram.md) para procedência das mensagens, formatação, anexos e voz.
