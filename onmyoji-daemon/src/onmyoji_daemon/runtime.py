@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import queue
+import re
 import subprocess
 import sys
+import threading
 import tomllib
+from time import monotonic
 from collections.abc import Callable
 
 
@@ -80,6 +84,59 @@ def _environment() -> dict[str, str]:
     return environment
 
 
+def _safe_output(value: str) -> str:
+    """Remove segredos de uma linha devolvida por ferramenta externa."""
+    value = re.sub(r"(?i)\b(token|password|secret|credential|api[_-]?key)\b(\s*[:=]\s*)\S+", r"\1\2[redacted]", value.strip())
+    value = re.sub(r"(?i)\bbearer\s+\S+", "Bearer [redacted]", value)
+    return value[:500]
+
+
+def _python_code(executable: Path, code: str) -> list[str]:
+    """Evita a consulta WMI do Python 3.12 ao importar ferramentas no Windows."""
+    prefix = "import platform; platform.system = lambda: 'Windows'; " if os.name == "nt" else ""
+    return [str(executable), "-I", "-B", "-c", prefix + code]
+
+
+def _pip_command(executable: Path, arguments: list[str]) -> list[str]:
+    if os.name != "nt":
+        return [str(executable), "-I", "-B", "-m", "pip", *arguments]
+    code = "import platform, runpy; platform.system = lambda: 'Windows'; runpy.run_module('pip', run_name='__main__')"
+    return [str(executable), "-I", "-B", "-c", code, *arguments]
+
+
+def run_with_progress(command: list[str], *, environment: dict[str, str], timeout: int, stage: str, progress: Callable[[str], None] | None, cwd: Path | None = None) -> tuple[int, str]:
+    """Executa ferramenta externa exibindo saída sanitizada e batimentos periódicos."""
+    try:
+        process = subprocess.Popen(command, env=environment, cwd=str(cwd) if cwd else None, text=True, encoding="utf-8", errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1)
+    except OSError as error:
+        raise RuntimeError(f"Não foi possível iniciar {stage.lower()}.") from error
+    assert process.stdout is not None
+    lines: queue.Queue[str | None] = queue.Queue()
+    def read_output() -> None:
+        for line in process.stdout:
+            lines.put(line)
+        lines.put(None)
+    threading.Thread(target=read_output, daemon=True).start()
+    deadline = monotonic() + timeout; detail = ""; closed = False
+    while not closed:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            process.kill(); process.wait()
+            raise RuntimeError(f"{stage} excedeu o tempo limite de {timeout // 60} minutos.")
+        try:
+            line = lines.get(timeout=min(15, remaining))
+        except queue.Empty:
+            if progress: progress(f"{stage} Ainda em andamento; aguarde a conclusão ou o diagnóstico.")
+            continue
+        if line is None:
+            closed = True
+            continue
+        detail = _safe_output(line)
+        if progress and detail:
+            progress(f"{stage} {detail}")
+    return process.wait(), detail
+
+
 def ensure(root: Path, requirements: list[str], probe: str, progress: Callable[[str], None] | None = None) -> str:
     """Prepara o runtime selecionado e instala requisitos no mesmo interpretador."""
     executable = python(root)
@@ -90,27 +147,27 @@ def ensure(root: Path, requirements: list[str], probe: str, progress: Callable[[
         if progress:
             progress("Criando o ambiente isolado único do Shikigami.")
         try:
-            completed = subprocess.run([str(source), "-I", "-B", "-m", "venv", str(venv_path(root))], env=_environment(), text=True, capture_output=True, timeout=120, check=False)
-        except (OSError, subprocess.TimeoutExpired) as error:
+            code, detail = run_with_progress([str(source), "-I", "-B", "-m", "venv", str(venv_path(root))], environment=_environment(), timeout=120, stage="Criando o ambiente isolado /venv.", progress=progress)
+        except RuntimeError as error:
             raise RuntimeError("Não foi possível criar o ambiente isolado /venv.") from error
-        if completed.returncode:
-            raise RuntimeError("O Python-base não conseguiu criar o ambiente isolado /venv.")
+        if code:
+            raise RuntimeError(f"O Python-base não conseguiu criar o ambiente isolado /venv.{(' Detalhe: ' + detail) if detail else ''}")
     if not executable.is_file():
         raise RuntimeError("O Python global configurado não existe.")
     if requirements:
         if progress:
             progress("Instalando dependências no runtime único do Shikigami.")
-        command = [str(executable), "-I", "-B", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", *requirements]
+        command = _pip_command(executable, ["install", "--disable-pip-version-check", "--no-input", "--upgrade", *requirements])
         try:
-            completed = subprocess.run(command, env=_environment(), text=True, capture_output=True, timeout=600, check=False)
-        except (OSError, subprocess.TimeoutExpired) as error:
+            code, detail = run_with_progress(command, environment=_environment(), timeout=600, stage="Instalando dependências no runtime único do Shikigami.", progress=progress)
+        except RuntimeError as error:
             raise RuntimeError("Não foi possível instalar dependências no runtime do Shikigami.") from error
-        if completed.returncode:
-            raise RuntimeError("O instalador de dependências do runtime do Shikigami falhou.")
+        if code:
+            raise RuntimeError(f"O instalador de dependências do runtime do Shikigami falhou.{(' Detalhe: ' + detail) if detail else ''}")
     try:
-        checked = subprocess.run([str(executable), "-I", "-B", "-c", probe], env=_environment(), text=True, capture_output=True, timeout=15, check=False)
-    except (OSError, subprocess.TimeoutExpired) as error:
+        code, detail = run_with_progress(_python_code(executable, probe), environment=_environment(), timeout=15, stage="Validando as dependências do runtime único.", progress=progress)
+    except RuntimeError as error:
         raise RuntimeError("Não foi possível validar o runtime do Shikigami.") from error
-    if checked.returncode:
-        raise RuntimeError("O runtime do Shikigami não possui as dependências esperadas.")
+    if code:
+        raise RuntimeError(f"O runtime do Shikigami não possui as dependências esperadas.{(' Detalhe: ' + detail) if detail else ''}")
     return "Runtime Python único do Shikigami pronto."

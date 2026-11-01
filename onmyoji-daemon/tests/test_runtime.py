@@ -35,3 +35,13 @@ def test_legacy_existing_runtime_maps_to_root_isolated_environment(tmp_path: Pat
     value = runtime.configuration(tmp_path)
     assert value == {"mode": "isolated", "base_python": "C:/legacy/Scripts/python.exe", "executable": ""}
     assert runtime.python(tmp_path).is_relative_to(tmp_path / "venv")
+
+
+def test_external_output_is_sanitized() -> None:
+    assert runtime._safe_output("token=abc123 password: hidden Bearer value") == "token=[redacted] password: [redacted] Bearer [redacted]"
+
+
+def test_windows_python_commands_bypass_wmi_probe(monkeypatch) -> None:
+    monkeypatch.setattr(runtime.os, "name", "nt")
+    command = runtime._pip_command(Path("python.exe"), ["install", "example"])
+    assert "platform.system" in command[4] and command[-2:] == ["install", "example"]

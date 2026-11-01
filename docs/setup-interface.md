@@ -53,3 +53,4 @@ Use `note()` para contexto, `result(True, ...)` para conclusão e `result(False,
 - `flow_choice()` apresenta uma enumeração em linha, sem cabeçalho.
 - Funções de seleção usadas por assistentes, criação de perfis ou credenciais devem usar `flow_choice()`.
 - Antes de criar um novo helper de UI, verifique se um desses contratos já representa a interação desejada.
+- Processos externos iniciados pelo setup devem apresentar etapa, saída sanitizada e avisos periódicos enquanto executam; a saída nunca pode revelar credenciais, tokens ou segredos.

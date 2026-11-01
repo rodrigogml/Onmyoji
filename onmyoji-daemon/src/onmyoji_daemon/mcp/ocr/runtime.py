@@ -6,11 +6,9 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import sys
-import threading
 from collections.abc import Callable
 from uuid import uuid4
 
@@ -223,26 +221,14 @@ def native_installation_guidance() -> dict:
 
 def _run_install(command: list[str], *, timeout: int = 1200, environment: dict | None = None, cwd: Path | None = None, stage: str = "Preparando componentes documentais.", progress: Callable[[str], None] | None = None) -> None:
     """Executa uma etapa com aviso periódico e devolve o diagnóstico do instalador."""
-    if progress:
-        progress(stage)
-    finished = threading.Event()
-    def heartbeat() -> None:
-        while not finished.wait(15):
-            if progress:
-                progress(f"{stage} Ainda em andamento; aguarde a conclusão ou o diagnóstico.")
-    reporter = threading.Thread(target=heartbeat, daemon=True)
-    reporter.start()
     try:
-        completed = subprocess.run(command, env=environment, cwd=str(cwd) if cwd else None, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=timeout, check=False)
-    except (OSError, subprocess.TimeoutExpired) as error:
+        from ...runtime import RuntimeError as SharedRuntimeError, run_with_progress
+        code, detail = run_with_progress(command, environment=dict(environment or {}), timeout=timeout, stage=stage, progress=progress, cwd=cwd)
+    except SharedRuntimeError as error:
         raise DocumentError("installation_failed", f"{stage} Não foi possível concluir a etapa.") from error
-    finally:
-        finished.set(); reporter.join(timeout=1)
-    if completed.returncode:
-        lines = (completed.stderr or completed.stdout).strip().splitlines()
-        detail = re.sub(r"(?i)\b(token|password|secret|credential)\b(\s*[:=]\s*)\S+", r"\1\2[redacted]", lines[-1]) if lines else ""
+    if code:
         suffix = f" Detalhe: {detail}" if detail else ""
-        raise DocumentError("installation_failed", f"{stage} O instalador retornou código {completed.returncode}.{suffix}")
+        raise DocumentError("installation_failed", f"{stage} O instalador retornou código {code}.{suffix}")
     if progress:
         progress(f"{stage} Concluída.")
 
