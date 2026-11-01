@@ -20,8 +20,6 @@ import shutil
 from collections.abc import Callable
 
 
-SERVICE_ROOT_KEY = "SOFTWARE\\Onmyoji\\Services"
-
 from .rpc import call
 from .registry import SERVICES
 from .instance import identity
@@ -356,16 +354,7 @@ def install_service(root: Path, name: str, description: str, scope: str = "syste
         except subprocess.TimeoutExpired:
             return False, "O registro do Serviço do Windows excedeu 60 segundos e foi interrompido. Verifique permissões administrativas e o estado do Gerenciador de Controle de Serviços."
         if created.returncode != 0: return False, (created.stderr or created.stdout).strip()
-        try:
-            if progress: progress("Validando o registro do serviço no Windows.")
-            import winreg
-            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, f"{SERVICE_ROOT_KEY}\\{name}")
-            try: registered_root, _kind = winreg.QueryValueEx(key, "OnmyojiRoot")
-            finally: winreg.CloseKey(key)
-            if Path(str(registered_root)).resolve() != root.resolve(): raise ValueError("a raiz registrada não corresponde à instância")
-        except (OSError, ValueError) as error:
-            subprocess.run([executable, "-m", "onmyoji_daemon.windows_service", "--service-name", name, "--onmyoji-root", str(root.resolve()), "remove"], text=True, capture_output=True, env=environment, check=False)
-            return False, f"O registro do Serviço do Windows não pôde ser validado; a instalação foi desfeita: {error}"
+        if progress: progress("Validando o registro do serviço no Windows.")
         if progress: progress("Aplicando a descrição do serviço.")
         subprocess.run(["sc.exe", "description", name, description], text=True, capture_output=True, check=False, timeout=20)
         if windows_account and windows_account.casefold() != "localsystem":

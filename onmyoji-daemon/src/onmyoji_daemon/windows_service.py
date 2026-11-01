@@ -18,8 +18,6 @@ from onmyoji_daemon.management import daemon_python
 from onmyoji_daemon.supervisor import Supervisor
 
 
-SERVICE_ROOT_KEY = "SOFTWARE\\Onmyoji\\Services"
-
 try:
     import win32service
     import win32serviceutil
@@ -28,19 +26,8 @@ except ImportError:
 
 
 def _service_root(name: str) -> Path:
-    """Obtém a raiz registrada para a instância atendida pelo Windows Service."""
-    import winreg
-    key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, f"{SERVICE_ROOT_KEY}\\{name}")
-    try: value, _kind = winreg.QueryValueEx(key, "OnmyojiRoot")
-    finally: winreg.CloseKey(key)
-    return Path(str(value)).resolve()
-
-
-def _save_service_root(name: str, root: Path) -> None:
-    import winreg
-    key = winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, f"{SERVICE_ROOT_KEY}\\{name}")
-    try: winreg.SetValueEx(key, "OnmyojiRoot", 0, winreg.REG_SZ, str(root.resolve()))
-    finally: winreg.CloseKey(key)
+    """Deriva a raiz da instância a partir do módulo instalado pelo próprio serviço."""
+    return Path(__file__).resolve().parents[3]
 
 
 if win32serviceutil:
@@ -69,7 +56,6 @@ def main(argv: list[str] | None = None) -> int:
     previous, sys.argv = sys.argv, [sys.argv[0], *remainder]
     try:
         win32serviceutil.HandleCommandLine(OnmyojiManagedService)
-        if any(action in remainder for action in ("install", "update")): _save_service_root(name, root)
     finally: sys.argv = previous
     return 0
 
