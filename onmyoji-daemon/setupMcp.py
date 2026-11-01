@@ -1876,7 +1876,7 @@ def manage_eccovox_profile(config: McpConfiguration, name: str) -> None:
         elif action in {"6", "7"}:
             key = "readable_roots" if action == "6" else "writable_roots"
             defaults = eccovox_media_roots(config)
-            suggested = ";".join(profile[key] or ([defaults[0]] if key == "readable_roots" else [defaults[1]]))
+            suggested = ";".join(profile[key] or [defaults[0]])
             value = ask("Raízes separadas por ;", suggested, True)
             if value is None: continue
             profile[key] = eccovox_media_roots(config, value)
@@ -1927,7 +1927,7 @@ def eccovox_menu(config: McpConfiguration) -> None:
                 result(False, f"Não foi possível consultar as capacidades do EccoVox: {error}"); continue
             defaults = eccovox_media_roots(config)
             readable = ask("Raízes de leitura, separadas por ;", defaults[0], True)
-            writable = ask("Raízes de escrita, separadas por ;", defaults[1], True)
+            writable = ask("Raízes de escrita, separadas por ;", defaults[0], True)
             output = ask("Pasta padrão de saída", eccovox_default_output_directory(config), True)
             if not all((readable, writable)) or output is None: result(False, "Perfil EccoVox não foi criado."); continue
             data["profiles"][name] = {"enabled": True, "description": description, "base_url": endpoint, "voice": voice, "language": language, "default_output_directory": eccovox_default_output_directory(config, output), "readable_roots": eccovox_media_roots(config, readable), "writable_roots": eccovox_media_roots(config, writable)}
