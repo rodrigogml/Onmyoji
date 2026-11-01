@@ -1884,6 +1884,35 @@ def daemon_menu(root: Path) -> None:
             elif choice == "2": service_menu()
             else: result(False, "Opção inválida.")
 
+    def configure_voice_replies() -> None:
+        """Configura áudio do Telegram diretamente, sem um submenu de opção única."""
+        telegram_path = telegram_configuration_path(root)
+        command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "bootstrap"], quiet=True)
+        try:
+            settings = tomllib.loads(telegram_path.read_text(encoding="utf-8")); voice = settings.get("voice_reply", {})
+            enabled, profile = bool(voice.get("enabled", False)), str(voice.get("eccovox_profile") or "")
+            name, language, auto_off = str(voice.get("voice") or ""), str(voice.get("language") or ""), int(voice.get("auto_off_minutes") or 15)
+        except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
+            enabled, profile, name, language, auto_off = False, "", "", "", 15
+        active = prompt("Habilitar respostas em áudio? [S/n]: ").strip().casefold() not in {"n", "x", "\x1b"}
+        if active:
+            try: profiles = sorted(key for key, value in McpConfiguration(root).eccovox()["profiles"].items() if isinstance(value, dict) and value.get("enabled") is True)
+            except Exception: profiles = []
+            if not profiles:
+                result(False, "Nenhum perfil EccoVox habilitado. Configure-o primeiro em MCP > Integrações MCP > EccoVox."); return
+            profile = flow_choice("Perfil MCP EccoVox", profiles, profile if profile in profiles else profiles[0])
+            if profile is None: return
+            name = choose_eccovox_tts_capability(root, profile, "voices", "Voz das respostas Telegram", name)
+            if name is None: return
+            language = choose_eccovox_tts_capability(root, profile, "languages", "Idioma das respostas Telegram", language)
+            if language is None: return
+        raw = prompt(f"Desligar áudio após minutos sem interação [{auto_off}]: ").strip()
+        try: minutes = int(raw) if raw else auto_off
+        except ValueError: result(False, "Informe minutos inteiros."); return
+        arguments = [sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-voice-reply", "--profile", profile, "--voice", name, "--language", language, "--auto-off-minutes", str(minutes)] + (["--enabled"] if active else [])
+        changed = command(arguments, quiet=True); result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
+        if changed.returncode == 0: offer_restart()
+
     def telegram_section_menu(section: str) -> None:
         while True:
             telegram_path = telegram_configuration_path(root)
@@ -1919,7 +1948,6 @@ def daemon_menu(root: Path) -> None:
                 "app-server": ("Codex App Server", "Conversa persistente e teste controlado do agente"),
                 "owners": ("Owners e comandos", "Pareamento, comandos privados e preferências"),
                 "security": ("Segurança e instruções", "TOTP e instruções particulares do Shikigami"),
-                "audio": ("Respostas em áudio", "Configuração do EccoVox para o gateway Telegram"),
                 "media": ("Arquivos e fotos do agente", "Permissão do gateway Telegram para mídia de saída"),
             }[section]
             screen(title, subtitle)
@@ -1940,8 +1968,6 @@ def daemon_menu(root: Path) -> None:
             elif section == "security":
                 item("1.", "Desabilitar TOTP" if totp_enabled else "Configurar e habilitar TOTP")
                 item("2.", "Instruções do Shikigami", instruction_file)
-            elif section == "audio":
-                item("1.", "Desabilitar respostas em áudio" if voice_enabled else "Configurar e habilitar respostas em áudio", f"EccoVox: {voice_profile} · voz: {voice_name or 'herdada'} · idioma: {voice_language or 'herdado'} · auto-off: {voice_auto_off} min" if voice_enabled else "Desabilitadas")
             else:
                 item("1.", "Desabilitar envio pelo agente" if outbound_media else "Habilitar envio pelo agente", "Arquivos, fotos e áudio na conversa Telegram ativa")
             item("X.", "Voltar")
@@ -1953,7 +1979,6 @@ def daemon_menu(root: Path) -> None:
                 "app-server": {"1": "7", "2": "9", "3": "10"},
                 "owners": {"1": "4", "2": "8", "3": "12"},
                 "security": {"1": "6", "2": "13"},
-                "audio": {"1": "11"},
                 "media": {"1": "14"},
             }[section]
             if choice not in actions:
@@ -2066,32 +2091,6 @@ def daemon_menu(root: Path) -> None:
                 except ValueError: result(False, "Informe um número inteiro de minutos."); continue
                 changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-app-server", "--idle-timeout", str(minutes * 60)], quiet=True)
                 result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
-                if changed.returncode == 0: offer_restart()
-            elif choice == "11":
-                active = prompt("Habilitar respostas em áudio? [S/n]: ").strip().casefold() not in {"n", "x", "\x1b"}
-                profile = voice_profile
-                if active:
-                    try:
-                        profiles = sorted(name for name, value in McpConfiguration(root).eccovox()["profiles"].items() if isinstance(value, dict) and value.get("enabled") is True)
-                    except Exception:
-                        profiles = []
-                    if not profiles:
-                        result(False, "Nenhum perfil EccoVox habilitado. Configure-o primeiro em MCP > Integrações MCP > EccoVox.")
-                        continue
-                    profile = flow_choice("Perfil MCP EccoVox", profiles, voice_profile if voice_profile in profiles else profiles[0])
-                    if profile is None:
-                        continue
-                selected_voice, selected_language = voice_name, voice_language
-                if active:
-                    selected_voice = choose_eccovox_tts_capability(root, profile, "voices", "Voz das respostas Telegram", voice_name)
-                    if selected_voice is None: continue
-                    selected_language = choose_eccovox_tts_capability(root, profile, "languages", "Idioma das respostas Telegram", voice_language)
-                    if selected_language is None: continue
-                raw = prompt(f"Desligar áudio após minutos sem interação [{voice_auto_off}]: ").strip()
-                try: minutes = int(raw) if raw else voice_auto_off
-                except ValueError: result(False, "Informe minutos inteiros."); continue
-                arguments = [sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-voice-reply", "--profile", profile, "--voice", selected_voice, "--language", selected_language, "--auto-off-minutes", str(minutes)] + (["--enabled"] if active else [])
-                changed = command(arguments, quiet=True); result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
                 if changed.returncode == 0: offer_restart()
             elif choice == "12":
                 enabled = prompt(f"Permitir que o owner escolha modelo e raciocínio por conversa? [{'S' if owner_preferences else 'n'}]: ").strip().casefold() or ("s" if owner_preferences else "n")
@@ -2294,7 +2293,7 @@ def daemon_menu(root: Path) -> None:
             elif choice == "3": telegram_section_menu("app-server")
             elif choice == "4": telegram_section_menu("owners")
             elif choice == "5": telegram_section_menu("security")
-            elif choice == "6": telegram_section_menu("audio")
+            elif choice == "6": configure_voice_replies()
             elif choice == "7": telegram_section_menu("media")
             else: result(False, "Opção inválida.")
 
