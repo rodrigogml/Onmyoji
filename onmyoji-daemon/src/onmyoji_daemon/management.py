@@ -19,6 +19,9 @@ import uuid
 import shutil
 from collections.abc import Callable
 
+
+SERVICE_ROOT_KEY = "SOFTWARE\\Onmyoji\\Services"
+
 from .rpc import call
 from .registry import SERVICES
 from .instance import identity
@@ -356,7 +359,7 @@ def install_service(root: Path, name: str, description: str, scope: str = "syste
         try:
             if progress: progress("Validando o registro do serviço no Windows.")
             import winreg
-            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, f"SYSTEM\\CurrentControlSet\\Services\\{name}")
+            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, f"{SERVICE_ROOT_KEY}\\{name}")
             try: registered_root, _kind = winreg.QueryValueEx(key, "OnmyojiRoot")
             finally: winreg.CloseKey(key)
             if Path(str(registered_root)).resolve() != root.resolve(): raise ValueError("a raiz registrada não corresponde à instância")

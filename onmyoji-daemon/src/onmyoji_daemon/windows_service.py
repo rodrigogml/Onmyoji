@@ -17,6 +17,9 @@ from onmyoji_daemon.instance import identity
 from onmyoji_daemon.management import daemon_python
 from onmyoji_daemon.supervisor import Supervisor
 
+
+SERVICE_ROOT_KEY = "SOFTWARE\\Onmyoji\\Services"
+
 try:
     import win32service
     import win32serviceutil
@@ -27,7 +30,7 @@ except ImportError:
 def _service_root(name: str) -> Path:
     """Obtém a raiz registrada para a instância atendida pelo Windows Service."""
     import winreg
-    key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, f"SYSTEM\\CurrentControlSet\\Services\\{name}")
+    key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, f"{SERVICE_ROOT_KEY}\\{name}")
     try: value, _kind = winreg.QueryValueEx(key, "OnmyojiRoot")
     finally: winreg.CloseKey(key)
     return Path(str(value)).resolve()
@@ -35,7 +38,7 @@ def _service_root(name: str) -> Path:
 
 def _save_service_root(name: str, root: Path) -> None:
     import winreg
-    key = winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, f"SYSTEM\\CurrentControlSet\\Services\\{name}")
+    key = winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, f"{SERVICE_ROOT_KEY}\\{name}")
     try: winreg.SetValueEx(key, "OnmyojiRoot", 0, winreg.REG_SZ, str(root.resolve()))
     finally: winreg.CloseKey(key)
 
