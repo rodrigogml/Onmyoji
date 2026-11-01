@@ -1873,10 +1873,11 @@ def daemon_menu(root: Path) -> None:
                 totp_enabled = bool(telegram_settings.get("totp", {}).get("enabled", False))
                 voice_enabled = bool(telegram_settings.get("voice_reply", {}).get("enabled", False))
                 voice_profile = str(telegram_settings.get("voice_reply", {}).get("eccovox_profile") or "")
+                voice_name = str(telegram_settings.get("voice_reply", {}).get("voice") or "")
                 voice_auto_off = int(telegram_settings.get("voice_reply", {}).get("auto_off_minutes") or 15)
                 outbound_media = bool(telegram_settings.get("telegram", {}).get("agent_outbound_media", telegram_settings.get("voice_reply", {}).get("agent_outbound_media", False)))
             except (OSError, tomllib.TOMLDecodeError):
-                telegram_settings = {}; totp_enabled, voice_enabled, voice_profile, voice_auto_off, outbound_media = False, False, "", 15, False
+                telegram_settings = {}; totp_enabled, voice_enabled, voice_profile, voice_name, voice_auto_off, outbound_media = False, False, "", "", 15, False
             try:
                 daemon_settings = tomllib.loads((root / "configs" / "daemon" / "daemon.toml").read_text(encoding="utf-8"))
                 daemon_app_server = daemon_settings.get("app_server", {})
@@ -1916,7 +1917,7 @@ def daemon_menu(root: Path) -> None:
                 item("1.", "Desabilitar TOTP" if totp_enabled else "Configurar e habilitar TOTP")
                 item("2.", "Instruções do Shikigami", instruction_file)
             elif section == "audio":
-                item("1.", "Desabilitar respostas em áudio" if voice_enabled else "Configurar e habilitar respostas em áudio", f"EccoVox: {voice_profile} · auto-off: {voice_auto_off} min" if voice_enabled else "Desabilitadas")
+                item("1.", "Desabilitar respostas em áudio" if voice_enabled else "Configurar e habilitar respostas em áudio", f"EccoVox: {voice_profile} · voz: {voice_name or 'herdada do perfil MCP'} · auto-off: {voice_auto_off} min" if voice_enabled else "Desabilitadas")
             else:
                 item("1.", "Desabilitar envio pelo agente" if outbound_media else "Habilitar envio pelo agente", "Arquivos, fotos e áudio na conversa Telegram ativa")
             item("X.", "Voltar")
@@ -2056,10 +2057,13 @@ def daemon_menu(root: Path) -> None:
                     profile = flow_choice("Perfil MCP EccoVox", profiles, voice_profile if voice_profile in profiles else profiles[0])
                     if profile is None:
                         continue
+                selected_voice = prompt(f"Voz Telegram [vazio = herdar perfil MCP; atual: {voice_name or 'herdada'}]: ").strip()
+                if selected_voice.casefold() in {"x", "\x1b"}:
+                    continue
                 raw = prompt(f"Desligar áudio após minutos sem interação [{voice_auto_off}]: ").strip()
                 try: minutes = int(raw) if raw else voice_auto_off
                 except ValueError: result(False, "Informe minutos inteiros."); continue
-                arguments = [sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-voice-reply", "--profile", profile, "--auto-off-minutes", str(minutes)] + (["--enabled"] if active else [])
+                arguments = [sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-voice-reply", "--profile", profile, "--voice", selected_voice, "--auto-off-minutes", str(minutes)] + (["--enabled"] if active else [])
                 changed = command(arguments, quiet=True); result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
                 if changed.returncode == 0: offer_restart()
             elif choice == "12":

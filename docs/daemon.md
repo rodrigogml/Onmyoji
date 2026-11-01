@@ -36,7 +36,7 @@ O envio de anexos requer o modo App Server habilitado. No modo `codex exec`, o g
 
 ## Respostas em áudio e mídia de saída
 
-O menu `Gateway Telegram → Configurar respostas em áudio` seleciona um perfil MCP EccoVox, o desligamento automático por inatividade e, separadamente, a permissão de mídia enviada pelo agente. O modo texto/áudio é persistido por conversa e volta para texto após o tempo configurado sem nova mensagem do owner. O menu `/config` alterna esse modo; o agente também pode consultar e alterá-lo pela ferramenta dinâmica `telegram_gateway.set_reply_mode` na conversa ativa.
+O perfil MCP EccoVox define a voz padrão usada pelas ferramentas MCP de síntese. O menu `Gateway Telegram → Configurar respostas em áudio` seleciona esse perfil, permite uma voz específica para o Telegram (vazia para herdar a voz do perfil MCP), configura o desligamento automático por inatividade e, separadamente, a permissão de mídia enviada pelo agente. O modo texto/áudio é persistido por conversa e volta para texto após o tempo configurado sem nova mensagem do owner. O menu `/config` alterna esse modo; o agente também pode consultar e alterá-lo pela ferramenta dinâmica `telegram_gateway.set_reply_mode` na conversa ativa.
 
 Quando o modo é áudio, o gateway inclui uma orientação transitória para resposta falável no turno e sintetiza a resposta final localmente pelo EccoVox. A falha de síntese é informada e, por padrão, entrega a resposta em texto. O áudio e qualquer arquivo de saída vivem somente no staging/outbox do turno, dentro do workspace, e são apagados ao fim.
 

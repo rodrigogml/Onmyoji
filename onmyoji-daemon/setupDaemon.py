@@ -276,11 +276,14 @@ def ensure_eccovox_staging_access(root: Path, profile: str) -> Path:
     return staging
 
 
-def save_voice_reply(root: Path, enabled: bool, profile: str, auto_off_minutes: int) -> Path | None:
+def save_voice_reply(root: Path, enabled: bool, profile: str, auto_off_minutes: int, voice_name: str | None = None) -> Path | None:
     if not 1 <= auto_off_minutes <= 1440: raise ValueError("O desligamento automático deve estar entre 1 e 1440 minutos.")
     staging: Path | None = None
     if enabled: staging = ensure_eccovox_staging_access(root, profile)
     data = telegram_data(root); voice = data.setdefault("voice_reply", {})
+    if voice_name is not None:
+        if len(voice_name.strip()) > 120: raise ValueError("O identificador da voz deve ter no máximo 120 caracteres.")
+        voice["voice"] = voice_name.strip()
     voice.update({"enabled": enabled, "eccovox_profile": profile, "auto_off_minutes": auto_off_minutes})
     telegram = data.get("telegram", {}); save_telegram(root, str(telegram.get("vault_profile") or ""), str(telegram.get("token_entry") or ""), data)
     return staging
@@ -564,7 +567,7 @@ def test_telegram(root: Path) -> tuple[bool, str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--onmyoji-root", default=str(ROOT)); parser.add_argument("--action", choices=["bootstrap", "daemon-bootstrap", "validate", "validation-json", "keepass-validation-json", "daemon-validation-json", "instructions-status", "profiles", "set-runtime", "set-credential", "set-totp", "set-app-server", "set-owner-execution-preferences", "set-voice-reply", "set-agent-outbound-media", "check-entry", "write-token", "test-telegram", "test-agent"], default="bootstrap"); parser.add_argument("--profile"); parser.add_argument("--entry"); parser.add_argument("--real-entry"); parser.add_argument("--fake-entry"); parser.add_argument("--runtime-mode"); parser.add_argument("--python"); parser.add_argument("--base-python"); parser.add_argument("--enabled", action="store_true"); parser.add_argument("--disabled", action="store_true"); parser.add_argument("--idle-timeout", type=int); parser.add_argument("--auto-off-minutes", type=int); parser.add_argument("--models", default=""); parser.add_argument("--efforts", default=""); args = parser.parse_args()
+    parser = argparse.ArgumentParser(); parser.add_argument("--onmyoji-root", default=str(ROOT)); parser.add_argument("--action", choices=["bootstrap", "daemon-bootstrap", "validate", "validation-json", "keepass-validation-json", "daemon-validation-json", "instructions-status", "profiles", "set-runtime", "set-credential", "set-totp", "set-app-server", "set-owner-execution-preferences", "set-voice-reply", "set-agent-outbound-media", "check-entry", "write-token", "test-telegram", "test-agent"], default="bootstrap"); parser.add_argument("--profile"); parser.add_argument("--entry"); parser.add_argument("--real-entry"); parser.add_argument("--fake-entry"); parser.add_argument("--runtime-mode"); parser.add_argument("--python"); parser.add_argument("--base-python"); parser.add_argument("--enabled", action="store_true"); parser.add_argument("--disabled", action="store_true"); parser.add_argument("--idle-timeout", type=int); parser.add_argument("--auto-off-minutes", type=int); parser.add_argument("--voice"); parser.add_argument("--models", default=""); parser.add_argument("--efforts", default=""); args = parser.parse_args()
     root = Path(args.onmyoji_root).resolve()
     if args.action == "bootstrap": print(bootstrap(root)); return 0
     if args.action == "daemon-bootstrap": print(bootstrap_daemon(root)); return 0
@@ -585,7 +588,7 @@ def main() -> int:
     if args.action == "set-owner-execution-preferences":
         bootstrap(root); save_owner_execution_preferences(root, not args.disabled, args.models, args.efforts); print("Preferências de execução do owner salvas."); return 0
     if args.action == "set-voice-reply":
-        bootstrap(root); staging = save_voice_reply(root, args.enabled, args.profile or "", args.auto_off_minutes or 15)
+        bootstrap(root); staging = save_voice_reply(root, args.enabled, args.profile or "", args.auto_off_minutes or 15, args.voice)
         print(f"Configuração de resposta por áudio salva. Staging autorizado: {staging}" if staging else "Configuração de resposta por áudio salva."); return 0
     if args.action == "set-agent-outbound-media":
         bootstrap(root); staging = save_agent_outbound_media(root, args.enabled)

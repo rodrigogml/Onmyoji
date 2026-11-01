@@ -808,6 +808,8 @@ class McpConfiguration:
             base_url = profile.get("base_url")
             if not isinstance(base_url, str) or not base_url.strip():
                 raise McpConfigurationError("Endpoint EccoVox inválido.")
+            if not isinstance(profile.get("voice", ""), str) or len(str(profile.get("voice", ""))) > 120:
+                raise McpConfigurationError("Voz padrão do perfil EccoVox inválida.")
             for key in ("readable_roots", "writable_roots"):
                 roots = profile.get(key)
                 if not isinstance(roots, list) or not all(isinstance(value, str) and value.strip() for value in roots):
@@ -922,7 +924,7 @@ class McpConfiguration:
         defaults = data["defaults"]
         lines = ["schema_version = 1", "", "[defaults]", f"request_timeout_seconds = {defaults['request_timeout_seconds']}", f"max_audio_bytes = {defaults['max_audio_bytes']}", f"max_text_characters = {defaults['max_text_characters']}"]
         for name, profile in sorted(data["profiles"].items()):
-            lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"base_url = {_quote(profile['base_url'])}", f"readable_roots = {_array(profile['readable_roots'])}", f"writable_roots = {_array(profile['writable_roots'])}"]
+            lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"base_url = {_quote(profile['base_url'])}", f"voice = {_quote(profile.get('voice', ''))}", f"readable_roots = {_array(profile['readable_roots'])}", f"writable_roots = {_array(profile['writable_roots'])}"]
         return "\n".join(lines) + "\n"
 
     @staticmethod

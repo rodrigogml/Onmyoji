@@ -493,7 +493,7 @@ class Gateway(TelegramChannels):
     def _tts(self, text: str, output: Path) -> None:
         if not self.settings.voice_enabled: raise RuntimeError("Resposta em áudio não está disponível.")
         try:
-            EccoVoxService(self.settings.root).synthesize(self.settings.voice_profile, text[:self.settings.voice_max_text], str(output), self.settings.voice_format, language=self.settings.voice_language, speed=self.settings.voice_speed)
+            EccoVoxService(self.settings.root).synthesize(self.settings.voice_profile, text[:self.settings.voice_max_text], str(output), self.settings.voice_format, voice=self.settings.voice_name or None, language=self.settings.voice_language, speed=self.settings.voice_speed)
         except EccoVoxError as error:
             raise RuntimeError(str(error)) from error
         if not output.is_file() or output.is_symlink(): raise RuntimeError("EccoVox não gerou o áudio.")

@@ -157,13 +157,13 @@ def test_interactive_console_translates_policy_and_relative_writable_directories
 
 def test_tts_uses_internal_mcp_eccovox_service(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
-    config = tmp_path / "configs" / "daemon" / "services" / "telegram" / "config.toml"; config.write_text(config.read_text(encoding="utf-8") + "\n[voice_reply]\nenabled = true\neccovox_profile = \"eccovox\"\n", encoding="utf-8")
+    config = tmp_path / "configs" / "daemon" / "services" / "telegram" / "config.toml"; config.write_text(config.read_text(encoding="utf-8") + "\n[voice_reply]\nenabled = true\neccovox_profile = \"eccovox\"\nvoice = \"pm_alex\"\n", encoding="utf-8")
     gateway = Gateway(Settings.load(tmp_path, data)); output = tmp_path / "voice.opus"; captured = {}
     def synthesize(_self, profile, text, output_path, response_format, **kwargs):
         captured.update({"profile": profile, "text": text, "output": output_path, "format": response_format, **kwargs})
         Path(output_path).write_bytes(b"audio")
     with patch("onmyoji_daemon.telegram.EccoVoxService.synthesize", synthesize): gateway._tts("Teste", output)
-    assert captured["profile"] == "eccovox" and captured["output"] == str(output)
+    assert captured["profile"] == "eccovox" and captured["output"] == str(output) and captured["voice"] == "pm_alex"
 
 
 def test_contacts_are_local_and_do_not_share_owners(tmp_path):

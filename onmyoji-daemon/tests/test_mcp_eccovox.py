@@ -37,6 +37,28 @@ def test_eccovox_configuration_is_kept_in_mcp_subdirectory(tmp_path):
     assert json.loads(json.dumps(config.eccovox()))["profiles"]["voz"]["enabled"] is True
 
 
+def test_eccovox_profile_persists_its_default_voice(tmp_path):
+    config = configured(tmp_path); data = config.eccovox(); data["profiles"]["voz"]["voice"] = "pm_alex"; config.save_eccovox(data)
+
+    assert McpConfiguration(tmp_path).eccovox()["profiles"]["voz"]["voice"] == "pm_alex"
+    assert 'voice = "pm_alex"' in config.eccovox_path.read_text(encoding="utf-8")
+
+
+def test_synthesis_uses_the_profile_default_voice_when_not_overridden(tmp_path, monkeypatch):
+    config = configured(tmp_path); data = config.eccovox(); data["profiles"]["voz"]["voice"] = "pm_alex"; config.save_eccovox(data)
+    captured = {}
+
+    def request(_self, _config, path, body, _content_type):
+        captured.update({"path": path, "payload": json.loads(body)})
+        return b"audio", "audio/mpeg"
+
+    monkeypatch.setattr(EccoVoxService, "_request", request)
+    output = tmp_path / "write" / "answer.mp3"
+    EccoVoxService(tmp_path).synthesize("voz", "Olá", str(output), "mp3")
+
+    assert captured == {"path": "/v1/audio/speech", "payload": {"input": "Olá", "responseFormat": "mp3", "voice": "pm_alex"}}
+
+
 def test_eccovox_rejects_symbolic_link_as_synthesis_output(tmp_path):
     config = configured(tmp_path); target = tmp_path / "write" / "target.mp3"; link = tmp_path / "write" / "link.mp3"
     try: link.symlink_to(target)

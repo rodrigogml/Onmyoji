@@ -73,7 +73,8 @@ class EccoVoxService:
         if media_format not in ALLOWED_TTS_FORMATS or output.suffix.lower() != f".{media_format}":
             raise EccoVoxError("invalid_request", "A extensão do arquivo deve corresponder a um formato de áudio suportado.")
         payload: dict[str, Any] = {"input": text, "responseFormat": media_format}
-        for key, value in (("voice", voice), ("language", language), ("profile", runtime_profile)):
+        effective_voice = voice if voice is not None else config["voice"]
+        for key, value in (("voice", effective_voice), ("language", language), ("profile", runtime_profile)):
             if value is not None:
                 if not isinstance(value, str) or not value.strip():
                     raise EccoVoxError("invalid_request", f"{key} deve ser informado quando usado.")
@@ -109,7 +110,10 @@ class EccoVoxService:
                 raise ValueError
         except (KeyError, TypeError, ValueError) as exc:
             raise EccoVoxError("invalid_config", "Perfil EccoVox inválido.") from exc
-        return {"base_url": base_url.rstrip("/"), "timeout": timeout, "max_audio_bytes": max_audio, "max_text_characters": max_text, "readable_roots": readable, "writable_roots": writable}
+        voice = profile.get("voice", "")
+        if not isinstance(voice, str) or len(voice) > 120:
+            raise EccoVoxError("invalid_config", "Perfil EccoVox inválido.")
+        return {"base_url": base_url.rstrip("/"), "timeout": timeout, "max_audio_bytes": max_audio, "max_text_characters": max_text, "voice": voice.strip() or None, "readable_roots": readable, "writable_roots": writable}
 
     @staticmethod
     def _roots(values: Any) -> tuple[Path, ...]:
