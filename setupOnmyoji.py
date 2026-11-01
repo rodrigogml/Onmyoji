@@ -1049,7 +1049,12 @@ def configure_totp_password(root: Path, profile: str, label: str, default_entry:
 
 def telegram_token_entry(root: Path) -> str:
     """Retorna a entrada padrão do token vinculada à identidade da instância."""
-    return vault_entry_path(root, "Serviço", "Telegram", "default", "Bot")
+    return vault_entry_path(root, "Serviço", "Telegram", "", "BotToken")
+
+
+def telegram_totp_entry(root: Path, kind: str) -> str:
+    """Retorna a entrada padrão da senha TOTP real ou falsa do Telegram."""
+    return vault_entry_path(root, "Serviço", "Telegram", "TOTP", kind.title())
 
 
 def configured_telegram_token_entry(root: Path, current_entry: str = "") -> str:
@@ -2061,10 +2066,10 @@ def daemon_menu(root: Path) -> None:
                         result(False, "Configure primeiro a credencial do bot e seu perfil de vault MCP.")
                         continue
                     totp = telegram_settings.get("totp", {})
-                    real = configure_totp_password(root, profile, "real", vault_entry_path(root, "Serviço", "Telegram", "default", "TOTP:Real"), str(totp.get("real_password_entry") or ""))
+                    real = configure_totp_password(root, profile, "real", telegram_totp_entry(root, "real"), str(totp.get("real_password_entry") or ""))
                     if real is None:
                         continue
-                    fake = configure_totp_password(root, profile, "falsa", vault_entry_path(root, "Serviço", "Telegram", "default", "TOTP:Fake"), str(totp.get("fake_password_entry") or ""))
+                    fake = configure_totp_password(root, profile, "falsa", telegram_totp_entry(root, "fake"), str(totp.get("fake_password_entry") or ""))
                     if fake is None:
                         continue
                     changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-totp", "--enabled", "--real-entry", real, "--fake-entry", fake], quiet=True)

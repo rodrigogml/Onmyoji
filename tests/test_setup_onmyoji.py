@@ -155,14 +155,22 @@ class SystemSetupTests(unittest.TestCase):
             root = Path(temporary)
             path = root / "configs" / "onmyoji-system.toml"; path.parent.mkdir()
             path.write_text('[shikigami]\nidentity = "Lavelinha"\n', encoding="utf-8")
-            self.assertEqual(MODULE.telegram_token_entry(root), "Lavelinha/Serviço/Telegram:default:Bot")
+            self.assertEqual(MODULE.telegram_token_entry(root), "Lavelinha/Serviço/Telegram:BotToken")
 
     def test_telegram_token_entry_replaces_the_legacy_generic_marker(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             path = root / "configs" / "onmyoji-system.toml"; path.parent.mkdir()
             path.write_text('[shikigami]\nidentity = "Lavelinha"\n', encoding="utf-8")
-            self.assertEqual(MODULE.configured_telegram_token_entry(root, "APIs/Telegram:Shikigami"), "Lavelinha/Serviço/Telegram:default:Bot")
+            self.assertEqual(MODULE.configured_telegram_token_entry(root, "APIs/Telegram:Shikigami"), "Lavelinha/Serviço/Telegram:BotToken")
+
+    def test_telegram_totp_entries_use_the_configured_shikigami_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "configs" / "onmyoji-system.toml"; path.parent.mkdir()
+            path.write_text('[shikigami]\nidentity = "Lavelinha"\n', encoding="utf-8")
+            self.assertEqual(MODULE.telegram_totp_entry(root, "real"), "Lavelinha/Serviço/Telegram:TOTP:Real")
+            self.assertEqual(MODULE.telegram_totp_entry(root, "fake"), "Lavelinha/Serviço/Telegram:TOTP:Fake")
 
     def test_vault_entry_path_uses_only_instance_and_layer_groups(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
