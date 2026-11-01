@@ -74,6 +74,20 @@ class BootstrapShikigamiTests(unittest.TestCase):
             MODULE.configure_identity(Path(temporary), lambda prompt: "Autor" if "Nome" in prompt else "autor@example.test")
         self.assertEqual(command.call_count, 4)
 
+    def test_merge_protection_guards_setup_scripts_and_prioritizes_upstream(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "git") as command:
+            repository = Path(temporary); (repository / ".git" / "info").mkdir(parents=True)
+
+            MODULE.configure_merge_protection(repository)
+
+            attributes = (repository / ".git" / "info" / "attributes").read_text(encoding="utf-8")
+            hook = (repository / ".git" / "hooks" / "pre-commit").read_text(encoding="utf-8")
+        self.assertIn("onmyoji-daemon/setupMcp.py merge=shikigami-upstream", attributes)
+        self.assertIn("setupOnmyoji.py merge=shikigami-upstream", attributes)
+        self.assertIn("onmyoji-setup-guard", hook)
+        self.assertIn("onmyoji-daemon/setupDaemon.py", hook)
+        self.assertTrue(any(call.args[0][:2] == ["config", "merge.shikigami-upstream.driver"] for call in command.call_args_list))
+
     def test_interactive_cancellation_does_not_create_instance(self) -> None:
         answers = iter(["Akuma", "", "", "", "", "", "n"])
         output: list[str] = []

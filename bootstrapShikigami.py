@@ -19,6 +19,7 @@ if hasattr(sys.stderr, "reconfigure"):
 DEFAULT_UPSTREAM_URL = "https://github.com/rodrigogml/Onmyoji.git"
 TEMPLATE_DIRECTORY = Path("shikigami-template")
 PROTECTED_FILES = ("README.md", "AGENTS.md", ".gitignore")
+UPSTREAM_SETUP_FILES = ("setupOnmyoji.py", "bootstrapShikigami.py", "onmyoji-daemon/setupDaemon.py", "onmyoji-daemon/setupMcp.py")
 WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{number}" for number in range(1, 10)), *(f"LPT{number}" for number in range(1, 10))}
 TEXT_LOGO = """⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢰⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⡀⣚⡀⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
@@ -145,17 +146,29 @@ def copy_template(template: Path, destination: Path, replacements: dict[str, str
 
 
 def configure_merge_protection(repository: Path) -> None:
-    """Mantém os arquivos de identidade locais quando a instância recebe o upstream."""
+    """Preserva a identidade local e mantém os scripts de setup sob o upstream."""
     driver = f'"{sys.executable}" -c "import sys; sys.exit(0)"'
+    upstream_driver = f'"{sys.executable}" -c "import shutil, sys; shutil.copyfile(sys.argv[2], sys.argv[1])" %A %B'
     git(["config", "merge.shikigami-local.name", "Preserva arquivos locais do Shikigami"], cwd=repository)
     git(["config", "merge.shikigami-local.driver", driver], cwd=repository)
+    git(["config", "merge.shikigami-upstream.name", "Prioriza scripts de setup do Onmyōji"], cwd=repository)
+    git(["config", "merge.shikigami-upstream.driver", upstream_driver], cwd=repository)
     attributes = repository / ".git" / "info" / "attributes"
     attributes.parent.mkdir(parents=True, exist_ok=True)
     marker = "# Arquivos de identidade preservados pelo bootstrap do Shikigami."
+    upstream_marker = "# Scripts de setup recebem a versão do upstream em conflitos."
     existing = attributes.read_text(encoding="utf-8") if attributes.exists() else ""
-    retained = [line for line in existing.splitlines() if line not in {marker, *(f"{path} merge=shikigami-local" for path in PROTECTED_FILES)}]
-    retained.extend([marker, *(f"{path} merge=shikigami-local" for path in PROTECTED_FILES)])
+    generated = {marker, upstream_marker, *(f"{path} merge=shikigami-local" for path in PROTECTED_FILES), *(f"{path} merge=shikigami-upstream" for path in UPSTREAM_SETUP_FILES)}
+    retained = [line for line in existing.splitlines() if line not in generated]
+    retained.extend([marker, *(f"{path} merge=shikigami-local" for path in PROTECTED_FILES), upstream_marker, *(f"{path} merge=shikigami-upstream" for path in UPSTREAM_SETUP_FILES)])
     attributes.write_text("\n".join(retained).strip() + "\n", encoding="utf-8")
+    hook = repository / ".git" / "hooks" / "pre-commit"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    if hook.exists() and "onmyoji-setup-guard" not in hook.read_text(encoding="utf-8"):
+        raise BootstrapError("Já existe um hook pre-commit; configure a proteção dos scripts de setup manualmente.")
+    guarded = "\n".join(UPSTREAM_SETUP_FILES)
+    hook.write_text("#!/bin/sh\n# onmyoji-setup-guard\nwhile IFS= read -r path\ndo\n    if git diff --cached --quiet -- \"$path\"; then continue; fi\n    echo \"Erro: $path pertence ao Onmyōji e não pode ser incluído em um commit do Shikigami.\" >&2\n    exit 1\ndone <<'ONMYOJI_SETUP_FILES'\n" + guarded + "\nONMYOJI_SETUP_FILES\n", encoding="utf-8", newline="\n")
+    hook.chmod(hook.stat().st_mode | 0o111)
 
 
 def configure_identity(repository: Path, ask: Callable[[str], str]) -> None:

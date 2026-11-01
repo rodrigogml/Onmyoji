@@ -142,6 +142,12 @@ def select(title: str, names: list[str], current: str = "") -> str | None:
     return flow_choice(title, names, current)
 
 
+def manage_selected_profile(config: McpConfiguration, title: str, names: list[str], manager) -> None:
+    """Abre um perfil somente quando a seleção não foi cancelada."""
+    if name := select(title, names):
+        manager(config, name)
+
+
 def menu_width() -> int:
     """Mantém o resumo das integrações dentro da mesma largura do título."""
     return max(56, min(shutil.get_terminal_size((78, 24)).columns, 96))
@@ -634,9 +640,7 @@ def todoist_menu(config: McpConfiguration) -> None:
             description = ask("Descrição de quando utilizar este perfil", required=True)
             if not description: result(False, "Perfil Todoist inválido."); continue
             data["profiles"][name] = {"enabled": True, "description": description, "credential_profile": vault, "credential_entry_path": entry, "credential_field": field}
-        elif choice == "2":
-            if name := select("MCP · Gerenciar perfil Todoist", names):
-                manage_todoist_profile(config, name)
+        elif choice == "2": manage_selected_profile(config, "MCP · Gerenciar perfil Todoist", names, manage_todoist_profile)
         else:
             result(False, "Opção inválida.")
             continue
@@ -748,9 +752,7 @@ def omie_menu(config: McpConfiguration) -> None:
             data["profiles"][name] = {"enabled": True, "description": description, "credential_profile": vault, "credential_entry_path": entry, **fields}
             try: config.save_omie(data); result(True, "Perfil Omie atualizado.")
             except McpConfigurationError as error: result(False, str(error))
-        elif choice == "2":
-            if name := select("MCP · Gerenciar perfil Omie", names):
-                manage_omie_profile(config, name)
+        elif choice == "2": manage_selected_profile(config, "MCP · Gerenciar perfil Omie", names, manage_omie_profile)
         else:
             result(False, "Opção inválida.")
 
@@ -872,9 +874,7 @@ def cloudflare_menu(config: McpConfiguration) -> None:
                 result(True, "Perfil Cloudflare atualizado.")
             except McpConfigurationError as error:
                 result(False, str(error))
-        elif choice == "2":
-            if name := select("MCP · Gerenciar perfil Cloudflare", names):
-                manage_cloudflare_profile(config, name)
+        elif choice == "2": manage_selected_profile(config, "MCP · Gerenciar perfil Cloudflare", names, manage_cloudflare_profile)
         else:
             result(False, "Opção inválida.")
 
@@ -996,9 +996,7 @@ def forward_email_menu(config: McpConfiguration) -> None:
                 result(True, "Perfil Forward Email atualizado.")
             except McpConfigurationError as error:
                 result(False, str(error))
-        elif choice == "2":
-            if name := select("MCP · Gerenciar perfil Forward Email", names):
-                manage_forward_email_profile(config, name)
+        elif choice == "2": manage_selected_profile(config, "MCP · Gerenciar perfil Forward Email", names, manage_forward_email_profile)
         else:
             result(False, "Opção inválida.")
 
@@ -1120,9 +1118,7 @@ def notion_menu(config: McpConfiguration) -> None:
                 result(True, "Perfil Notion atualizado.")
             except McpConfigurationError as error:
                 result(False, str(error))
-        elif choice == "2":
-            if name := select("MCP · Gerenciar perfil Notion", names):
-                manage_notion_profile(config, name)
+        elif choice == "2": manage_selected_profile(config, "MCP · Gerenciar perfil Notion", names, manage_notion_profile)
         else:
             result(False, "Opção inválida.")
 
@@ -1218,8 +1214,7 @@ def aws_menu(config: McpConfiguration) -> None:
             data["profiles"][name] = {"enabled": True, "description": description, "credential_profile": vault, "credential_entry_path": credential[0], **credential[1], "cli_path": cli, "region": region, "expected_account_id": account, "readable_roots": [item.strip() for item in readable.split(";") if item.strip()], "writable_roots": [item.strip() for item in writable.split(";") if item.strip()]}
             try: config.save_aws(data); result(True, "Perfil AWS atualizado.")
             except McpConfigurationError as error: result(False, str(error))
-        elif choice == "2":
-            if name := select("MCP · Gerenciar perfil AWS", names): manage_aws_profile(config, name)
+        elif choice == "2": manage_selected_profile(config, "MCP · Gerenciar perfil AWS", names, manage_aws_profile)
         else: result(False, "Opção inválida.")
 
 
@@ -1300,8 +1295,7 @@ def mysql_menu(config: McpConfiguration) -> None:
             data["profiles"][name] = {"enabled": True, "description": description, "host": host, "database": database, "socket": socket, "allow_client_commands": False, "credential_profile": vault, "credential_entry_path": credential[0], **credential[1], "readable_roots": [item.strip() for item in roots.split(";") if item.strip()]}
             try: config.save_mysql(data); result(True, "Perfil MySQL atualizado.")
             except McpConfigurationError as error: result(False, str(error))
-        elif choice == "2":
-            if name := select("MCP · Gerenciar perfil MySQL", names): manage_mysql_profile(config, name)
+        elif choice == "2": manage_selected_profile(config, "MCP · Gerenciar perfil MySQL", names, manage_mysql_profile)
         else: result(False, "Opção inválida.")
 
 
@@ -1408,8 +1402,7 @@ def ssh_menu(config: McpConfiguration) -> None:
             data["profiles"][name] = {"enabled": True, "description": description, "host": host, "port": int(port), "username": username, "auth_mode": mode, "credential_profile": vault, **authentication, "known_hosts": known_hosts, "readable_roots": [item.strip() for item in readable.split(";") if item.strip()], "writable_roots": [item.strip() for item in writable.split(";") if item.strip()]}
             try: config.save_ssh(data); result(True, "Perfil SSH atualizado.")
             except McpConfigurationError as error: result(False, str(error))
-        elif choice == "2":
-            if name := select("MCP · Gerenciar perfil SSH", names): manage_ssh_profile(config, name)
+        elif choice == "2": manage_selected_profile(config, "MCP · Gerenciar perfil SSH", names, manage_ssh_profile)
         else: result(False, "Opção inválida.")
 
 
@@ -1488,8 +1481,7 @@ def bis2cmd_menu(config: McpConfiguration) -> None:
             data["profiles"][name] = {"enabled": True, "description": description, "jar_path": jar, "working_dir": working, "host": host, "port": int(port), "java_options": "", "credential_profile": vault, "credential_entry_path": credential[0], **credential[1], "readable_roots": [item.strip() for item in readable.split(";") if item.strip()], "writable_roots": [item.strip() for item in writable.split(";") if item.strip()]}
             try: config.save_bis2cmd(data); result(True, "Perfil BIS2CMD atualizado.")
             except McpConfigurationError as error: result(False, str(error))
-        elif choice == "2":
-            if name := select("MCP · Gerenciar perfil BIS2CMD", names): manage_bis2cmd_profile(config, name)
+        elif choice == "2": manage_selected_profile(config, "MCP · Gerenciar perfil BIS2CMD", names, manage_bis2cmd_profile)
         else: result(False, "Opção inválida.")
 
 
@@ -1575,8 +1567,7 @@ def bis10cmd_menu(config: McpConfiguration) -> None:
             data["profiles"][name] = {"enabled": True, "description": description, "jar_path": jar, "working_dir": working, "host": host, "port": int(port), "locale": locale, "jndi_credential_profile": jndi_vault, "jndi_credential_entry_path": jndi_credential[0], **jndi_credential[1], "bis_credential_profile": bis_vault, "bis_credential_entry_path": bis_credential[0], **bis_credential[1]}
             try: config.save_bis10cmd(data); result(True, "Perfil BIS10CMD atualizado.")
             except McpConfigurationError as error: result(False, str(error))
-        elif choice == "2":
-            if name := select("MCP · Gerenciar perfil BIS10CMD", names): manage_bis10cmd_profile(config, name)
+        elif choice == "2": manage_selected_profile(config, "MCP · Gerenciar perfil BIS10CMD", names, manage_bis10cmd_profile)
         else: result(False, "Opção inválida.")
 
 
@@ -1942,9 +1933,7 @@ def eccovox_menu(config: McpConfiguration) -> None:
             data["profiles"][name] = {"enabled": True, "description": description, "base_url": endpoint, "voice": voice, "language": language, "default_output_directory": eccovox_default_output_directory(config, output), "readable_roots": eccovox_media_roots(config, readable), "writable_roots": eccovox_media_roots(config, writable)}
             try: config.save_eccovox(data); result(True, "Perfil EccoVox salvo no MCP.")
             except (McpConfigurationError, ValueError) as error: result(False, str(error))
-        elif choice == "2":
-            if name := select("MCP · Gerenciar perfil EccoVox", names):
-                manage_eccovox_profile(config, name)
+        elif choice == "2": manage_selected_profile(config, "MCP · Gerenciar perfil EccoVox", names, manage_eccovox_profile)
         else:
             result(False, "Opção inválida.")
 
@@ -2030,8 +2019,7 @@ def google_menu(config: McpConfiguration) -> None:
             data["profiles"][name] = {"enabled": True, "description": description, "oauth_profile": oauth_profile, "credential_profile": vault, "credential_entry_path": credential[0], **credential[1], "user_id": user_id, "readable_roots": [item.strip() for item in readable.split(";") if item.strip()], "writable_roots": [item.strip() for item in writable.split(";") if item.strip()]}
             try: config.save_google(data); result(True, "Perfil Google salvo. Use Gerenciar perfil > Autorizar conta no Google para concluir o OAuth.")
             except McpConfigurationError as error: result(False, str(error))
-        elif choice == "2":
-            if name := select("MCP · Gerenciar perfil Google", names): manage_google_profile(config, name)
+        elif choice == "2": manage_selected_profile(config, "MCP · Gerenciar perfil Google", names, manage_google_profile)
         else: result(False, "Opção inválida.")
 
 
@@ -2109,8 +2097,7 @@ def spotify_menu(config: McpConfiguration) -> None:
             data["profiles"][name] = {"enabled": True, "description": description, "credential_profile": vault, "credential_entry_path": credential[0], **credential[1], "refresh_token_field": "password", "callback_port": int(callback_port)}
             try: config.save_spotify(data); result(True, "Perfil Spotify salvo. Cadastre a Redirect URI exibida e use Gerenciar perfil > Autorizar conta no Spotify.")
             except McpConfigurationError as error: result(False, str(error))
-        elif choice == "2":
-            if name := select("MCP · Gerenciar perfil Spotify", names): manage_spotify_profile(config, name)
+        elif choice == "2": manage_selected_profile(config, "MCP · Gerenciar perfil Spotify", names, manage_spotify_profile)
         else: result(False, "Opção inválida.")
 
 
