@@ -1512,6 +1512,15 @@ def daemon_menu(root: Path) -> None:
     environment["PYTHONPATH"] = source + (os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else "")
     telegram_token_changed = False
 
+    def windows_service_administrator() -> bool:
+        """Confirma privilégio necessário antes de alterar o Service Control Manager."""
+        if os.name != "nt": return True
+        try:
+            import ctypes
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except (AttributeError, OSError):
+            return False
+
     def command(arguments: list[str], quiet: bool = False, input_value: str | None = None) -> subprocess.CompletedProcess[str]:
         return subprocess.run(arguments, cwd=str(project), env=environment, text=True, encoding="utf-8", errors="replace", capture_output=quiet, input=input_value)
 
@@ -1779,6 +1788,8 @@ def daemon_menu(root: Path) -> None:
                 name = prompt(f"Nome do serviço [{default_name}]: ").strip() or default_name
                 description = prompt(f"Descrição [{f'Shikigami {visible} Daemon'}]: ").strip() or f"Shikigami {visible} Daemon"
                 if os.name == "nt":
+                    if not windows_service_administrator():
+                        result(False, "A instalação do Serviço do Windows exige um terminal executado como Administrador. Feche este setup, abra o PowerShell como Administrador e execute-o novamente."); continue
                     selected_account = windows_service_account()
                     if selected_account is None: result(False, "Instalação do serviço cancelada."); continue
                     account, password = selected_account
@@ -1817,6 +1828,8 @@ def daemon_menu(root: Path) -> None:
                 if confirmation == "remover": privileged_service_action("remove-service")
                 else: result(False, "Remoção cancelada; a confirmação deve ser exatamente remover.")
             elif choice == "6" and os.name == "nt":
+                if not windows_service_administrator():
+                    result(False, "Alterar a conta do Serviço do Windows exige um terminal executado como Administrador. Feche este setup, abra o PowerShell como Administrador e execute-o novamente."); continue
                 selected_account = windows_service_account()
                 if selected_account is None: result(False, "Alteração da conta cancelada."); continue
                 account, password = selected_account
