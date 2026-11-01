@@ -160,6 +160,7 @@ class SystemSetupTests(unittest.TestCase):
             self.assertEqual(MODULE.vault_entry_path(root, "MCP", "Todoist", "default", "Token"), "Lavelinha/MCP/Todoist:default:Token")
             self.assertEqual(MODULE.vault_entry_path(root, "MCP", "AWS", "default", "Credentials"), "Lavelinha/MCP/AWS:default:Credentials")
             self.assertEqual(MODULE.vault_entry_path(root, "MCP", "SSH", "default", "PrivateKey"), "Lavelinha/MCP/SSH:default:PrivateKey")
+            self.assertEqual(MODULE.vault_entry_path(root, "MCP", "BTG", "sandbox", "default:OAuth"), "Lavelinha/MCP/BTG:sandbox:default:OAuth")
 
     def test_workspace_suggestion_is_a_sibling_with_work_suffix(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

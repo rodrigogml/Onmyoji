@@ -1418,7 +1418,7 @@ def bis2cmd_menu(config: McpConfiguration) -> None:
         if choice == "1":
             name = ask_new_profile_name("Nome do perfil BIS2CMD", data["profiles"]); vault = select("Escolha o perfil de vault", config.vault_profile_names())
             if not name or not vault or name in data["profiles"]: result(False, "Nome inválido, repetido ou retorno solicitado."); continue
-            entry = ask("Entrada KeePass", f"APIs/BIS2CMD/{name}", True)
+            entry = ask("Entrada KeePass", vault_entry_path(config.root, "MCP", "BIS2CMD", name, "Credentials"), True)
             if not entry: continue
             credential = bis2cmd_credentials(config, vault, entry)
             if credential is None: continue
@@ -1498,13 +1498,13 @@ def bis10cmd_menu(config: McpConfiguration) -> None:
             if not name or name in data["profiles"]: result(False, "Nome inválido, repetido ou retorno solicitado."); continue
             jndi_vault = select("Escolha o perfil de vault JNDI", config.vault_profile_names())
             if not jndi_vault: continue
-            jndi_entry = ask("Entrada KeePass JNDI", f"APIs/BIS10CMD/JNDI/{name}", True)
+            jndi_entry = ask("Entrada KeePass JNDI", vault_entry_path(config.root, "MCP", "BIS10CMD", name, "JNDI"), True)
             if not jndi_entry: continue
             jndi_credential = bis10cmd_credentials(config, jndi_vault, jndi_entry, "JNDI")
             if jndi_credential is None: continue
             bis_vault = select("Escolha o perfil de vault BIS10", config.vault_profile_names())
             if not bis_vault: continue
-            bis_entry = ask("Entrada KeePass BIS10", f"APIs/BIS10CMD/BIS10/{name}", True)
+            bis_entry = ask("Entrada KeePass BIS10", vault_entry_path(config.root, "MCP", "BIS10CMD", name, "BIS10"), True)
             if not bis_entry: continue
             bis_credential = bis10cmd_credentials(config, bis_vault, bis_entry, "BIS10")
             if bis_credential is None: continue
@@ -1754,7 +1754,7 @@ def btg_menu(config: McpConfiguration) -> None:
         vault = select("Escolha o perfil de vault", config.vault_profile_names())
         if not vault:
             continue
-        entry = ask("Entrada KeePass das credenciais", f"Integrations/BTG/{environment}/{name}", True)
+        entry = ask("Entrada KeePass das credenciais", vault_entry_path(config.root, "MCP", "BTG", environment, f"{name}:OAuth"), True)
         if not entry:
             continue
         profile = {"enabled": True, "description": "Perfil em configuração", "environment": environment, "company_id": company, "credential_profile": vault, "credential_entry_path": entry, "oauth_mode": "remote", "scopes": DEFAULT_SCOPES, "redirect_uri": "", "max_amount": "1000000.00", "monitor_enabled": False}
@@ -1927,7 +1927,7 @@ def google_menu(config: McpConfiguration) -> None:
         if choice == "1":
             name = ask_new_profile_name("Nome do perfil Google", data["profiles"]); vault = select("Escolha o perfil de vault", config.vault_profile_names())
             if not name or not vault or name in data["profiles"]: result(False, "Nome inválido, repetido ou retorno solicitado."); continue
-            entry = ask("Entrada KeePass", f"APIs/Google/{name}", True)
+            entry = ask("Entrada KeePass", vault_entry_path(config.root, "MCP", "Google", name, "OAuth"), True)
             if not entry: continue
             credential = google_credentials(config, vault, entry)
             if credential is None: continue
@@ -2005,7 +2005,7 @@ def spotify_menu(config: McpConfiguration) -> None:
         if choice == "1":
             name = ask_new_profile_name("Nome do perfil Spotify", data["profiles"]); vault = select("Escolha o perfil de vault", config.vault_profile_names())
             if not name or not vault or name in data["profiles"]: result(False, "Nome inválido, repetido ou retorno solicitado."); continue
-            entry = ask("Entrada KeePass", f"APIs/Spotify/{name}", True)
+            entry = ask("Entrada KeePass", vault_entry_path(config.root, "MCP", "Spotify", name, "OAuth"), True)
             if not entry: continue
             credential = spotify_credentials(config, vault, entry)
             if credential is None: continue

@@ -12,6 +12,7 @@ import pytest
 
 def mock_configuration():
     config = Mock()
+    config.root = Path("Lavelinha")
     config.email.return_value = {"accounts": {}}
     config.pdf.return_value = {"profiles": {}}
     config.ocr.return_value = {"profiles": {}}
@@ -306,7 +307,7 @@ def test_btg_new_profile_scopes_default_keepass_entry_by_environment(monkeypatch
 
     module.btg_menu(config)
 
-    assert entries == [f"Integrations/BTG/{environment}/empresa"]
+    assert entries == [f"Lavelinha/MCP/BTG:{environment}:empresa:OAuth"]
     assert data["profiles"]["empresa"]["credential_entry_path"] == entries[0]
 
 
