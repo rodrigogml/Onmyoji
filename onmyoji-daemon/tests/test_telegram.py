@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import io
 import threading
+from urllib.error import HTTPError
 from pathlib import Path
 from dataclasses import replace
 from unittest.mock import patch
 
-from onmyoji_daemon.telegram import AppServerTurn, CodexAppServer, Contacts, Gateway, McpVault, Settings
+from onmyoji_daemon.telegram import AppServerTurn, CodexAppServer, Contacts, Gateway, McpVault, Settings, TelegramApi, TelegramMediaUploadError
 from onmyoji_daemon.launcher import _approval_policy, _sandbox_policy
 from onmyoji_daemon.telegram_formatting import MAX_MESSAGE_LENGTH, plain_text, render_html, split_html, visible_text
 
@@ -429,13 +430,13 @@ def test_agent_text_uses_html_parse_mode_for_every_chunk(tmp_path):
     assert len(sent) > 1 and all(values["parse_mode"] == "HTML" and len(text) <= MAX_MESSAGE_LENGTH for _chat, text, values in sent)
 
 
-def test_agent_can_send_a_photo_created_in_the_reserved_outbox(tmp_path):
+def test_agent_can_send_photo_and_document_created_in_the_reserved_outbox(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
-    gateway = Gateway(replace(Settings.load(tmp_path, data), agent_outbound_media=True)); sent = {}
+    gateway = Gateway(replace(Settings.load(tmp_path, data), agent_outbound_media=True)); sent = []
 
     class Api:
         def send_file(_self, method, chat_id, path, field, caption, **values):
-            sent.update({"method": method, "chat_id": chat_id, "path": path, "field": field, "caption": caption, "values": values})
+            sent.append({"method": method, "chat_id": chat_id, "path": path, "field": field, "caption": caption, "values": values})
             return {"message_id": 7}
 
     active = AppServerTurn(9, "turn-1", threading.Event(), conversation_id="private:9")
@@ -444,9 +445,44 @@ def test_agent_can_send_a_photo_created_in_the_reserved_outbox(tmp_path):
     response = gateway._app_server_request("item/tool/call", request)
     outbox = Path(json.loads(response["contentItems"][0]["text"])["outbox"]); picture = outbox / "picture.png"; picture.write_bytes(b"image")
 
-    gateway._app_server_request("item/tool/call", {**request, "tool": "send_file", "arguments": {"file_name": picture.name, "kind": "photo", "caption": "Imagem"}})
+    response = gateway._app_server_request("item/tool/call", {**request, "tool": "send_file", "arguments": {"file_name": picture.name, "kind": "photo", "caption": "Imagem"}})
 
-    assert sent["method"] == "sendPhoto" and sent["chat_id"] == 9 and sent["path"] == picture and sent["field"] == "photo"
+    assert json.loads(response["contentItems"][0]["text"])["sent"] is True
+    response = gateway._app_server_request("item/tool/call", {**request, "tool": "send_file", "arguments": {"file_name": picture.name, "kind": "document"}})
+    assert json.loads(response["contentItems"][0]["text"])["sent"] is True
+    assert [(item["method"], item["chat_id"], item["path"], item["field"]) for item in sent] == [("sendPhoto", 9, picture, "photo"), ("sendDocument", 9, picture, "document")]
+
+
+def test_agent_receives_a_structured_media_upload_failure(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(replace(Settings.load(tmp_path, data), agent_outbound_media=True))
+
+    class Api:
+        def send_file(_self, *_args, **_kwargs): raise TelegramMediaUploadError("Telegram API HTTP 400 ao executar sendPhoto: Bad Request: invalid photo")
+
+    active = AppServerTurn(9, "turn-1", threading.Event(), conversation_id="private:9")
+    gateway.api = Api(); gateway.app_turns[active.thread_id] = active; outbox = gateway._outbox(active.conversation_id, active.thread_id); active.outbox = outbox
+    (outbox / "picture.png").write_bytes(b"image")
+
+    response = gateway._app_server_request("item/tool/call", {"namespace": "telegram_gateway", "threadId": active.thread_id, "tool": "send_file", "arguments": {"file_name": "picture.png", "kind": "photo"}})
+
+    payload = json.loads(response["contentItems"][0]["text"])
+    assert response["success"] is True and payload == {"sent": False, "stage": "telegram_api", "error": "Telegram API HTTP 400 ao executar sendPhoto: Bad Request: invalid photo"}
+    state = json.loads((data / "state" / "gateway-status.json").read_text(encoding="utf-8"))
+    assert state["diagnostics"][-1]["event"] == "media.send_failed"
+
+
+def test_media_upload_exposes_telegram_http_description(tmp_path):
+    image = tmp_path / "picture.png"; image.write_bytes(b"image")
+    error = HTTPError("https://api.telegram.org/bottoken/sendPhoto", 400, "Bad Request", None, io.BytesIO(b'{"ok":false,"description":"Bad Request: invalid photo"}'))
+
+    with patch("onmyoji_daemon.telegram.urlopen", side_effect=error):
+        try:
+            TelegramApi("token").send_file("sendPhoto", 9, image, "photo")
+        except TelegramMediaUploadError as raised:
+            assert str(raised) == "Telegram API HTTP 400 ao executar sendPhoto: Bad Request: invalid photo"
+        else:
+            raise AssertionError("O erro HTTP do Telegram deve ser preservado para diagnóstico.")
 
 
 def test_group_dynamic_tools_do_not_publish_interactive_menu(tmp_path):

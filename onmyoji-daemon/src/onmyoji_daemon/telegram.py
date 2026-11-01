@@ -17,6 +17,7 @@ import threading
 import time
 import tomllib
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -144,6 +145,9 @@ class Settings:
 
 
 class CodexProtocolError(RuntimeError): pass
+
+
+class TelegramMediaUploadError(RuntimeError): pass
 
 
 class CodexAppServer:
@@ -292,8 +296,21 @@ class TelegramApi:
         for key, value in values.items(): chunks.extend((f"--{boundary}\r\n".encode(), f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode(), value.encode("utf-8"), b"\r\n"))
         chunks.extend((f"--{boundary}\r\n".encode(), f'Content-Disposition: form-data; name="{field}"; filename="{path.name}"\r\n'.encode(), b"Content-Type: application/octet-stream\r\n\r\n", path.read_bytes(), b"\r\n", f"--{boundary}--\r\n".encode()))
         request = Request(self.base + method, data=b"".join(chunks), headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
-        with urlopen(request, timeout=90) as response: payload = json.loads(response.read())
-        if not payload.get("ok"): raise RuntimeError("Telegram API rejected media upload")
+        try:
+            with urlopen(request, timeout=90) as response: payload = json.loads(response.read())
+        except HTTPError as error:
+            try:
+                body = json.loads(error.read().decode("utf-8", errors="replace")); detail = str(body.get("description") or "resposta sem descrição") if isinstance(body, dict) else "resposta inválida"
+            except Exception:
+                detail = "resposta sem descrição legível"
+            raise TelegramMediaUploadError(f"Telegram API HTTP {error.code} ao executar {method}: {detail[:300]}") from error
+        except URLError as error:
+            raise TelegramMediaUploadError(f"Não foi possível alcançar a API do Telegram ao executar {method}: {str(error.reason)[:300]}") from error
+        except (OSError, ValueError) as error:
+            raise TelegramMediaUploadError(f"Não foi possível enviar a mídia pelo Telegram ao executar {method}: {str(error)[:300]}") from error
+        if not payload.get("ok"):
+            detail = str(payload.get("description") or "resposta sem descrição") if isinstance(payload, dict) else "resposta inválida"
+            raise TelegramMediaUploadError(f"Telegram API recusou {method}: {detail[:300]}")
         return payload.get("result") if isinstance(payload.get("result"), dict) else {}
     def set_owner_commands(self, owner_id: int, totp_enabled: bool) -> bool:
         commands = [{"command": "new", "description": "Iniciar uma nova conversa"}, {"command": "config", "description": "Configurar esta conversa"}, {"command": "channel", "description": "Gerenciar canal de envio"}]
@@ -662,14 +679,28 @@ class Gateway(TelegramChannels):
             active.outbox = active.outbox or self._outbox(active.conversation_id, active.thread_id)
             return {"contentItems": [{"type": "inputText", "text": json.dumps({"outbox": str(active.outbox)}, ensure_ascii=False)}], "success": True}
         if tool == "send_file":
-            if not self.settings.agent_outbound_media: raise RuntimeError("Envio de mídia pelo agente está desabilitado.")
+            def failed(stage: str, error: Exception | str) -> dict[str, Any]:
+                self._record_error(error)
+                self._diagnostic("media.send_failed", conversation=active.conversation_id, kind=str(arguments.get("kind") or ""), file_name=str(arguments.get("file_name") or "")[:128], stage=stage, error=self.last_error)
+                payload = {"sent": False, "stage": stage, "error": self.last_error}
+                return {"contentItems": [{"type": "inputText", "text": json.dumps(payload, ensure_ascii=False)}], "success": True}
+            if not self.settings.agent_outbound_media: return failed("capability", "Envio de mídia pelo agente está desabilitado.")
             active.outbox = active.outbox or self._outbox(active.conversation_id, active.thread_id); name = safe_name(str(arguments.get("file_name") or ""), "")
             path = (active.outbox / name).resolve()
-            if not name or not under(path, active.outbox) or not path.is_file() or path.is_symlink() or path.stat().st_size > self.settings.max_outbound_media_bytes: raise RuntimeError("Arquivo do outbox inválido ou excede o limite.")
-            kind = str(arguments.get("kind") or "document"); method, field = {"photo": ("sendPhoto", "photo"), "document": ("sendDocument", "document"), "audio": ("sendAudio", "audio")}[kind]
+            if not name or not under(path, active.outbox) or not path.is_file() or path.is_symlink() or path.stat().st_size > self.settings.max_outbound_media_bytes: return failed("outbox_validation", "Arquivo do outbox inválido ou excede o limite.")
+            kind = str(arguments.get("kind") or "document")
+            target = {"photo": ("sendPhoto", "photo"), "document": ("sendDocument", "document"), "audio": ("sendAudio", "audio")}.get(kind)
+            if not target: return failed("argument_validation", "Tipo de mídia inválido.")
+            method, field = target
             caption = render_html(str(arguments.get("caption") or ""))
-            if len(caption) > 1024: raise RuntimeError("A legenda excede o limite do Telegram após a formatação.")
-            result = self.api.send_file(method, active.chat_id, path, field, caption, parse_mode="HTML", **active.telegram_topic_values) if self.api else {}
+            if len(caption) > 1024: return failed("caption_validation", "A legenda excede o limite do Telegram após a formatação.")
+            if not self.api: return failed("gateway", "Gateway Telegram indisponível.")
+            self._diagnostic("media.send_started", conversation=active.conversation_id, kind=kind, file_name=name, size=path.stat().st_size, method=method)
+            try:
+                result = self.api.send_file(method, active.chat_id, path, field, caption, parse_mode="HTML", **active.telegram_topic_values)
+            except Exception as error:
+                return failed("telegram_api", error)
+            self._diagnostic("media.sent", conversation=active.conversation_id, kind=kind, file_name=name, size=path.stat().st_size, method=method, message_id=result.get("message_id"))
             return {"contentItems": [{"type": "inputText", "text": json.dumps({"sent": True, "message_id": result.get("message_id")}, ensure_ascii=False)}], "success": True}
         if tool == "list_attachments":
             entries = [{key: entry[key] for key in ("id", "kind", "name", "mime_type", "size", "created_at")} for entry in self._attachment_rows(active.conversation_id, int(arguments.get("limit", 20)))]
