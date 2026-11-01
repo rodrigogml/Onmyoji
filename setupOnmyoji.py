@@ -1944,10 +1944,16 @@ def daemon_menu(root: Path) -> None:
         sharing = flow_choice("Pensamentos nas novas conversas", ["Compartilhar durante o turno", "Não compartilhar"], "Compartilhar durante o turno" if share else "Não compartilhar")
         if sharing is None:
             return
-        retention = flow_choice("Após concluir o turno", ["Excluir pensamentos compartilhados", "Manter pensamentos compartilhados"], "Excluir pensamentos compartilhados" if delete else "Manter pensamentos compartilhados")
-        if retention is None:
-            return
-        changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-default-thought-preferences", "--share-thoughts", str(sharing.startswith("Compartilhar")).lower(), "--delete-thoughts", str(retention.startswith("Excluir")).lower()], quiet=True)
+        share = sharing.startswith("Compartilhar")
+        if share:
+            retention = flow_choice("Após concluir o turno", ["Excluir pensamentos compartilhados", "Manter pensamentos compartilhados"], "Excluir pensamentos compartilhados" if delete else "Manter pensamentos compartilhados")
+            if retention is None:
+                return
+            delete = retention.startswith("Excluir")
+        else:
+            delete = True
+            note("Os pensamentos não serão enviados ao Telegram; não há conteúdo para manter após o turno.")
+        changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-default-thought-preferences", "--share-thoughts", str(share).lower(), "--delete-thoughts", str(delete).lower()], quiet=True)
         result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
         if changed.returncode == 0:
             note("O padrão será aplicado em novas conversas e ao usar /new; a conversa atual preserva sua escolha própria.")
