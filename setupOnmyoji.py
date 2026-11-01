@@ -1195,6 +1195,23 @@ def shikigami_diagnostics(root: Path, progress=None) -> list[dict[str, str]]:
     def checking(label: str) -> None:
         if progress: progress(label)
     data = load_system(root); diagnostics: list[dict[str, str]] = []
+    checking("Verificando o ambiente Python do Shikigami...")
+    try:
+        configuration = python_runtime.configuration(root)
+        runtime = python_runtime.python(root)
+        base = python_runtime.base_python(root)
+        executable = runtime if runtime.is_file() else base
+        checked = subprocess.run([str(executable), "-I", "-B", "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"], text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=10, check=False)
+        version = (checked.stdout or "").strip()
+        valid = checked.returncode == 0 and tuple(int(value) for value in version.split(".")[:2]) >= (3, 11)
+        if not valid:
+            raise ValueError("O interpretador selecionado não é um Python 3.11 ou superior funcional.")
+        if configuration["mode"] == "isolated" and not runtime.is_file():
+            diagnostics.append({"state": "pending", "label": "Ambiente Python", "detail": f"Python-base {version} pronto; /venv será criado quando um componente for instalado."})
+        else:
+            diagnostics.append({"state": "ok", "label": "Ambiente Python", "detail": f"{configuration['mode']} · Python {version} · {runtime}"})
+    except (OSError, ValueError, subprocess.TimeoutExpired, python_runtime.RuntimeError) as error:
+        diagnostics.append({"state": "error", "label": "Ambiente Python", "detail": str(error)})
     identity = str(data["shikigami_identity"])
     if not identity.strip():
         diagnostics.append({"state": "pending", "label": "Nome do Shikigami", "detail": "A instalação inicial ainda não definiu um nome."})
@@ -2198,6 +2215,7 @@ def daemon_menu(root: Path) -> None:
         while True:
             screen("Gateway Telegram", "Integração, autenticação e owners do Shikigami")
             item("!.", "Diagnóstico do Telegram", "Plataforma, KeePass Vault e gateway")
+            print()
             item("W.", "Wizard de configuração do Telegram", "Configura o gateway e o primeiro owner")
             print()
             item("1.", "Gateway Telegram", "Ativação e teste da conexão")
@@ -2430,6 +2448,7 @@ def daemon_menu(root: Path) -> None:
         status = "CONFIGURAÇÃO-BASE PREPARADA" if installed() else "NÃO CONFIGURADO"
         screen("Daemon", f"Plataforma local e serviços da instância · {status}")
         item("!.", "Diagnóstico do Daemon", "Começa pelo diagnóstico principal do Shikigami")
+        print()
         item("W.", "Wizard de configuração do Daemon", "Guia de configuração e validação")
         print()
         item("1.", "Preparar e instalar daemon" if not installed() else "Validar runtime do daemon", status)
@@ -2489,6 +2508,7 @@ def menu(skills: list[Skill], root: Path) -> int:
     while True:
         screen("Central de configuração", "Onmyōji · integrações do Shikigami")
         item("!.", "Diagnóstico", "Valida nome, executável e modelo do Codex-CLI")
+        print()
         item("P.", "Python e bibliotecas", "Runtime único e componentes compartilhados")
         item("C.", "Codex-CLI", "Modelo, projeto, sandbox e permissões")
         item("D.", "Daemon", "Supervisor local e serviços da instância")

@@ -236,20 +236,20 @@ class SystemSetupTests(unittest.TestCase):
     def test_diagnostics_check_all_reviewed_initial_setup_items(self) -> None:
         catalog = [{"id": "gpt-6.1-sol", "defaultReasoningEffort": "medium", "supportedReasoningEfforts": [{"reasoningEffort": "medium"}]}]
         with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "validate_codex_executable", return_value=(True, "codex 1.0")), patch.object(MODULE, "validate_codex_login", return_value=(True, "login confirmado")), patch.object(MODULE, "fetch_codex_model_catalog", return_value=(catalog, "catálogo atual")), patch.object(MODULE, "validate_codex_model", return_value=(True, "modelo respondeu")):
-            data = MODULE.default_system() | {"shikigami_identity": "Exemplo", "shikigami_installed": True, "executable": "codex", "project_directory": temporary}
+            data = MODULE.default_system() | {"shikigami_identity": "Exemplo", "shikigami_installed": True, "python_base_executable": sys.executable, "executable": "codex", "project_directory": temporary}
             MODULE.system_path(Path(temporary)).parent.mkdir()
             MODULE.system_path(Path(temporary)).write_text(MODULE.render_system(data), encoding="utf-8")
             diagnostics = MODULE.shikigami_diagnostics(Path(temporary))
-        self.assertEqual([(item["state"], item["label"]) for item in diagnostics], [("ok", "Nome do Shikigami"), ("ok", "Executável do Codex-CLI"), ("ok", "Login do Codex-CLI"), ("ok", "Catálogo de modelos"), ("ok", "Modelo do Codex-CLI"), ("ok", "Esforço de raciocínio"), ("ok", "Validação do modelo"), ("ok", "Pasta de trabalho"), ("ok", "Sandbox"), ("ok", "Política de aprovação"), ("ok", "Diretórios adicionais de escrita")])
+        self.assertEqual([(item["state"], item["label"]) for item in diagnostics], [("pending", "Ambiente Python"), ("ok", "Nome do Shikigami"), ("ok", "Executável do Codex-CLI"), ("ok", "Login do Codex-CLI"), ("ok", "Catálogo de modelos"), ("ok", "Modelo do Codex-CLI"), ("ok", "Esforço de raciocínio"), ("ok", "Validação do modelo"), ("ok", "Pasta de trabalho"), ("ok", "Sandbox"), ("ok", "Política de aprovação"), ("ok", "Diretórios adicionais de escrita")])
 
     def test_diagnostics_do_not_query_models_without_login(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "validate_codex_executable", return_value=(True, "versão")), patch.object(MODULE, "validate_codex_login", return_value=(False, "sem login")), patch.object(MODULE, "fetch_codex_model_catalog") as catalog:
-            data = MODULE.default_system() | {"shikigami_identity": "Exemplo", "executable": "codex", "project_directory": temporary}
+            data = MODULE.default_system() | {"shikigami_identity": "Exemplo", "python_base_executable": sys.executable, "executable": "codex", "project_directory": temporary}
             MODULE.system_path(Path(temporary)).parent.mkdir()
             MODULE.system_path(Path(temporary)).write_text(MODULE.render_system(data), encoding="utf-8")
             diagnostics = MODULE.shikigami_diagnostics(Path(temporary))
         catalog.assert_not_called()
-        self.assertEqual([(item["state"], item["label"]) for item in diagnostics[2:7]], [("error", "Login do Codex-CLI"), ("pending", "Catálogo de modelos"), ("pending", "Modelo do Codex-CLI"), ("pending", "Esforço de raciocínio"), ("pending", "Validação do modelo")])
+        self.assertEqual([(item["state"], item["label"]) for item in diagnostics[3:8]], [("error", "Login do Codex-CLI"), ("pending", "Catálogo de modelos"), ("pending", "Modelo do Codex-CLI"), ("pending", "Esforço de raciocínio"), ("pending", "Validação do modelo")])
 
     def test_diagnostics_validate_each_additional_writable_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
