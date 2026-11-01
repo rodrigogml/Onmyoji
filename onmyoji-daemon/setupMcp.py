@@ -19,7 +19,7 @@ if hasattr(sys.stderr, "reconfigure"):
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from setupOnmyoji import Ui, flow_choice, flow_heading, instance_identity, item as render_item, note, prompt, result, screen as render_screen
+from setupOnmyoji import Ui, flow_choice, flow_heading, instance_identity, item as render_item, note, prompt, result, screen as render_screen, vault_entry_path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
@@ -573,7 +573,7 @@ def todoist_menu(config: McpConfiguration) -> None:
         if choice == "1":
             name = ask_new_profile_name("Nome do perfil Todoist", data["profiles"]); vault = select("Escolha o perfil de vault", config.vault_profile_names())
             if not name or not vault or name in data["profiles"]: result(False, "Nome inválido, repetido ou retorno solicitado."); continue
-            entry = ask("Entrada KeePass da chave", f"APIs/Todoist/{name}", True)
+            entry = ask("Entrada KeePass da chave", vault_entry_path(config.root, "MCP", "Todoist", name, "Token"), True)
             if not entry: result(False, "Perfil Todoist inválido."); continue
             credential = configure_vault_password_entry(config, vault, entry, "Todoist")
             if credential is None: continue
@@ -679,7 +679,7 @@ def omie_menu(config: McpConfiguration) -> None:
             if not name or not vault or name in data["profiles"]:
                 result(False, "Nome inválido, repetido ou retorno solicitado.")
                 continue
-            entry = ask("Entrada KeePass das credenciais", f"APIs/Omie/{name}", True)
+            entry = ask("Entrada KeePass das credenciais", vault_entry_path(config.root, "MCP", "Omie", name, "Credenciais"), True)
             if not entry:
                 result(False, "Perfil Omie inválido.")
                 continue
@@ -796,7 +796,7 @@ def cloudflare_menu(config: McpConfiguration) -> None:
             if not name or not vault or name in data["profiles"]:
                 result(False, "Nome inválido, repetido ou retorno solicitado.")
                 continue
-            entry = ask("Entrada KeePass do API Token", f"APIs/Cloudflare/{name}", True)
+            entry = ask("Entrada KeePass do API Token", vault_entry_path(config.root, "MCP", "Cloudflare", name, "ApiToken"), True)
             if not entry:
                 result(False, "Perfil Cloudflare inválido.")
                 continue

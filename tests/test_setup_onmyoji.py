@@ -143,14 +143,21 @@ class SystemSetupTests(unittest.TestCase):
             root = Path(temporary)
             path = root / "configs" / "onmyoji-system.toml"; path.parent.mkdir()
             path.write_text('[shikigami]\nidentity = "Lavelinha"\n', encoding="utf-8")
-            self.assertEqual(MODULE.telegram_token_entry(root), "APIs/Telegram:Lavelinha")
+            self.assertEqual(MODULE.telegram_token_entry(root), "Lavelinha/Serviço/Telegram:default:Bot")
 
     def test_telegram_token_entry_replaces_the_legacy_generic_marker(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             path = root / "configs" / "onmyoji-system.toml"; path.parent.mkdir()
             path.write_text('[shikigami]\nidentity = "Lavelinha"\n', encoding="utf-8")
-            self.assertEqual(MODULE.configured_telegram_token_entry(root, "APIs/Telegram:Shikigami"), "APIs/Telegram:Lavelinha")
+            self.assertEqual(MODULE.configured_telegram_token_entry(root, "APIs/Telegram:Shikigami"), "Lavelinha/Serviço/Telegram:default:Bot")
+
+    def test_vault_entry_path_uses_only_instance_and_layer_groups(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "configs" / "onmyoji-system.toml"; path.parent.mkdir()
+            path.write_text('[shikigami]\nidentity = "Lavelinha"\n', encoding="utf-8")
+            self.assertEqual(MODULE.vault_entry_path(root, "MCP", "Todoist", "default", "Token"), "Lavelinha/MCP/Todoist:default:Token")
 
     def test_workspace_suggestion_is_a_sibling_with_work_suffix(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

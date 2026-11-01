@@ -165,6 +165,16 @@ def instance_identity(root: Path) -> str:
     return name.strip() or "Shikigami"
 
 
+def vault_entry_path(root: Path, layer: str, integration: str, profile: str = "", definition: str = "") -> str:
+    """Monta a referência padrão de uma entrada KeePass da instância.
+
+    A hierarquia de grupos permanece limitada ao Shikigami e à camada. O
+    restante identifica a entrada pelo título, separado por dois-pontos.
+    """
+    title = ":".join(value for value in (integration, profile, definition) if value)
+    return f"{instance_identity(root)}/{layer}/{title}"
+
+
 def default_system() -> dict[str, object]:
     return {
         "shikigami_identity": "",
@@ -1016,11 +1026,11 @@ def configure_totp_password(root: Path, profile: str, label: str, default_entry:
 
 def telegram_token_entry(root: Path) -> str:
     """Retorna a entrada padrão do token vinculada à identidade da instância."""
-    return f"APIs/Telegram:{instance_identity(root)}"
+    return vault_entry_path(root, "Serviço", "Telegram", "default", "Bot")
 
 
 def configured_telegram_token_entry(root: Path, current_entry: str = "") -> str:
-    """Preserva uma escolha explícita, mas substitui o marcador legado genérico."""
+    """Preserva uma escolha explícita, mas substitui somente o marcador legado genérico."""
     return current_entry if current_entry and current_entry != "APIs/Telegram:Shikigami" else telegram_token_entry(root)
 
 
@@ -1996,16 +2006,15 @@ def daemon_menu(root: Path) -> None:
                     result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
                     if changed.returncode == 0: offer_restart()
                 else:
-                    instance = "".join(part[:1].upper() + part[1:] for part in instance_identity(root).split()) or "Shikigami"
                     profile = str(telegram_settings.get("telegram", {}).get("vault_profile") or "")
                     if not profile:
                         result(False, "Configure primeiro a credencial do bot e seu perfil de vault MCP.")
                         continue
                     totp = telegram_settings.get("totp", {})
-                    real = configure_totp_password(root, profile, "real", f"APIs/TelegramTOTP:{instance}:Real", str(totp.get("real_password_entry") or ""))
+                    real = configure_totp_password(root, profile, "real", vault_entry_path(root, "Serviço", "Telegram", "default", "TOTP:Real"), str(totp.get("real_password_entry") or ""))
                     if real is None:
                         continue
-                    fake = configure_totp_password(root, profile, "falsa", f"APIs/TelegramTOTP:{instance}:Fake", str(totp.get("fake_password_entry") or ""))
+                    fake = configure_totp_password(root, profile, "falsa", vault_entry_path(root, "Serviço", "Telegram", "default", "TOTP:Fake"), str(totp.get("fake_password_entry") or ""))
                     if fake is None:
                         continue
                     changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-totp", "--enabled", "--real-entry", real, "--fake-entry", fake], quiet=True)
@@ -2354,7 +2363,7 @@ def daemon_menu(root: Path) -> None:
                     current = tomllib.loads((root / "configs" / "daemon" / "services" / "mini-apps" / "tunnel.toml").read_text(encoding="utf-8"))
                 except (OSError, tomllib.TOMLDecodeError):
                     current = {}
-                credential = configure_mcp_password_reference(root, "Cloudflare Tunnel", "APIs/Cloudflare/MiniApps", str(current.get("credential_profile") or ""), str(current.get("credential_entry_path") or ""))
+                credential = configure_mcp_password_reference(root, "Cloudflare Tunnel", vault_entry_path(root, "Serviço", "MiniApps", "default", "CloudflareTunnel"), str(current.get("credential_profile") or ""), str(current.get("credential_entry_path") or ""))
                 if credential is None:
                     result(False, "Configuração do Tunnel cancelada.")
                     continue

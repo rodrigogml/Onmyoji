@@ -37,6 +37,8 @@ Cada `setupSkill.py` de `shikigami-skills/` é responsável exclusivamente pela 
 
 Quando uma skill precisa da referência `vault_profile`, o configurador lê os perfis em `configs/mcp/credentials.toml` e oferece um seletor numérico. Não solicite esse identificador como texto livre; se ainda não houver perfis de vault MCP, informe que o operador deve criar um no menu `MCP > Perfis de vault`.
 
+As novas referências KeePass sugeridas pelo setup usam somente os grupos `<Shikigami>/Serviço` ou `<Shikigami>/MCP`; o título da entrada é formado por `<Integração>:<perfil>:<finalidade>`. Referências já configuradas e caminhos personalizados permanecem válidos e não são migrados automaticamente.
+
 Após a escolha do perfil de vault MCP, sugira a entrada de credencial no formato `APIs/<Integração>:<perfil-da-skill-em-CamelCase>`, por exemplo `APIs/Notion:Laveli` para o perfil local `laveli`. O usuário pode ajustar a sugestão ao criar uma configuração; não substitua uma entrada já configurada durante edição.
 
 Quando uma skill oferecer teste de perfil, ele deve selecionar um perfil existente e executar somente uma operação de leitura mínima. O resultado deve confirmar a autenticação ou descrever a falha sem imprimir credenciais, tokens nem a resposta completa da API.
