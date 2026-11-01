@@ -158,6 +158,8 @@ class SystemSetupTests(unittest.TestCase):
             path = root / "configs" / "onmyoji-system.toml"; path.parent.mkdir()
             path.write_text('[shikigami]\nidentity = "Lavelinha"\n', encoding="utf-8")
             self.assertEqual(MODULE.vault_entry_path(root, "MCP", "Todoist", "default", "Token"), "Lavelinha/MCP/Todoist:default:Token")
+            self.assertEqual(MODULE.vault_entry_path(root, "MCP", "AWS", "default", "Credentials"), "Lavelinha/MCP/AWS:default:Credentials")
+            self.assertEqual(MODULE.vault_entry_path(root, "MCP", "SSH", "default", "PrivateKey"), "Lavelinha/MCP/SSH:default:PrivateKey")
 
     def test_workspace_suggestion_is_a_sibling_with_work_suffix(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

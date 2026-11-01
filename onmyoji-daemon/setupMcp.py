@@ -919,7 +919,7 @@ def forward_email_menu(config: McpConfiguration) -> None:
             if not name or not vault or name in data["profiles"]:
                 result(False, "Nome inválido, repetido ou retorno solicitado.")
                 continue
-            entry = ask("Entrada KeePass do token", f"APIs/ForwardEmail/{name}", True)
+            entry = ask("Entrada KeePass do token", vault_entry_path(config.root, "MCP", "ForwardEmail", name, "Token"), True)
             if not entry:
                 result(False, "Perfil Forward Email inválido.")
                 continue
@@ -1042,7 +1042,7 @@ def notion_menu(config: McpConfiguration) -> None:
             if not name or not vault or name in data["profiles"]:
                 result(False, "Nome inválido, repetido ou retorno solicitado.")
                 continue
-            entry = ask("Entrada KeePass do token", f"APIs/Notion/{name}", True)
+            entry = ask("Entrada KeePass do token", vault_entry_path(config.root, "MCP", "Notion", name, "Token"), True)
             if not entry:
                 result(False, "Perfil Notion inválido.")
                 continue
@@ -1148,7 +1148,7 @@ def aws_menu(config: McpConfiguration) -> None:
         if choice == "1":
             name = ask_new_profile_name("Nome do perfil AWS", data["profiles"]); vault = select("Escolha o perfil de vault", config.vault_profile_names())
             if not name or not vault or name in data["profiles"]: result(False, "Nome inválido, repetido ou retorno solicitado."); continue
-            entry = ask("Entrada KeePass das credenciais", f"APIs/AWS/{name}", True)
+            entry = ask("Entrada KeePass das credenciais", vault_entry_path(config.root, "MCP", "AWS", name, "Credentials"), True)
             if not entry: result(False, "Perfil AWS inválido."); continue
             credential = aws_credentials(config, vault, entry)
             if credential is None: continue
@@ -1232,7 +1232,7 @@ def mysql_menu(config: McpConfiguration) -> None:
         if choice == "1":
             name = ask_new_profile_name("Nome do perfil MySQL", data["profiles"]); vault = select("Escolha o perfil de vault", config.vault_profile_names())
             if not name or not vault or name in data["profiles"]: result(False, "Nome inválido, repetido ou retorno solicitado."); continue
-            entry = ask("Entrada KeePass das credenciais", f"APIs/MySQL/{name}", True)
+            entry = ask("Entrada KeePass das credenciais", vault_entry_path(config.root, "MCP", "MySQL", name, "Credentials"), True)
             if not entry: continue
             credential = mysql_credentials(config, vault, entry)
             if credential is None: continue
@@ -1336,7 +1336,8 @@ def ssh_menu(config: McpConfiguration) -> None:
             host = ask("Host", required=True); port = ask("Porta", "22", True); username = ask("Usuário", required=True)
             mode_label = flow_choice("Autenticação SSH", ["Senha", "Chave privada"], "Chave privada")
             if not host or not port or not port.isdigit() or not username or mode_label is None: result(False, "Perfil SSH inválido."); continue
-            mode = "password" if mode_label == "Senha" else "key"; entry = ask("Entrada KeePass", f"APIs/SSH/{name}", True)
+            mode = "password" if mode_label == "Senha" else "key"
+            entry = ask("Entrada KeePass", vault_entry_path(config.root, "MCP", "SSH", name, "Password" if mode == "password" else "PrivateKey"), True)
             if not entry: continue
             authentication = ssh_authentication(config, vault, entry, mode)
             if authentication is None: continue
