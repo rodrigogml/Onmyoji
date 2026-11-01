@@ -47,6 +47,9 @@ O repositório do Onmyōji concentra os componentes reutilizáveis. Ele não arm
 Onmyōji/
 ├── configs/                # Configuração local efetiva da instância
 ├── docs/                   # Documentação da base
+├── state/                  # Estado operacional persistente da instância
+├── tmp/                    # Arquivos transitórios da instância
+├── venv/                   # Runtime Python privado da instância
 ├── etc/                    # Documentos e elementos adicionais do projeto
 ├── onmyoji-daemon/         # Daemon e servidor MCP interno
 │   └── src/onmyoji_daemon/
@@ -57,7 +60,10 @@ Onmyōji/
 
 | Diretório ou arquivo | Papel |
 | --- | --- |
-| `configs/` | Armazena a configuração local efetiva da instância, incluindo Codex CLI, perfis MCP e estado dos serviços. Seu conteúdo não é versionado. |
+| `configs/` | Armazena a configuração local efetiva da instância, incluindo Codex CLI e perfis MCP. Seu conteúdo não é versionado. |
+| `state/` | Armazena estado operacional persistente, como bancos locais de serviços e modelos OCR preparados. Seu conteúdo não é versionado. |
+| `tmp/` | Armazena downloads, caches, staging e saídas transitórias. Pode ser removido integralmente e seu conteúdo não é versionado. |
+| `venv/` | Contém o runtime Python privado e as bibliotecas instaladas pela instância. É reconstruível e seu conteúdo não é versionado. |
 | `docs/` | Reúne a documentação de setup, operação do daemon, interface dos scripts e diretrizes de desenvolvimento. |
 | `etc/` | Armazena documentos e elementos adicionais diversos relacionados ao projeto, incluindo seus recursos de identidade visual. |
 | `onmyoji-daemon/` | Contém o daemon, o servidor MCP interno e os módulos das integrações disponíveis para uma instância. |
