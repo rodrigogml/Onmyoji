@@ -4,10 +4,12 @@
 /venv/
 /installation_id
 /models_cache.json
+/.sandbox_migration
 
 # Arquivosd e Backup
 /*.bak
 /*.bak.*
+/generated_images/
 
 # Estado local do Codex
 /auth.json
