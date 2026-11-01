@@ -1262,9 +1262,11 @@ def codex_menu(root: Path) -> None:
         item("6.", "Sandbox", str(data["sandbox_mode"]))
         item("7.", "Política de aprovação", str(data["approval_policy"]))
         item("8.", "Diretórios adicionais de escrita", f"{len(data['additional_writable_directories'])} configurado(s)")
+        print()
         item("R.", "Runtime Python", f"{data['python_mode']} · {'/venv' if data['python_mode'] == 'isolated' else data['python_executable']}")
-        item("9.", "Executar Codex-CLI", "CLI nativo com modelo, sandbox e diretórios configurados")
-        item("10.", "Console interativo Onmyōji", "App Server com developer instructions compostas")
+        print()
+        item("C.", "Executar Codex-CLI", "CLI nativo com modelo, sandbox e diretórios configurados")
+        item("I.", "Console interativo Onmyōji", "App Server com developer instructions compostas")
         print(f"\n  Estado: {'✓ PRONTO' if ready else '○ ' + message}")
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
@@ -1326,8 +1328,8 @@ def codex_menu(root: Path) -> None:
                     ok, message = save_system(root, candidate); result(ok, message); data = candidate if ok else data
                 else: result(False, "Informe um executável Python existente.")
             else: result(False, "Escolha 1 ou 2.")
-        elif choice == "9": launch_codex(root, data)
-        elif choice == "10": launch_onmyoji_interactive(root, data)
+        elif choice == "c": launch_codex(root, data)
+        elif choice == "i": launch_onmyoji_interactive(root, data)
         else: result(False, "Opção inválida.")
 
 
