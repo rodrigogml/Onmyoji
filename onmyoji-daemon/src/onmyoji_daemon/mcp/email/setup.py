@@ -11,6 +11,7 @@ import tomllib
 from .contracts import EmailError
 from .oauth import EmailOAuth
 from ..runtime import mcp_runtime_python
+from setupOnmyoji import vault_entry_path
 
 
 def run_admin(config, ui, name, action, connection="incoming"):
@@ -23,7 +24,7 @@ def run_admin(config, ui, name, action, connection="incoming"):
     ui.result(completed.returncode == 0, "Operação de e-mail concluída." if completed.returncode == 0 else "Operação de e-mail não concluída.")
 
 
-def edit_endpoint(config, ui, current, kind, reuse_auth=None):
+def edit_endpoint(config, ui, current, kind, account_name, reuse_auth=None):
     value = copy.deepcopy(current or {})
     protocols = {"IMAP": "imap", "POP3": "pop3"} if kind == "incoming" else {"SMTP": "smtp"}
     selected = ui.flow_choice("Protocolo", list(protocols), next((label for label, code in protocols.items() if code == value.get("protocol")), next(iter(protocols))))
@@ -45,7 +46,8 @@ def edit_endpoint(config, ui, current, kind, reuse_auth=None):
     auth = value.get("auth", {})
     vault = ui.select("Perfil de vault MCP", config.vault_profile_names(), auth.get("credential_profile", ""))
     if not vault: return None
-    entry = ui.ask("Entrada KeePass dedicada", auth.get("credential_entry_path", f"Email/{username}/{kind}"), True)
+    definition = "Incoming" if kind == "incoming" else "SMTP"
+    entry = ui.ask("Entrada KeePass dedicada", auth.get("credential_entry_path", vault_entry_path(config.root, "MCP", "Email", account_name, definition)), True)
     if not entry: return None
     if mode == "Senha ou senha de aplicativo":
         credential = ui.configure_vault_entry_fields(config, vault, entry, "E-mail", [("password_field", "Senha ou senha de aplicativo", "password")])
@@ -127,7 +129,7 @@ def manage(config, ui, name):
                 if not action: continue
                 if action == "Remover esta conexão": account.pop(kind, None)
                 else:
-                    value = edit_endpoint(config, ui, account.get(kind), kind)
+                    value = edit_endpoint(config, ui, account.get(kind), kind, name)
                     if value is None: continue
                     account[kind] = value
             elif choice == "4":
@@ -205,7 +207,7 @@ def email_menu(config, ui):
                     if kind == "smtp" and account.get("incoming"):
                         reused = ui.flow_choice("Credencial SMTP", ["Reutilizar referência do recebimento", "Configurar credencial distinta"], "Reutilizar referência do recebimento")
                         if reused is None: cancelled = True; break
-                    value = edit_endpoint(config, ui, {"username": address}, kind, account["incoming"]["auth"] if reused == "Reutilizar referência do recebimento" else None)
+                    value = edit_endpoint(config, ui, {"username": address}, kind, name, account["incoming"]["auth"] if reused == "Reutilizar referência do recebimento" else None)
                     if value is None: cancelled = True; break
                     account[kind] = value
                 if cancelled: continue

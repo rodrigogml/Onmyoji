@@ -44,10 +44,23 @@ def test_reused_credentials_skip_vault_and_secret_prompts(tmp_path):
     config = Mock(root=tmp_path); ui = Mock()
     ui.flow_choice.side_effect = ["SMTP", "TLS direto"]; ui.ask.side_effect = ["smtp.example.test", "465", "test@example.test"]
     auth = {"mode": "password", "credential_profile": "vault", "credential_entry_path": "Email/test"}
-    result = edit_endpoint(config, ui, None, "smtp", reuse_auth=auth)
+    result = edit_endpoint(config, ui, None, "smtp", "default", reuse_auth=auth)
     assert result["auth"] == auth and result["auth"] is not auth
     ui.configure_vault_entry_fields.assert_not_called(); ui.select.assert_not_called()
     ui.screen.assert_not_called()
+
+
+def test_new_email_credential_uses_instance_mcp_entry_convention(tmp_path):
+    config = Mock(root=tmp_path); ui = Mock()
+    ui.flow_choice.side_effect = ["SMTP", "TLS direto", "Senha ou senha de aplicativo"]
+    ui.ask.side_effect = ["smtp.example.test", "465", "test@example.test", "Lavelinha/MCP/Email:default:SMTP"]
+    ui.select.return_value = "vault"
+    ui.configure_vault_entry_fields.return_value = ("Lavelinha/MCP/Email:default:SMTP", {"password_field": "password"})
+    (tmp_path / "configs").mkdir(); (tmp_path / "configs" / "onmyoji-system.toml").write_text('[shikigami]\nidentity = "Lavelinha"\n', encoding="utf-8")
+
+    edit_endpoint(config, ui, None, "smtp", "default")
+
+    assert ui.ask.call_args_list[3].args == ("Entrada KeePass dedicada", "Lavelinha/MCP/Email:default:SMTP", True)
 
 
 def test_attachment_roots_default_to_and_create_workspace_email_directory(tmp_path):
