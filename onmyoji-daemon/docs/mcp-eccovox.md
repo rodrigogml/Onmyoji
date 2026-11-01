@@ -4,7 +4,7 @@ O módulo `eccovox` oferece transcrição de áudio e síntese de fala pelo runt
 
 ## Configuração
 
-Use **MCP > EccoVox**. Cada perfil tem nome, descrição de contexto, habilitação, endpoint HTTP local, voz padrão e raízes autorizadas de leitura e escrita. A voz é um identificador aceito pelo runtime EccoVox; deixá-la vazia usa o padrão configurado no próprio runtime. O endpoint sugerido é `http://127.0.0.1:8870`; somente endereços de loopback são aceitos.
+Use **MCP > EccoVox**. Cada perfil tem nome, descrição de contexto, habilitação, endpoint HTTP local, voz padrão, pasta padrão de saída e raízes autorizadas de leitura e escrita. As raízes padrão são o Work inteiro; a saída automática fica em `<Work>/.onmyoji/eccovox/output`. A voz é um identificador aceito pelo runtime EccoVox; deixá-la vazia usa o padrão configurado no próprio runtime. O endpoint sugerido é `http://127.0.0.1:8870`; somente endereços de loopback são aceitos.
 
 A configuração fica em `configs/mcp/eccovox.toml`. O menu permite alterar descrição, endpoint e raízes, testar a conexão, habilitar, desabilitar e remover o perfil. Esta integração local não utiliza credenciais de vault.
 
@@ -16,7 +16,7 @@ Sem perfil habilitado, nenhuma ferramenta é publicada. Um único perfil é sele
 | --- | --- |
 | `eccovox.get_health` | Consulta saúde, versão e capacidades informadas pelo runtime. |
 | `eccovox.transcribe_audio` | Lê `audio_path` em uma raiz autorizada e retorna texto e metadados disponíveis. Aceita `language` e `runtime_profile` opcionais. |
-| `eccovox.synthesize_speech` | Converte `text` em áudio no `output_path` autorizado. Aceita formato, voz, idioma, velocidade e perfil do runtime; exige `confirm=true`. |
+| `eccovox.synthesize_speech` | Converte `text` em áudio no `output_path` autorizado ou, sem esse campo, na pasta padrão de saída do perfil. Aceita formato, voz, idioma, velocidade e perfil do runtime; exige `confirm=true`. |
 
 Na transcrição, os formatos aceitos são WAV, MP3, M4A, MP4, OGG, Opus, WebM e FLAC. Na síntese, são MP3, WAV, Opus e FLAC; a extensão de saída deve coincidir com o formato solicitado. O perfil MCP escolhe a conexão, as permissões locais e a voz usada quando a chamada não a substitui; `runtime_profile` seleciona um perfil do próprio EccoVox.
 

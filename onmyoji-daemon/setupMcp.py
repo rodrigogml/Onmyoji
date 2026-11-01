@@ -61,8 +61,8 @@ def ask_new_profile_name(label: str, profiles: dict[str, object]) -> str | None:
     return ask(label, "default" if "default" not in profiles else "", required=True)
 
 
-def eccovox_media_roots(config: McpConfiguration, values: str = "") -> list[str]:
-    """Cria raízes de mídia do EccoVox, sempre contidas no workspace configurado."""
+def eccovox_workspace(config: McpConfiguration) -> Path:
+    """Resolve o Work externo que contém os arquivos autorizados do EccoVox."""
     try:
         system = tomllib.loads((config.root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8"))
         workspace = Path(str(system["codex"]["project_directory"])).expanduser()
@@ -73,12 +73,28 @@ def eccovox_media_roots(config: McpConfiguration, values: str = "") -> list[str]
         raise ValueError("Configure o workspace antes de criar o perfil EccoVox.") from error
     if workspace.is_relative_to(config.root.resolve()):
         raise ValueError("O workspace do EccoVox deve ficar fora da instância Onmyōji.")
-    roots = [Path(value.strip()).expanduser().resolve() for value in values.split(";") if value.strip()] or [workspace / ".onmyoji" / "eccovox" / "input", workspace / ".onmyoji" / "eccovox" / "output"]
+    return workspace
+
+
+def eccovox_media_roots(config: McpConfiguration, values: str = "") -> list[str]:
+    """Cria raízes de mídia do EccoVox, padrão no Work inteiro."""
+    workspace = eccovox_workspace(config)
+    roots = [Path(value.strip()).expanduser().resolve() for value in values.split(";") if value.strip()] or [workspace]
     for root in roots:
         if not root.is_relative_to(workspace):
             raise ValueError("As raízes do EccoVox devem ficar dentro do workspace configurado.")
         root.mkdir(parents=True, exist_ok=True)
     return [str(root) for root in roots]
+
+
+def eccovox_default_output_directory(config: McpConfiguration, value: str = "") -> str:
+    """Prepara o diretório padrão de resultados, separado das raízes autorizadas."""
+    workspace = eccovox_workspace(config)
+    directory = Path(value.strip()).expanduser().resolve() if value.strip() else workspace / ".onmyoji" / "eccovox" / "output"
+    if not directory.is_relative_to(workspace):
+        raise ValueError("A pasta padrão de saída do EccoVox deve ficar dentro do workspace configurado.")
+    directory.mkdir(parents=True, exist_ok=True)
+    return str(directory)
 
 
 def select(title: str, names: list[str], current: str = "") -> str | None:
@@ -1788,11 +1804,12 @@ def manage_eccovox_profile(config: McpConfiguration, name: str) -> None:
         item("1.", "Alterar descrição")
         item("2.", "Alterar endpoint local")
         item("3.", "Alterar voz padrão", profile.get("voice") or "Padrão configurado no EccoVox")
-        item("4.", "Alterar raízes de leitura")
-        item("5.", "Alterar raízes de escrita")
-        item("6.", "Habilitar" if not profile["enabled"] else "Desabilitar")
-        item("7.", "Testar conexão")
-        item("8.", "Remover perfil")
+        item("4.", "Alterar pasta padrão de saída", profile.get("default_output_directory") or "<Work>/.onmyoji/eccovox/output")
+        item("5.", "Alterar raízes de leitura")
+        item("6.", "Alterar raízes de escrita")
+        item("7.", "Habilitar" if not profile["enabled"] else "Desabilitar")
+        item("8.", "Testar conexão")
+        item("9.", "Remover perfil")
         item("X.", "Voltar")
         action = prompt("Opção: ").strip().casefold()
         if action in {"x", "\x1b"}: return
@@ -1808,20 +1825,24 @@ def manage_eccovox_profile(config: McpConfiguration, name: str) -> None:
             value = ask("Identificador da voz [vazio = padrão do runtime EccoVox]", profile.get("voice", ""))
             if value is None: continue
             profile["voice"] = value.strip()
-        elif action in {"4", "5"}:
-            key = "readable_roots" if action == "4" else "writable_roots"
+        elif action == "4":
+            value = ask("Pasta padrão de saída", profile.get("default_output_directory") or eccovox_default_output_directory(config), True)
+            if value is None: continue
+            profile["default_output_directory"] = eccovox_default_output_directory(config, value)
+        elif action in {"5", "6"}:
+            key = "readable_roots" if action == "5" else "writable_roots"
             defaults = eccovox_media_roots(config)
             suggested = ";".join(profile[key] or ([defaults[0]] if key == "readable_roots" else [defaults[1]]))
             value = ask("Raízes separadas por ;", suggested, True)
             if value is None: continue
             profile[key] = eccovox_media_roots(config, value)
-        elif action == "6": profile["enabled"] = not profile["enabled"]
-        elif action == "7":
+        elif action == "7": profile["enabled"] = not profile["enabled"]
+        elif action == "8":
             try:
                 EccoVoxService(config.root).health(name); result(True, "Runtime EccoVox respondeu à consulta de saúde.")
             except EccoVoxError as error: result(False, str(error))
             continue
-        elif action == "8":
+        elif action == "9":
             confirmation = ask("Digite REMOVER para confirmar", required=True)
             if confirmation is None or confirmation.casefold() != "remover": result(False, "Perfil EccoVox não removido."); continue
             del data["profiles"][name]
@@ -1851,8 +1872,9 @@ def eccovox_menu(config: McpConfiguration) -> None:
             defaults = eccovox_media_roots(config)
             readable = ask("Raízes de leitura, separadas por ;", defaults[0], True)
             writable = ask("Raízes de escrita, separadas por ;", defaults[1], True)
-            if not all((description, endpoint, readable, writable)) or voice is None: result(False, "Perfil EccoVox não foi criado."); continue
-            data["profiles"][name] = {"enabled": True, "description": description, "base_url": endpoint, "voice": voice.strip(), "readable_roots": eccovox_media_roots(config, readable), "writable_roots": eccovox_media_roots(config, writable)}
+            output = ask("Pasta padrão de saída", eccovox_default_output_directory(config), True)
+            if not all((description, endpoint, readable, writable)) or voice is None or output is None: result(False, "Perfil EccoVox não foi criado."); continue
+            data["profiles"][name] = {"enabled": True, "description": description, "base_url": endpoint, "voice": voice.strip(), "default_output_directory": eccovox_default_output_directory(config, output), "readable_roots": eccovox_media_roots(config, readable), "writable_roots": eccovox_media_roots(config, writable)}
             try: config.save_eccovox(data); result(True, "Perfil EccoVox salvo no MCP.")
             except (McpConfigurationError, ValueError) as error: result(False, str(error))
         elif choice == "2" and (name := select("MCP · Gerenciar perfil EccoVox", names)):

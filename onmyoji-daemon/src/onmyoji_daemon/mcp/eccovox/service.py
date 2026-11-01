@@ -9,6 +9,8 @@ import tomllib
 from typing import Any, Mapping
 from urllib import error, parse, request
 
+from ..artifacts import workspace
+
 
 ALLOWED_AUDIO_SUFFIXES = {".wav", ".mp3", ".m4a", ".mp4", ".ogg", ".opus", ".webm", ".flac"}
 ALLOWED_TTS_FORMATS = {"mp3", "wav", "opus", "flac"}
@@ -64,12 +66,12 @@ class EccoVoxService:
                 result[target] = payload[source]
         return result
 
-    def synthesize(self, profile_name: str, text: str, output_path: str, response_format: str | None = None, *, voice: str | None = None, language: str | None = None, speed: float | int | None = None, runtime_profile: str | None = None) -> dict[str, Any]:
+    def synthesize(self, profile_name: str, text: str, output_path: str = "", response_format: str | None = None, *, voice: str | None = None, language: str | None = None, speed: float | int | None = None, runtime_profile: str | None = None) -> dict[str, Any]:
         config = self._profile(profile_name)
         if not isinstance(text, str) or not text.strip() or len(text) > config["max_text_characters"]:
             raise EccoVoxError("invalid_request", "O texto deve ser preenchido e respeitar o limite configurado.")
-        output = self._contained(output_path, config["writable_roots"], "output_path", False)
-        media_format = response_format or output.suffix.lower().lstrip(".")
+        media_format = response_format or (Path(output_path).suffix.lower().lstrip(".") if output_path else "mp3")
+        output = self._contained(output_path, config["writable_roots"], "output_path", False) if output_path else self._default_output(config, media_format)
         if media_format not in ALLOWED_TTS_FORMATS or output.suffix.lower() != f".{media_format}":
             raise EccoVoxError("invalid_request", "A extensão do arquivo deve corresponder a um formato de áudio suportado.")
         payload: dict[str, Any] = {"input": text, "responseFormat": media_format}
@@ -113,7 +115,23 @@ class EccoVoxService:
         voice = profile.get("voice", "")
         if not isinstance(voice, str) or len(voice) > 120:
             raise EccoVoxError("invalid_config", "Perfil EccoVox inválido.")
-        return {"base_url": base_url.rstrip("/"), "timeout": timeout, "max_audio_bytes": max_audio, "max_text_characters": max_text, "voice": voice.strip() or None, "readable_roots": readable, "writable_roots": writable}
+        output_value = profile.get("default_output_directory", "")
+        if not isinstance(output_value, str):
+            raise EccoVoxError("invalid_config", "Perfil EccoVox inválido.")
+        if output_value.strip():
+            output_directory = Path(output_value).expanduser().resolve()
+        else:
+            output_directory = workspace(self.root) / ".onmyoji" / "eccovox" / "output"
+            if not any(output_directory.is_relative_to(root) for root in writable):
+                output_directory = writable[0] / ".onmyoji" / "eccovox" / "output"
+        if not any(output_directory.is_relative_to(root) for root in writable):
+            raise EccoVoxError("invalid_config", "A pasta padrão de saída do EccoVox não está autorizada para escrita.")
+        return {"base_url": base_url.rstrip("/"), "timeout": timeout, "max_audio_bytes": max_audio, "max_text_characters": max_text, "voice": voice.strip() or None, "default_output_directory": output_directory, "readable_roots": readable, "writable_roots": writable}
+
+    def _default_output(self, config: dict[str, Any], media_format: str) -> Path:
+        directory = config["default_output_directory"]
+        directory.mkdir(parents=True, exist_ok=True)
+        return self._contained(str(directory / f"speech-{secrets.token_hex(8)}.{media_format}"), config["writable_roots"], "output_path", False)
 
     @staticmethod
     def _roots(values: Any) -> tuple[Path, ...]:

@@ -13,7 +13,7 @@ from onmyoji_daemon.mcp.eccovox.service import EccoVoxError, EccoVoxService
 def configured(root: Path) -> McpConfiguration:
     read, write = root / "read", root / "write"; read.mkdir(); write.mkdir()
     config = McpConfiguration(root); data = config.eccovox()
-    data["profiles"]["voz"] = {"enabled": True, "description": "Áudio do workspace", "base_url": "http://127.0.0.1:8870", "readable_roots": [str(read)], "writable_roots": [str(write)]}
+    data["profiles"]["voz"] = {"enabled": True, "description": "Áudio do workspace", "base_url": "http://127.0.0.1:8870", "default_output_directory": str(write), "readable_roots": [str(read)], "writable_roots": [str(write)]}
     config.save_eccovox(data); return config
 
 
@@ -22,6 +22,7 @@ def test_eccovox_publishes_implicit_single_profile_tools(tmp_path):
     definitions = {item["name"]: item for item in registry.definitions()}
     assert set(definitions) == {"eccovox.get_health", "eccovox.transcribe_audio", "eccovox.synthesize_speech"}
     assert "profile" not in definitions["eccovox.get_health"]["input_schema"]["properties"]
+    assert "output_path" not in definitions["eccovox.synthesize_speech"]["input_schema"]["required"]
 
 
 def test_eccovox_profile_context_is_listed_when_multiple(tmp_path):
@@ -57,6 +58,15 @@ def test_synthesis_uses_the_profile_default_voice_when_not_overridden(tmp_path, 
     EccoVoxService(tmp_path).synthesize("voz", "Olá", str(output), "mp3")
 
     assert captured == {"path": "/v1/audio/speech", "payload": {"input": "Olá", "responseFormat": "mp3", "voice": "pm_alex"}}
+
+
+def test_synthesis_without_output_path_uses_profile_default_directory(tmp_path, monkeypatch):
+    config = configured(tmp_path); output_directory = tmp_path / "write" / "default"; data = config.eccovox(); data["profiles"]["voz"]["default_output_directory"] = str(output_directory); config.save_eccovox(data)
+    monkeypatch.setattr(EccoVoxService, "_request", lambda *_args: (b"audio", "audio/mpeg"))
+
+    result = EccoVoxService(tmp_path).synthesize("voz", "Olá")
+
+    assert Path(result["output_path"]).parent == output_directory and Path(result["output_path"]).suffix == ".mp3"
 
 
 def test_eccovox_rejects_symbolic_link_as_synthesis_output(tmp_path):
