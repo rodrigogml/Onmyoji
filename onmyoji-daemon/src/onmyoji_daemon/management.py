@@ -355,8 +355,7 @@ def install_service(root: Path, name: str, description: str, scope: str = "syste
             return False, "O registro do Serviço do Windows excedeu 60 segundos e foi interrompido. Verifique permissões administrativas e o estado do Gerenciador de Controle de Serviços."
         if created.returncode != 0: return False, (created.stderr or created.stdout).strip()
         if progress: progress("Validando o registro do serviço no Windows.")
-        if progress: progress("Aplicando a descrição do serviço.")
-        subprocess.run(["sc.exe", "description", name, description], text=True, capture_output=True, check=False, timeout=20)
+        if progress: progress("Registrando a configuração local do serviço.")
         if windows_account and windows_account.casefold() != "localsystem":
             if progress: progress("Configurando a conta Windows selecionada; a senha não será exibida nem armazenada.")
             _write_json(service_path(root), {"name": name, "root": str(root.resolve())})
