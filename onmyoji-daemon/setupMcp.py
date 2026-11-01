@@ -1306,7 +1306,12 @@ def trust_ssh_host(host: str, port: int, known_hosts: str) -> bool:
         print("\n  " + Ui.text("Confirmar identidade do servidor SSH", Ui.bold, Ui.violet))
         note(f"Servidor: {host if port == 22 else f'[{host}]:{port}'}"); note(f"Chave: {key.get_name()} · {fingerprint}"); note(f"Arquivo: {known_hosts}")
         confirmation = ask("Digite CONFIAR para gravar esta chave", required=True)
-        if confirmation is None or confirmation.casefold() != "confiar": result(False, "Chave SSH não gravada."); return False
+        if confirmation is None:
+            result(False, "Chave SSH não gravada: confirmação cancelada.")
+            return False
+        if confirmation.casefold() != "confiar":
+            result(False, "Chave SSH não gravada: digite exatamente CONFIAR para confirmar a fingerprint exibida.")
+            return False
         save_host_key(Path(known_hosts), host, port, key); result(True, "Chave SSH confirmada e gravada."); return True
     except SshError as error: result(False, str(error)); return False
 

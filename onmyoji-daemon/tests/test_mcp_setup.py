@@ -255,6 +255,18 @@ def test_ssh_removal_is_case_insensitive(monkeypatch, capsys):
     assert "Perfil SSH removido" in capsys.readouterr().out
 
 
+def test_ssh_host_trust_explains_an_unrecognized_confirmation(monkeypatch, capsys, tmp_path):
+    module = setup_module(); key = Mock(); key.get_name.return_value = "ssh-ed25519"
+    save = Mock()
+    monkeypatch.setattr(module, "fetch_host_key", lambda _host, _port: (key, "SHA256:fingerprint"))
+    monkeypatch.setattr(module, "ask", lambda *_args, **_kwargs: "CONFIRMAR")
+    monkeypatch.setattr(module, "save_host_key", save)
+
+    assert module.trust_ssh_host("server", 22, str(tmp_path / "known_hosts")) is False
+    save.assert_not_called()
+    assert "digite exatamente CONFIAR" in capsys.readouterr().out
+
+
 def test_bis2cmd_removal_is_case_insensitive(monkeypatch, capsys):
     module = setup_module(); config = mock_configuration()
     profile = {"enabled": True, "description": "BIS2 de teste.", "jar_path": "BISCMD.jar", "working_dir": "biscmd", "host": "localhost", "port": 8080, "java_options": "", "credential_profile": "vault", "credential_entry_path": "APIs/BIS2CMD/erp", "username_field": "username", "password_field": "password", "readable_roots": [], "writable_roots": []}
