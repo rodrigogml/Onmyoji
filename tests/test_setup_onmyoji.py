@@ -74,6 +74,18 @@ class SystemSetupTests(unittest.TestCase):
         heading.assert_called_once_with("Diagnóstico", "Estado da instalação e do Codex-CLI")
         screen.assert_not_called()
 
+    def test_daemon_menu_uninstalls_directly_without_utility_submenu(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); project = root / "onmyoji-daemon"; project.mkdir()
+            (project / "setupDaemon.py").write_text("", encoding="utf-8")
+            daemon = root / "configs" / "daemon" / "daemon.toml"; daemon.parent.mkdir(parents=True); daemon.write_text("", encoding="utf-8")
+            completed = subprocess.CompletedProcess([], 0, stdout="Removido.", stderr="")
+            answers = iter(["3", "desinstalar", "x"])
+            with patch.object(MODULE, "prompt", side_effect=lambda _label: next(answers)), patch.object(MODULE, "screen") as screen, patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+                MODULE.daemon_menu(root)
+        self.assertTrue(any("remove-instance" in call.args[0] for call in run.call_args_list))
+        self.assertTrue(all(call.args[0] == "Daemon" for call in screen.call_args_list))
+
     def test_initial_configuration_starts_uninstalled_without_instance_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

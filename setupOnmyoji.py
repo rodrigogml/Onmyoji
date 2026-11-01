@@ -2484,22 +2484,14 @@ def daemon_menu(root: Path) -> None:
                     result(True, json.dumps(diagnosis.get("tunnel", {}), ensure_ascii=False))
             else: result(False, "Opção inválida.")
 
-    def utilities_menu() -> None:
-        """Reúne somente ferramentas auxiliares e de manutenção da plataforma."""
-        while True:
-            screen("Utilitários e manutenção", "Ferramentas técnicas da instância do daemon")
-            if installed():
-                item("1.", "Desinstalar daemon da instância", "Remove configurações e estado locais")
-            else:
-                note("Instale primeiro o daemon pela opção 1 do menu anterior.")
-            item("X.", "Voltar")
-            choice = prompt("Opção: ").strip().casefold()
-            if choice in {"x", "\x1b"}: return
-            if installed() and choice == "1":
-                confirmation = prompt("ATENÇÃO: isto apagará todas as configurações, credenciais referenciadas, pareamentos, conversas e estado do daemon desta instância. Uma reinstalação exigirá configurar tudo novamente. Digite desinstalar para confirmar: ").strip()
-                if confirmation == "desinstalar": lifecycle("remove-instance")
-                else: result(False, "Desinstalação cancelada; a confirmação deve ser exatamente desinstalar.")
-            else: result(False, "Opção inválida.")
+    def uninstall_instance() -> None:
+        """Confirma a remoção sem abrir um submenu de opção única."""
+        if not installed():
+            result(False, "Instale o daemon pela opção 1 antes de desinstalá-lo.")
+            return
+        confirmation = prompt("ATENÇÃO: isto apagará todas as configurações, credenciais referenciadas, pareamentos, conversas e estado do daemon desta instância. Uma reinstalação exigirá configurar tudo novamente. Digite desinstalar para confirmar: ").strip()
+        if confirmation == "desinstalar": lifecycle("remove-instance")
+        else: result(False, "Desinstalação cancelada; a confirmação deve ser exatamente desinstalar.")
 
     while True:
         status = "CONFIGURAÇÃO-BASE PREPARADA" if installed() else "NÃO CONFIGURADO"
@@ -2510,7 +2502,7 @@ def daemon_menu(root: Path) -> None:
         print()
         item("1.", "Preparar e instalar daemon" if not installed() else "Validar runtime do daemon", status)
         item("2.", "Processo/Serviço do Daemon", "Processo local e serviço do sistema operacional")
-        item("3.", "Utilitários e manutenção", "Remoção da instância do daemon")
+        item("3.", "Desinstalar daemon da instância", "Remove configurações e estado locais")
         print()
         item("T.", "Telegram", "Configuração, teste e pareamento")
         item("M.", "MiniApps", "Gateway HTTPS e Cloudflare Tunnel")
@@ -2525,7 +2517,7 @@ def daemon_menu(root: Path) -> None:
         elif choice == "2":
             if not installed(): result(False, "Instale o daemon pela opção 1 antes de operá-lo.")
             else: operation_menu()
-        elif choice == "3": utilities_menu()
+        elif choice == "3": uninstall_instance()
         elif choice in {"t", "m"}:
             if not installed(): result(False, "Instale o daemon pela opção 1 antes de configurar serviços.")
             elif choice == "t": telegram_menu()
