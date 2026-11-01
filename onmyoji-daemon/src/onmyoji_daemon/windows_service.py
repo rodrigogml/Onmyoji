@@ -60,4 +60,10 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-if __name__ == "__main__": raise SystemExit(main())
+if __name__ == "__main__":
+    # pywin32 pode manter threads internas depois de HandleCommandLine no modo
+    # administrativo de install/remove. Este processo é apenas o registrador;
+    # o serviço real é iniciado por pythonservice.exe, que importa este módulo.
+    exit_code = main()
+    sys.stdout.flush(); sys.stderr.flush()
+    os._exit(exit_code)
