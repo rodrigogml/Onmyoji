@@ -241,6 +241,7 @@ class AppServerTurn:
     conversation_id: str = ""
     reply_to_message_id: int | None = None
     source_trust: str = "UNTRUSTED_USER"
+    sticker_only_sent: bool = False
 
 
 @dataclass
@@ -701,6 +702,8 @@ class Gateway(TelegramChannels):
             if not self.settings.agent_outbound_media: return failed("capability", "Envio de mídia pelo agente está desabilitado.")
             if active.source_trust not in {"OWNER", "AUTHORIZED_USER"}: return failed("authorization", "Somente owner ou usuário autorizado pode enviar figurinha.")
             identifier = str(arguments.get("sticker_id") or "")
+            delivery = str(arguments.get("delivery") or "supplement")
+            if delivery not in {"supplement", "only"}: return failed("argument_validation", "delivery deve ser supplement ou only.")
             sticker = next((item for item in self._stickers().stickers if item.identifier == identifier), None)
             if sticker is None: return failed("catalog", "Figurinha desconhecida ou indisponível no catálogo.")
             if not self.api: return failed("gateway", "Gateway Telegram indisponível.")
@@ -709,8 +712,9 @@ class Gateway(TelegramChannels):
                 sent = self.api.send_file("sendSticker", active.chat_id, sticker.path, "sticker", **active.telegram_topic_values)
             except Exception as error:
                 return failed("telegram_api", error)
-            self._diagnostic("sticker.sent", conversation=active.conversation_id, sticker_id=sticker.identifier, file_name=sticker.path.name, size=sticker.path.stat().st_size, method="sendSticker", message_id=sent.get("message_id"))
-            return {"contentItems": [{"type": "inputText", "text": json.dumps({"sent": True, "message_id": sent.get("message_id")}, ensure_ascii=False)}], "success": True}
+            active.sticker_only_sent = delivery == "only"
+            self._diagnostic("sticker.sent", conversation=active.conversation_id, sticker_id=sticker.identifier, file_name=sticker.path.name, size=sticker.path.stat().st_size, method="sendSticker", delivery=delivery, message_id=sent.get("message_id"))
+            return {"contentItems": [{"type": "inputText", "text": json.dumps({"sent": True, "message_id": sent.get("message_id"), "delivery": delivery}, ensure_ascii=False)}], "success": True}
         if tool == "send_file":
             def failed(stage: str, error: Exception | str) -> dict[str, Any]:
                 self._record_error(error)
@@ -828,6 +832,9 @@ class Gateway(TelegramChannels):
         for tool in tools[0]["tools"]:
             if tool["name"] == "send_message":
                 tool["description"] = "Envia mensagem adicional à conversa Telegram ativa; pode expirar automaticamente."
+            elif tool["name"] == "send_sticker":
+                tool["description"] = "Envia uma figurinha pré-cadastrada pelo ID, sem legenda. Use delivery=only somente quando ela for a resposta completa; o gateway não enviará texto final."
+                tool["inputSchema"]["properties"]["delivery"] = {"type": "string", "enum": ["supplement", "only"], "default": "supplement"}
         if self._conversation_kind(str(chat_id)) != "private":
             tools[0]["tools"] = [tool for tool in tools[0]["tools"] if tool["name"] != "ask_menu"]
         started = client.request("thread/start", {**params, "serviceName": "onmyoji_telegram", "dynamicTools": tools}); thread = started.get("thread") if isinstance(started.get("thread"), dict) else started; thread_id = str(thread.get("id") or "") if isinstance(thread, dict) else ""
@@ -851,7 +858,7 @@ class Gateway(TelegramChannels):
         except Exception as error:
             self._record_error(f"Transcrição de voz indisponível: {error}"); return None
 
-    def _app_turn(self, chat_id: int, text: str, attachments: list[dict[str, Any]] | None = None, turn_context: dict[str, Any] | None = None) -> tuple[str, str]:
+    def _app_turn(self, chat_id: int, text: str, attachments: list[dict[str, Any]] | None = None, turn_context: dict[str, Any] | None = None) -> tuple[str | None, str]:
         context = TelegramTurnContext.from_value(turn_context)
         telegram_chat_id, telegram_topic_values = self._telegram_address(str(chat_id)); client = self._app_client(); thread_id = self._app_thread(chat_id, client, turn_context); state = self._channel_state(chat_id); active = AppServerTurn(telegram_chat_id, thread_id, threading.Event(), reply_mode=state["reply_mode"], telegram_topic_values=telegram_topic_values, conversation_id=str(chat_id), source_trust=context.source_trust)
         with self.app_server_lock: self.app_turns[thread_id] = active
@@ -880,6 +887,8 @@ class Gateway(TelegramChannels):
                 raise CodexProtocolError("O turno do Codex excedeu o tempo configurado")
             if active.status == "completed":
                 self._mark_external(str(chat_id), external_ids)
+            if active.sticker_only_sent:
+                return None, active.reply_mode
             if active.final_text: return active.final_text, active.reply_mode
             if active.status == "completed": return "O agente concluiu o turno sem uma resposta textual.", active.reply_mode
             detail = active.failure_detail or client.last_error

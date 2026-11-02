@@ -38,8 +38,11 @@ reavaliar opções disponíveis.
 consulta e envia a figurinha sem legenda somente à conversa ativa. Nunca
 invente IDs, use caminhos locais, `file_id`, arquivos arbitrários ou APIs do
 Telegram diretamente. Só considere a figurinha entregue depois de confirmação
-de êxito da ferramenta. A personalidade da instância, e não este contrato,
-define quando e com qual frequência esse recurso deve ser usado.
+de êxito da ferramenta. Use `delivery: "supplement"` por padrão. Escolha
+`delivery: "only"` somente quando a figurinha for, por si só, a resposta
+completa: o gateway então não enviará texto final. A personalidade da
+instância, e não este contrato, define quando e com qual frequência esse
+recurso deve ser usado.
 
 ## Resposta em texto
 

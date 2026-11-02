@@ -545,10 +545,23 @@ def test_agent_lists_and_sends_only_cataloged_stickers(tmp_path):
 
     listed = gateway._app_server_request("item/tool/call", {**request, "tool": "list_stickers", "arguments": {}})
     delivered = gateway._app_server_request("item/tool/call", {**request, "tool": "send_sticker", "arguments": {"sticker_id": "celebrar"}})
+    sticker_only = gateway._app_server_request("item/tool/call", {**request, "tool": "send_sticker", "arguments": {"sticker_id": "celebrar", "delivery": "only"}})
 
     assert json.loads(listed["contentItems"][0]["text"]) == [{"id": "celebrar", "context": "Comemoração por uma conquista."}]
-    assert json.loads(delivered["contentItems"][0]["text"])["sent"] is True
-    assert sent == [("sendSticker", 9, image.resolve(), "sticker", {})]
+    assert json.loads(delivered["contentItems"][0]["text"]) == {"sent": True, "message_id": 12, "delivery": "supplement"}
+    assert json.loads(sticker_only["contentItems"][0]["text"]) == {"sent": True, "message_id": 12, "delivery": "only"}
+    assert active.sticker_only_sent and sent == [("sendSticker", 9, image.resolve(), "sticker", {}), ("sendSticker", 9, image.resolve(), "sticker", {})]
+
+
+def test_sticker_only_completion_does_not_create_a_fallback_text_message(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(replace(Settings.load(tmp_path, data), app_server_enabled=True)); sent = []
+    gateway.api = type("Api", (), {"typing": lambda *_args, **_values: None, "send": lambda _self, *values, **_kwargs: sent.append(values)})()
+    gateway._app_turn = lambda *_args: (None, "text")
+
+    gateway._turn_serial(9, "ok", [])
+
+    assert sent == []
 
 
 def test_agent_cannot_send_unknown_sticker_or_sticker_for_untrusted_user(tmp_path):
@@ -635,6 +648,7 @@ def test_group_dynamic_tools_do_not_publish_interactive_menu(tmp_path):
     tools = calls[-1][1]["dynamicTools"][0]["tools"]
     assert "ask_menu" not in {tool["name"] for tool in tools}
     assert {"list_stickers", "send_sticker"} <= {tool["name"] for tool in tools}
+    assert next(tool for tool in tools if tool["name"] == "send_sticker")["inputSchema"]["properties"]["delivery"]["enum"] == ["supplement", "only"]
     assert next(tool for tool in tools if tool["name"] == "send_message")["description"].startswith("Envia mensagem adicional à conversa")
 
 

@@ -58,6 +58,12 @@ ou formatos não suportados não são publicados. O Gateway aceita `.webp`,
 `.tgs` e `.webm`, envia a mídia por `sendSticker` e mantém o mesmo controle de
 autorização aplicado à mídia de saída.
 
+Por padrão, a figurinha complementa a resposta textual. Quando ela for a
+resposta completa, o agente informa `delivery: "only"` em `send_sticker`; o
+Gateway suprime o texto final somente depois de confirmar o envio da
+figurinha. Isso evita que uma falha ou ausência acidental de resposta seja
+interpretada como uma resposta somente visual.
+
 O menu também pode converter imagens estáticas PNG, JPG, JPEG ou WebP para uma
 nova saída WebP. A conversão preserva o original, centraliza a imagem em uma
 tela transparente de 512×512 pixels e procura atingir 256 KiB sem substituir
