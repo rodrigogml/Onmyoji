@@ -1960,6 +1960,51 @@ def daemon_menu(root: Path) -> None:
             note("O padrão será aplicado em novas conversas e ao usar /new; a conversa atual preserva sua escolha própria.")
             offer_restart()
 
+    def convert_stickers_menu() -> None:
+        """Converte fontes estáticas sem alterar os originais nem sobrescrever saídas."""
+        while True:
+            sources = [
+                path for path in discover_static_sources(root)
+                if not (path.suffix.casefold() == ".webp" and path.stem.casefold().endswith("-telegram"))
+            ]
+            screen("Converter figurinhas estáticas", "Cria cópias WebP 512×512; os originais serão preservados")
+            note(f"Pasta: {sticker_folder(root)}")
+            if not sources:
+                result(False, "Nenhuma imagem PNG, JPG, JPEG ou WebP aguardando conversão foi encontrada.")
+                item("X.", "Voltar")
+                if prompt("Opção: ").strip().casefold() in {"x", "\x1b", ""}:
+                    return
+                result(False, "Opção inválida.")
+                continue
+            for index, source in enumerate(sources, 1):
+                item(f"{index}.", source.name, f"{source.stat().st_size / 1024:.1f} KiB")
+            print()
+            item("T.", "Converter todas", f"{len(sources)} imagem(ns)")
+            item("X.", "Voltar")
+            choice = prompt("Opção [1]: ").strip().casefold() or "1"
+            if choice in {"x", "\x1b"}:
+                return
+            if choice == "t":
+                selected = sources
+            elif choice.isdigit() and 1 <= int(choice) <= len(sources):
+                selected = [sources[int(choice) - 1]]
+            else:
+                result(False, "Opção inválida.")
+                continue
+            for source in selected:
+                note(f"Convertendo {source.name}; criando uma cópia WebP 512×512.")
+                try:
+                    converted = convert_static_sticker(source)
+                    detail = f"{converted.output.name} · {converted.output_bytes / 1024:.1f} KiB · qualidade {converted.quality}"
+                    result(True, f"Figurinha convertida: {detail}.")
+                    if not converted.reached_target:
+                        note(f"A saída não atingiu o alvo de {STATIC_STICKER_TARGET_BYTES // 1024} KiB; ainda pode ser cadastrada se estiver dentro do limite de envio do gateway.")
+                except FileExistsError:
+                    note(f"{source.name}: saída já existente; preservada sem alteração.")
+                except (ValueError, RuntimeError) as error:
+                    result(False, f"{source.name}: {error}")
+            note("Use 'Cadastrar arquivos encontrados' para informar o contexto e disponibilizar as saídas ao agente.")
+
     def configure_stickers() -> None:
         """Administra os ativos versionáveis de figurinha sem expor caminhos ao agente."""
         folder = sticker_folder(root)
@@ -2029,26 +2074,7 @@ def daemon_menu(root: Path) -> None:
                     note("PNG e JPG não podem ser enviados como figurinha; escolha a opção 4 para criar versões WebP.")
                     for path in unsupported: note(f"{path.name}: precisa de conversão para WebP.")
             elif choice == "4":
-                if not sources:
-                    result(False, "Nenhuma imagem PNG, JPG, JPEG ou WebP foi encontrada na pasta de figurinhas.")
-                    note(f"Copie as imagens para: {folder}")
-                    continue
-                selected = flow_choice("Imagem para converter", [path.name for path in sources], sources[0].name)
-                if selected is None:
-                    result(False, "Conversão cancelada.")
-                    continue
-                source = next(path for path in sources if path.name == selected)
-                note("Criando uma cópia WebP 512×512; o original será preservado.")
-                try:
-                    converted = convert_static_sticker(source)
-                    size = f"{converted.output_bytes / 1024:.1f} KiB"
-                    detail = f"{converted.output.name} · {size} · qualidade {converted.quality}"
-                    result(True, f"Figurinha convertida: {detail}.")
-                    if not converted.reached_target:
-                        note(f"A saída não atingiu o alvo de {STATIC_STICKER_TARGET_BYTES // 1024} KiB; ela continua disponível para cadastro se estiver dentro do limite de envio do gateway.")
-                    note("Use 'Cadastrar arquivos encontrados' para informar o contexto e disponibilizá-la ao agente.")
-                except (ValueError, FileExistsError, RuntimeError) as error:
-                    result(False, str(error))
+                convert_stickers_menu()
             elif choice == "5":
                 folder.mkdir(parents=True, exist_ok=True)
                 try:
