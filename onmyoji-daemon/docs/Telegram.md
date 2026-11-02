@@ -35,6 +35,29 @@ por procedência. Uma transcrição de voz informa que é automática e pode con
 erros de reconhecimento; nomes próprios, siglas e termos incomuns exigem
 confirmação antes de orientar uma ação relevante.
 
+## Pensamentos
+
+O menu `Gateway Telegram` permite definir o padrão de pensamentos aplicado a
+novas conversas e a conversas reiniciadas com `/new`: compartilhar ou não os
+pensamentos do agente durante o turno e, quando compartilhados, excluí-los ou
+mantê-los após a resposta. A configuração individual em `/config` continua
+restrita à conversa atual e não é alterada ao modificar o padrão global.
+
+## Figurinhas do agente
+
+O Gateway pode disponibilizar figurinhas pré-cadastradas ao agente na conversa
+ativa. Os arquivos e o catálogo versionável ficam em
+`configs/daemon/services/telegram/stickers/`. O catálogo associa um ID estável,
+o nome local do arquivo e o contexto que explica quando a figurinha representa
+uma resposta adequada.
+
+O agente consulta somente IDs e contextos e envia uma opção cadastrada pelo
+ID; não recebe acesso a caminhos locais, arquivos arbitrários ou `file_id` do
+Telegram. Arquivos sem contexto, links, caminhos externos, arquivos ausentes
+ou formatos não suportados não são publicados. O Gateway aceita `.webp`,
+`.tgs` e `.webm`, envia a mídia por `sendSticker` e mantém o mesmo controle de
+autorização aplicado à mídia de saída.
+
 ## Respostas em texto e menus
 
 Respostas do agente são convertidas de um subconjunto simples de Markdown para
