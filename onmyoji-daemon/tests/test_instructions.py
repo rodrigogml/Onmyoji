@@ -60,6 +60,8 @@ def test_telegram_fixed_policy_is_kept_in_the_versioned_contract(tmp_path):
     bundle = InstructionComposer(tmp_path, data, "instructions.md").compose(identity="Exemplo", telegram=True)
     assert "[TELEGRAM — CONTRATO DE CANAL]" in bundle.text
     assert "UNTRUSTED_USER" in bundle.text
+    assert "telegram_gateway.list_stickers" in bundle.text
+    assert "máximo uma figurinha por turno" in bundle.text
     assert "[TELEGRAM GROUP CONTEXT]" not in bundle.text
 
 
