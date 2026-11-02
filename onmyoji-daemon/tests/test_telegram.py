@@ -11,7 +11,7 @@ from unittest.mock import patch
 from onmyoji_daemon.telegram import AppServerTurn, CodexAppServer, Contacts, Gateway, McpVault, Settings, TelegramApi, TelegramMediaUploadError
 from onmyoji_daemon.launcher import _approval_policy, _sandbox_policy
 from onmyoji_daemon.telegram_formatting import MAX_MESSAGE_LENGTH, plain_text, render_html, split_html, visible_text
-from onmyoji_daemon.telegram_stickers import convert_static, discover_static_sources, load as load_sticker_catalog
+from onmyoji_daemon.telegram_stickers import convert_static, discover_static_sources, load as load_sticker_catalog, save as save_sticker_catalog
 
 
 def write_settings(root: Path, data_dir: Path) -> None:
@@ -489,6 +489,17 @@ def test_sticker_catalog_rejects_external_paths_missing_files_and_extensions(tmp
 
     assert catalog.stickers == ()
     assert len(catalog.issues) == 3
+
+
+def test_empty_sticker_catalog_is_valid_and_is_written_with_its_table(tmp_path):
+    folder = tmp_path / "configs" / "daemon" / "services" / "telegram" / "stickers"; folder.mkdir(parents=True)
+    (folder / "catalog.toml").write_text("schema_version = 1\n", encoding="utf-8")
+
+    assert load_sticker_catalog(tmp_path, 1024).stickers == ()
+    catalog = save_sticker_catalog(tmp_path, {})
+
+    assert catalog.read_text(encoding="utf-8") == "schema_version = 1\n\n[stickers]\n"
+    assert load_sticker_catalog(tmp_path, 1024).issues == ()
 
 
 def test_static_sticker_conversion_creates_a_separate_512_webp(tmp_path):

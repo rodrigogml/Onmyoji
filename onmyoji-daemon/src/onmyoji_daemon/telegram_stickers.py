@@ -142,12 +142,13 @@ def load(root: Path, maximum_bytes: int) -> StickerCatalog:
         document = tomllib.loads(source.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as error:
         return StickerCatalog(folder, (), (f"Catálogo inválido: {error}",), {})
-    if document.get("schema_version") != 1 or not isinstance(document.get("stickers", {}), dict):
+    entries = document.get("stickers", {})
+    if document.get("schema_version") != 1 or not isinstance(entries, dict):
         return StickerCatalog(folder, (), ("Catálogo inválido: use schema_version = 1 e a tabela [stickers].",), {})
     raw: dict[str, dict[str, str]] = {}
     valid: list[Sticker] = []
     issues: list[str] = []
-    for identifier, value in sorted(document["stickers"].items()):
+    for identifier, value in sorted(entries.items()):
         if not isinstance(identifier, str) or not STICKER_ID.fullmatch(identifier):
             issues.append(f"ID inválido: {identifier!r}.")
             continue
@@ -181,7 +182,7 @@ def save(root: Path, entries: dict[str, dict[str, str]]) -> Path:
     if folder.is_symlink():
         raise ValueError("Pasta de figurinhas não pode ser um link.")
     folder.mkdir(parents=True, exist_ok=True)
-    lines = ["schema_version = 1"]
+    lines = ["schema_version = 1", "", "[stickers]"]
     for identifier, value in sorted(entries.items()):
         if not STICKER_ID.fullmatch(identifier):
             raise ValueError("ID de figurinha inválido.")

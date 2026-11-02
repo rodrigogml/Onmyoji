@@ -2029,12 +2029,13 @@ def daemon_menu(root: Path) -> None:
                     result(True, "Todos os arquivos suportados já possuem cadastro.")
                     continue
                 entries = dict(catalog.raw_entries)
+                changed = False
                 for path in pending:
-                    identifier = prompt(f"ID para {path.name} [{suggested_identifier(path)}]: ").strip() or suggested_identifier(path)
+                    identifier = prompt(f"ID técnico para {path.name} [{suggested_identifier(path)}] (não é a explicação): ").strip() or suggested_identifier(path)
                     if identifier.casefold() in {"x", "\x1b"}:
                         break
                     if not STICKER_ID.fullmatch(identifier) or identifier in entries:
-                        result(False, "ID inválido ou já utilizado; use letras minúsculas, números, _ ou -.")
+                        result(False, "ID inválido ou já utilizado; use de 1 a 64 letras minúsculas, números, _ ou -, começando por letra ou número.")
                         continue
                     context = prompt(f"Quando usar a figurinha {identifier}: ").strip()
                     if context.casefold() in {"x", "\x1b"}:
@@ -2042,11 +2043,18 @@ def daemon_menu(root: Path) -> None:
                     if not context:
                         result(False, "A explicação de uso é obrigatória; o arquivo não será disponibilizado ao agente.")
                         continue
+                    if prompt(f"Cadastrar '{identifier}' com esta explicação? [s/N]: ").strip().casefold() not in {"s", "sim"}:
+                        note("Cadastro não confirmado; o arquivo permanece fora do catálogo.")
+                        continue
                     entries[identifier] = {"file": path.name, "context": context}
-                try:
-                    save_sticker_catalog(root, entries); result(True, "Catálogo de figurinhas atualizado.")
-                except ValueError as error:
-                    result(False, str(error))
+                    changed = True
+                if changed:
+                    try:
+                        save_sticker_catalog(root, entries); result(True, "Catálogo de figurinhas atualizado.")
+                    except ValueError as error:
+                        result(False, str(error))
+                else:
+                    note("Nenhum cadastro válido foi confirmado; o catálogo existente não foi alterado.")
             elif choice == "2":
                 names = sorted(catalog.raw_entries)
                 identifier = flow_choice("Figurinha para editar", names, names[0] if names else "") if names else None
