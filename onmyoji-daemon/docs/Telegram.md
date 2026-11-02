@@ -58,6 +58,13 @@ ou formatos não suportados não são publicados. O Gateway aceita `.webp`,
 `.tgs` e `.webm`, envia a mídia por `sendSticker` e mantém o mesmo controle de
 autorização aplicado à mídia de saída.
 
+O menu também pode converter imagens estáticas PNG, JPG, JPEG ou WebP para uma
+nova saída WebP. A conversão preserva o original, centraliza a imagem em uma
+tela transparente de 512×512 pixels e procura atingir 256 KiB sem substituir
+um arquivo existente. A saída ainda exige cadastro e contexto antes de ser
+oferecida ao agente. Arquivos `.tgs` e `.webm` não são convertidos pelo menu,
+pois animações vetoriais e vídeo têm requisitos próprios.
+
 ## Respostas em texto e menus
 
 Respostas do agente são convertidas de um subconjunto simples de Markdown para

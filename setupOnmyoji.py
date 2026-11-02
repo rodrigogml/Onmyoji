@@ -32,7 +32,7 @@ from onmyoji_daemon.mcp.configuration import McpConfiguration
 from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialResolver
 from onmyoji_daemon.mcp.eccovox import EccoVoxError, EccoVoxService
 from onmyoji_daemon import runtime as python_runtime
-from onmyoji_daemon.telegram_stickers import STICKER_ID, discover as discover_stickers, load as load_sticker_catalog, save as save_sticker_catalog, sticker_folder, suggested_identifier
+from onmyoji_daemon.telegram_stickers import STATIC_STICKER_TARGET_BYTES, STICKER_ID, convert_static as convert_static_sticker, discover as discover_stickers, discover_static_sources, load as load_sticker_catalog, save as save_sticker_catalog, sticker_folder, suggested_identifier
 from onmyoji_daemon import management as daemon_management
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
 from onmyoji_daemon.mcp.ocr.runtime import DocumentError, install_runtime as install_document_runtime
@@ -1967,12 +1967,14 @@ def daemon_menu(root: Path) -> None:
             catalog = load_sticker_catalog(root, 20 * 1024 * 1024)
             registered = {value["file"] for value in catalog.raw_entries.values()}
             pending = [path for path in discover_stickers(root) if path.name not in registered]
+            sources = discover_static_sources(root)
             screen("Figurinhas do agente", "Catálogo versionável de mídia permitida para a conversa Telegram ativa")
             note(f"Pasta: {folder}")
             item("1.", "Cadastrar arquivos encontrados", f"{len(pending)} sem explicação")
             item("2.", "Editar explicação de uma figurinha", f"{len(catalog.raw_entries)} cadastrada(s)")
             item("3.", "Exibir catálogo e pendências", f"{len(catalog.stickers)} disponível(is) ao agente")
-            item("4.", "Abrir pasta de figurinhas", "Explorer no Windows")
+            item("4.", "Converter e otimizar imagens estáticas", f"{len(sources)} PNG, JPG ou WebP encontrada(s)")
+            item("5.", "Abrir pasta de figurinhas", "Explorer no Windows")
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}:
@@ -2022,7 +2024,32 @@ def daemon_menu(root: Path) -> None:
                     note("Nenhuma figurinha disponível ao agente.")
                 for issue in catalog.issues: result(False, issue)
                 for path in pending: note(f"{path.name}: sem explicação de uso.")
+                unsupported = [path for path in sources if path.suffix.casefold() != ".webp"]
+                if unsupported:
+                    note("PNG e JPG não podem ser enviados como figurinha; escolha a opção 4 para criar versões WebP.")
+                    for path in unsupported: note(f"{path.name}: precisa de conversão para WebP.")
             elif choice == "4":
+                if not sources:
+                    result(False, "Nenhuma imagem PNG, JPG, JPEG ou WebP foi encontrada na pasta de figurinhas.")
+                    note(f"Copie as imagens para: {folder}")
+                    continue
+                selected = flow_choice("Imagem para converter", [path.name for path in sources], sources[0].name)
+                if selected is None:
+                    result(False, "Conversão cancelada.")
+                    continue
+                source = next(path for path in sources if path.name == selected)
+                note("Criando uma cópia WebP 512×512; o original será preservado.")
+                try:
+                    converted = convert_static_sticker(source)
+                    size = f"{converted.output_bytes / 1024:.1f} KiB"
+                    detail = f"{converted.output.name} · {size} · qualidade {converted.quality}"
+                    result(True, f"Figurinha convertida: {detail}.")
+                    if not converted.reached_target:
+                        note(f"A saída não atingiu o alvo de {STATIC_STICKER_TARGET_BYTES // 1024} KiB; ela continua disponível para cadastro se estiver dentro do limite de envio do gateway.")
+                    note("Use 'Cadastrar arquivos encontrados' para informar o contexto e disponibilizá-la ao agente.")
+                except (ValueError, FileExistsError, RuntimeError) as error:
+                    result(False, str(error))
+            elif choice == "5":
                 folder.mkdir(parents=True, exist_ok=True)
                 try:
                     if os.name == "nt": os.startfile(str(folder))

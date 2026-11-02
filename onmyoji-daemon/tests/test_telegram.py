@@ -11,7 +11,7 @@ from unittest.mock import patch
 from onmyoji_daemon.telegram import AppServerTurn, CodexAppServer, Contacts, Gateway, McpVault, Settings, TelegramApi, TelegramMediaUploadError
 from onmyoji_daemon.launcher import _approval_policy, _sandbox_policy
 from onmyoji_daemon.telegram_formatting import MAX_MESSAGE_LENGTH, plain_text, render_html, split_html, visible_text
-from onmyoji_daemon.telegram_stickers import load as load_sticker_catalog
+from onmyoji_daemon.telegram_stickers import convert_static, discover_static_sources, load as load_sticker_catalog
 
 
 def write_settings(root: Path, data_dir: Path) -> None:
@@ -489,6 +489,37 @@ def test_sticker_catalog_rejects_external_paths_missing_files_and_extensions(tmp
 
     assert catalog.stickers == ()
     assert len(catalog.issues) == 3
+
+
+def test_static_sticker_conversion_creates_a_separate_512_webp(tmp_path):
+    from PIL import Image
+
+    folder = tmp_path / "configs" / "daemon" / "services" / "telegram" / "stickers"; folder.mkdir(parents=True)
+    source = folder / "celebrar.png"
+    Image.new("RGBA", (1000, 300), (20, 40, 80, 180)).save(source)
+
+    assert discover_static_sources(tmp_path) == [source]
+    converted = convert_static(source)
+
+    assert source.exists() and converted.output.name == "celebrar-telegram.webp"
+    assert converted.output.is_file() and converted.output_bytes == converted.output.stat().st_size
+    with Image.open(converted.output) as image:
+        assert image.size == (512, 512) and image.format == "WEBP"
+
+
+def test_static_sticker_conversion_never_overwrites_an_existing_output(tmp_path):
+    from PIL import Image
+
+    folder = tmp_path / "configs" / "daemon" / "services" / "telegram" / "stickers"; folder.mkdir(parents=True)
+    source = folder / "celebrar.png"; Image.new("RGB", (20, 20), "red").save(source)
+    (folder / "celebrar-telegram.webp").write_bytes(b"keep")
+
+    try:
+        convert_static(source)
+    except FileExistsError as error:
+        assert "celebrar-telegram.webp" in str(error)
+    else:
+        raise AssertionError("A conversão não pode substituir uma saída existente.")
 
 
 def test_agent_lists_and_sends_only_cataloged_stickers(tmp_path):

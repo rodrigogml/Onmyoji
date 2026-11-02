@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import io
 import re
 import tomllib
 from dataclasses import dataclass
@@ -10,7 +11,11 @@ from pathlib import Path
 
 
 SUPPORTED_EXTENSIONS = frozenset({".webp", ".tgs", ".webm"})
+STATIC_SOURCE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp"})
 STICKER_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
+STATIC_STICKER_SIDE = 512
+STATIC_STICKER_TARGET_BYTES = 256 * 1024
+MAX_STATIC_SOURCE_PIXELS = 50_000_000
 
 
 @dataclass(frozen=True)
@@ -30,6 +35,18 @@ class StickerCatalog:
     stickers: tuple[Sticker, ...]
     issues: tuple[str, ...]
     raw_entries: dict[str, dict[str, str]]
+
+
+@dataclass(frozen=True)
+class StaticStickerConversion:
+    """Resultado de uma conversão não destrutiva para WebP de figurinha."""
+
+    source: Path
+    output: Path
+    source_size: tuple[int, int]
+    output_bytes: int
+    quality: int
+    reached_target: bool
 
 
 def sticker_folder(root: Path) -> Path:
@@ -54,6 +71,64 @@ def discover(root: Path) -> list[Path]:
     if not folder.is_dir() or folder.is_symlink():
         return []
     return sorted((path for path in folder.iterdir() if path.is_file() and not path.is_symlink() and path.suffix.casefold() in SUPPORTED_EXTENSIONS), key=lambda path: path.name.casefold())
+
+
+def discover_static_sources(root: Path) -> list[Path]:
+    """Lista imagens estáticas locais que ainda podem ser convertidas para WebP."""
+    folder = sticker_folder(root)
+    if not folder.is_dir() or folder.is_symlink():
+        return []
+    return sorted(
+        (path for path in folder.iterdir() if path.is_file() and not path.is_symlink() and path.suffix.casefold() in STATIC_SOURCE_EXTENSIONS),
+        key=lambda path: path.name.casefold(),
+    )
+
+
+def optimized_static_path(source: Path) -> Path:
+    """Define a saída WebP sem reutilizar nem substituir o arquivo de origem."""
+    return source.with_name(f"{source.stem}-telegram.webp")
+
+
+def convert_static(source: Path, *, target_bytes: int = STATIC_STICKER_TARGET_BYTES) -> StaticStickerConversion:
+    """Converte uma imagem estática local em WebP 512x512 sem alterar a origem.
+
+    A imagem é centralizada em tela transparente para atender à dimensão visual
+    das figurinhas. A saída é criada exclusivamente se ainda não existir.
+    """
+    if not source.is_file() or source.is_symlink() or source.suffix.casefold() not in STATIC_SOURCE_EXTENSIONS:
+        raise ValueError("A imagem de origem deve ser um arquivo PNG, JPG, JPEG ou WebP regular.")
+    target = optimized_static_path(source)
+    if target.exists():
+        raise FileExistsError(f"A saída já existe: {target.name}.")
+    try:
+        from PIL import Image
+        with Image.open(source) as original:
+            original.load()
+            width, height = original.size
+            if width < 1 or height < 1 or width * height > MAX_STATIC_SOURCE_PIXELS:
+                raise ValueError("A imagem excede o limite seguro de pixels para conversão.")
+            image = original.convert("RGBA")
+    except ImportError as error:
+        raise RuntimeError("Pillow não está instalado no runtime. Instale ou repare PDF e OCR básico antes de converter figurinhas.") from error
+    except OSError as error:
+        raise ValueError(f"Não foi possível ler a imagem: {error}") from error
+    image.thumbnail((STATIC_STICKER_SIDE, STATIC_STICKER_SIDE), Image.Resampling.LANCZOS)
+    canvas = Image.new("RGBA", (STATIC_STICKER_SIDE, STATIC_STICKER_SIDE), (0, 0, 0, 0))
+    canvas.alpha_composite(image, ((STATIC_STICKER_SIDE - image.width) // 2, (STATIC_STICKER_SIDE - image.height) // 2))
+    encoded = b""
+    quality = 30
+    for candidate in range(88, 29, -8):
+        stream = io.BytesIO()
+        canvas.save(stream, format="WEBP", quality=candidate, method=6)
+        encoded, quality = stream.getvalue(), candidate
+        if len(encoded) <= target_bytes:
+            break
+    try:
+        with target.open("xb") as output:
+            output.write(encoded)
+    except OSError as error:
+        raise ValueError(f"Não foi possível publicar a figurinha convertida: {error}") from error
+    return StaticStickerConversion(source, target, (width, height), len(encoded), quality, len(encoded) <= target_bytes)
 
 
 def load(root: Path, maximum_bytes: int) -> StickerCatalog:
