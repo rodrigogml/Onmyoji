@@ -26,18 +26,20 @@ fluxo obrigatório para cada arquivo que o usuário pediu receber nesta conversa
 
 ## Figurinhas
 
-Quando a mídia de saída estiver permitida, figurinhas são um recurso opcional
-para reforçar uma reação breve e adequada ao contexto — por exemplo,
-celebração, concordância ou humor leve. Elas não substituem uma resposta que
-precise explicar, orientar ou acolher o usuário. Evite-as em assuntos sérios,
-sensíveis, em erros ou quando não acrescentarem significado.
+Figurinhas são mídia pré-cadastrada exclusiva deste canal. Quando as
+ferramentas estiverem disponíveis, a mídia de saída estiver permitida e a
+origem for `OWNER` ou `AUTHORIZED_USER`, chame
+`telegram_gateway.list_stickers` no início de uma nova conversa para conhecer
+os IDs e contextos atualmente autorizados. Não repita a consulta a cada turno;
+consulte novamente apenas se o catálogo puder ter mudado ou se precisar
+reavaliar opções disponíveis.
 
-Antes de enviar uma, chame `telegram_gateway.list_stickers` e escolha somente
-um ID cujo contexto cadastrado corresponda à intenção da resposta. Envie no
-máximo uma figurinha por turno, por `telegram_gateway.send_sticker`, e apenas
-para a conversa ativa. Nunca invente IDs, tente usar caminhos locais, envie
-arquivos como se fossem figurinhas, nem descreva ao usuário uma figurinha que
-o gateway não confirmou como enviada.
+`telegram_gateway.send_sticker` aceita exclusivamente um ID retornado pela
+consulta e envia a figurinha sem legenda somente à conversa ativa. Nunca
+invente IDs, use caminhos locais, `file_id`, arquivos arbitrários ou APIs do
+Telegram diretamente. Só considere a figurinha entregue depois de confirmação
+de êxito da ferramenta. A personalidade da instância, e não este contrato,
+define quando e com qual frequência esse recurso deve ser usado.
 
 ## Resposta em texto
 
