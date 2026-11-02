@@ -32,7 +32,7 @@ from onmyoji_daemon.mcp.configuration import McpConfiguration
 from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialResolver
 from onmyoji_daemon.mcp.eccovox import EccoVoxError, EccoVoxService
 from onmyoji_daemon import runtime as python_runtime
-from onmyoji_daemon.telegram_stickers import STATIC_STICKER_TARGET_BYTES, STICKER_ID, convert_static as convert_static_sticker, discover as discover_stickers, discover_static_sources, load as load_sticker_catalog, save as save_sticker_catalog, sticker_folder, suggested_identifier
+from onmyoji_daemon.telegram_stickers import MAX_CONTEXT_LENGTH, STATIC_STICKER_TARGET_BYTES, STICKER_ID, convert_static as convert_static_sticker, discover as discover_stickers, discover_static_sources, load as load_sticker_catalog, save as save_sticker_catalog, sticker_folder, suggested_identifier
 from onmyoji_daemon import management as daemon_management
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
 from onmyoji_daemon.mcp.ocr.runtime import DocumentError, install_runtime as install_document_runtime
@@ -2028,48 +2028,53 @@ def daemon_menu(root: Path) -> None:
                 if not pending:
                     result(True, "Todos os arquivos suportados já possuem cadastro.")
                     continue
-                entries = dict(catalog.raw_entries)
-                changed = False
-                for path in pending:
-                    identifier = prompt(f"ID técnico para {path.name} [{suggested_identifier(path)}] (não é a explicação): ").strip() or suggested_identifier(path)
-                    if identifier.casefold() in {"x", "\x1b"}:
-                        break
-                    if not STICKER_ID.fullmatch(identifier) or identifier in entries:
-                        result(False, "ID inválido ou já utilizado; use de 1 a 64 letras minúsculas, números, _ ou -, começando por letra ou número.")
-                        continue
-                    context = prompt(f"Quando usar a figurinha {identifier}: ").strip()
-                    if context.casefold() in {"x", "\x1b"}:
-                        break
-                    if not context:
-                        result(False, "A explicação de uso é obrigatória; o arquivo não será disponibilizado ao agente.")
-                        continue
-                    if prompt(f"Cadastrar '{identifier}' com esta explicação? [s/N]: ").strip().casefold() not in {"s", "sim"}:
-                        note("Cadastro não confirmado; o arquivo permanece fora do catálogo.")
-                        continue
-                    entries[identifier] = {"file": path.name, "context": context}
-                    changed = True
-                if changed:
-                    try:
-                        save_sticker_catalog(root, entries); result(True, "Catálogo de figurinhas atualizado.")
-                    except ValueError as error:
-                        result(False, str(error))
-                else:
-                    note("Nenhum cadastro válido foi confirmado; o catálogo existente não foi alterado.")
+                selected = flow_choice("Arquivo para cadastrar", [path.name for path in pending], pending[0].name)
+                if selected is None:
+                    note("Cadastro cancelado; o catálogo não foi alterado.")
+                    continue
+                path = next(path for path in pending if path.name == selected)
+                identifier = prompt(f"ID técnico para {path.name} [{suggested_identifier(path)}] (não é a explicação): ").strip() or suggested_identifier(path)
+                if identifier.casefold() in {"x", "\x1b"}:
+                    note("Cadastro cancelado; o catálogo não foi alterado.")
+                    continue
+                if not STICKER_ID.fullmatch(identifier) or identifier in catalog.raw_entries:
+                    result(False, "ID inválido ou já utilizado; use de 1 a 64 letras minúsculas, números, _ ou -, começando por letra ou número.")
+                    continue
+                context = prompt(f"Quando usar a figurinha {identifier} [até {MAX_CONTEXT_LENGTH} caracteres]: ").strip()
+                if context.casefold() in {"x", "\x1b"}:
+                    note("Cadastro cancelado; o catálogo não foi alterado.")
+                    continue
+                if not 1 <= len(context) <= MAX_CONTEXT_LENGTH:
+                    result(False, f"A explicação deve ter entre 1 e {MAX_CONTEXT_LENGTH} caracteres; nada foi gravado.")
+                    continue
+                if prompt(f"Cadastrar '{identifier}' com esta explicação? [s/N]: ").strip().casefold() not in {"s", "sim"}:
+                    note("Cadastro não confirmado; o catálogo não foi alterado.")
+                    continue
+                entries = dict(catalog.raw_entries); entries[identifier] = {"file": path.name, "context": context}
+                try:
+                    save_sticker_catalog(root, entries); result(True, "Figurinha cadastrada e catálogo gravado.")
+                except ValueError as error:
+                    result(False, f"Nada foi gravado: {error}")
             elif choice == "2":
                 names = sorted(catalog.raw_entries)
-                identifier = flow_choice("Figurinha para editar", names, names[0] if names else "") if names else None
-                if identifier is None:
-                    result(False, "Nenhuma figurinha cadastrada." if not names else "Edição cancelada.")
+                labels = [f"{identifier} · {catalog.raw_entries[identifier]['file']}" for identifier in names]
+                selected = flow_choice("Figurinha para editar", labels, labels[0] if labels else "") if labels else None
+                if selected is None:
+                    result(False, "Nenhuma figurinha cadastrada." if not labels else "Edição cancelada.")
                     continue
+                identifier = names[labels.index(selected)]
                 current = catalog.raw_entries[identifier]
-                context = prompt(f"Quando usar a figurinha {identifier} [{current['context']}]: ").strip() or current["context"]
+                context = prompt(f"Quando usar a figurinha {identifier} [{current['context']}] (até {MAX_CONTEXT_LENGTH} caracteres): ").strip() or current["context"]
                 if context.casefold() in {"x", "\x1b"}:
+                    continue
+                if not 1 <= len(context) <= MAX_CONTEXT_LENGTH:
+                    result(False, f"A explicação deve ter entre 1 e {MAX_CONTEXT_LENGTH} caracteres; nada foi gravado.")
                     continue
                 entries = dict(catalog.raw_entries); entries[identifier] = {"file": current["file"], "context": context}
                 try:
-                    save_sticker_catalog(root, entries); result(True, "Explicação da figurinha atualizada.")
+                    save_sticker_catalog(root, entries); result(True, "Explicação atualizada e catálogo gravado.")
                 except ValueError as error:
-                    result(False, str(error))
+                    result(False, f"Nada foi gravado: {error}")
             elif choice == "3":
                 if catalog.stickers:
                     for sticker in catalog.stickers: print(f"    {sticker.identifier:<20} {sticker.path.name} · {sticker.context}")

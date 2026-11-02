@@ -16,6 +16,7 @@ STICKER_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
 STATIC_STICKER_SIDE = 512
 STATIC_STICKER_TARGET_BYTES = 256 * 1024
 MAX_STATIC_SOURCE_PIXELS = 50_000_000
+MAX_CONTEXT_LENGTH = 240
 
 
 @dataclass(frozen=True)
@@ -159,8 +160,8 @@ def load(root: Path, maximum_bytes: int) -> StickerCatalog:
         if not isinstance(filename, str) or Path(filename).name != filename or not filename:
             issues.append(f"{identifier}: arquivo deve ser somente um nome dentro da pasta de figurinhas.")
             continue
-        if not isinstance(context, str) or not 1 <= len(context.strip()) <= 240:
-            issues.append(f"{identifier}: informe um contexto de uso entre 1 e 240 caracteres.")
+        if not isinstance(context, str) or not 1 <= len(context.strip()) <= MAX_CONTEXT_LENGTH:
+            issues.append(f"{identifier}: informe um contexto de uso entre 1 e {MAX_CONTEXT_LENGTH} caracteres.")
             raw[identifier] = {"file": filename, "context": context if isinstance(context, str) else ""}
             continue
         raw[identifier] = {"file": filename, "context": context.strip()}
@@ -187,7 +188,7 @@ def save(root: Path, entries: dict[str, dict[str, str]]) -> Path:
         if not STICKER_ID.fullmatch(identifier):
             raise ValueError("ID de figurinha inválido.")
         filename, context = str(value.get("file") or ""), str(value.get("context") or "").strip()
-        if Path(filename).name != filename or not filename or not 1 <= len(context) <= 240:
+        if Path(filename).name != filename or not filename or not 1 <= len(context) <= MAX_CONTEXT_LENGTH:
             raise ValueError("Arquivo ou contexto de figurinha inválido.")
         lines.extend(("", f"[stickers.{identifier}]", f"file = {json.dumps(filename, ensure_ascii=False)}", f"context = {json.dumps(context, ensure_ascii=False)}"))
     temporary = target.with_suffix(".tmp")

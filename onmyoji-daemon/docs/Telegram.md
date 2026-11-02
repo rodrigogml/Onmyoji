@@ -71,6 +71,10 @@ um arquivo existente. A saída ainda exige cadastro e contexto antes de ser
 oferecida ao agente. Arquivos `.tgs` e `.webm` não são convertidos pelo menu,
 pois animações vetoriais e vídeo têm requisitos próprios.
 
+O cadastro e a edição selecionam uma figurinha por vez. O setup valida o ID e
+o contexto, de até 240 caracteres, antes de gravar imediatamente o catálogo;
+uma entrada inválida não afeta os demais arquivos pendentes.
+
 ## Respostas em texto e menus
 
 Respostas do agente são convertidas de um subconjunto simples de Markdown para

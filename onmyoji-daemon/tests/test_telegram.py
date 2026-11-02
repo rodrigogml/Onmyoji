@@ -11,7 +11,7 @@ from unittest.mock import patch
 from onmyoji_daemon.telegram import AppServerTurn, CodexAppServer, Contacts, Gateway, McpVault, Settings, TelegramApi, TelegramMediaUploadError
 from onmyoji_daemon.launcher import _approval_policy, _sandbox_policy
 from onmyoji_daemon.telegram_formatting import MAX_MESSAGE_LENGTH, plain_text, render_html, split_html, visible_text
-from onmyoji_daemon.telegram_stickers import convert_static, discover_static_sources, load as load_sticker_catalog, save as save_sticker_catalog
+from onmyoji_daemon.telegram_stickers import MAX_CONTEXT_LENGTH, convert_static, discover_static_sources, load as load_sticker_catalog, save as save_sticker_catalog
 
 
 def write_settings(root: Path, data_dir: Path) -> None:
@@ -500,6 +500,15 @@ def test_empty_sticker_catalog_is_valid_and_is_written_with_its_table(tmp_path):
 
     assert catalog.read_text(encoding="utf-8") == "schema_version = 1\n\n[stickers]\n"
     assert load_sticker_catalog(tmp_path, 1024).issues == ()
+
+
+def test_sticker_catalog_rejects_context_over_the_declared_limit_before_writing(tmp_path):
+    import pytest
+
+    with pytest.raises(ValueError, match="Arquivo ou contexto"):
+        save_sticker_catalog(tmp_path, {"celebrar": {"file": "celebrar.webp", "context": "x" * (MAX_CONTEXT_LENGTH + 1)}})
+
+    assert not (tmp_path / "configs" / "daemon" / "services" / "telegram" / "stickers" / "catalog.toml").exists()
 
 
 def test_static_sticker_conversion_creates_a_separate_512_webp(tmp_path):
