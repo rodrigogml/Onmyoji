@@ -15,7 +15,7 @@ As ferramentas preservam os comandos oficiais e recebem `args`, uma lista de str
 | Ferramenta MCP | Comando BISCMD | Efeito |
 | --- | --- | --- |
 | `bis2cmd.companies_list` | `companiesList` | Lista empresas. |
-| `bis2cmd.certificates_list` | `certificatesList` | Lista certificados. |
+| `bis2cmd.certificates_list` | `certificatesList` | Lista certificados; com `companyId`, consulta somente o certificado padrão associado à empresa. |
 | `bis2cmd.items_list` | `itemsList` | Lista itens e códigos. |
 | `bis2cmd.item_update` | `itemUpdate` | Altera campos permitidos de item ou código. |
 | `bis2cmd.item_price_update` | `itemPriceUpdate` | Altera preço por empresa e código. |
@@ -33,6 +33,19 @@ As ferramentas preservam os comandos oficiais e recebem `args`, uma lista de str
 | `bis2cmd.import_file` | `importFile` | Restaura payloads exportados. |
 
 Operações capazes de alterar estado ou chamar serviços fiscais exigem `confirm=true` no contrato MCP. Quando o próprio BISCMD exige o marcador `confirm`, ele também deve permanecer em `args`.
+
+## Certificado padrão e certificado explícito
+
+`certificates_list` sem `companyId` lista os certificados cadastrados. Com
+`companyId`, o BISCMD consulta apenas o certificado padrão associado àquela
+empresa. Portanto, uma lista vazia com esse filtro não demonstra que a empresa
+não tenha certificado disponível; demonstra somente que não há associação de
+certificado padrão.
+
+Operações fiscais como `nfce_inutilize_number` recebem `certificateId`
+explicitamente. Antes de concluir que não é possível operar, consulte a lista
+sem filtro, confira a validade do certificado encontrado e trate a associação
+à empresa como uma verificação distinta.
 
 ## Arquivos locais
 

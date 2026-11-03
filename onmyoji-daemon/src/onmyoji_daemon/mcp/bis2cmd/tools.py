@@ -6,7 +6,7 @@ from .service import Bis2CmdService, COMMANDS, WRITE_OPERATIONS
 
 DESCRIPTIONS = {
     "companies_list": "Lista empresas. args aceita pares limit/offset.",
-    "certificates_list": "Lista certificados. args aceita companyId, limit e offset em pares.",
+    "certificates_list": "Lista certificados. args aceita companyId, limit e offset em pares. ATENÇÃO: companyId consulta somente o certificado padrão associado à empresa; lista vazia com esse filtro não prova ausência de certificado cadastrado. Para localizar certificados utilizáveis, consulte também sem companyId e confirme ID e validade.",
     "items_list": "Lista itens por id, codeId, status, code ou displayLine; aceita limit/offset.",
     "item_update": "Altera campo permitido de item ou código. args: itemId, codeId opcional, field, value e confirm.",
     "item_price_update": "Altera preço. args: companyId, codeId, price e confirm.",
@@ -17,7 +17,7 @@ DESCRIPTIONS = {
     "validate_doc_fiscal": "Revalida documento fiscal. args: docId <id>.",
     "nfce_download_xml": "Consulta ou persiste XML na SEFAZ. args: companyId, certificateId, key; opcional output, dryRun ou confirm. output fica restrito às raízes de exportação.",
     "nfce_listagem_chaves": "Lista página de chaves na SEFAZ. args: companyId, certificateId, start ISO-8601 e end opcional; continue por metadata.next_start.",
-    "nfce_inutilize_number": "Inutiliza faixas na SEFAZ. args: companyId, certificateId, conjuntos serie/numberStart/numberEnd, --workers 2-5 opcional e confirm.",
+    "nfce_inutilize_number": "Inutiliza faixas na SEFAZ. args: companyId, certificateId, conjuntos serie/numberStart/numberEnd, --workers 2-5 opcional e confirm. certificateId é explícito: não conclua que ele está indisponível apenas porque certificates_list com companyId retornou vazio, pois esse filtro cobre somente o certificado padrão.",
     "nfce_send_offline": "Envia NFC-e offline. args: docId <id>, ids <lista> ou all, seguido de confirm.",
     "export_nfe": "Exporta XMLs de NFe. args: startDate, endDate e outputPath; destino restrito às raízes de exportação.",
     "export_file": "Exporta arquivos DB. args: intervalo startDate/endDate, lastDays ou startID/endID, mais outputPath; destino restrito às raízes de exportação.",

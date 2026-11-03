@@ -33,3 +33,13 @@ def test_special_argument_validation_and_output():
     with pytest.raises(Bis2CmdError): validate_args("docFiscalDetail", ["key", "123"])
     validate_args("nfceInutilizeNumber", ["companyId", "2", "certificateId", "6", "serie", "1", "numberStart", "2", "numberEnd", "3", "confirm"])
     assert parse_output('BISJSON {"ok":true}\nMensagem\n')["messages"] == ["Mensagem"]
+
+
+def test_certificate_company_filter_explains_that_it_only_reads_the_default_certificate(tmp_path, monkeypatch):
+    service = configured(tmp_path)
+    monkeypatch.setattr("onmyoji_daemon.mcp.bis2cmd.service.subprocess.run", lambda *_args, **_kwargs: Mock(returncode=0, stdout=b'BISMETA {"complete":true}\n', stderr=b""))
+
+    result = service.invoke("bis", "certificates_list", {"args": ["companyId", "2", "limit", "100"]})
+
+    assert result["records"] == []
+    assert result["filter"] == {"company_id": "2", "scope": "default_certificate_only", "empty_result_means": "A empresa não possui certificado padrão associado; isso não comprova ausência de certificados cadastrados."}

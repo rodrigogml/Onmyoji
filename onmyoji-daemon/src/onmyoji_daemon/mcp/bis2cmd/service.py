@@ -113,7 +113,12 @@ class Bis2CmdService:
             decoded = value.decode(defaults["encoding"], errors="replace"); return value.decode("cp1252", errors="replace") if "\ufffd" in decoded else decoded
         stdout, stderr = decode(completed.stdout), decode(completed.stderr)
         if completed.returncode: raise Bis2CmdError("bis2cmd_error", _failure(stdout, stderr))
-        return parse_output(stdout)
+        result = parse_output(stdout)
+        if command == "certificatesList":
+            company_id = next((args[index + 1] for index in range(len(args) - 1) if args[index].casefold() == "companyid"), None)
+            if company_id is not None:
+                result["filter"] = {"company_id": company_id, "scope": "default_certificate_only", "empty_result_means": "A empresa não possui certificado padrão associado; isso não comprova ausência de certificados cadastrados."}
+        return result
     def _profile(self, name: str):
         try: document = tomllib.loads(self.path.read_text(encoding="utf-8"))
         except FileNotFoundError as error: raise Bis2CmdError("config_not_found", "Configuração BIS2CMD MCP não encontrada.") from error
