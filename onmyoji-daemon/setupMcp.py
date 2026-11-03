@@ -1423,7 +1423,7 @@ def manage_bis2cmd_profile(config: McpConfiguration, name: str) -> None:
         profile_screen("MCP · Perfil BIS2CMD", name, profile)
         item("1.", "Alterar perfil de vault"); item("2.", "Alterar entrada e credenciais"); item("3.", "Alterar descrição"); item("4.", "Alterar JAR e diretório de trabalho")
         item("5.", "Alterar host e porta"); item("6.", "Alterar raízes de importação", f"{len(profile['readable_roots'])} configurada(s)"); item("7.", "Alterar raízes de exportação", f"{len(profile['writable_roots'])} configurada(s)")
-        item("8.", "Habilitar"); item("9.", "Desabilitar"); item("10.", "Testar conexão"); item("11.", "Remover perfil"); item("X.", "Voltar")
+        item("8.", "Habilitar"); item("9.", "Desabilitar"); item("10.", "Testar conexão"); item("11.", "Remover perfil"); item("12.", "Renomear perfil"); item("X.", "Voltar")
         action = prompt("Opção: ").strip().casefold()
         if action in {"x", "\x1b"}: return
         if action in {"1", "2"}:
@@ -1462,6 +1462,19 @@ def manage_bis2cmd_profile(config: McpConfiguration, name: str) -> None:
             del data["profiles"][name]
             try: config.save_bis2cmd(data); result(True, "Perfil BIS2CMD removido. A entrada KeePass foi preservada.")
             except McpConfigurationError as error: result(False, f"Perfil BIS2CMD não removido: {error}"); continue
+            return
+        elif action == "12":
+            replacement = ask("Novo nome do perfil", name, True)
+            if not replacement: continue
+            if replacement == name:
+                note("O perfil já possui esse nome."); continue
+            if replacement in data["profiles"]:
+                result(False, "Já existe um perfil BIS2CMD com esse nome."); continue
+            if prompt(f"Renomear o perfil BIS2CMD '{name}' para '{replacement}'? [s/N]: ").strip().casefold() not in {"s", "sim"}:
+                result(False, "Perfil BIS2CMD não renomeado."); continue
+            data["profiles"][replacement] = data["profiles"].pop(name)
+            try: config.save_bis2cmd(data); result(True, "Perfil BIS2CMD renomeado. A entrada KeePass foi preservada.")
+            except McpConfigurationError as error: result(False, f"Perfil BIS2CMD não renomeado: {error}"); continue
             return
         else: result(False, "Opção inválida."); continue
         try: config.save_bis2cmd(data); result(True, "Perfil BIS2CMD atualizado.")

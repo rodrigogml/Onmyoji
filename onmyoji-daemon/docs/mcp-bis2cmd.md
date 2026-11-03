@@ -4,6 +4,10 @@ A integração executa o cliente Java BISCMD contra as fachadas EJB remotas do B
 
 Cada perfil define contexto de uso, JAR, diretório de trabalho, host e porta do WildFly, entrada KeePass e raízes locais permitidas para importação e exportação. Um único perfil habilitado é implícito; com vários, `bis2cmd.list_profiles` informa nome e contexto.
 
+No setup, a opção **Renomear perfil** move somente a chave do perfil e preserva
+os demais campos. A entrada KeePass é independente do nome do perfil: ajuste-a
+separadamente em **Alterar entrada e credenciais** quando necessário.
+
 ## Ferramentas
 
 As ferramentas preservam os comandos oficiais e recebem `args`, uma lista de strings na ordem aceita pelo BISCMD. O argumento `help` solicita a ajuda nativa do comando.

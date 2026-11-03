@@ -277,6 +277,18 @@ def test_bis2cmd_removal_is_case_insensitive(monkeypatch, capsys):
     assert "Perfil BIS2CMD removido" in capsys.readouterr().out
 
 
+def test_bis2cmd_profile_rename_preserves_its_configuration(monkeypatch, capsys):
+    module = setup_module(); config = mock_configuration()
+    profile = {"enabled": True, "description": "BIS2 de teste.", "jar_path": "BISCMD.jar", "working_dir": "biscmd", "host": "localhost", "port": 8080, "java_options": "", "credential_profile": "vault", "credential_entry_path": "APIs/BIS2CMD/default", "username_field": "username", "password_field": "password", "readable_roots": [], "writable_roots": []}
+    config.bis2cmd.return_value = {"profiles": {"default": profile}}
+    answers = iter(["12", "barinella", "s"]); monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
+
+    module.manage_bis2cmd_profile(config, "default")
+
+    config.save_bis2cmd.assert_called_once_with({"profiles": {"barinella": profile}})
+    assert "Perfil BIS2CMD renomeado" in capsys.readouterr().out
+
+
 def test_bis10cmd_removal_is_case_insensitive(monkeypatch, capsys):
     module = setup_module(); config = mock_configuration()
     profile = {"enabled": True, "description": "BIS10.", "jar_path": "BISCMD.jar", "working_dir": "BIS10CMD", "host": "localhost", "port": 8080, "locale": "pt-BR", "jndi_credential_profile": "jndi", "jndi_credential_entry_path": "JNDI", "jndi_username_field": "username", "jndi_password_field": "password", "bis_credential_profile": "bis", "bis_credential_entry_path": "BIS10", "bis_username_field": "username", "bis_password_field": "password"}
