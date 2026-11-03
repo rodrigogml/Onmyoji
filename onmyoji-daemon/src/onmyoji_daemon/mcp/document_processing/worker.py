@@ -36,6 +36,13 @@ def main(request_path: str) -> int:
         require(raw.is_absolute(), "invalid_path", "O pedido documental deve usar caminho absoluto.")
         reject_links(raw)
         request = json.loads(raw.read_text(encoding="utf-8"))
+        if request.get("direct_password"):
+            secret = sys.stdin.buffer.read(4097)
+            require(1 <= len(secret) <= 4096, "invalid_password", "A senha direta do PDF não foi recebida.")
+            try:
+                request["arguments"] = {**request["arguments"], "password": secret.decode("utf-8")}
+            except UnicodeDecodeError as error:
+                raise DocumentError("invalid_password", "A senha direta do PDF precisa usar UTF-8.") from error
         namespace = request["namespace"]
         require(namespace in {"pdf", "ocr"}, "invalid_namespace", "Módulo documental inválido.")
         from .configuration import validate_profile_directories

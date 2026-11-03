@@ -219,6 +219,25 @@ def test_real_pdf_worker_reads_then_publishes_an_independent_document(tmp_path):
         jobs.close()
 
 
+def test_direct_pdf_password_is_delivered_without_being_persisted(tmp_path):
+    fitz = pytest.importorskip("pymupdf")
+    root, configured = profile(tmp_path)
+    source = Path(configured["readable_roots"][0]) / "protected.pdf"
+    with fitz.open() as document:
+        document.new_page().insert_text((40, 40), "Protegido")
+        document.save(source, encryption=fitz.PDF_ENCRYPT_AES_256, user_pw="direct-secret", owner_pw="direct-secret")
+    jobs = Jobs(root, "pdf")
+    try:
+        submitted = jobs.submit("default", configured, {}, "inspect", {"input_path": str(source), "password": "direct-secret"}, "direct-password")
+        request = (jobs._directories[submitted["job_id"]] / "request.json").read_text(encoding="utf-8")
+        state = (jobs._directories[submitted["job_id"]] / "state.json").read_text(encoding="utf-8")
+        assert "direct-secret" not in request and "direct-secret" not in state
+        assert '"direct_password": true' in request
+        assert wait_job(jobs, submitted["job_id"])["status"] == "succeeded"
+    finally:
+        jobs.close()
+
+
 def test_real_worker_fails_on_malformed_pdf_without_publication(tmp_path):
     pytest.importorskip("pymupdf")
     root, configured = profile(tmp_path)

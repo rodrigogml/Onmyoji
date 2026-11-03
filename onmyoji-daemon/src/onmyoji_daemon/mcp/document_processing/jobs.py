@@ -4,6 +4,7 @@ from __future__ import annotations
 import atexit
 import copy
 import hashlib
+import hmac
 import json
 import math
 import os
@@ -147,6 +148,8 @@ class Jobs:
         self._retention: dict[str, float] = {}
         self._processes: dict[str, subprocess.Popen] = {}
         self._job_handles: dict[str, object] = {}
+        self._passwords: dict[str, str] = {}
+        self._password_key = os.urandom(32)
         self._lock = threading.RLock()
         self._closed = threading.Event()
         self._last_cleanup = time.time()
@@ -248,8 +251,12 @@ class Jobs:
     def submit(self, profile_name: str, profile: dict, defaults: dict, operation: str, args: dict, request_id: str) -> dict:
         require(isinstance(request_id, str) and 1 <= len(request_id) <= 200 and all(ord(char) >= 32 for char in request_id), "invalid_request_id", "Informe request_id com até 200 caracteres.")
         self.register(profile_name, profile, defaults)
-        fingerprints = self._input_fingerprints(profile, args, defaults.get("max_input_bytes", 262144000))
-        payload = {"operation": operation, "arguments": args, "sources": fingerprints}
+        password = args.get("password")
+        require(password is None or isinstance(password, str) and password, "invalid_password", "A senha direta do PDF deve ser um texto não vazio.")
+        safe_args = {key: value for key, value in args.items() if key != "password"}
+        fingerprints = self._input_fingerprints(profile, safe_args, defaults.get("max_input_bytes", 262144000))
+        password_digest = hmac.new(self._password_key, password.encode("utf-8"), hashlib.sha256).hexdigest() if password else None
+        payload = {"operation": operation, "arguments": safe_args, "password_digest": password_digest, "sources": fingerprints}
         digest = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
         with self._lock:
             require(not self._closed.is_set(), "service_closed", "O serviço documental está encerrando.")
@@ -265,11 +272,13 @@ class Jobs:
             directory.mkdir()
             reject_links(directory)
             state = {"job_id": identifier, "namespace": self.namespace, "profile": profile_name, "operation": operation, "status": "queued", "created_at": time.time(), "request_id": request_id, "request_hash": digest, "timeout_seconds": defaults.get("timeout_seconds", 1800)}
-            request = {"root": str(self.root), "namespace": self.namespace, "profile_name": profile_name, "profile": profile, "defaults": defaults, "operation": operation, "arguments": args, "sources": fingerprints}
+            request = {"root": str(self.root), "namespace": self.namespace, "profile_name": profile_name, "profile": profile, "defaults": defaults, "operation": operation, "arguments": safe_args, "direct_password": password is not None, "sources": fingerprints}
             _write_json(directory / "request.json", request)
             _write_json(directory / "state.json", state)
             self._records[identifier] = state
             self._directories[identifier] = directory
+            if password is not None:
+                self._passwords[identifier] = password
             return self._public(state)
 
     def _state(self, profile_name: str, identifier: str) -> dict:
@@ -333,6 +342,7 @@ class Jobs:
                     _stop_process(process)
                 _close_windows_job(self._job_handles.pop(job_id, None))
                 self._rollback_completed(job_id)
+                self._passwords.pop(job_id, None)
                 self._persist(job_id, state)
             return self._public(state)
 
@@ -349,7 +359,17 @@ class Jobs:
         reject_links(directory / "request.json")
         environment = execution_environment(directory, source)
         options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
-        process = subprocess.Popen([sys.executable, "-B", "-m", "onmyoji_daemon.mcp.document_processing.worker", str(directory / "request.json")], cwd=str(directory), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=environment, **options)
+        password = self._passwords.get(identifier)
+        process = subprocess.Popen([sys.executable, "-B", "-m", "onmyoji_daemon.mcp.document_processing.worker", str(directory / "request.json")], cwd=str(directory), stdin=subprocess.PIPE if password is not None else subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=environment, **options)
+        if password is not None:
+            try:
+                require(process.stdin is not None, "worker_unavailable", "Não foi possível transmitir a senha direta ao processo documental.")
+                process.stdin.write(password.encode("utf-8"))
+                process.stdin.close()
+                self._passwords.pop(identifier, None)
+            except (OSError, ValueError, DocumentError):
+                _stop_process(process)
+                raise
         if os.name == "nt":
             try:
                 self._job_handles[identifier] = _windows_job(process)
@@ -425,6 +445,7 @@ class Jobs:
                         state.update(status="failed", error={"code": "timeout" if timed_out else completion.get("error", {}).get("code", "worker_failed"), "message": "A execução excedeu o prazo configurado." if timed_out else completion.get("error", {}).get("message", "O processo documental não concluiu a operação.")})
                     state["finished_at"] = time.time()
                     self._persist(identifier, state)
+                    self._passwords.pop(identifier, None)
                     del self._processes[identifier]
                     _close_windows_job(self._job_handles.pop(identifier, None))
                 busy = {self._records[identifier]["profile"] for identifier in self._processes}
@@ -438,6 +459,7 @@ class Jobs:
                         busy.add(state["profile"])
                     except (OSError, ValueError):
                         state.update(status="failed", finished_at=time.time(), error={"code": "worker_unavailable", "message": "Não foi possível iniciar o processo documental."})
+                        self._passwords.pop(identifier, None)
                     self._persist(identifier, state)
 
     def close(self) -> None:
@@ -453,6 +475,7 @@ class Jobs:
                     state.update(status="interrupted", finished_at=time.time(), error={"code": "interrupted", "message": "O servidor MCP foi encerrado durante a execução."})
                     self._persist(identifier, state)
             self._processes.clear()
+            self._passwords.clear()
             for handle in self._job_handles.values():
                 _close_windows_job(handle)
             self._job_handles.clear()

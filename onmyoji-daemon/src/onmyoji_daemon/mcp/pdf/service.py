@@ -73,6 +73,10 @@ def _bbox(page, value) -> list[float]:
 
 
 def _password(context, args: dict) -> str:
+    password = args.get("password")
+    if password is not None:
+        _require(isinstance(password, str) and bool(password), "invalid_password", "A senha direta do PDF deve ser um texto não vazio.")
+        return password
     return context.resolve_password(args["password_ref"]) if args.get("password_ref") else ""
 
 

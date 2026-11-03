@@ -33,7 +33,8 @@ PATH = string("Caminho absoluto dentro das raízes autorizadas do workspace.")
 RECT = {"type": "array", "items": NUMBER, "minItems": 4, "maxItems": 4, "description": "[x0,y0,x1,y1] em pontos, origem superior esquerda da página visível após rotação."}
 COLOR = {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 1}, "minItems": 3, "maxItems": 3}
 PASSWORD = object_schema({"credential_profile": string(), "credential_entry_path": string(), "field": enum("password")}, ["credential_profile", "credential_entry_path"])
-INPUT = {"input_path": PATH, "password_ref": PASSWORD}
+DIRECT_PASSWORD = string("Senha do PDF para esta chamada. É transmitida ao worker por stdin e não é gravada no job.")
+INPUT = {"input_path": PATH, "password": DIRECT_PASSWORD, "password_ref": PASSWORD}
 SELECTION = {"pages": string("Páginas a partir de 1, por exemplo 1-3,7,10-12."), "region": RECT}
 OUTPUT = {"output_path": PATH, "allow_signature_invalidation": BOOLEAN}
 OCR_OPTIONS = {"engine": enum("tesseract", "paddleocr"), "languages": array(string(), 1, 20), "dpi": {"type": "integer", "minimum": 72, "maximum": 600}, "rotate": BOOLEAN, "deskew": BOOLEAN}
@@ -49,7 +50,7 @@ PDF_SPECS = {
     "render_pages": ("Renderiza páginas, recortes, miniaturas ou folha de contato.", {**SELECTION, "format": enum("png", "jpeg"), "dpi": {"type": "integer", "minimum": 36, "maximum": 600}, "contact_sheet": BOOLEAN, "output_directory": PATH, "output_path": PATH}, []),
     "extract_images": ("Extrai imagens incorporadas preservando a fonte.", {**SELECTION, "output_directory": PATH}, ["output_directory"]),
     "select_pages": ("Extrai, exclui, reordena, duplica ou insere páginas em um PDF novo.", {**SELECTION, **OUTPUT, "action": enum("extract", "delete", "reorder", "duplicate", "insert"), "page_order": array(POSITIVE, 1), "insert_path": PATH, "insert_at": POSITIVE}, ["output_path"]),
-    "merge": ("Mescla ou intercala PDFs na ordem informada.", {**OUTPUT, "password_ref": PASSWORD, "input_paths": array(PATH, 2, 100), "action": enum("concat", "interleave")}, ["input_paths", "output_path"]),
+    "merge": ("Mescla ou intercala PDFs na ordem informada.", {**OUTPUT, "password": DIRECT_PASSWORD, "password_ref": PASSWORD, "input_paths": array(PATH, 2, 100), "action": enum("concat", "interleave")}, ["input_paths", "output_path"]),
     "split": ("Divide por intervalos ou marcadores e publica somente saídas completas.", {"ranges": array(string(), 1), "action": enum("ranges", "bookmarks"), "output_directory": PATH, "allow_signature_invalidation": BOOLEAN}, ["output_directory"]),
     "transform_pages": ("Rotaciona, recorta, redimensiona ou altera margens. Recorte não remove conteúdo oculto.", {**SELECTION, **OUTPUT, "action": enum("rotate", "crop", "resize", "margins"), "angle": {"type": "integer", "enum": [0, 90, 180, 270, -90, -180, -270]}, "width": NUMBER, "height": NUMBER, "margins": RECT}, ["action", "output_path"]),
     "create": ("Cria PDF de imagens ou texto estruturado.", {**OUTPUT, "input_paths": array(PATH, 1, 2000), "text": {"type": "string", "maxLength": 2000000}, "title": string(), "width": NUMBER, "height": NUMBER}, ["output_path"]),

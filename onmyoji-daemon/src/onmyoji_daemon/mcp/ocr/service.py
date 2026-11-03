@@ -224,7 +224,9 @@ def _open_pdf(path: Path, args: dict, context):
     except Exception as error:
         raise DocumentError("invalid_pdf", "O documento PDF não pôde ser aberto.") from error
     if document.needs_pass:
-        password = context.resolve_password(args.get("password_ref")) if args.get("password_ref") else ""
+        password = args.get("password")
+        if password is None:
+            password = context.resolve_password(args.get("password_ref")) if args.get("password_ref") else ""
         if not password or not document.authenticate(password):
             document.close()
             raise DocumentError("password_required", "Informe uma referência de senha válida para o PDF.")

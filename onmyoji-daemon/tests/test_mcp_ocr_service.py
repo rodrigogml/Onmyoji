@@ -335,3 +335,18 @@ def test_searchable_pdf_native_does_not_require_ocr_engine(tmp_path, monkeypatch
     assert result["engine"] == "pymupdf" and result["pages_with_text"] == 1
     with pymupdf.open(tmp_path / "output.pdf") as document:
         assert "Native text" in document[0].get_text()
+
+
+def test_ocr_opens_password_protected_pdf_with_direct_password(tmp_path):
+    pymupdf = pytest.importorskip("pymupdf")
+    source = tmp_path / "protected.pdf"
+    with pymupdf.open() as document:
+        document.new_page().insert_text((50, 70), "Protegido")
+        document.save(source, encryption=pymupdf.PDF_ENCRYPT_AES_256, user_pw="direct-secret", owner_pw="direct-secret")
+
+    document = service._open_pdf(source, {"password": "direct-secret"}, Context(tmp_path))
+
+    try:
+        assert document.page_count == 1
+    finally:
+        document.close()
