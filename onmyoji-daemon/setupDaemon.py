@@ -222,6 +222,16 @@ def save_default_thought_preferences(root: Path, share: bool, delete: bool) -> N
     save_telegram(root, str(telegram.get("vault_profile") or ""), str(telegram.get("token_entry") or ""), data)
 
 
+def save_max_parallel_conversations(root: Path, maximum: int) -> None:
+    """Define quantas conversas distintas o gateway pode processar simultaneamente."""
+    if not 1 <= maximum <= 16:
+        raise ValueError("O máximo de conversas em paralelo deve estar entre 1 e 16.")
+    data = telegram_data(root); agent = data.setdefault("agent", {})
+    agent["max_parallel_conversations"] = maximum
+    telegram = data.get("telegram", {})
+    save_telegram(root, str(telegram.get("vault_profile") or ""), str(telegram.get("token_entry") or ""), data)
+
+
 def workspace(root: Path) -> Path:
     try:
         system = tomllib.loads((root / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8"))
@@ -579,7 +589,7 @@ def test_telegram(root: Path) -> tuple[bool, str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--onmyoji-root", default=str(ROOT)); parser.add_argument("--action", choices=["bootstrap", "daemon-bootstrap", "validate", "validation-json", "keepass-validation-json", "daemon-validation-json", "instructions-status", "profiles", "set-runtime", "set-credential", "set-totp", "set-app-server", "set-owner-execution-preferences", "set-default-thought-preferences", "set-voice-reply", "set-agent-outbound-media", "check-entry", "write-token", "test-telegram", "test-agent"], default="bootstrap"); parser.add_argument("--profile"); parser.add_argument("--entry"); parser.add_argument("--real-entry"); parser.add_argument("--fake-entry"); parser.add_argument("--runtime-mode"); parser.add_argument("--python"); parser.add_argument("--base-python"); parser.add_argument("--enabled", action="store_true"); parser.add_argument("--disabled", action="store_true"); parser.add_argument("--idle-timeout", type=int); parser.add_argument("--auto-off-minutes", type=int); parser.add_argument("--voice"); parser.add_argument("--language"); parser.add_argument("--models", default=""); parser.add_argument("--efforts", default=""); parser.add_argument("--share-thoughts", choices=["true", "false"]); parser.add_argument("--delete-thoughts", choices=["true", "false"]); args = parser.parse_args()
+    parser = argparse.ArgumentParser(); parser.add_argument("--onmyoji-root", default=str(ROOT)); parser.add_argument("--action", choices=["bootstrap", "daemon-bootstrap", "validate", "validation-json", "keepass-validation-json", "daemon-validation-json", "instructions-status", "profiles", "set-runtime", "set-credential", "set-totp", "set-app-server", "set-owner-execution-preferences", "set-default-thought-preferences", "set-max-parallel-conversations", "set-voice-reply", "set-agent-outbound-media", "check-entry", "write-token", "test-telegram", "test-agent"], default="bootstrap"); parser.add_argument("--profile"); parser.add_argument("--entry"); parser.add_argument("--real-entry"); parser.add_argument("--fake-entry"); parser.add_argument("--runtime-mode"); parser.add_argument("--python"); parser.add_argument("--base-python"); parser.add_argument("--enabled", action="store_true"); parser.add_argument("--disabled", action="store_true"); parser.add_argument("--idle-timeout", type=int); parser.add_argument("--auto-off-minutes", type=int); parser.add_argument("--voice"); parser.add_argument("--language"); parser.add_argument("--models", default=""); parser.add_argument("--efforts", default=""); parser.add_argument("--share-thoughts", choices=["true", "false"]); parser.add_argument("--delete-thoughts", choices=["true", "false"]); parser.add_argument("--max-parallel-conversations", type=int); args = parser.parse_args()
     root = Path(args.onmyoji_root).resolve()
     if args.action == "bootstrap": print(bootstrap(root)); return 0
     if args.action == "daemon-bootstrap": print(bootstrap_daemon(root)); return 0
@@ -602,6 +612,9 @@ def main() -> int:
     if args.action == "set-default-thought-preferences":
         if args.share_thoughts is None or args.delete_thoughts is None: parser.error("--share-thoughts e --delete-thoughts são obrigatórios")
         bootstrap(root); save_default_thought_preferences(root, args.share_thoughts == "true", args.delete_thoughts == "true"); print("Padrão de pensamentos salvo."); return 0
+    if args.action == "set-max-parallel-conversations":
+        if args.max_parallel_conversations is None: parser.error("--max-parallel-conversations é obrigatório")
+        bootstrap(root); save_max_parallel_conversations(root, args.max_parallel_conversations); print("Limite de conversas em paralelo salvo."); return 0
     if args.action == "set-voice-reply":
         bootstrap(root); staging = save_voice_reply(root, args.enabled, args.profile or "", args.auto_off_minutes or 15, args.voice, args.language)
         print(f"Configuração de resposta por áudio salva. Staging autorizado: {staging}" if staging else "Configuração de resposta por áudio salva."); return 0

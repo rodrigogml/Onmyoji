@@ -1960,6 +1960,34 @@ def daemon_menu(root: Path) -> None:
             note("O padrão será aplicado em novas conversas e ao usar /new; a conversa atual preserva sua escolha própria.")
             offer_restart()
 
+    def configure_parallel_responses() -> None:
+        """Define o limite global de turnos simultâneos em conversas distintas."""
+        telegram_path = telegram_configuration_path(root)
+        command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "bootstrap"], quiet=True)
+        try:
+            agent = tomllib.loads(telegram_path.read_text(encoding="utf-8")).get("agent", {})
+            current = int(agent.get("max_parallel_conversations", 1))
+            current = min(16, max(1, current))
+        except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
+            current = 1
+        note("O limite distribui processamento entre conversas diferentes. Mensagens da mesma conversa continuam em ordem.")
+        raw = prompt(f"Máximo de conversas processadas em paralelo [{current}] (1 a 16): ").strip()
+        if raw.casefold() in {"x", "\x1b"}:
+            return
+        try:
+            maximum = int(raw) if raw else current
+        except ValueError:
+            result(False, "Informe um número inteiro entre 1 e 16.")
+            return
+        if not 1 <= maximum <= 16:
+            result(False, "Informe um número entre 1 e 16.")
+            return
+        changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-max-parallel-conversations", "--max-parallel-conversations", str(maximum)], quiet=True)
+        result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
+        if changed.returncode == 0:
+            note("O novo limite será usado após reiniciar o gateway Telegram.")
+            offer_restart()
+
     def convert_stickers_menu() -> None:
         """Converte fontes estáticas sem alterar os originais nem sobrescrever saídas."""
         while True:
@@ -2471,6 +2499,7 @@ def daemon_menu(root: Path) -> None:
             item("7.", "Arquivos e fotos do agente", "Permissão de mídia enviada pelo gateway Telegram")
             item("8.", "Padrão de pensamentos", "Comportamento inicial de novas conversas e /new")
             item("9.", "Figurinhas do agente", "Catálogo e explicações de uso")
+            item("10.", "Paralelismo de respostas", "Máximo de conversas processadas simultaneamente")
             print()
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
@@ -2486,6 +2515,7 @@ def daemon_menu(root: Path) -> None:
             elif choice == "7": telegram_section_menu("media")
             elif choice == "8": configure_default_thoughts()
             elif choice == "9": configure_stickers()
+            elif choice == "10": configure_parallel_responses()
             else: result(False, "Opção inválida.")
 
     def miniapps_command(*arguments: str) -> subprocess.CompletedProcess[str]:

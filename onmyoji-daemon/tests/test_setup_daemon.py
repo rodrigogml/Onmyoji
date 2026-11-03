@@ -64,6 +64,23 @@ def test_default_thought_preferences_are_persisted_for_new_conversations(tmp_pat
     assert saved["telegram"]["default_delete_thoughts"] is False
 
 
+def test_max_parallel_conversations_is_persisted_with_safe_limits(tmp_path):
+    module = setup_module(); module.bootstrap(tmp_path)
+    data = module.telegram_data(tmp_path); module.save_telegram(tmp_path, "vault", "APIs/Telegram:Bot", data)
+
+    module.save_max_parallel_conversations(tmp_path, 4)
+
+    saved = tomllib.loads(module.target(tmp_path).read_text(encoding="utf-8"))
+    assert saved["agent"]["max_parallel_conversations"] == 4
+
+    try:
+        module.save_max_parallel_conversations(tmp_path, 17)
+    except ValueError as error:
+        assert str(error) == "O máximo de conversas em paralelo deve estar entre 1 e 16."
+    else:
+        raise AssertionError("O limite acima de 16 deveria ser rejeitado.")
+
+
 def test_validation_requires_an_absolute_codex_executable_for_services(tmp_path):
     module = setup_module(); workspace = tmp_path / "workspace"; workspace.mkdir()
     configs = tmp_path / "configs"; configs.mkdir()

@@ -43,6 +43,13 @@ pensamentos do agente durante o turno e, quando compartilhados, excluí-los ou
 mantê-los após a resposta. A configuração individual em `/config` continua
 restrita à conversa atual e não é alterada ao modificar o padrão global.
 
+## Paralelismo de respostas
+
+O menu `Gateway Telegram` permite definir de 1 a 16 conversas processadas em
+paralelo. O limite distribui capacidade entre conversas distintas; mensagens
+da mesma conversa permanecem serializadas para conservar a ordem e o contexto.
+Reinicie o Gateway depois de alterar esse valor para aplicar o novo limite.
+
 ## Figurinhas do agente
 
 O Gateway pode disponibilizar figurinhas pré-cadastradas ao agente na conversa
