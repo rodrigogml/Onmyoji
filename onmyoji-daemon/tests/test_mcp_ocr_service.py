@@ -245,6 +245,18 @@ def test_model_cache_copy_does_not_share_writable_model_files(tmp_path):
     assert resource.read_bytes() == b"original"
 
 
+def test_model_cache_rejects_windows_paths_that_exceed_the_legacy_limit(tmp_path, monkeypatch):
+    from onmyoji_daemon.mcp.ocr import runtime
+    models = tmp_path / "models"; models.mkdir()
+    (models / "weights.bin").write_bytes(b"resource")
+    monkeypatch.setattr(runtime.os, "name", "nt")
+
+    with pytest.raises(DocumentError) as failure:
+        runtime.copy_model_cache(models, tmp_path / ("d" * 180))
+
+    assert failure.value.code == "model_cache_path_too_long"
+
+
 def test_advanced_inference_uses_a_working_copy_of_prepared_resources(tmp_path, monkeypatch):
     source = image_file(tmp_path)
     executable = tmp_path / "advanced-python.exe"; executable.touch()
@@ -256,6 +268,7 @@ def test_advanced_inference_uses_a_working_copy_of_prepared_resources(tmp_path, 
         request = json.loads(Path(command[-2]).read_text(encoding="utf-8"))
         cache = Path(request["models"])
         assert cache != models and cache.is_relative_to(context.job_dir)
+        assert cache.name == "models"
         assert kwargs["env"]["PADDLE_PDX_CACHE_HOME"] == str(cache)
         (cache / "weights.bin").write_bytes(b"working-copy")
         Path(command[-1]).write_text('{"text":"reconhecido"}', encoding="utf-8")

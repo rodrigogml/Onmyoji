@@ -115,7 +115,12 @@ def pip_command() -> list[str]:
 
 
 def copy_model_cache(models: Path, destination: Path) -> Path:
-    """Copia recursos preparados para um cache de inferência sem gravar nos originais."""
+    """Copia recursos preparados para um cache de inferência sem gravar nos originais.
+
+    O destino precisa ser curto o bastante para acomodar toda a árvore de
+    modelos no Windows. Isso evita que uma instalação válida seja anunciada
+    como pronta e falhe apenas na primeira inferência.
+    """
     from ..document_processing.paths import reject_links
     models = models.resolve()
     reject_links(destination)
@@ -123,9 +128,11 @@ def copy_model_cache(models: Path, destination: Path) -> Path:
         reject_links(candidate)
         if not candidate.resolve().is_relative_to(models):
             raise DocumentError("invalid_models", "O cache de modelos contém um caminho externo à área de recursos.")
+        if os.name == "nt" and len(str(destination / candidate.relative_to(models))) >= 260:
+            raise DocumentError("model_cache_path_too_long", "O diretório de trabalho OCR gera caminhos longos demais no Windows; configure um workspace com caminho menor.")
     try:
         shutil.copytree(models, destination, symlinks=False, dirs_exist_ok=False)
-    except OSError as error:
+    except (OSError, shutil.Error) as error:
         raise DocumentError("model_cache_failed", "Não foi possível preparar o cache de inferência no workspace.") from error
     return destination
 

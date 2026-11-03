@@ -187,7 +187,12 @@ def _advanced(path: Path, options: dict, profile: dict, context, *, layout: bool
     executable, models = advanced_python(context.root), model_directory(context.root, profile)
     if not executable.is_file() or not (models / "prepared.json").is_file():
         raise DocumentError("models_unavailable", "Prepare o runtime e os modelos avançados pelo setup OCR.")
-    cached_models = copy_model_cache(models, context.temporary_path(".models"))
+    cached_models = getattr(context, "_advanced_models_cache", None)
+    if cached_models is None:
+        # O diretório do job já é exclusivo. Evitamos outro UUID no caminho do
+        # cache, que no Windows pode ultrapassar MAX_PATH em modelos PaddleOCR.
+        cached_models = copy_model_cache(models, context.job_dir / "models")
+        context._advanced_models_cache = cached_models
     request = context.temporary_path(".json")
     result = context.temporary_path(".json")
     effective_options = {"rotate_pages": profile.get("rotate_pages", False), "deskew": profile.get("deskew", False), **options}
