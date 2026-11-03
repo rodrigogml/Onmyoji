@@ -25,6 +25,16 @@ def test_supervisor_service_output_redacts_sensitive_values(tmp_path):
     assert supervisor._safe_output("falhou token=abc password: xyz secret = zzz") == "falhou token=[redacted] password=[redacted] secret=[redacted]"
 
 
+def test_supervisor_retries_an_enabled_service_after_a_failure(tmp_path, monkeypatch):
+    supervisor = Supervisor(tmp_path); service = supervisor.services["telegram"]
+    service.enabled, service.state = True, "failed"; calls = []
+    monkeypatch.setattr(supervisor, "start", lambda name: calls.append(name) or {"state": "running"})
+
+    supervisor._recover_enabled_services_once()
+
+    assert calls == ["telegram"]
+
+
 def test_supervisor_persists_enablement_and_local_rpc(tmp_path):
     supervisor = Supervisor(tmp_path)
     thread = threading.Thread(target=supervisor.run_forever, daemon=True); thread.start()

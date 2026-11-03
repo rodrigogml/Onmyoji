@@ -63,6 +63,11 @@ e são tentadas novamente no próximo turno.
 `/new` é a forma explícita de descartar o contexto. Cada tópico direto do
 Telegram também é uma conversa independente, embora pertença ao mesmo DM.
 
+Se a conexão autenticada com o Telegram falhar durante a inicialização, o
+supervisor marca o Gateway como indisponível e tenta iniciá-lo novamente em
+segundo plano. Uma inicialização que não ficou pronta é encerrada antes da nova
+tentativa, para não deixar processos sem endpoint de controle.
+
 ## Figurinhas do agente
 
 O Gateway pode disponibilizar figurinhas pré-cadastradas ao agente na conversa

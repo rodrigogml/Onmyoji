@@ -49,6 +49,8 @@ class Supervisor:
         self.host, self.token, self.stop_event = "127.0.0.1", secrets.token_urlsafe(32), threading.Event()
         self.rpc = RpcServer(self.host, free_port(), self.token, self.handle)
         self.services = {name: ManagedService(spec) for name, spec in SERVICES.items()}
+        self.recovery_delay_seconds = 15.0
+        self.next_recovery_at: dict[str, float] = {}
         self._load_state()
 
     def _acquire_lock(self) -> None:
@@ -137,7 +139,27 @@ class Supervisor:
                 except OSError: time.sleep(0.05)
             raise TimeoutError("service did not become ready")
         except Exception as error:
+            if service.process and service.process.poll() is None:
+                try:
+                    service.process.terminate(); service.process.wait(timeout=5)
+                except (OSError, subprocess.TimeoutExpired):
+                    try: service.process.kill(); service.process.wait(timeout=5)
+                    except (OSError, subprocess.TimeoutExpired): pass
             service.state, service.last_error = "failed", str(error); return self.status(name)
+
+    def _recover_enabled_services_once(self) -> None:
+        """Agenda nova inicialização após falha transitória de serviço habilitado."""
+        now = time.monotonic()
+        for name, service in self.services.items():
+            state = self.status(name)
+            if not service.enabled or state["state"] != "failed" or now < self.next_recovery_at.get(name, 0):
+                continue
+            self.next_recovery_at[name] = now + self.recovery_delay_seconds
+            self.start(name)
+
+    def _recover_enabled_services(self) -> None:
+        while not self.stop_event.wait(1):
+            self._recover_enabled_services_once()
 
     def stop(self, name: str) -> dict[str, Any]:
         service = self.services[name]
@@ -171,6 +193,7 @@ class Supervisor:
         self._acquire_lock(); self._endpoint(); self._save_state()
         for name, service in self.services.items():
             if service.enabled: self.start(name)
+        threading.Thread(target=self._recover_enabled_services, daemon=True).start()
         try: self.rpc.serve_forever(self.stop_event)
         finally:
             for name in self.services: self.stop(name)
