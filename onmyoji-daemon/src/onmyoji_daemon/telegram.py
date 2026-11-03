@@ -456,9 +456,7 @@ class Gateway(TelegramChannels):
                 except CodexExecutionError as error: raise CodexProtocolError(str(error)) from error
                 if skill_changed:
                     if self.app_server and self.app_server.running(): self.app_server.stop()
-                    with self.database_lock:
-                        self.database.execute("UPDATE conversations SET codex_thread_id=NULL, instruction_baseline_hash=NULL")
-                        self.database.commit()
+                    self._diagnostic("app_server.restarted", reason="shikigami_skills_changed")
             # O App Server lê os MCPs ao iniciar. Quando o setup marca uma
             # pendência, recicle apenas este subprocesso antes do próximo
             # turno seguro; o gateway e suas filas permanecem em execução.
@@ -814,18 +812,33 @@ class Gateway(TelegramChannels):
             try: self.api.delete(active.chat_id, message_id)
             except Exception as error: self._record_error(error)
 
+    @staticmethod
+    def _thread_is_missing(error: CodexProtocolError) -> bool:
+        """Distingue uma thread removida de falhas transitórias ao retomá-la."""
+        detail = str(error).casefold()
+        return any(fragment in detail for fragment in ("thread not found", "unknown thread", "no such thread", "thread does not exist", "invalid thread id"))
+
     def _app_thread(self, chat_id: int, client: CodexAppServer, turn_context: dict[str, Any] | None = None) -> str:
         state = self._channel_state(chat_id); bundle = self.instructions.compose(identity=self.identity, telegram=True, reply_mode=str(state["reply_mode"]), outbound_media=self.settings.agent_outbound_media, telegram_context=TelegramTurnContext.from_value(turn_context))
         tool_contract = f"{bundle.baseline_hash}:telegram-tools-v2"
         row = self.database.execute("SELECT codex_thread_id, instruction_baseline_hash FROM conversations WHERE chat_id=?", (str(chat_id),)).fetchone(); thread_id = str(row[0]) if row and row[0] else ""
-        if thread_id and str(row[1] or "") != tool_contract:
-            self.database.execute("UPDATE conversations SET codex_thread_id=NULL, instruction_baseline_hash=NULL, updated_at=? WHERE chat_id=?", (time.time(), str(chat_id))); self.database.commit(); thread_id = ""
+        revised = bool(thread_id and str(row[1] or "") != tool_contract)
         params = {"cwd": str(self.settings.project), "approvalPolicy": self.settings.approval, "sandbox": self.settings.sandbox, "developerInstructions": bundle.text}
         model, _effort = self._execution_preferences(chat_id)
         if model: params["model"] = model
         if thread_id:
-            try: client.request("thread/resume", {"threadId": thread_id, **params}); return thread_id
-            except CodexProtocolError: self.database.execute("UPDATE conversations SET codex_thread_id=NULL WHERE chat_id=?", (str(chat_id),)); self.database.commit()
+            try:
+                client.request("thread/resume", {"threadId": thread_id, **params})
+                if revised:
+                    self.database.execute("UPDATE conversations SET instruction_baseline_hash=?, updated_at=? WHERE chat_id=?", (tool_contract, time.time(), str(chat_id))); self.database.commit()
+                    self._diagnostic("thread.revision_updated", conversation=str(chat_id))
+                return thread_id
+            except CodexProtocolError as error:
+                if not self._thread_is_missing(error):
+                    self._diagnostic("thread.resume_failed", conversation=str(chat_id), reason="transient")
+                    raise
+                self.database.execute("UPDATE conversations SET codex_thread_id=NULL, instruction_baseline_hash=NULL, updated_at=? WHERE chat_id=?", (time.time(), str(chat_id))); self.database.commit()
+                self._diagnostic("thread.reset", conversation=str(chat_id), reason="resume_missing")
         tools = [{"type": "namespace", "name": "telegram_gateway", "description": "Interface restrita à DM Telegram ativa.", "tools": [{"type": "function", "name": "get_channel_state", "description": "Consulta o modo de resposta da conversa ativa.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "set_reply_mode", "description": "Define a resposta final como texto ou áudio nesta conversa.", "inputSchema": {"type": "object", "properties": {"mode": {"type": "string", "enum": ["text", "audio"]}}, "required": ["mode"], "additionalProperties": False}}, {"type": "function", "name": "get_outbox", "description": "Reserva o diretório exclusivo deste turno para mídia recém-criada.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "send_file", "description": "Envia arquivo do outbox por file_name ou arquivo existente em raiz autorizada por file_path. Caminho direto exige owner autorizado.", "inputSchema": {"type": "object", "properties": {"file_name": {"type": "string"}, "file_path": {"type": "string"}, "kind": {"type": "string", "enum": ["photo", "document", "audio"]}, "caption": {"type": "string"}}, "required": ["kind"], "additionalProperties": False}}, {"type": "function", "name": "list_stickers", "description": "Lista IDs e contextos das figurinhas pré-cadastradas para a conversa ativa.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "send_sticker", "description": "Envia uma figurinha pré-cadastrada pelo seu ID, sem legenda.", "inputSchema": {"type": "object", "properties": {"sticker_id": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["sticker_id"], "additionalProperties": False}}, {"type": "function", "name": "list_attachments", "description": "Lista os metadados dos anexos retidos na conversa atual.", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False}}, {"type": "function", "name": "materialize_attachment", "description": "Copia um anexo retido para o staging seguro do turno atual.", "inputSchema": {"type": "object", "properties": {"attachment_id": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["attachment_id"], "additionalProperties": False}}]}]
         tools[0]["tools"].extend([{"type": "function", "name": "send_message", "description": "Envia mensagem adicional somente à DM Telegram ativa; pode expirar automaticamente.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "minLength": 1, "maxLength": 4000}, "ttl_seconds": {"type": "integer", "minimum": 0, "maximum": 86400}, "protect_content": {"type": "boolean"}}, "required": ["text"], "additionalProperties": False}}, {"type": "function", "name": "ask_menu", "description": "Exibe opções ao owner da DM ativa e aguarda a seleção com prazo limitado.", "inputSchema": {"type": "object", "properties": {"question": {"type": "string", "minLength": 1, "maxLength": 4000}, "options": {"type": "array", "minItems": 2, "maxItems": 20, "items": {"type": "object", "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 64}, "label": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["id", "label"], "additionalProperties": False}}, "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": 300}, "protect_content": {"type": "boolean"}}, "required": ["question", "options"], "additionalProperties": False}}])
         tools[0]["description"] = "Interface restrita à conversa Telegram ativa. Cada ferramenta declara o escopo em que funciona."
@@ -1030,6 +1043,7 @@ class Gateway(TelegramChannels):
             self.database.commit()
         self.database.execute("INSERT OR IGNORE INTO conversations(chat_id, updated_at, share_thoughts, delete_thoughts) VALUES (?, ?, ?, ?)", (str(chat_id), time.time(), self.settings.default_share_thoughts, self.settings.default_delete_thoughts))
         self.database.execute("UPDATE conversations SET generation=generation+1, codex_thread_id=NULL, owner_model=NULL, owner_effort=NULL, share_thoughts=?, delete_thoughts=?, updated_at=? WHERE chat_id=?", (self.settings.default_share_thoughts, self.settings.default_delete_thoughts, time.time(), str(chat_id))); self.database.commit()
+        self._diagnostic("thread.reset", conversation=str(chat_id), reason="new_command")
         if old and self.app_server and self.app_server.running():
             try: self.app_server.request("thread/delete", {"threadId": old})
             except Exception: pass

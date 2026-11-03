@@ -50,6 +50,19 @@ paralelo. O limite distribui capacidade entre conversas distintas; mensagens
 da mesma conversa permanecem serializadas para conservar a ordem e o contexto.
 Reinicie o Gateway depois de alterar esse valor para aplicar o novo limite.
 
+## Continuidade de contexto
+
+Uma conversa mantém a thread persistida do Codex através de reinicializações
+do App Server, atualizações de skills, instruções e MCPs. Essas alterações
+podem reiniciar o processo para recarregar recursos, mas não iniciam uma
+conversa nova. O Gateway atualiza a revisão das instruções após retomar a
+thread e só descarta sua referência quando o App Server confirma que ela não
+existe mais. Falhas transitórias de retomada ficam registradas para diagnóstico
+e são tentadas novamente no próximo turno.
+
+`/new` é a forma explícita de descartar o contexto. Cada tópico direto do
+Telegram também é uma conversa independente, embora pertença ao mesmo DM.
+
 ## Figurinhas do agente
 
 O Gateway pode disponibilizar figurinhas pré-cadastradas ao agente na conversa

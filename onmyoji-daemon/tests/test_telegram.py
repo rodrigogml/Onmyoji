@@ -8,7 +8,7 @@ from pathlib import Path
 from dataclasses import replace
 from unittest.mock import patch
 
-from onmyoji_daemon.telegram import AppServerTurn, CodexAppServer, Contacts, Gateway, McpVault, Settings, TelegramApi, TelegramMediaUploadError
+from onmyoji_daemon.telegram import AppServerTurn, CodexAppServer, CodexProtocolError, Contacts, Gateway, McpVault, Settings, TelegramApi, TelegramMediaUploadError
 from onmyoji_daemon.launcher import _approval_policy, _sandbox_policy
 from onmyoji_daemon.telegram_formatting import MAX_MESSAGE_LENGTH, plain_text, render_html, split_html, visible_text
 from onmyoji_daemon.telegram_stickers import MAX_CONTEXT_LENGTH, convert_static, discover_static_sources, load as load_sticker_catalog, save as save_sticker_catalog
@@ -133,7 +133,7 @@ def test_gateway_recycles_only_the_idle_app_server_when_mcp_reconciliation_is_pe
     assert client.stops == 1 and client.starts == 1
 
 
-def test_gateway_recycles_context_when_shikigami_skills_are_synchronized(tmp_path, monkeypatch):
+def test_gateway_restarts_app_server_but_preserves_context_when_shikigami_skills_are_synchronized(tmp_path, monkeypatch):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
     gateway = Gateway(Settings.load(tmp_path, data))
     gateway.database.execute("INSERT INTO conversations(chat_id, updated_at, last_interaction_at, codex_thread_id, instruction_baseline_hash) VALUES ('1', 1, 1, 'thread-old', 'hash-old')"); gateway.database.commit()
@@ -150,7 +150,7 @@ def test_gateway_recycles_context_when_shikigami_skills_are_synchronized(tmp_pat
     assert gateway._app_client() is client
     row = gateway.database.execute("SELECT codex_thread_id, instruction_baseline_hash FROM conversations WHERE chat_id='1'").fetchone()
     assert client.stops == 1 and client.starts == 1
-    assert row == (None, None)
+    assert row == ("thread-old", "hash-old")
 
 
 def test_gateway_sandbox_includes_only_configured_activity_root(tmp_path):
@@ -659,6 +659,46 @@ def test_group_dynamic_tools_do_not_publish_interactive_menu(tmp_path):
     assert {"list_stickers", "send_sticker"} <= {tool["name"] for tool in tools}
     assert next(tool for tool in tools if tool["name"] == "send_sticker")["inputSchema"]["properties"]["delivery"]["enum"] == ["supplement", "only"]
     assert next(tool for tool in tools if tool["name"] == "send_message")["description"].startswith("Envia mensagem adicional à conversa")
+
+
+def test_resuming_a_revised_thread_preserves_its_context_and_updates_the_audit_hash(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data)); gateway.database.execute("INSERT INTO conversations(chat_id, updated_at, codex_thread_id, instruction_baseline_hash) VALUES (?, ?, ?, ?)", ("9", 0, "thread-old", "outdated")); gateway.database.commit(); calls = []
+
+    class Client:
+        def request(_self, method, params): calls.append((method, params)); return {}
+
+    assert gateway._app_thread(9, Client()) == "thread-old"
+    row = gateway.database.execute("SELECT codex_thread_id, instruction_baseline_hash FROM conversations WHERE chat_id='9'").fetchone()
+    assert calls[0][0] == "thread/resume" and row[0] == "thread-old" and row[1] != "outdated"
+
+
+def test_transient_thread_resume_failure_preserves_the_thread_for_retry(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data)); gateway.database.execute("INSERT INTO conversations(chat_id, updated_at, codex_thread_id) VALUES (?, ?, ?)", ("9", 0, "thread-old")); gateway.database.commit()
+
+    class Client:
+        def request(_self, _method, _params): raise CodexProtocolError("Codex App Server excedeu o tempo de espera em thread/resume")
+
+    try: gateway._app_thread(9, Client())
+    except CodexProtocolError: pass
+    else: raise AssertionError("A falha transitória precisa ser entregue para nova tentativa.")
+    assert gateway.database.execute("SELECT codex_thread_id FROM conversations WHERE chat_id='9'").fetchone() == ("thread-old",)
+
+
+def test_missing_thread_is_recreated_only_after_resume_confirms_its_absence(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data)); gateway.database.execute("INSERT INTO conversations(chat_id, updated_at, codex_thread_id) VALUES (?, ?, ?)", ("9", 0, "thread-old")); gateway.database.commit(); calls = []
+
+    class Client:
+        def request(_self, method, params):
+            calls.append(method)
+            if method == "thread/resume": raise CodexProtocolError("Codex App Server recusou thread/resume: thread not found")
+            return {"thread": {"id": "thread-new"}}
+
+    assert gateway._app_thread(9, Client()) == "thread-new"
+    assert calls == ["thread/resume", "thread/start"]
+    assert gateway.database.execute("SELECT codex_thread_id FROM conversations WHERE chat_id='9'").fetchone() == ("thread-new",)
 
 
 def test_queue_preserves_trusted_turn_metadata_separately_from_user_content(tmp_path):
