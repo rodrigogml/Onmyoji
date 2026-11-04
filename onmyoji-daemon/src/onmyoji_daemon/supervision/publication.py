@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 from ..rpc import RpcError
 from ..gateway.exception import GatewayError
 from ..gateway.repository import validate_prefix, validate_target
-from ..cloudflare_tunnel.configuration import TunnelDefinition
+from ..cloudflare_tunnel.configuration import TunnelConfiguration, TunnelDefinition
 from ..cloudflare_tunnel.exception import TunnelError
 
 
@@ -58,7 +58,8 @@ class PublicationCoordinator:
         except (OSError, ValueError):
             settings = {}
         executable = str(settings.get("cloudflared_executable") or "cloudflared")
-        return {"configured": bool(settings), "provisioned": bool(settings.get("tunnel_id")),
+        configured = type(settings.get("schema_version")) is int and settings["schema_version"] == 1 and TunnelConfiguration.is_configured(settings)
+        return {"configured": configured, "provisioned": configured and bool(settings.get("tunnel_id")),
                 "hostname": settings.get("hostname"), "running": False, "connected": False,
                 "cloudflared_available": bool(shutil.which(executable) or Path(executable).is_file())}
 

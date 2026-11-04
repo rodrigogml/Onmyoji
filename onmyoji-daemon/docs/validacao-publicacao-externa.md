@@ -18,9 +18,11 @@ ou publicação da instância em uso. O procedimento operacional está em
 | Namespaces RPC/MCP/CLI, erros estruturados e remoção das APIs antigas | `test_publication_rpc.py`, `test_publication_admin.py`, `test_publication_stdio.py` |
 | Configuração parcial, conflitos DNS/ingress, operação assíncrona e interrupção sem repetição automática | `test_cloudflare_tunnel.py`, `test_cloudflare_tunnel_service.py` |
 | Release oficial, asset existente, SHA-256, permissões, atualização e rollback preservando a versão anterior | `test_cloudflare_tunnel_installer.py` |
+| Instalação sem conta/token, metadados parciais distintos de Tunnel configurado e diagnóstico sem serviços ou escritas | `test_cloudflare_tunnel_installer.py`, `test_cloudflare_tunnel_service.py`, `test_publication_diagnostics.py` |
 | Token somente no ambiente restrito, falha recuperável, parada intencional e encerramento de descendentes | `test_cloudflare_tunnel.py`, `test_cloudflare_tunnel_service.py`, `test_service_process_group.py` |
 | Migração repetida, validação do executável antes do corte, alterações concorrentes, falhas intermediárias e rollback explícito | `test_publication_migration.py` |
 | Menu independente de Mini Apps e convenções de apresentação do setup | `tests/test_setup_onmyoji.py` na raiz |
+| Wizard com KeePass antes dos IDs, validação/repetição de entradas, cancelamento e confirmação da origem antes do provisionamento | `tests/test_setup_onmyoji.py` na raiz |
 
 O listener `reikon` existe somente nos testes de coexistência. A suíte exercita
 Job Object no Windows; a supervisão de morte do processo pai POSIX possui teste

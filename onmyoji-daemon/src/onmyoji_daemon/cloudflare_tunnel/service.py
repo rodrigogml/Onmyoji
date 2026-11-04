@@ -57,7 +57,7 @@ class TunnelService:
 
     @staticmethod
     def _definition(settings: dict[str, Any]) -> TunnelDefinition:
-        if not settings:
+        if not TunnelConfiguration.is_configured(settings):
             raise TunnelError("incomplete_config", "Configure o Tunnel antes de provisioná-lo.")
         definition = TunnelDefinition(*(str(settings.get(key, "")) for key in ("account_id", "zone_id", "hostname", "tunnel_id", "tunnel_name")))
         definition.validate()
@@ -65,7 +65,7 @@ class TunnelService:
 
     @staticmethod
     def _ingress_ready(settings: dict[str, Any]) -> bool:
-        return bool(settings.get("tunnel_id") and settings.get("ca_file") and
+        return bool(TunnelConfiguration.is_configured(settings) and settings.get("tunnel_id") and settings.get("ca_file") and
                     settings.get("provisioned_gateway_url") == settings.get("gateway_url") and
                     settings.get("provisioned_ca_file") == settings.get("ca_file"))
 
@@ -82,7 +82,7 @@ class TunnelService:
             last_error, error_code = self.last_error, self.error_code
         state = process.status() if process is not None else {"running": False, "connected": False, "pid": None, "last_error": last_error}
         runtime_matches = not state["running"] or self.running_identity == self._identity(settings)
-        return {"configured": bool(settings), "provisioned": bool(settings.get("tunnel_id")), "hostname": settings.get("hostname"),
+        return {"configured": TunnelConfiguration.is_configured(settings), "provisioned": TunnelConfiguration.is_configured(settings) and bool(settings.get("tunnel_id")), "hostname": settings.get("hostname"),
                 "tunnel_id": settings.get("tunnel_id"), "cloudflared_executable": executable,
                 "cloudflared_available": bool(shutil.which(executable) or Path(executable).is_file()),
                 "gateway_url": settings.get("gateway_url"), "ca_file": settings.get("ca_file"),
@@ -97,9 +97,9 @@ class TunnelService:
     def _start_connector(self) -> dict[str, Any]:
         with self.start_lock:
             settings = self.configuration.settings()
-            if settings and self.origin and any(settings.get(key) != value for key, value in self.origin.items()):
+            if TunnelConfiguration.is_configured(settings) and self.origin and any(settings.get(key) != value for key, value in self.origin.items()):
                 settings = self.configuration.configure(self.origin, validate_credentials=False)
-            if self.closing.is_set() or not self.activated or not self._ingress_ready(settings):
+            if self.closing.is_set() or not self.activated or not TunnelConfiguration.is_configured(settings) or not self._ingress_ready(settings):
                 return self.status()
             validate_origin(settings["gateway_url"], settings["ca_file"])
             with self.state_lock:
@@ -142,9 +142,9 @@ class TunnelService:
         if self.operations.busy:
             return self.status()
         settings = self.configuration.settings()
-        if settings:
+        if TunnelConfiguration.is_configured(settings):
             self.configuration.configure(self.origin, validate_credentials=False)
-        if not settings or not self._ingress_ready({**settings, **self.origin}):
+        if not TunnelConfiguration.is_configured(settings) or not self._ingress_ready({**settings, **self.origin}):
             return self.status()
 
         def activate(progress):
@@ -171,9 +171,9 @@ class TunnelService:
 
     def _provision(self, progress) -> dict[str, Any]:
         settings = self.configuration.settings()
-        if settings and self.origin:
-            settings = self.configuration.configure(self.origin, validate_credentials=False)
         definition = self._definition(settings)
+        if self.origin:
+            settings = self.configuration.configure(self.origin, validate_credentials=False)
         validate_origin(settings["gateway_url"], settings.get("ca_file", ""))
         client = self._client(settings)
         if not definition.tunnel_id:
@@ -206,7 +206,7 @@ class TunnelService:
             result = installer.rollback(True)
         else:
             result = installer.install(True, params.get("install_directory"), params.get("adopt") is True, progress, params.get("version"))
-        if self.activated and not self.closing.is_set():
+        if self.activated and not self.closing.is_set() and self._ingress_ready(self.configuration.settings()):
             progress("reiniciando conector com o executável selecionado")
             self._stop_connector()
             self._start_with_recovery()

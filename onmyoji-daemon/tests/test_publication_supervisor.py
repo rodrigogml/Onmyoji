@@ -11,6 +11,7 @@ import pytest
 
 from onmyoji_daemon.rpc import RpcError
 from onmyoji_daemon.supervisor import Supervisor
+from onmyoji_daemon.cloudflare_tunnel.configuration import TunnelConfiguration
 
 
 def running(service, generation="one"):
@@ -178,6 +179,41 @@ def test_new_tunnel_generation_does_not_inherit_previous_connection(tmp_path):
     try:
         coordinator.reconcile()
         assert not coordinator.tunnel["connected"] and not coordinator.tunnel["running"]
+    finally:
+        supervisor.rpc.close()
+
+
+def test_offline_tunnel_with_only_installed_binary_is_not_configured_or_provisioned(tmp_path):
+    binary = tmp_path / "configs" / "daemon" / "services" / "cloudflare-tunnel" / "bin" / "cloudflared.exe"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"installed")
+    configuration = TunnelConfiguration(tmp_path)
+    configuration.configure_executable({"cloudflared_executable": str(binary), "managed_version": "2026.10.7"})
+    supervisor = Supervisor(tmp_path)
+    try:
+        supervisor.publications.reconcile()
+        status = supervisor.publications.tunnel
+        assert status["cloudflared_available"]
+        assert status["configured"] is False and status["provisioned"] is False
+        assert status["running"] is False and status["connected"] is False
+    finally:
+        supervisor.rpc.close()
+
+
+@pytest.mark.parametrize("field,value", [("tunnel_id", None), ("tunnel_id", []), ("tunnel_name", None), ("tunnel_name", []), ("hostname", 7)])
+def test_configuration_completeness_rejects_invalid_definition_types(field, value):
+    settings = {"schema_version": 1, "account_id": "account", "zone_id": "zone", "hostname": "gateway.example.com", "credential_profile": "vault", "credential_entry_path": "APIs/Tunnel", field: value}
+    assert TunnelConfiguration.is_configured(settings) is False
+
+
+def test_offline_tunnel_rejects_unsupported_schema_instead_of_reporting_provisioned(tmp_path):
+    path = tmp_path / "configs" / "daemon" / "services" / "cloudflare-tunnel" / "tunnel.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text('schema_version = true\naccount_id = "account"\nzone_id = "zone"\nhostname = "gateway.example.com"\ncredential_profile = "vault"\ncredential_entry_path = "APIs/Tunnel"\ntunnel_id = "existing"\n', encoding="utf-8")
+    supervisor = Supervisor(tmp_path)
+    try:
+        status = supervisor.publications._offline_tunnel()
+        assert status["configured"] is False and status["provisioned"] is False
     finally:
         supervisor.rpc.close()
 

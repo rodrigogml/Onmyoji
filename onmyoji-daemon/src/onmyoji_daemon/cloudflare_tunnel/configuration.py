@@ -79,6 +79,7 @@ class TunnelConfiguration:
     """Mescla alterações locais sem apagar IDs, referências ou versão instalada."""
 
     STRING_KEYS = ("account_id", "zone_id", "hostname", "tunnel_id", "tunnel_name", "credential_profile", "credential_entry_path", "credential_field", "cloudflared_executable", "gateway_url", "ca_file", "provisioned_gateway_url", "provisioned_ca_file", "managed_version", "managed_digest", "install_directory", "previous_executable", "previous_version", "previous_digest")
+    EXECUTABLE_KEYS = frozenset(("cloudflared_executable", "managed_version", "managed_digest", "install_directory", "previous_executable", "previous_version", "previous_digest"))
     DEFAULTS = {"schema_version": 1, "tunnel_id": "", "tunnel_name": "onmyoji-gateway", "credential_field": "password", "cloudflared_executable": "cloudflared", "gateway_url": "https://localhost:39390", "ca_file": "", "timeout_seconds": 30}
 
     def __init__(self, root: Path, data_dir: Path | None = None, credentials: KeePassCredentialResolver | None = None):
@@ -98,6 +99,53 @@ class TunnelConfiguration:
         if type(values.get("schema_version")) is not int or values["schema_version"] != 1:
             raise TunnelError("unsupported_config", "Versão de configuração do Tunnel não suportada.")
         return values
+
+    @classmethod
+    def is_configured(cls, values: dict[str, Any]) -> bool:
+        """Distingue um Tunnel definido de metadados locais apenas do instalador."""
+        effective = {**cls.DEFAULTS, **values}
+        if any(not isinstance(effective.get(key), str) or not effective[key].strip() for key in ("account_id", "zone_id", "hostname", "credential_profile", "credential_entry_path")):
+            return False
+        try:
+            TunnelDefinition(*(effective[key] for key in ("account_id", "zone_id", "hostname", "tunnel_id", "tunnel_name"))).validate()
+        except TunnelError:
+            return False
+        return effective.get("credential_field") == "password"
+
+    def _persist(self, values: dict[str, Any]) -> None:
+        lines = ["schema_version = 1"]
+        lines.extend(f"{key} = {json.dumps(values[key], ensure_ascii=False)}" for key in self.STRING_KEYS if key in values)
+        lines.append(f"timeout_seconds = {values['timeout_seconds']}")
+        atomic_text(self.root, self.path, "\n".join(lines) + "\n")
+
+    def configure_executable(self, values: dict[str, Any]) -> dict[str, Any]:
+        """Persiste somente a seleção do binário, sem exigir Tunnel, Gateway ou cofre.
+
+        Campos de identidade, origem e credenciais continuam exclusivos de
+        ``configure``. Isso permite instalar e reverter versões antes de iniciar
+        a configuração de uma publicação externa.
+        """
+        if not isinstance(values, dict) or set(values) - self.EXECUTABLE_KEYS:
+            raise TunnelError("invalid_config", "A instalação aceita somente metadados do executável cloudflared.")
+        with self.lock:
+            merged = {**self.DEFAULTS, **self.settings(), **values}
+            for key in self.EXECUTABLE_KEYS:
+                if key in merged:
+                    if not isinstance(merged[key], str):
+                        raise TunnelError("invalid_config", "Os metadados do executável devem ser strings.")
+                    merged[key] = merged[key].strip()
+            if not merged["cloudflared_executable"]:
+                raise TunnelError("invalid_executable", "Executável cloudflared obrigatório.")
+            if merged.get("install_directory") and not Path(merged["install_directory"]).is_absolute():
+                raise TunnelError("invalid_install_directory", "O diretório de instalação deve ser absoluto.")
+            for key in ("managed_version", "previous_version"):
+                if merged.get(key) and not re.fullmatch(r"v?\d{4}\.\d+\.\d+", merged[key]):
+                    raise TunnelError("invalid_release", "Identificador da versão oficial inválido.")
+            for key in ("managed_digest", "previous_digest"):
+                if merged.get(key) and not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", merged[key]):
+                    raise TunnelError("invalid_digest", "SHA-256 registrado do executável inválido.")
+            self._persist(merged)
+            return merged
 
     def configure(self, values: dict[str, Any], validate_credentials: bool = True) -> dict[str, Any]:
         """Persiste a configuração mesclada; nunca aceita tokens ou campos desconhecidos."""
@@ -137,8 +185,5 @@ class TunnelConfiguration:
                     raise TunnelError("credential_unavailable", "Não foi possível validar a referência KeePass do Tunnel.") from error
                 if not available:
                     raise TunnelError("credential_missing", "A entrada do cofre MCP não contém o token do Tunnel.")
-            lines = ["schema_version = 1"]
-            lines.extend(f"{key} = {json.dumps(merged[key], ensure_ascii=False)}" for key in self.STRING_KEYS if key in merged)
-            lines.append(f"timeout_seconds = {merged['timeout_seconds']}")
-            atomic_text(self.root, self.path, "\n".join(lines) + "\n")
+            self._persist(merged)
             return merged

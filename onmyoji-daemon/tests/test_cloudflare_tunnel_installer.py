@@ -67,6 +67,46 @@ def test_installer_uses_official_digest_tmp_staging_and_versioned_destination(in
     assert not list((tmp_path / "tmp").iterdir())
 
 
+def test_install_from_empty_instance_requires_no_tunnel_or_vault_and_preserves_binary_on_configuration(installed):
+    installer, config, _release, binary = installed
+    config.path.unlink()
+    config.credentials.reset_mock()
+
+    result = installer.install(True)
+
+    assert Path(result["executable"]).read_bytes() == binary
+    assert not config.is_configured(config.settings())
+    config.credentials.password_exists.assert_not_called()
+    config.credentials.resolve.assert_not_called()
+    config.configure({"account_id": "account", "zone_id": "zone", "hostname": "gateway.example.com", "credential_profile": "vault", "credential_entry_path": "APIs/Tunnel"})
+    assert config.is_configured(config.settings())
+    assert config.settings()["cloudflared_executable"] == result["executable"]
+
+
+def test_update_and_rollback_before_configuring_a_tunnel_keep_versioned_files(installed, monkeypatch):
+    installer, config, release, binary = installed
+    config.path.unlink()
+    config.credentials.reset_mock()
+    def run(command, **_kwargs):
+        path = Path(command[0])
+        version = path.parent.name if path.parent.parent.name == "versions" else release["tag_name"]
+        return SimpleNamespace(returncode=0, stdout=f"cloudflared version {version}", stderr="")
+    monkeypatch.setattr("onmyoji_daemon.cloudflare_tunnel.installer.subprocess.run", run)
+    first = installer.install(True)
+    release["tag_name"] = "2026.10.8"
+    release["assets"][0]["browser_download_url"] = "https://github.com/cloudflare/cloudflared/releases/download/2026.10.8/cloudflared-windows-amd64.exe"
+
+    second = installer.install(True)
+    rollback = installer.rollback(True)
+
+    assert rollback["executable"] == first["executable"]
+    assert config.settings()["previous_executable"] == second["executable"]
+    assert Path(first["executable"]).read_bytes() == Path(second["executable"]).read_bytes() == binary
+    assert not config.is_configured(config.settings())
+    config.credentials.password_exists.assert_not_called()
+    config.credentials.resolve.assert_not_called()
+
+
 def test_unwritable_directory_is_rejected_before_download(installed, monkeypatch):
     installer, config, _release, _binary = installed
     before = config.settings()
@@ -172,10 +212,22 @@ def test_repeated_install_does_not_lose_previous_version(installed):
 def test_failed_config_commit_removes_only_new_version(installed, monkeypatch):
     installer, config, _, _ = installed
     original = config.path.read_bytes()
-    monkeypatch.setattr(config, "configure", Mock(side_effect=OSError("commit failed")))
+    monkeypatch.setattr(config, "configure_executable", Mock(side_effect=OSError("commit failed")))
     with pytest.raises(TunnelError):
         installer.install(True)
     assert not (config.path.parent / "bin" / "versions" / "2026.10.7" / "cloudflared.exe").exists()
+    assert config.path.read_bytes() == original
+
+
+def test_executable_os_failure_reports_type_and_errno_without_private_details(installed, monkeypatch):
+    installer, config, _, _ = installed
+    original = config.path.read_bytes()
+    monkeypatch.setattr("onmyoji_daemon.cloudflare_tunnel.installer.subprocess.run", Mock(side_effect=PermissionError(13, "password=private", "C:/private/path.exe")))
+    with pytest.raises(TunnelError) as failure:
+        installer.install(True)
+    assert failure.value.code == "invalid_executable"
+    assert "PermissionError" in str(failure.value) and "errno 13" in str(failure.value)
+    assert "password=private" not in str(failure.value) and "C:/private" not in str(failure.value)
     assert config.path.read_bytes() == original
 
 

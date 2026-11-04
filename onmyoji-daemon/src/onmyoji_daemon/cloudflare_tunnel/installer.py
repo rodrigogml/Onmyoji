@@ -20,6 +20,19 @@ from .exception import TunnelError
 RELEASE_URL = "https://api.github.com/repos/cloudflare/cloudflared/releases/latest"
 
 
+def _system_error_detail(error: BaseException) -> str:
+    """Retorna classe e código operacional, sem caminhos ou saída de subprocessos."""
+    code = getattr(error, "winerror", None)
+    if code is not None:
+        return f"{type(error).__name__}, WinError {code}"
+    code = getattr(error, "errno", None)
+    if code is not None:
+        return f"{type(error).__name__}, errno {code}"
+    if isinstance(error, subprocess.TimeoutExpired):
+        return f"tempo limite de {error.timeout} segundos excedido"
+    return type(error).__name__
+
+
 def asset_name(system: str | None = None, machine: str | None = None) -> str:
     system, machine = (system or platform.system()).lower(), (machine or platform.machine()).lower()
     arch = "amd64" if machine in {"amd64", "x86_64"} else "arm64" if machine in {"arm64", "aarch64"} else ""
@@ -44,7 +57,7 @@ class CloudflaredInstaller:
             with urllib.request.urlopen(request, timeout=30) as response:
                 value = json.loads(response.read())
         except (OSError, ValueError) as error:
-            raise TunnelError("release_unavailable", "Não foi possível consultar a versão oficial do cloudflared.") from error
+            raise TunnelError("release_unavailable", f"Não foi possível consultar a versão oficial do cloudflared ({_system_error_detail(error)}).") from error
         if not isinstance(value, dict):
             raise TunnelError("invalid_release", "Metadados da versão oficial inválidos.")
         return value
@@ -55,8 +68,6 @@ class CloudflaredInstaller:
             raise TunnelError("confirmation_required", "Instalação de cloudflared exige confirm=true.")
         report = progress or (lambda _value: None)
         settings = self.configuration.settings()
-        if not settings:
-            raise TunnelError("incomplete_config", "Configure o Tunnel antes de instalar cloudflared.")
         previous = str(settings.get("cloudflared_executable", "cloudflared"))
         managed = str(settings.get("managed_version", ""))
         if previous != "cloudflared" and not managed and not adopt:
@@ -99,7 +110,7 @@ class CloudflaredInstaller:
             if shutil.disk_usage(base).free < size * 2:
                 raise TunnelError("insufficient_space", "Não há espaço suficiente no diretório de instalação.")
         except OSError as error:
-            raise TunnelError("install_permission_denied", "Não foi possível criar ou acessar o diretório de instalação.") from error
+            raise TunnelError("install_permission_denied", f"Não foi possível criar ou acessar o diretório de instalação ({_system_error_detail(error)}).") from error
         temporary_root = self.configuration.root / "tmp"
         temporary_root.mkdir(parents=True, exist_ok=True)
         created = False
@@ -111,7 +122,7 @@ class CloudflaredInstaller:
                     with urllib.request.urlopen(url, timeout=60) as response, staged.open("wb") as output:
                         shutil.copyfileobj(response, output)
                 except OSError as error:
-                    raise TunnelError("download_failed", "Não foi possível baixar cloudflared oficial.") from error
+                    raise TunnelError("download_failed", f"Não foi possível baixar cloudflared oficial ({_system_error_detail(error)}).") from error
                 actual = hashlib.sha256(staged.read_bytes()).hexdigest()
                 if staged.stat().st_size != size or actual != digest.split(":", 1)[1].lower():
                     raise TunnelError("checksum_mismatch", "SHA-256 do binário não corresponde à versão oficial.")
@@ -121,7 +132,7 @@ class CloudflaredInstaller:
                 try:
                     checked = subprocess.run([str(staged), "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, check=False)
                 except (OSError, subprocess.SubprocessError) as error:
-                    raise TunnelError("invalid_executable", "Não foi possível validar o executável baixado.") from error
+                    raise TunnelError("invalid_executable", f"Não foi possível validar o executável baixado ({_system_error_detail(error)}).") from error
                 if checked.returncode or version.lstrip("v") not in checked.stdout:
                     raise TunnelError("invalid_executable", "O executável baixado não confirmou a versão esperada.")
                 destination.parent.mkdir(parents=True, exist_ok=True)
@@ -142,11 +153,11 @@ class CloudflaredInstaller:
                 before = {"previous_executable": previous, "previous_version": settings.get("managed_version", ""), "previous_digest": settings.get("managed_digest", "")}
                 if previous == str(destination):
                     before = {key: settings.get(key, "") for key in before}
-                self.configuration.configure({"cloudflared_executable": str(destination), "install_directory": str(base), "managed_version": version, "managed_digest": digest.lower(), **before}, validate_credentials=False)
+                self.configuration.configure_executable({"cloudflared_executable": str(destination), "install_directory": str(base), "managed_version": version, "managed_digest": digest.lower(), **before})
         except OSError as error:
             if created:
                 destination.unlink(missing_ok=True)
-            raise TunnelError("install_permission_denied", "Não foi possível gravar o executável no diretório de instalação.") from error
+            raise TunnelError("install_permission_denied", f"Não foi possível gravar o executável no diretório de instalação ({_system_error_detail(error)}).") from error
         except BaseException:
             if created:
                 destination.unlink(missing_ok=True)
@@ -167,17 +178,17 @@ class CloudflaredInstaller:
             if digest and hashlib.sha256(Path(executable).read_bytes()).hexdigest() != digest.removeprefix("sha256:"):
                 raise TunnelError("checksum_mismatch", "O executável anterior foi alterado desde a instalação.")
         except OSError as error:
-            raise TunnelError("invalid_executable", "Não foi possível verificar o executável anterior.") from error
+            raise TunnelError("invalid_executable", f"Não foi possível verificar o executável anterior ({_system_error_detail(error)}).") from error
         try:
             checked = subprocess.run([executable, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, check=False)
         except (OSError, subprocess.SubprocessError) as error:
-            raise TunnelError("invalid_executable", "Não foi possível validar o executável anterior.") from error
+            raise TunnelError("invalid_executable", f"Não foi possível validar o executável anterior ({_system_error_detail(error)}).") from error
         if checked.returncode or "cloudflared" not in checked.stdout.lower():
             raise TunnelError("invalid_executable", "O executável anterior não confirmou cloudflared.")
         version = str(settings.get("previous_version", ""))
         if version and version.lstrip("v") not in checked.stdout:
             raise TunnelError("invalid_executable", "O executável anterior não confirmou a versão registrada.")
-        self.configuration.configure({"cloudflared_executable": executable, "managed_version": version, "managed_digest": digest,
+        self.configuration.configure_executable({"cloudflared_executable": executable, "managed_version": version, "managed_digest": digest,
                                       "previous_executable": settings["cloudflared_executable"], "previous_version": settings.get("managed_version", ""),
-                                      "previous_digest": settings.get("managed_digest", "")}, validate_credentials=False)
+                                      "previous_digest": settings.get("managed_digest", "")})
         return {"executable": executable, "version": version}

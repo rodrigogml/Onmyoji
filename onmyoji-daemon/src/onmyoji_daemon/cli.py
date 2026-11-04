@@ -41,6 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="onmyoji-daemon"); parser.add_argument("--onmyoji-root", required=True, type=Path)
     sub = parser.add_subparsers(dest="action", required=True); sub.add_parser("run"); sub.add_parser("interactive"); sub.add_parser("list-services")
     sub.add_parser("prepare-instance"); sub.add_parser("install-instance"); sub.add_parser("install-runtime"); sub.add_parser("remove-instance")
+    sub.add_parser("publication-diagnose", help="Diagnostica Gateway/Tunnel sem iniciar serviços ou alterar arquivos")
     sub.add_parser("process-status"); sub.add_parser("process-start")
     for action in ("process-stop", "process-force-stop"): sub.add_parser(action)
     install_service = sub.add_parser("install-service"); install_service.add_argument("--name", required=True); install_service.add_argument("--description", required=True); install_service.add_argument("--scope", choices=["user", "system"], default="system"); install_service.add_argument("--run-as-user", default=""); install_service.add_argument("--run-as-group", default=""); install_service.add_argument("--use-sudo", action="store_true"); install_service.add_argument("--windows-account", default=""); install_service.add_argument("--password-stdin", action="store_true")
@@ -88,6 +89,10 @@ def main(argv: list[str] | None = None) -> int:
         return management.install_service(root, args.name, args.description, args.scope, args.run_as_user, args.run_as_group, args.use_sudo, args.windows_account, sys.stdin.read().rstrip("\r\n") if args.password_stdin else "", lambda message: print("› " + message, flush=True))
     if args.action == "run": Supervisor(root).run_forever(); return 0
     if args.action == "interactive": return interactive_main(["--onmyoji-root", str(root)])
+    if args.action == "publication-diagnose":
+        from .publication_diagnostics import diagnose
+        response = diagnose(root, progress=lambda message: print("› " + message, file=sys.stderr, flush=True))
+        print(json.dumps(response, ensure_ascii=False)); return 0
     if args.action == "publication-migrate":
         from .publication_migration import PublicationMigration, MigrationError
         try:

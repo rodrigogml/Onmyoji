@@ -24,6 +24,39 @@ Ele reúne configuração, diagnóstico, instalação, provisionamento, ciclo de
 listeners e migração legada. Gateway e Tunnel iniciam por escolha do operador;
 a habilitação controla a retomada no próximo início do Daemon.
 
+Use **!. Diagnóstico da publicação externa** para verificar pré-requisitos,
+runtime, credencial KeePass, executável, serviços, origem HTTPS e conexão. O
+diagnóstico funciona mesmo sem configuração ou serviços iniciados, apresenta
+cada etapa e indica a ação para resolver cada pendência. Ele não instala,
+inicia nem provisiona recursos. A opção 2 mantém acesso ao mesmo diagnóstico.
+A presença da credencial no cofre não comprova suas permissões Cloudflare;
+a confirmação remota acontece no provisionamento explícito.
+
+Use **W. Wizard de publicação externa** para preparar a instância em sequência:
+daemon, credencial, identificadores e hostname, executável, Gateway HTTPS,
+provisionamento e retomada automática. O wizard pede confirmação antes de
+provisionar Tunnel, ingress e DNS e apresenta o diagnóstico final. `X` cancela
+a etapa atual; alterações já confirmadas, inclusive uma credencial salva no
+KeePass, permanecem disponíveis para retomar o assistente.
+
+A configuração começa pelo API Token no perfil de vault MCP: é possível
+reutilizar uma senha existente, substituí-la ou criar a entrada com digitação
+oculta. A sugestão para uma instância nova é
+`<Shikigami>/Serviço/CloudflareTunnel:APIToken`. A configuração mantém somente
+as referências do perfil e da entrada. Depois são solicitados:
+
+- **Account ID:** identificador da conta Cloudflare, com 32 caracteres
+  hexadecimais; não é o API Token.
+- **Zone ID:** identificador do domínio administrado pela Cloudflare, também
+  com 32 caracteres hexadecimais.
+- **Hostname:** endereço público completo, como `akuma.exemplo.com`, sem esquema,
+  porta ou caminho. O túnel não exige informar o IP público do computador.
+
+Os identificadores e o hostname são dados de configuração local em
+`tunnel.toml`; o segredo permanece no KeePass. Consulte
+[onde localizar os IDs](https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/)
+e as [permissões do API Token para Tunnel e DNS](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel-api/).
+
 | Dados locais, não versionados | Localização |
 | --- | --- |
 | Porta HTTPS do Gateway | `configs/daemon/services/gateway/config.toml` |
@@ -50,6 +83,12 @@ gerenciado sugerido, permitindo outro caminho absoluto. O download usa a release
 oficial, seu SHA-256 e uma execução `--version`; todo staging permanece em `tmp/`.
 O serviço reporta separadamente falhas de plataforma, rede, integridade,
 permissão e execução. Não há elevação silenciosa de privilégios.
+
+**3. Instalar ou atualizar cloudflared** funciona antes de informar conta,
+domínio ou credencial. Somente metadados do binário são gravados nesse caso;
+isso não marca o Tunnel como configurado nem inicia uma conexão externa.
+O provisionamento aguarda a confirmação da origem HTTPS e da CA pelo Supervisor
+antes de enviar qualquer alteração à Cloudflare.
 
 Atualizações são explícitas. A versão anterior permanece disponível e o menu
 permite restaurá-la. Um executável externo só é substituído como referência

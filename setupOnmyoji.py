@@ -34,6 +34,7 @@ from onmyoji_daemon.mcp.eccovox import EccoVoxError, EccoVoxService
 from onmyoji_daemon import runtime as python_runtime
 from onmyoji_daemon.telegram_stickers import MAX_CONTEXT_LENGTH, STATIC_STICKER_TARGET_BYTES, STICKER_ID, convert_static as convert_static_sticker, discover as discover_stickers, discover_static_sources, load as load_sticker_catalog, save as save_sticker_catalog, sticker_folder, suggested_identifier
 from onmyoji_daemon import management as daemon_management
+from onmyoji_daemon.publication_diagnostics import diagnose as diagnose_publication
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
 from onmyoji_daemon.mcp.ocr.runtime import DocumentError, install_runtime as install_document_runtime
 SYSTEM_BEGIN = "# BEGIN ONMYOJI MANAGED CODEX SETTINGS"
@@ -1620,6 +1621,7 @@ def daemon_menu(root: Path) -> None:
         for check in checks:
             state = check.get("state", "error"); symbol, color = ({"ok": ("✓", Ui.green), "pending": ("○", Ui.amber), "error": ("✗", Ui.red)}).get(state, ("!", Ui.red))
             print("    " + Ui.text(symbol, Ui.bold, color) + "  " + check.get("label", "Validação") + (Ui.text(" — " + check.get("detail", ""), color) if check.get("detail") else ""))
+            if check.get("action"): print("       Próximo passo: " + check["action"])
 
     def show_validation() -> bool:
         checks = validation(); print()
@@ -2591,6 +2593,15 @@ def daemon_menu(root: Path) -> None:
         try: return tomllib.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError): return {}
 
+    def show_publication_diagnosis() -> bool:
+        flow_heading("Diagnóstico da publicação externa", "Daemon, KeePass, Gateway HTTPS, cloudflared e conexão do Tunnel")
+        checks = diagnose_publication(root, progress=lambda message: print("    → " + message, flush=True))
+        print()
+        print_checks(checks)
+        ready = bool(checks) and not any(check.get("state") == "error" for check in checks)
+        result(ready, "Diagnóstico concluído; confira também os itens pendentes." if ready else "Há pré-requisitos pendentes. Use W para configurar ou siga os próximos passos indicados.")
+        return ready
+
     def cloudflared_installed(executable: str) -> bool:
         selected = shutil.which(executable) or (executable if Path(executable).is_file() else None)
         if not selected: return False
@@ -2603,14 +2614,21 @@ def daemon_menu(root: Path) -> None:
         if not daemon_running():
             result(False, "Inicie o daemon em Processo/Serviço do Daemon antes de executar esta ação.")
             return False
-        return lifecycle("start", [service])
+        completed = publication_command("start", service)
+        if completed.returncode != 0:
+            result(False, (completed.stderr or completed.stdout or f"Não foi possível iniciar {service}. Reinicie o daemon e consulte !.").strip()); return False
+        try: state = json.loads(completed.stdout or "{}")
+        except ValueError: state = {}
+        if not isinstance(state, dict) or state.get("state") != "running":
+            detail = str(state.get("last_error") or "O serviço não confirmou o estado running.") if isinstance(state, dict) else "Resposta de estado inválida."
+            result(False, f"Falha ao iniciar {service}: {detail} Consulte o diagnóstico (!)."); return False
+        result(True, f"Serviço {service} em execução.")
+        return True
 
     def install_publication_binary(update: bool = False) -> bool:
         flow_heading("Atualizar cloudflared" if update else "Instalar cloudflared", "Binário oficial verificado; a versão anterior será preservada")
         current = tunnel_settings()
-        if not current:
-            result(False, "Configure o Tunnel antes de instalar o executável.")
-            return False
+        note("Esta instalação prepara somente o executável; conta, domínio e token podem ser configurados depois.")
         suggested = str(current.get("install_directory") or root / "configs" / "daemon" / "services" / "cloudflare-tunnel" / "bin")
         destination = prompt(f"Diretório de instalação [{suggested}]: ").strip() or suggested
         if destination.casefold() == "x": return False
@@ -2628,36 +2646,134 @@ def daemon_menu(root: Path) -> None:
         result(completed.returncode == 0, "cloudflared instalado e validado." if completed.returncode == 0 else "A instalação não foi concluída; consulte o resultado acima.")
         return completed.returncode == 0
 
-    def configure_publication() -> None:
-        flow_heading("Configurar publicação externa", "Um hostname compartilhado; token somente no KeePass")
+    def configure_publication() -> bool:
+        flow_heading("Configurar Cloudflare e credencial", "Identificadores locais; API Token protegido pelo KeePass")
         current = tunnel_settings()
         legacy = root / "configs" / "daemon" / "services" / "mini-apps" / "tunnel.toml"
-        if not current and legacy.is_file():
+        if not current.get("account_id") and legacy.is_file():
             result(False, "Existe uma configuração legada. Use Migrar publicação existente para preservar o Tunnel e suas URLs.")
-            return
-        note("Use um domínio Cloudflare e uma entrada KeePass com permissão de edição do Tunnel e DNS da zona.")
+            return False
+        note("1. API Token: autoriza o acesso à Cloudflare e será salvo no campo senha do KeePass.")
+        note("Crie um API Token com Account > Cloudflare Tunnel > Edit e Zone > DNS > Edit, limitado à conta e à zona utilizadas.")
+        note("Onde criar: https://dash.cloudflare.com/profile/api-tokens")
+        credential = configure_mcp_password_reference(root, "Cloudflare Tunnel", vault_entry_path(root, "Serviço", "CloudflareTunnel", definition="APIToken"), str(current.get("credential_profile") or ""), str(current.get("credential_entry_path") or ""))
+        if credential is None: return False
+        note("2. Account ID e Zone ID identificam sua conta e o domínio; não são tokens e ficam em tunnel.toml.")
+        note("No painel Cloudflare, abra o domínio e copie Account ID e Zone ID na seção API da página Overview.")
+        note("Ajuda: https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/")
         values: dict[str, str] = {}
-        for key, label in (("account_id", "Cloudflare Account ID"), ("zone_id", "Cloudflare Zone ID"), ("hostname", "Hostname público")):
+        for key, label in (("account_id", "Account ID da conta Cloudflare"), ("zone_id", "Zone ID do domínio Cloudflare")):
             default = str(current.get(key) or "")
-            value = prompt(label + (f" [{default}]" if default else "") + ": ").strip() or default
-            if value.casefold() == "x": return
-            if not value:
-                result(False, f"{label} é obrigatório; configuração cancelada.")
-                return
-            values[key] = value
-        credential = configure_mcp_password_reference(root, "Cloudflare Tunnel", vault_entry_path(root, "Serviço", "CloudflareTunnel", "default", "APIToken"), str(current.get("credential_profile") or ""), str(current.get("credential_entry_path") or ""))
-        if credential is None: return
+            while True:
+                value = prompt(label + (f" [{default}]" if default else " [X cancela]") + ": ").strip() or default
+                if value.casefold() in {"x", "\x1b"}: return False
+                if re.fullmatch(r"[0-9a-fA-F]{32}", value):
+                    values[key] = value.lower(); break
+                result(False, f"{label} deve ter 32 caracteres hexadecimais, sem espaços. Copie o ID do painel; a credencial já foi tratada no KeePass.")
+        note("3. Hostname: endereço público completo deste Shikigami, como akuma.seudominio.com, sem https:// nem caminho.")
+        note("O cloudflared conecta este computador à Cloudflare; não é necessário informar o IP público do computador.")
+        from onmyoji_daemon.cloudflare_tunnel.configuration import TunnelDefinition
+        from onmyoji_daemon.cloudflare_tunnel.exception import TunnelError
+        hostname_default = str(current.get("hostname") or "")
+        while True:
+            hostname = prompt("Hostname público" + (f" [{hostname_default}]" if hostname_default else " [X cancela]") + ": ").strip() or hostname_default
+            if hostname.casefold() in {"x", "\x1b"}: return False
+            try:
+                TunnelDefinition(values["account_id"], values["zone_id"], hostname.lower()).validate()
+            except TunnelError as error:
+                result(False, str(error)); continue
+            values["hostname"] = hostname.lower(); break
         values["credential_profile"], values["credential_entry_path"] = credential
-        executable = str(current.get("cloudflared_executable") or "cloudflared")
-        values["cloudflared_executable"] = prompt(f"Executável cloudflared [{executable}]: ").strip() or executable
-        if values["cloudflared_executable"].casefold() == "x": return
+        note(f"Os identificadores e a referência KeePass serão gravados em {root / 'configs/daemon/services/cloudflare-tunnel/tunnel.toml'}.")
+        note("Esta etapa salva a configuração local; o provisionamento remoto será confirmado separadamente.")
+        if prompt("Salvar a configuração Cloudflare e a referência KeePass? [S/n]: ").strip().casefold() not in {"", "s", "sim"}: return False
         completed = publication_command("cloudflare-tunnel", "configure", "--values", json.dumps(values))
-        result(completed.returncode == 0, (completed.stdout or completed.stderr).strip())
-        if completed.returncode != 0: return
-        selected = values["cloudflared_executable"]
-        if not cloudflared_installed(selected):
-            note("cloudflared ainda não está disponível. A instalação gerenciada permite escolher o diretório.")
-            install_publication_binary()
+        if completed.returncode != 0:
+            result(False, (completed.stderr or completed.stdout or "A configuração não pôde ser salva.").strip()); return False
+        result(True, "Configuração Cloudflare e referência KeePass salvas. O token permanece no cofre.")
+        return True
+
+    def provision_publication() -> bool:
+        current = tunnel_settings()
+        if not all(current.get(key) for key in ("account_id", "zone_id", "hostname", "credential_profile", "credential_entry_path")):
+            result(False, "Configure Cloudflare e a credencial primeiro: opção 1 ou W. A instalação do binário, opção 3, é independente."); return False
+        executable = str(current.get("cloudflared_executable") or "cloudflared")
+        if not cloudflared_installed(executable) and not install_publication_binary(): return False
+        note(f"Será publicada a origem HTTPS do Gateway em https://{current['hostname']}; a operação configura o Tunnel, o ingress e o DNS.")
+        if prompt("Provisionar hostname, ingress e DNS na Cloudflare? [s/N]: ").strip().casefold() not in {"s", "sim"}: return False
+        if not start_publication_service("gateway") or not start_publication_service("cloudflare-tunnel"): return False
+        note("Aguardando o Supervisor confirmar a origem HTTPS e a CA do Gateway no serviço Tunnel.")
+        deadline, origin = time.monotonic() + 10, {}
+        while time.monotonic() < deadline:
+            checked = publication_command("cloudflare-tunnel", "status")
+            try: origin = json.loads(checked.stdout or "{}") if checked.returncode == 0 else {}
+            except ValueError: origin = {}
+            if isinstance(origin, dict) and origin.get("activated") is True and origin.get("ca_file"): break
+            time.sleep(0.25)
+        else:
+            result(False, "O Supervisor não confirmou a origem HTTPS em 10 segundos. Nenhuma solicitação de provisionamento foi enviada; consulte o diagnóstico (!)."); return False
+        completed = publication_command("cloudflare-tunnel", "provision", "--confirm", "--wait", quiet=False)
+        result(completed.returncode == 0, "Provisionamento concluído; confira a conexão no diagnóstico (!)." if completed.returncode == 0 else "Provisionamento não concluído; confira a etapa, o código de erro e o resultado acima.")
+        return completed.returncode == 0
+
+    def configure_publication_gateway() -> bool:
+        if not start_publication_service("gateway"): return False
+        status = publication_command("gateway", "status")
+        try: current = json.loads(status.stdout or "{}") if status.returncode == 0 else {}
+        except ValueError: current = {}
+        if not isinstance(current, dict) or not isinstance(current.get("http_port"), int):
+            result(False, (status.stderr or status.stdout or "Não foi possível consultar a porta do Gateway. Consulte o diagnóstico (!).").strip()); return False
+        port = current["http_port"]
+        while True:
+            raw = prompt(f"Porta HTTPS local do Gateway [{port}]: ").strip() or str(port)
+            if raw.casefold() in {"x", "\x1b"}: return False
+            try: selected = int(raw)
+            except ValueError: selected = 0
+            if 1 <= selected <= 65535: break
+            result(False, "Informe uma porta numérica entre 1 e 65535.")
+        if selected == port:
+            result(True, f"Gateway HTTPS preparado na porta {port}."); return True
+        note("A alteração reinicia o Gateway; um ingress já provisionado precisará ser atualizado na opção 4.")
+        if prompt("Salvar a porta e reiniciar o Gateway agora? [S/n]: ").strip().casefold() not in {"", "s", "sim"}: return False
+        completed = publication_command("gateway", "configure", "--values", json.dumps({"http_port": selected}), "--confirm")
+        if completed.returncode != 0:
+            result(False, (completed.stderr or completed.stdout or "A porta não pôde ser salva.").strip()); return False
+        return lifecycle("restart", ["gateway"])
+
+    def publication_wizard() -> None:
+        flow_heading("Assistente de publicação externa", "Gateway HTTPS e Tunnel Cloudflare, passo a passo")
+        note("O Gateway encaminha as requisições aos serviços locais; o Tunnel publica o Gateway no hostname Cloudflare.")
+        note("Mini Apps é um consumidor opcional e possui seu próprio wizard. X cancela a etapa atual; etapas já confirmadas permanecem salvas.")
+        print("\n  1. Verificar o daemon da instância")
+        if not daemon_running():
+            if not installed():
+                result(False, "Prepare o daemon em 'Validar runtime do daemon' e execute este wizard novamente."); return
+            if prompt("Iniciar o daemon agora para configurar a publicação? [S/n]: ").strip().casefold() not in {"", "s", "sim"}: return
+            if not lifecycle("service-start" if service_installed() else "process-start") or not wait_for_daemon_ready():
+                result(False, "O daemon não respondeu. Consulte o diagnóstico (!)."); return
+        registered = publication_command("list-services")
+        try: names = {item["name"] for item in json.loads(registered.stdout or "[]") if isinstance(item, dict) and "name" in item}
+        except (ValueError, TypeError): names = set()
+        if not {"gateway", "cloudflare-tunnel"} <= names:
+            result(False, "O daemon em memória ainda não reconhece Gateway e Tunnel. Reinicie-o em Processo/Serviço do Daemon e reabra W."); return
+        result(True, "Daemon respondendo com os serviços Gateway e Tunnel disponíveis.")
+        print("\n  2. Configurar token KeePass, conta Cloudflare e hostname")
+        if not configure_publication(): return
+        print("\n  3. Validar ou instalar o executável cloudflared")
+        executable = str(tunnel_settings().get("cloudflared_executable") or "cloudflared")
+        if cloudflared_installed(executable): result(True, "Executável cloudflared encontrado e validado.")
+        elif not install_publication_binary(): return
+        print("\n  4. Preparar o Gateway HTTPS local")
+        note("O certificado e a origem HTTPS são locais; confirme a porta que será usada pelo Tunnel.")
+        if not configure_publication_gateway(): return
+        print("\n  5. Provisionar e iniciar o Tunnel")
+        if not provision_publication(): return
+        print("\n  6. Retomar Gateway e Tunnel após reiniciar o daemon")
+        if prompt("Habilitar os dois serviços para início automático com o daemon? [S/n]: ").strip().casefold() in {"", "s", "sim"}:
+            if not lifecycle("enable", ["gateway"]) or not lifecycle("enable", ["cloudflare-tunnel"]): return
+        print("\n  7. Diagnóstico final")
+        show_publication_diagnosis()
+        note("Para publicar Mini Apps e OAuth, abra Daemon > M. Mini Apps > W. O acesso local pode ser validado separadamente.")
 
     def publication_listeners() -> None:
         if not start_publication_service("gateway"): return
@@ -2691,8 +2807,12 @@ def daemon_menu(root: Path) -> None:
     def publication_menu() -> None:
         while True:
             screen("Publicação externa", "Gateway HTTP e Cloudflare Tunnel independentes de Mini Apps")
-            item("1.", "Configurar hostname e referência KeePass")
-            item("2.", "Estado e diagnóstico")
+            item("!.", "Diagnóstico da publicação externa", "Pré-requisitos, KeePass, Gateway, binário e conexão")
+            print()
+            item("W.", "Wizard de publicação externa", "Configura e prepara Gateway e Tunnel passo a passo")
+            print()
+            item("1.", "Configurar Cloudflare e credencial", "Token no KeePass, Account ID, Zone ID e hostname")
+            item("2.", "Estado e diagnóstico", "Disponível mesmo sem configuração ou serviços iniciados")
             item("3.", "Instalar ou atualizar cloudflared")
             item("4.", "Provisionar Tunnel, ingress e DNS")
             item("5.", "Administrar serviços", "Iniciar, parar, reiniciar, habilitar ou desabilitar")
@@ -2702,12 +2822,9 @@ def daemon_menu(root: Path) -> None:
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
-            if choice == "1": configure_publication()
-            elif choice == "2":
-                flow_heading("Estado da publicação externa", "Disponibilidade local e externa são independentes")
-                for service in ("gateway", "cloudflare-tunnel"):
-                    completed = publication_command(service, "status")
-                    result(completed.returncode == 0, service + ": " + (completed.stdout or completed.stderr).strip())
+            if choice in {"!", "2"}: show_publication_diagnosis()
+            elif choice == "w": publication_wizard()
+            elif choice == "1": configure_publication()
             elif choice == "3":
                 action = flow_choice("Executável cloudflared", ["Instalar", "Atualizar", "Restaurar versão anterior"], "Instalar")
                 if action == "Restaurar versão anterior":
@@ -2716,29 +2833,14 @@ def daemon_menu(root: Path) -> None:
                     completed = publication_command("cloudflare-tunnel", "rollback-cloudflared", "--confirm", "--wait", quiet=False)
                     result(completed.returncode == 0, "Versão anterior restaurada." if completed.returncode == 0 else "A versão anterior não pôde ser restaurada.")
                 elif action is not None: install_publication_binary(action == "Atualizar")
-            elif choice == "4":
-                if not tunnel_settings(): result(False, "Configure o Tunnel antes de provisionar."); continue
-                executable = str(tunnel_settings().get("cloudflared_executable") or "cloudflared")
-                if not cloudflared_installed(executable) and not install_publication_binary(): continue
-                if prompt("Provisionar hostname, ingress e DNS na Cloudflare? [s/N]: ").strip().casefold() not in {"s", "sim"}: continue
-                if not start_publication_service("gateway") or not start_publication_service("cloudflare-tunnel"): continue
-                completed = publication_command("cloudflare-tunnel", "provision", "--confirm", "--wait", quiet=False)
-                result(completed.returncode == 0, "Provisionamento concluído." if completed.returncode == 0 else "Provisionamento não concluído; confira a operação informada.")
+            elif choice == "4": provision_publication()
             elif choice == "5":
                 service = flow_choice("Serviço", ["Gateway HTTP", "Cloudflare Tunnel"], "Gateway HTTP")
                 if service is None: continue
                 action = flow_choice("Ação", ["Iniciar", "Parar", "Reiniciar", "Habilitar", "Desabilitar"], "Iniciar")
                 if action is not None: lifecycle({"Iniciar": "start", "Parar": "stop", "Reiniciar": "restart", "Habilitar": "enable", "Desabilitar": "disable"}[action], ["gateway" if service == "Gateway HTTP" else "cloudflare-tunnel"])
             elif choice == "6": publication_listeners()
-            elif choice == "7":
-                if not start_publication_service("gateway"): continue
-                raw = prompt("Porta HTTPS do Gateway [39390]: ").strip() or "39390"
-                if raw.casefold() == "x": continue
-                try: port = int(raw)
-                except ValueError: result(False, "Informe uma porta numérica."); continue
-                if prompt("Salvar porta e aplicar no próximo reinício do Gateway? [s/N]: ").strip().casefold() not in {"s", "sim"}: continue
-                completed = publication_command("gateway", "configure", "--values", json.dumps({"http_port": port}), "--confirm")
-                result(completed.returncode == 0, (completed.stdout or completed.stderr).strip())
+            elif choice == "7": configure_publication_gateway()
             elif choice == "8": publication_migration()
             else: result(False, "Opção inválida.")
 

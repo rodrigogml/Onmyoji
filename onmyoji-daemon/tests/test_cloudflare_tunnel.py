@@ -72,6 +72,28 @@ def test_configuration_preserves_ids_refs_and_windows_paths(tmp_path):
     assert not list((tmp_path / "tmp").iterdir())
 
 
+@pytest.mark.parametrize("values", [None, {"token": "private"}, {"account_id": "account"}, {"hostname": "gateway.example.com"}, {"cloudflared_executable": ""}, {"managed_version": "invalid"}, {"managed_digest": "sha256:invalid"}, {"install_directory": "relative"}, {"previous_executable": None}])
+def test_executable_metadata_rejects_identity_secrets_and_invalid_fields(tmp_path, values):
+    resolver = Mock(side_effect=AssertionError("O instalador não consulta credenciais."))
+    config = TunnelConfiguration(tmp_path, credentials=resolver)
+    with pytest.raises(TunnelError):
+        config.configure_executable(values)
+    assert not config.path.exists()
+
+
+def test_executable_metadata_does_not_relax_full_tunnel_configuration_validation(tmp_path):
+    resolver = Mock()
+    config = TunnelConfiguration(tmp_path, credentials=resolver)
+    config.configure_executable({"cloudflared_executable": "cloudflared", "managed_version": "2026.10.7"})
+    before = config.path.read_bytes()
+    assert not config.is_configured(config.settings())
+    with pytest.raises(TunnelError) as failure:
+        config.configure({"hostname": "gateway.example.com"})
+    assert failure.value.code == "incomplete_config"
+    assert config.path.read_bytes() == before
+    resolver.password_exists.assert_not_called()
+
+
 @pytest.mark.parametrize("values", [None, {"token": "private"}, {"account_id": None}, {"schema_version": True}, {"timeout_seconds": True}, {"timeout_seconds": 0}, {"timeout_seconds": 121}, {"credential_field": "title"}, {"cloudflared_executable": ""}])
 def test_configuration_rejects_invalid_or_secret_values_without_mutating(tmp_path, values):
     config, _ = configuration(tmp_path)

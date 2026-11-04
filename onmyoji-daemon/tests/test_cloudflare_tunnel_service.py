@@ -89,6 +89,40 @@ def test_wrapper_is_administratively_ready_without_configuration(tmp_path):
         service.close()
 
 
+def test_install_before_tunnel_configuration_is_available_and_does_not_start_connector(tmp_path, monkeypatch):
+    resolver = Mock()
+    resolver.password_exists.side_effect = AssertionError("Instalação não requer cofre.")
+    resolver.resolve.side_effect = AssertionError("Instalação não resolve token.")
+    service = TunnelService(tmp_path, tmp_path / "configs" / "tunnel", resolver)
+    binary = tmp_path / "configs" / "tunnel" / "cloudflared.exe"
+    binary.write_bytes(b"installed")
+    ca = tmp_path / "configs" / "gateway-ca.pem"; ca.write_text("ca", encoding="utf-8")
+    installer = Mock()
+    def install(*_args):
+        service.configuration.configure_executable({"cloudflared_executable": str(binary), "managed_version": "2026.10.7"})
+        return {"executable": str(binary)}
+    installer.install.side_effect = install
+    monkeypatch.setattr("onmyoji_daemon.cloudflare_tunnel.service.CloudflaredInstaller", Mock(return_value=installer))
+    client, process = Mock(), Mock()
+    monkeypatch.setattr("onmyoji_daemon.cloudflare_tunnel.service.CloudflareClient", client)
+    monkeypatch.setattr("onmyoji_daemon.cloudflare_tunnel.service.TunnelProcess", process)
+    try:
+        activate(service, ca)
+        result = wait_operation(service, service.rpc("cloudflare-tunnel.install-cloudflared", {"confirm": True}))
+        assert result["state"] == "succeeded"
+        assert service.status()["cloudflared_available"]
+        assert not service.status()["configured"] and not service.status()["running"]
+        assert "ca_file" not in service.configuration.settings() or service.configuration.settings()["ca_file"] == ""
+        assert activate(service, ca)["configured"] is False
+        incomplete = wait_operation(service, service.rpc("cloudflare-tunnel.provision", {"confirm": True}))
+        assert incomplete["error_code"] == "incomplete_config"
+        assert not service.failed.is_set() and not service.stopped.is_set()
+        resolver.password_exists.assert_not_called(); resolver.resolve.assert_not_called()
+        client.assert_not_called(); process.assert_not_called()
+    finally:
+        service.close()
+
+
 def test_service_rejects_persistent_state_outside_configs(tmp_path):
     with pytest.raises(TunnelError):
         TunnelService(tmp_path, tmp_path / "workspace")
