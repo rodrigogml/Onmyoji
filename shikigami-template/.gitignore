@@ -13,6 +13,11 @@
 
 # Estado local do Codex
 /auth.json
+/history.jsonl
+/session_index.jsonl
+/version.json
+/rules/
+/packages/
 /sessions/
 /state/
 /skills/
