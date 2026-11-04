@@ -113,7 +113,7 @@ class SystemSetupTests(unittest.TestCase):
             selected = str(root / "configs" / "daemon" / "services" / "cloudflare-tunnel" / "custom-bin")
             answers = iter(["p", "3", selected, "s", "x", "x"])
             completed = subprocess.CompletedProcess([], 0, stdout='{"state": "running"}', stderr="")
-            with patch.object(MODULE, "prompt", side_effect=lambda _label: next(answers)) as prompt, patch.object(MODULE, "screen"), patch.object(MODULE, "flow_choice", return_value="Instalar"), patch.object(MODULE.subprocess, "run", return_value=completed) as run, patch.object(MODULE, "configure_mcp_password_reference") as credentials:
+            with patch.object(MODULE, "prompt", side_effect=lambda _label: next(answers)) as prompt, patch.object(MODULE, "screen"), patch.object(MODULE, "flow_choice", return_value="Instalar"), patch.object(MODULE.subprocess, "run", return_value=completed) as run, patch.object(MODULE, "configure_mcp_password_reference") as credentials, patch.object(MODULE, "inspect_cloudflared_directory", create=True, return_value={"candidates": [], "errors": [], "latest_version": None, "latest_error": "consulta indisponível", "update_available": None}):
                 MODULE.daemon_menu(root)
             credentials.assert_not_called()
             self.assertFalse((manifest.parent / "services" / "cloudflare-tunnel" / "tunnel.toml").exists())
@@ -124,6 +124,133 @@ class SystemSetupTests(unittest.TestCase):
         self.assertIn("--wait", installs[0])
         self.assertIn("--confirm", installs[0])
         self.assertEqual(installs[0][installs[0].index("--install-directory") + 1], selected)
+
+    def test_publication_installer_reuses_existing_binary_when_current_outdated_or_latest_is_unavailable(self) -> None:
+        for latest, update_available, latest_error in (("2026.9.1", False, None), ("2026.10.7", True, None), (None, None, "consulta oficial indisponível")):
+            with self.subTest(latest=latest), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary); project = root / "onmyoji-daemon"; project.mkdir()
+                (project / "setupDaemon.py").write_text("", encoding="utf-8")
+                manifest = root / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True); manifest.write_text("", encoding="utf-8")
+                folder = root / "existing-tools"; folder.mkdir()
+                executable = folder / "cloudflared.exe"; executable.write_bytes(b"existing executable")
+                inspection = {"candidates": [{"executable": str(executable), "version": "2026.9.1"}], "errors": [], "latest_version": latest, "latest_error": latest_error, "update_available": update_available}
+                answers = iter(["p", "3", str(folder), "x", "x"])
+                events = []
+                def ask(label):
+                    events.append(label)
+                    return next(answers)
+                def inspect(*_args, **_kwargs):
+                    events.append("inspect")
+                    return inspection
+                def choose(label, values, current=""):
+                    events.append(label)
+                    return "Instalar" if label == "Executável cloudflared" else "Usar o executável existente"
+                def execute(arguments, **_kwargs):
+                    events.append(arguments)
+                    return subprocess.CompletedProcess(arguments, 0, stdout='{"state":"running"}', stderr="")
+                output = io.StringIO()
+                with patch.object(MODULE, "prompt", side_effect=ask) as prompts, patch.object(MODULE, "screen"), patch.object(MODULE, "flow_choice", side_effect=choose), patch.object(MODULE, "inspect_cloudflared_directory", create=True, side_effect=inspect) as inspector, patch.object(MODULE.subprocess, "run", side_effect=execute) as run, patch.object(MODULE.sys, "stdout", output):
+                    MODULE.daemon_menu(root)
+                commands = [call.args[0] for call in run.call_args_list]
+                reuse = [command for command in commands if "use-cloudflared" in command]
+                self.assertEqual(len(reuse), 1)
+                self.assertEqual(reuse[0][reuse[0].index("--executable") + 1], str(executable))
+                self.assertIn("--confirm", reuse[0])
+                self.assertIn("--wait", reuse[0])
+                self.assertFalse(any("install-cloudflared" in command or "update-cloudflared" in command for command in commands))
+                self.assertFalse(any("Baixar e instalar" in call.args[0] for call in prompts.call_args_list))
+                self.assertEqual(executable.read_bytes(), b"existing executable")
+                self.assertEqual(inspector.call_args.args[0], str(folder))
+                self.assertLess(events.index("inspect"), next(index for index, event in enumerate(events) if isinstance(event, list) and event[-2:] == ["start", "cloudflare-tunnel"]))
+                self.assertIn("2026.9.1", output.getvalue())
+                if latest_error:
+                    self.assertIn("indisponível", output.getvalue())
+
+    def test_publication_installer_inspects_before_confirmation_and_pins_the_selected_update(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); project = root / "onmyoji-daemon"; project.mkdir()
+            (project / "setupDaemon.py").write_text("", encoding="utf-8")
+            manifest = root / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True); manifest.write_text("", encoding="utf-8")
+            folder = root / "existing-tools"; folder.mkdir()
+            executable = folder / "cloudflared.exe"; executable.write_bytes(b"existing executable")
+            inspection = {"candidates": [{"executable": str(executable), "version": "2026.9.1"}], "errors": [], "latest_version": "2026.10.7", "latest_error": None, "update_available": True}
+            answers = iter(["p", "3", str(folder), "s", "x", "x"])
+            events = []
+            def ask(label):
+                events.append(label)
+                return next(answers)
+            def inspect(*_args, **_kwargs):
+                events.append("inspect")
+                return inspection
+            def choose(label, values, current=""):
+                return "Instalar" if label == "Executável cloudflared" else "Instalar nova versão 2026.10.7"
+            completed = subprocess.CompletedProcess([], 0, stdout='{"state":"running"}', stderr="")
+            with patch.object(MODULE, "prompt", side_effect=ask), patch.object(MODULE, "screen"), patch.object(MODULE, "flow_choice", side_effect=choose), patch.object(MODULE, "inspect_cloudflared_directory", create=True, side_effect=inspect), patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+                MODULE.daemon_menu(root)
+            commands = [call.args[0] for call in run.call_args_list]
+            installations = [command for command in commands if "install-cloudflared" in command or "update-cloudflared" in command]
+            self.assertEqual(len(installations), 1)
+            self.assertEqual(installations[0][installations[0].index("--version") + 1], "2026.10.7")
+            self.assertEqual(installations[0][installations[0].index("--install-directory") + 1], str(folder))
+            self.assertFalse(any("use-cloudflared" in command for command in commands))
+            self.assertEqual(executable.read_bytes(), b"existing executable")
+            self.assertLess(events.index("inspect"), next(index for index, value in enumerate(events) if value.startswith("Baixar e instalar")))
+
+    def test_publication_installer_requires_selection_when_multiple_binaries_are_found(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); project = root / "onmyoji-daemon"; project.mkdir()
+            (project / "setupDaemon.py").write_text("", encoding="utf-8")
+            manifest = root / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True); manifest.write_text("", encoding="utf-8")
+            folder = root / "tools"; folder.mkdir()
+            first = folder / "cloudflared.exe"; second = folder / "cloudflared-windows-amd64.exe"
+            first.write_bytes(b"first"); second.write_bytes(b"second")
+            inspection = {"candidates": [{"executable": str(first), "version": "2026.9.1"}, {"executable": str(second), "version": "2026.10.7"}], "errors": [], "latest_version": "2026.10.7", "latest_error": None, "update_available": True}
+            answers = iter(["p", "3", str(folder), "x", "x"])
+            selections = []
+            def choose(label, values, current=""):
+                if label == "Executável cloudflared": return "Instalar"
+                if label == "O que fazer com o cloudflared": return "Usar o executável existente"
+                selections.append(values)
+                return values[-1]
+            completed = subprocess.CompletedProcess([], 0, stdout='{"state":"running"}', stderr="")
+            with patch.object(MODULE, "prompt", side_effect=lambda _label: next(answers)), patch.object(MODULE, "screen"), patch.object(MODULE, "flow_choice", side_effect=choose), patch.object(MODULE, "inspect_cloudflared_directory", create=True, return_value=inspection), patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+                MODULE.daemon_menu(root)
+            self.assertEqual(len(selections), 1)
+            self.assertEqual(len(selections[0]), 2)
+            reuse = next(call.args[0] for call in run.call_args_list if "use-cloudflared" in call.args[0])
+            self.assertEqual(reuse[reuse.index("--executable") + 1], str(second))
+
+    def test_publication_installer_cancel_after_existing_binary_inspection_does_not_mutate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); project = root / "onmyoji-daemon"; project.mkdir()
+            (project / "setupDaemon.py").write_text("", encoding="utf-8")
+            manifest = root / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True); manifest.write_text("", encoding="utf-8")
+            folder = root / "tools"; folder.mkdir()
+            executable = folder / "cloudflared.exe"; executable.write_bytes(b"existing")
+            inspection = {"candidates": [{"executable": str(executable), "version": "2026.9.1"}], "errors": [], "latest_version": "2026.10.7", "latest_error": None, "update_available": True}
+            answers = iter(["p", "3", str(folder), "x", "x"])
+            def choose(label, values, current=""):
+                return "Instalar" if label == "Executável cloudflared" else None
+            completed = subprocess.CompletedProcess([], 0, stdout="[]", stderr="")
+            with patch.object(MODULE, "prompt", side_effect=lambda _label: next(answers)), patch.object(MODULE, "screen"), patch.object(MODULE, "flow_choice", side_effect=choose), patch.object(MODULE, "inspect_cloudflared_directory", create=True, return_value=inspection), patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+                MODULE.daemon_menu(root)
+            self.assertFalse(any(any(action in call.args[0] for action in ("start", "use-cloudflared", "install-cloudflared", "update-cloudflared")) for call in run.call_args_list))
+            self.assertEqual(executable.read_bytes(), b"existing")
+
+    def test_publication_installer_explains_invalid_binary_before_install_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); project = root / "onmyoji-daemon"; project.mkdir()
+            (project / "setupDaemon.py").write_text("", encoding="utf-8")
+            manifest = root / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True); manifest.write_text("", encoding="utf-8")
+            selected = str(root / "tools")
+            inspection = {"candidates": [], "errors": [{"executable": str(root / "tools" / "cloudflared.exe"), "code": "invalid_executable", "message": "O executável não confirmou uma versão válida."}], "latest_version": "2026.10.7", "latest_error": None, "update_available": None}
+            answers = iter(["p", "3", selected, "n", "x", "x"])
+            completed = subprocess.CompletedProcess([], 0, stdout="[]", stderr="")
+            output = io.StringIO()
+            with patch.object(MODULE, "prompt", side_effect=lambda _label: next(answers)), patch.object(MODULE, "screen"), patch.object(MODULE, "flow_choice", return_value="Instalar"), patch.object(MODULE, "inspect_cloudflared_directory", create=True, return_value=inspection), patch.object(MODULE.subprocess, "run", return_value=completed) as run, patch.object(MODULE.sys, "stdout", output):
+                MODULE.daemon_menu(root)
+            self.assertIn("não confirmou uma versão válida", output.getvalue())
+            self.assertFalse(any(any(action in call.args[0] for action in ("start", "use-cloudflared", "install-cloudflared", "update-cloudflared")) for call in run.call_args_list))
 
     def test_publication_configuration_validates_ids_and_stores_only_the_vault_reference(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -163,7 +290,7 @@ class SystemSetupTests(unittest.TestCase):
                 response = {"state": "failed", "last_error": "O runtime não possui a dependência necessária."} if arguments[-2:] == ["start", "cloudflare-tunnel"] else []
                 return subprocess.CompletedProcess(arguments, 0, stdout=json.dumps(response), stderr="")
             output = io.StringIO()
-            with patch.object(MODULE, "prompt", side_effect=lambda _label: next(answers)), patch.object(MODULE, "screen"), patch.object(MODULE, "flow_choice", return_value="Instalar"), patch.object(MODULE.subprocess, "run", side_effect=execute) as run, patch.object(MODULE.sys, "stdout", output):
+            with patch.object(MODULE, "prompt", side_effect=lambda _label: next(answers)), patch.object(MODULE, "screen"), patch.object(MODULE, "flow_choice", return_value="Instalar"), patch.object(MODULE.subprocess, "run", side_effect=execute) as run, patch.object(MODULE.sys, "stdout", output), patch.object(MODULE, "inspect_cloudflared_directory", create=True, return_value={"candidates": [], "errors": [], "latest_version": None, "latest_error": "consulta indisponível", "update_available": None}):
                 MODULE.daemon_menu(root)
         commands = [call.args[0] for call in run.call_args_list]
         self.assertTrue(any(command[-2:] == ["start", "cloudflare-tunnel"] for command in commands))

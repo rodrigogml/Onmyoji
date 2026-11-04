@@ -11,7 +11,7 @@ from unittest.mock import Mock
 import pytest
 
 from onmyoji_daemon.cloudflare_tunnel import TunnelConfiguration, TunnelError
-from onmyoji_daemon.cloudflare_tunnel.installer import CloudflaredInstaller, asset_name
+from onmyoji_daemon.cloudflare_tunnel.installer import CloudflaredInstaller, asset_name, inspect_cloudflared_directory, probe_cloudflared
 
 
 @pytest.fixture
@@ -290,3 +290,126 @@ def test_rollback_refuses_missing_or_modified_previous_version(installed, tmp_pa
     execute.assert_not_called()
     with pytest.raises(TunnelError):
         installer.rollback(False)
+
+
+@pytest.mark.parametrize("local,latest,expected", [("2026.10.7", "2026.10.7", False), ("2026.9.10", "2026.10.1", True), ("2026.11.0", "2026.10.7", False)])
+def test_inspect_existing_directory_compares_numeric_versions_without_download(tmp_path, monkeypatch, local, latest, expected):
+    binary = tmp_path / "cloudflared-windows-amd64.exe"; binary.write_bytes(b"existing")
+    monkeypatch.setattr("onmyoji_daemon.cloudflare_tunnel.installer.subprocess.run", lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=f"cloudflared version {local}", stderr=""))
+    monkeypatch.setattr(CloudflaredInstaller, "_release", staticmethod(lambda: {"tag_name": latest}))
+    download = Mock(side_effect=AssertionError("Inspeção não baixa nem instala."))
+    monkeypatch.setattr("onmyoji_daemon.cloudflare_tunnel.installer.urllib.request.urlopen", download)
+
+    result = inspect_cloudflared_directory(tmp_path)
+
+    assert result["candidates"] == [{"executable": str(binary.resolve()), "version": local}]
+    assert result["latest_version"] == latest and result["update_available"] is expected
+    assert not result["errors"] and result["latest_error"] is None
+    assert binary.read_bytes() == b"existing" and list(tmp_path.iterdir()) == [binary]
+    download.assert_not_called()
+
+
+def test_inspect_keeps_existing_binary_usable_when_latest_release_is_unavailable(tmp_path, monkeypatch):
+    binary = tmp_path / "cloudflared.exe"; binary.write_bytes(b"existing")
+    monkeypatch.setattr("onmyoji_daemon.cloudflare_tunnel.installer.subprocess.run", lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="cloudflared version 2026.10.7", stderr=""))
+    monkeypatch.setattr(CloudflaredInstaller, "_release", staticmethod(Mock(side_effect=TunnelError("release_unavailable", "Consulta oficial indisponível."))))
+
+    result = inspect_cloudflared_directory(tmp_path)
+
+    assert result["candidates"][0]["executable"] == str(binary.resolve())
+    assert result["latest_version"] is None and result["update_available"] is None
+    assert result["latest_error"] == "Consulta oficial indisponível."
+
+
+def test_inspect_distinguishes_missing_and_invalid_binaries_and_finds_current_managed_version(tmp_path, monkeypatch):
+    current = tmp_path / "versions" / "2026.10.7" / "cloudflared.exe"; current.parent.mkdir(parents=True); current.write_bytes(b"managed")
+    invalid = tmp_path / "cloudflared.exe"; invalid.write_bytes(b"invalid")
+    def run(command, **_kwargs):
+        return SimpleNamespace(returncode=0, stdout="cloudflared version 2026.10.7" if str(command[0]) == str(current.resolve()) else "some other product", stderr="")
+    monkeypatch.setattr("onmyoji_daemon.cloudflare_tunnel.installer.subprocess.run", run)
+    monkeypatch.setattr(CloudflaredInstaller, "_release", staticmethod(lambda: {"tag_name": "2026.10.7"}))
+
+    result = inspect_cloudflared_directory(tmp_path, str(current))
+    empty = inspect_cloudflared_directory(tmp_path / "missing")
+
+    assert result["candidates"] == [{"executable": str(current.resolve()), "version": "2026.10.7"}]
+    assert result["errors"][0]["executable"] == str(invalid) and result["errors"][0]["code"] == "invalid_executable"
+    assert empty["candidates"] == [] and empty["errors"] == []
+    assert not (tmp_path / "missing").exists()
+
+
+@pytest.mark.parametrize("problem", [PermissionError(13, "private-path"), subprocess.TimeoutExpired("cloudflared", 10)])
+def test_existing_probe_reports_execution_failure_without_private_output(tmp_path, monkeypatch, problem):
+    binary = tmp_path / "cloudflared.exe"; binary.write_bytes(b"existing")
+    monkeypatch.setattr("onmyoji_daemon.cloudflare_tunnel.installer.subprocess.run", Mock(side_effect=problem))
+    with pytest.raises(TunnelError) as failure:
+        probe_cloudflared(binary)
+    assert failure.value.code == "invalid_executable" and "private-path" not in str(failure.value)
+    assert "errno 13" in str(failure.value) if isinstance(problem, PermissionError) else "10 segundos" in str(failure.value)
+
+
+@pytest.mark.parametrize("kind", ["relative", "missing", "directory", "link"])
+def test_existing_probe_rejects_nonregular_paths_before_execution(tmp_path, monkeypatch, kind):
+    binary = tmp_path / "cloudflared.exe"
+    if kind == "relative": candidate = Path("cloudflared.exe")
+    elif kind == "directory": binary.mkdir(); candidate = binary
+    elif kind == "link":
+        target = tmp_path / "target.exe"; target.write_bytes(b"existing")
+        try: binary.symlink_to(target)
+        except OSError: pytest.skip("Links simbólicos indisponíveis neste usuário.")
+        candidate = binary
+    else: candidate = binary
+    execute = Mock(side_effect=AssertionError("Não executar caminho recusado."))
+    monkeypatch.setattr("onmyoji_daemon.cloudflare_tunnel.installer.subprocess.run", execute)
+    with pytest.raises(TunnelError): probe_cloudflared(candidate)
+    execute.assert_not_called()
+
+
+def test_use_existing_from_empty_instance_changes_only_reference_without_vault_or_download(tmp_path, monkeypatch):
+    binary = tmp_path / "external" / "cloudflared.exe"; binary.parent.mkdir(); binary.write_bytes(b"existing")
+    credentials = Mock(); credentials.password_exists.side_effect = AssertionError("Não consultar cofre."); credentials.resolve.side_effect = AssertionError("Não resolver segredo.")
+    config = TunnelConfiguration(tmp_path, credentials=credentials)
+    installer = CloudflaredInstaller(config)
+    monkeypatch.setattr("onmyoji_daemon.cloudflare_tunnel.installer.subprocess.run", lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="cloudflared version 2026.10.7", stderr=""))
+    monkeypatch.setattr(installer, "_release", Mock(side_effect=AssertionError("Seleção não consulta release.")))
+
+    result = installer.use_existing(True, binary)
+    settings = config.settings()
+
+    assert result["executable"] == settings["cloudflared_executable"] == str(binary.resolve())
+    assert settings["install_directory"] == str(binary.parent) and settings["managed_version"] == settings["managed_digest"] == ""
+    assert not config.is_configured(settings) and binary.read_bytes() == b"existing"
+    credentials.password_exists.assert_not_called(); credentials.resolve.assert_not_called()
+
+
+def test_use_existing_requires_confirmation_and_preserves_managed_rollback(installed, tmp_path, monkeypatch):
+    installer, config, _release, binary = installed
+    before = installer.install(True)
+    external = tmp_path / "outside.exe"; external.write_bytes(b"external")
+    with pytest.raises(TunnelError) as failure: installer.use_existing(False, external)
+    assert failure.value.code == "confirmation_required"
+    monkeypatch.setattr("onmyoji_daemon.cloudflare_tunnel.installer.subprocess.run", lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="cloudflared version 2026.11.0", stderr=""))
+
+    installer.use_existing(True, external)
+    installer.use_existing(True, external)
+
+    settings = config.settings()
+    assert settings["previous_executable"] == before["executable"]
+    assert settings["previous_version"] == "2026.10.7" and settings["previous_digest"] == before["digest"]
+    assert external.read_bytes() == b"external" and Path(before["executable"]).read_bytes() == binary
+
+
+def test_reselecting_managed_binary_preserves_verified_metadata_only_when_unchanged(installed, monkeypatch):
+    installer, config, _release, _binary = installed
+    installed_result = installer.install(True)
+    before = config.settings()
+
+    installer.use_existing(True, installed_result["executable"])
+    assert config.settings() == before
+
+    Path(installed_result["executable"]).write_bytes(b"externally replaced")
+    monkeypatch.setattr("onmyoji_daemon.cloudflare_tunnel.installer.subprocess.run", lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="cloudflared version 2026.10.7", stderr=""))
+    installer.use_existing(True, installed_result["executable"])
+
+    assert config.settings()["managed_version"] == config.settings()["managed_digest"] == ""
+    assert config.settings()["previous_executable"] == before["previous_executable"]

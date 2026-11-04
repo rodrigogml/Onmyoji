@@ -89,6 +89,43 @@ def test_wrapper_is_administratively_ready_without_configuration(tmp_path):
         service.close()
 
 
+def test_use_existing_binary_is_serialized_and_requires_no_tunnel_credentials(tmp_path, monkeypatch):
+    resolver = Mock(); resolver.password_exists.side_effect = AssertionError("Não consultar credencial."); resolver.resolve.side_effect = AssertionError("Não resolver credencial.")
+    service = TunnelService(tmp_path, tmp_path / "configs" / "tunnel", resolver)
+    binary = tmp_path / "cloudflared.exe"; binary.write_bytes(b"existing")
+    monkeypatch.setattr("onmyoji_daemon.cloudflare_tunnel.installer.subprocess.run", lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="cloudflared version 2026.10.7", stderr=""))
+    try:
+        result = wait_operation(service, service.rpc("cloudflare-tunnel.use-cloudflared", {"confirm": True, "executable": str(binary)}))
+        assert result["state"] == "succeeded" and result["operation"] == "use-cloudflared"
+        assert service.configuration.settings()["cloudflared_executable"] == str(binary.resolve())
+        assert not service.status()["configured"] and not service.status()["running"]
+        assert binary.read_bytes() == b"existing"
+        resolver.resolve.assert_not_called(); resolver.password_exists.assert_not_called()
+    finally:
+        service.close()
+
+
+@pytest.mark.parametrize("same_selection", [True, False])
+def test_selecting_existing_binary_restarts_connector_only_when_reference_changes(service, tmp_path, monkeypatch, same_selection):
+    tunnel, resolver, _client, ca = service
+    binary = tmp_path / "cloudflared.exe"; binary.write_bytes(b"existing")
+    if same_selection:
+        tunnel.configuration.configure_executable({"cloudflared_executable": str(binary.resolve())})
+    confirm_existing_origin(tunnel, ca)
+    tunnel.activated = True
+    stop, start = Mock(), Mock()
+    monkeypatch.setattr(tunnel, "_stop_connector", stop)
+    monkeypatch.setattr(tunnel, "_start_with_recovery", start)
+    monkeypatch.setattr("onmyoji_daemon.cloudflare_tunnel.installer.subprocess.run", lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="cloudflared version 2026.10.7", stderr=""))
+    resolver.reset_mock()
+
+    result = wait_operation(tunnel, tunnel.rpc("cloudflare-tunnel.use-cloudflared", {"confirm": True, "executable": str(binary)}))
+
+    assert result["state"] == "succeeded"
+    assert stop.call_count == start.call_count == (0 if same_selection else 1)
+    resolver.resolve.assert_not_called(); resolver.password_exists.assert_not_called()
+
+
 def test_install_before_tunnel_configuration_is_available_and_does_not_start_connector(tmp_path, monkeypatch):
     resolver = Mock()
     resolver.password_exists.side_effect = AssertionError("Instalação não requer cofre.")
@@ -221,7 +258,7 @@ def test_origin_update_authorizes_only_last_confirmed_remote_ingress(service, re
     assert client.configure_ingress.call_args.kwargs["expected_previous"] == (remote if recognized else None)
 
 
-@pytest.mark.parametrize("action", ["configure", "provision", "install-cloudflared", "update-cloudflared", "rollback-cloudflared"])
+@pytest.mark.parametrize("action", ["configure", "provision", "install-cloudflared", "update-cloudflared", "rollback-cloudflared", "use-cloudflared"])
 def test_mutating_rpc_requires_confirmation(service, action):
     tunnel, _, _, _ = service
     with pytest.raises(TunnelError) as captured:

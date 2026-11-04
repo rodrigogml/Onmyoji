@@ -82,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
         if action in {"install-cloudflared", "update-cloudflared"}:
             operation.add_argument("--install-directory"); operation.add_argument("--version"); operation.add_argument("--adopt", action="store_true")
     operation = tunnel_sub.add_parser("operation-status"); operation.add_argument("operation_id")
+    reuse = tunnel_sub.add_parser("use-cloudflared"); reuse.add_argument("--executable", required=True); reuse.add_argument("--confirm", action="store_true"); reuse.add_argument("--wait", action="store_true")
     migration = sub.add_parser("publication-migrate"); migration.add_argument("migration_action", choices=["inspect", "apply", "rollback"]); migration.add_argument("--confirm", action="store_true")
     tls = miniapps_sub.add_parser("tls"); tls_sub = tls.add_subparsers(dest="tls_action", required=True); tls_sub.add_parser("status"); trust = tls_sub.add_parser("install-trust"); trust.add_argument("--confirm", action="store_true")
     args = parser.parse_args(argv); root = args.onmyoji_root.resolve()
@@ -168,8 +169,9 @@ def main(argv: list[str] | None = None) -> int:
                 if args.owner: params["owner"] = args.owner
     elif args.action == "cloudflare-tunnel":
         method, params = "cloudflare-tunnel." + args.tunnel_action, {}
-        if args.tunnel_action in {"provision", "install-cloudflared", "update-cloudflared", "rollback-cloudflared"}:
+        if args.tunnel_action in {"provision", "install-cloudflared", "update-cloudflared", "rollback-cloudflared", "use-cloudflared"}:
             params = {"confirm": args.confirm}
+            if args.tunnel_action == "use-cloudflared": params["executable"] = args.executable
             if args.tunnel_action in {"install-cloudflared", "update-cloudflared"}:
                 for key in ("install_directory", "version"):
                     if getattr(args, key): params[key] = getattr(args, key)

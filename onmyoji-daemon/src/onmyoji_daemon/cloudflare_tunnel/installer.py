@@ -8,6 +8,7 @@ from pathlib import Path
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 from typing import Any, Callable
@@ -41,6 +42,34 @@ def asset_name(system: str | None = None, machine: str | None = None) -> str:
     if system == "linux" and arch:
         return f"cloudflared-linux-{arch}"
     raise TunnelError("unsupported_platform", "Instalação suporta Windows amd64 e Linux amd64/arm64.")
+
+
+def probe_cloudflared(path: str | Path) -> dict[str, str]:
+    """Valida um executável existente por arquivo regular e versão, sem modificá-lo.
+
+    Rejeita caminhos relativos, links/junctions, arquivos ausentes e processos
+    que falhem ou não se identifiquem como cloudflared em dez segundos.
+    """
+    if not isinstance(path, (str, Path)) or not str(path).strip():
+        raise TunnelError("invalid_executable", "Informe o caminho absoluto do executável cloudflared.")
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        raise TunnelError("invalid_executable", "Informe o caminho absoluto do executável cloudflared.")
+    try:
+        for component in (candidate, *candidate.parents):
+            if component.is_symlink() or (hasattr(component, "is_junction") and component.is_junction()):
+                raise TunnelError("invalid_executable", "O executável cloudflared deve ser um arquivo regular, sem links ou junctions.")
+        if not stat.S_ISREG(candidate.stat().st_mode):
+            raise TunnelError("invalid_executable", "O caminho informado não é um arquivo regular do cloudflared.")
+        candidate = candidate.resolve()
+        checked = subprocess.run([str(candidate), "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, check=False,
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        raise TunnelError("invalid_executable", f"Não foi possível validar o cloudflared existente ({_system_error_detail(error)}).") from error
+    version = re.search(r"\bcloudflared version v?(\d{4}\.\d+\.\d+)\b", checked.stdout or "", re.IGNORECASE)
+    if checked.returncode or version is None:
+        raise TunnelError("invalid_executable", f"O executável não confirmou uma versão válida do cloudflared (código {checked.returncode}).")
+    return {"executable": str(candidate), "version": version[1]}
 
 
 class CloudflaredInstaller:
@@ -164,6 +193,36 @@ class CloudflaredInstaller:
             raise
         return {"version": version, "digest": digest.lower(), "executable": str(destination), "previous_executable": before["previous_executable"]}
 
+    def use_existing(self, confirm: bool, path: str | Path) -> dict[str, str]:
+        """Seleciona um binário local validado sem download, cópia ou acesso ao cofre.
+
+        Uma instalação externa não ganha a marca de release oficial gerenciada.
+        Repetir a seleção atual conserva seus metadados e o rollback anterior.
+        """
+        if confirm is not True:
+            raise TunnelError("confirmation_required", "Selecionar cloudflared existente exige confirm=true.")
+        selected = probe_cloudflared(path)
+        settings = self.configuration.settings()
+        previous = str(settings.get("cloudflared_executable") or "cloudflared")
+        try:
+            unchanged = Path(previous).is_absolute() and Path(previous).resolve() == Path(selected["executable"])
+        except OSError:
+            unchanged = False
+        if not unchanged:
+            self.configuration.configure_executable({"cloudflared_executable": selected["executable"], "install_directory": str(Path(selected["executable"]).parent),
+                                                     "managed_version": "", "managed_digest": "", "previous_executable": previous,
+                                                     "previous_version": str(settings.get("managed_version") or ""), "previous_digest": str(settings.get("managed_digest") or "")})
+        elif settings.get("managed_version") or settings.get("managed_digest"):
+            # Uma execução válida não comprova que os bytes ainda sejam os da
+            # release gerenciada; uma substituição externa remove essa marca.
+            try:
+                expected = "sha256:" + hashlib.sha256(Path(selected["executable"]).read_bytes()).hexdigest()
+            except OSError as error:
+                raise TunnelError("invalid_executable", f"Não foi possível verificar o binário gerenciado ({_system_error_detail(error)}).") from error
+            if str(settings.get("managed_version") or "").removeprefix("v") != selected["version"] or settings.get("managed_digest") != expected:
+                self.configuration.configure_executable({"managed_version": "", "managed_digest": ""})
+        return {**selected, "previous_executable": previous}
+
     def rollback(self, confirm: bool) -> dict[str, Any]:
         """Restaura a referência anterior após validar sua execução, sem apagar versões."""
         if confirm is not True:
@@ -192,3 +251,51 @@ class CloudflaredInstaller:
                                       "previous_executable": settings["cloudflared_executable"], "previous_version": settings.get("managed_version", ""),
                                       "previous_digest": settings.get("managed_digest", "")})
         return {"executable": executable, "version": version}
+
+
+def inspect_cloudflared_directory(destination: str | Path, configured_executable: str = "", progress: Callable[[str], None] | None = None) -> dict[str, Any]:
+    """Localiza binários locais e compara suas versões à release oficial, sem escrita.
+
+    Uma falha de rede ou de versão em um candidato não apaga os demais resultados.
+    ``latest_error`` informa quando a atualidade da versão não foi confirmada.
+    """
+    if not isinstance(destination, (str, Path)) or not Path(destination).is_absolute():
+        raise TunnelError("invalid_install_directory", "Informe um diretório ou executável absoluto do cloudflared.")
+    directory = Path(destination)
+    paths: list[Path] = []
+    if directory.is_file() or directory.is_symlink():
+        paths.append(directory)
+    else:
+        for folder in (directory, directory / "bin"):
+            for name in ("cloudflared.exe", "cloudflared-windows-amd64.exe", "cloudflared"):
+                candidate = folder / name
+                if candidate.exists() or candidate.is_symlink():
+                    paths.append(candidate)
+        configured = Path(configured_executable) if configured_executable else None
+        if configured is not None and configured.is_absolute() and configured.is_relative_to(directory):
+            paths.append(configured)
+    report = progress or (lambda _value: None)
+    candidates, errors = [], []
+    seen: set[str] = set()
+    for path in paths:
+        key = os.path.normcase(str(path))
+        if key in seen:
+            continue
+        seen.add(key)
+        report(f"validando executável local: {path}")
+        try:
+            candidates.append(probe_cloudflared(path))
+        except TunnelError as error:
+            errors.append({"executable": str(path), "code": error.code, "message": str(error)})
+    report("consultando versão oficial mais recente do cloudflared")
+    latest, latest_error = None, None
+    try:
+        release = CloudflaredInstaller._release()
+        tag = str(release.get("tag_name") or "")
+        if release.get("draft") or release.get("prerelease") or not re.fullmatch(r"v?\d{4}\.\d+\.\d+", tag):
+            raise TunnelError("invalid_release", "A fonte oficial não confirmou uma versão estável válida do cloudflared.")
+        latest = tag.removeprefix("v")
+    except TunnelError as error:
+        latest_error = str(error)
+    update_available = any(tuple(map(int, item["version"].split("."))) < tuple(map(int, latest.split("."))) for item in candidates) if latest and candidates else None
+    return {"candidates": candidates, "errors": errors, "latest_version": latest, "latest_error": latest_error, "update_available": update_available}

@@ -87,6 +87,21 @@ permissão e execução. Não há elevação silenciosa de privilégios.
 **3. Instalar ou atualizar cloudflared** funciona antes de informar conta,
 domínio ou credencial. Somente metadados do binário são gravados nesse caso;
 isso não marca o Tunnel como configurado nem inicia uma conexão externa.
+O diretório informado é inspecionado antes de qualquer confirmação de download:
+o setup procura executáveis conhecidos, testa `--version` e compara com a
+release estável oficial. Se encontrar mais de um executável válido, pede a
+seleção pelo caminho e versão. Também é possível informar o caminho completo
+do arquivo.
+
+**Usar o executável existente** é a escolha inicial: registra o caminho absoluto
+para que o serviço e os diagnósticos utilizem essa instalação, sem copiar,
+baixar ou substituir o arquivo. Uma atualização disponível é oferecida como
+ação separada e usa uma cópia gerenciada em `versions/`. Falha na consulta da
+release é apresentada e não impede reutilizar uma instalação local validada.
+Cada binário é revalidado pelo serviço antes de salvar sua seleção. A validação
+de versão de um arquivo externo não comprova sua origem ou integridade oficial;
+o SHA-256 oficial continua sendo exigido nas novas instalações gerenciadas.
+
 O provisionamento aguarda a confirmação da origem HTTPS e da CA pelo Supervisor
 antes de enviar qualquer alteração à Cloudflare.
 

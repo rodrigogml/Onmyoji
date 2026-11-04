@@ -52,6 +52,20 @@ def test_cli_waits_for_installation_and_preserves_selected_directory(monkeypatch
     assert json.loads(captured.out)["state"] == "succeeded"
 
 
+def test_cli_selects_existing_binary_through_serialized_operation(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "endpoint", lambda _root: ("127.0.0.1", 1234, "private"))
+    monkeypatch.setattr(cli.time, "sleep", lambda _seconds: None)
+    calls = []
+    def rpc(_host, _port, _token, method, params, **_kwargs):
+        calls.append((method, params))
+        return {"operation_id": "select-1", "state": "succeeded" if method.endswith("operations.status") else "queued"}
+    monkeypatch.setattr(cli, "call", rpc)
+
+    assert cli.main(["--onmyoji-root", ".", "cloudflare-tunnel", "use-cloudflared", "--executable", "C:/Tools/cloudflared.exe", "--confirm", "--wait"]) == 0
+    assert calls == [("cloudflare-tunnel.use-cloudflared", {"confirm": True, "executable": "C:/Tools/cloudflared.exe"}), ("cloudflare-tunnel.operations.status", {"operation_id": "select-1"})]
+    assert "private" not in capsys.readouterr().out
+
+
 def test_mcp_separates_namespaces_and_exposes_installation_options(tmp_path):
     tools = {item["name"]: item for item in PublicationToolRegistry(tmp_path).definitions()}
     assert {"gateway.status", "gateway.listeners_restore", "cloudflare_tunnel.provision", "cloudflare_tunnel.operation_status"} <= tools.keys()

@@ -200,9 +200,19 @@ class TunnelService:
             self._start_with_recovery()
         return self.status()
 
-    def _install(self, params: dict[str, Any], progress, rollback: bool = False) -> dict[str, Any]:
+    def _install(self, params: dict[str, Any], progress, rollback: bool = False, use_existing: bool = False) -> dict[str, Any]:
         installer = CloudflaredInstaller(self.configuration)
-        if rollback:
+        previous_executable = str(self.configuration.settings().get("cloudflared_executable") or "cloudflared")
+        if use_existing:
+            progress("validando e selecionando o executável cloudflared existente")
+            result = installer.use_existing(True, params.get("executable"))
+            try:
+                unchanged = Path(previous_executable).is_absolute() and Path(previous_executable).resolve() == Path(result["executable"])
+            except OSError:
+                unchanged = False
+            if unchanged:
+                return result
+        elif rollback:
             result = installer.rollback(True)
         else:
             result = installer.install(True, params.get("install_directory"), params.get("adopt") is True, progress, params.get("version"))
@@ -233,7 +243,7 @@ class TunnelService:
             return self._activate(params)
         if action == "operations.status":
             return self.operations.status(str(params.get("operation_id", "")))
-        if action not in {"configure", "provision", "install-cloudflared", "update-cloudflared", "rollback-cloudflared"}:
+        if action not in {"configure", "provision", "install-cloudflared", "update-cloudflared", "rollback-cloudflared", "use-cloudflared"}:
             raise TunnelError("unknown_method", "Operação Cloudflare Tunnel não suportada.")
         if params.get("confirm") is not True:
             raise TunnelError("confirmation_required", "A operação administrativa exige confirm=true.")
@@ -242,7 +252,7 @@ class TunnelService:
             return self.operations.start(action, lambda progress: self._configure(values, progress))
         if action == "provision":
             return self.operations.start(action, self._provision)
-        return self.operations.start(action, lambda progress: self._install(params, progress, action == "rollback-cloudflared"))
+        return self.operations.start(action, lambda progress: self._install(params, progress, action == "rollback-cloudflared", action == "use-cloudflared"))
 
     def _monitor(self) -> None:
         parent = os.environ.get("ONMYOJI_SUPERVISOR_PID", "")

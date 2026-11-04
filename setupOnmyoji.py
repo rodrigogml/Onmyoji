@@ -35,6 +35,7 @@ from onmyoji_daemon import runtime as python_runtime
 from onmyoji_daemon.telegram_stickers import MAX_CONTEXT_LENGTH, STATIC_STICKER_TARGET_BYTES, STICKER_ID, convert_static as convert_static_sticker, discover as discover_stickers, discover_static_sources, load as load_sticker_catalog, save as save_sticker_catalog, sticker_folder, suggested_identifier
 from onmyoji_daemon import management as daemon_management
 from onmyoji_daemon.publication_diagnostics import diagnose as diagnose_publication
+from onmyoji_daemon.cloudflare_tunnel.installer import inspect_cloudflared_directory
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
 from onmyoji_daemon.mcp.ocr.runtime import DocumentError, install_runtime as install_document_runtime
 SYSTEM_BEGIN = "# BEGIN ONMYOJI MANAGED CODEX SETTINGS"
@@ -2626,19 +2627,64 @@ def daemon_menu(root: Path) -> None:
         return True
 
     def install_publication_binary(update: bool = False) -> bool:
-        flow_heading("Atualizar cloudflared" if update else "Instalar cloudflared", "Binário oficial verificado; a versão anterior será preservada")
+        flow_heading("Verificar ou atualizar cloudflared" if update else "Localizar ou instalar cloudflared", "Detecta instalação existente e consulta a versão oficial antes de decidir")
         current = tunnel_settings()
-        note("Esta instalação prepara somente o executável; conta, domínio e token podem ser configurados depois.")
-        suggested = str(current.get("install_directory") or root / "configs" / "daemon" / "services" / "cloudflare-tunnel" / "bin")
+        note("Informe a pasta onde o cloudflared já está instalado ou o destino de uma nova instalação.")
+        note("A verificação não exige conta, domínio ou token. Um executável existente pode ser reutilizado sem download.")
+        configured = str(current.get("cloudflared_executable") or "cloudflared")
+        existing_parent = Path(configured).parent if Path(configured).is_absolute() else None
+        suggested = str(current.get("install_directory") or existing_parent or root / "configs" / "daemon" / "services" / "cloudflare-tunnel" / "bin")
         destination = prompt(f"Diretório de instalação [{suggested}]: ").strip() or suggested
-        if destination.casefold() == "x": return False
+        if destination.casefold() in {"x", "\x1b"}: return False
         if not Path(destination).is_absolute():
             result(False, "Informe um diretório absoluto acessível ao usuário do daemon.")
             return False
-        arguments = ["cloudflare-tunnel", "update-cloudflared" if update else "install-cloudflared", "--install-directory", destination, "--confirm", "--wait"]
-        external = current.get("cloudflared_executable") not in {None, "", "cloudflared"} and not current.get("managed_version")
+        from onmyoji_daemon.cloudflare_tunnel.exception import TunnelError
+        try:
+            inspected = inspect_cloudflared_directory(destination, configured, progress=note)
+        except (TunnelError, OSError) as error:
+            result(False, f"Não foi possível verificar o diretório: {error}"); return False
+        candidates = inspected["candidates"]
+        for error in inspected.get("errors", []):
+            result(False, f"{error['executable']}: {error['message']}")
+        latest = inspected.get("latest_version")
+        if latest:
+            note(f"Versão oficial estável mais recente: {latest}.")
+        else:
+            note("Não foi possível confirmar a versão oficial mais recente: " + str(inspected.get("latest_error") or "consulta indisponível") + ". A reutilização de um binário local validado continua disponível.")
+        if candidates:
+            selected = candidates[0]
+            if len(candidates) > 1:
+                labels = [f"{entry['executable']} · versão {entry['version']}" for entry in candidates]
+                choice = flow_choice("Executável encontrado para validar e utilizar", labels, labels[0])
+                if choice is None: return False
+                selected = candidates[labels.index(choice)]
+            result(True, f"Executável encontrado: {selected['executable']} · versão {selected['version']}.")
+            def version_key(value: str) -> tuple[int, ...]:
+                match = re.fullmatch(r"v?(\d{4})\.(\d+)\.(\d+)", value)
+                return tuple(int(part) for part in match.groups()) if match else ()
+            newer = bool(latest and version_key(str(latest)) > version_key(selected["version"]))
+            if newer:
+                note(f"Há atualização disponível: {selected['version']} → {latest}.")
+            elif latest:
+                note("A versão instalada já é a mais recente ou é posterior à release estável consultada.")
+            install_choice = f"Instalar nova versão {latest}" if newer else "Instalar cópia gerenciada"
+            choice = flow_choice("O que fazer com o cloudflared", ["Usar o executável existente", install_choice], "Usar o executável existente")
+            if choice is None: return False
+            if choice == "Usar o executável existente":
+                if not start_publication_service("cloudflare-tunnel"): return False
+                completed = publication_command("cloudflare-tunnel", "use-cloudflared", "--executable", selected["executable"], "--confirm", "--wait", quiet=False)
+                result(completed.returncode == 0, "Executável existente validado e selecionado. Nenhum arquivo foi baixado ou substituído." if completed.returncode == 0 else "Não foi possível selecionar o executável existente; confira o diagnóstico acima.")
+                return completed.returncode == 0
+        else:
+            note("Nenhum executável cloudflared válido foi encontrado no diretório informado.")
+        base = str(Path(destination).parent) if Path(destination).is_file() else destination
+        note("Uma instalação gerenciada grava a nova versão em uma subpasta versions/ e preserva os executáveis existentes.")
+        arguments = ["cloudflare-tunnel", "update-cloudflared" if update else "install-cloudflared", "--install-directory", base, "--confirm", "--wait"]
+        if latest: arguments.extend(["--version", str(latest)])
+        external = configured not in {"", "cloudflared"} and not current.get("managed_version")
         if external:
-            if prompt("Adotar instalação gerenciada preservando o executável externo? [s/N]: ").strip().casefold() not in {"s", "sim"}: return False
+            note("Ao confirmar, a instância passará a usar a cópia gerenciada; o executável externo será preservado.")
             arguments.append("--adopt")
         if prompt("Baixar e instalar a versão oficial neste diretório? [s/N]: ").strip().casefold() not in {"s", "sim"}: return False
         if not start_publication_service("cloudflare-tunnel"): return False
