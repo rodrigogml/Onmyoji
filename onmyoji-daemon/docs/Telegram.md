@@ -43,6 +43,20 @@ pensamentos do agente durante o turno e, quando compartilhados, excluí-los ou
 mantê-los após a resposta. A configuração individual em `/config` continua
 restrita à conversa atual e não é alterada ao modificar o padrão global.
 
+## Configuração na conversa
+
+`/config` confirma o clique antes de processar a alteração; a atualização do
+controle não bloqueia o recebimento de novas mensagens do Telegram. A seção
+**Execução** preserva o limite de modelos e esforços definido no setup e, ao
+abrir a lista de modelos, consulta o catálogo atual da conta pelo App Server
+do Codex. Assim, opções removidas da conta não são oferecidas à conversa.
+
+Enquanto essa consulta ocorre, o controle mostra que está atualizando o
+catálogo. Se a API do Telegram, o App Server ou a configuração não puderem
+concluir uma ação, o Gateway fecha aquele controle e envia o motivo
+operacional sanitizado, junto com a orientação para abrir `/config` novamente.
+O diagnóstico também registra as etapas de confirmação, renderização e falha.
+
 ## Paralelismo de respostas
 
 O menu `Gateway Telegram` permite definir de 1 a 16 conversas processadas em

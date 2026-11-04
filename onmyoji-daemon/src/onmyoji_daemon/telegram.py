@@ -154,6 +154,18 @@ class CodexProtocolError(RuntimeError): pass
 class TelegramMediaUploadError(RuntimeError): pass
 
 
+class TelegramApiError(RuntimeError):
+    """Falha sanitizada retornada pela API HTTP do Telegram."""
+
+
+def _telegram_error_detail(error: Exception | str) -> str:
+    """Expõe um diagnóstico operacional curto sem incluir credenciais ou URLs."""
+    detail = str(error).replace("\n", " ").strip()
+    detail = re.sub(r"https?://[^\s]+", "API do Telegram", detail)
+    detail = re.sub(r"(?i)(token|password|secret)\s*[=:]\s*\S+", r"\1=[redacted]", detail)
+    return detail[-300:] or "Falha sem detalhe retornado pela API do Telegram."
+
+
 class CodexAppServer:
     """Processo Codex persistente, sempre privado à instância Onmyōji atual."""
     def __init__(self, settings: Settings):
@@ -268,11 +280,27 @@ class McpVault:
 
 class TelegramApi:
     def __init__(self, token: str): self.base, self.files = f"https://api.telegram.org/bot{token}/", f"https://api.telegram.org/file/bot{token}/"
-    def call(self, method: str, values: dict[str, Any] | None = None) -> Any:
+    def call(self, method: str, values: dict[str, Any] | None = None, timeout: float = 45) -> Any:
         body = urlencode({key: json.dumps(value) if isinstance(value, (dict, list)) else value for key, value in (values or {}).items()}).encode()
-        with urlopen(Request(self.base + method, data=body), timeout=45) as response: payload = json.loads(response.read())
-        if not payload.get("ok"): raise RuntimeError("Telegram API rejected request")
+        try:
+            with urlopen(Request(self.base + method, data=body), timeout=timeout) as response: payload = json.loads(response.read())
+        except HTTPError as error:
+            try:
+                response = json.loads(error.read().decode("utf-8", errors="replace"))
+                detail = str(response.get("description") or f"HTTP {error.code}") if isinstance(response, dict) else f"HTTP {error.code}"
+            except Exception:
+                detail = f"HTTP {error.code}"
+            raise TelegramApiError(f"Telegram recusou {method}: {detail[:240]}") from error
+        except (OSError, ValueError) as error:
+            raise TelegramApiError(f"Não foi possível concluir {method}: {_telegram_error_detail(error)}") from error
+        if not isinstance(payload, dict): raise TelegramApiError(f"Telegram retornou uma resposta inválida ao executar {method}.")
+        if not payload.get("ok"):
+            detail = str(payload.get("description") or "resposta sem descrição")
+            raise TelegramApiError(f"Telegram recusou {method}: {detail[:240]}")
         return payload.get("result")
+    def answer_callback(self, callback_id: str) -> None:
+        """Confirma o clique rapidamente para não deixar o botão em estado pendente."""
+        self.call("answerCallbackQuery", {"callback_query_id": callback_id}, timeout=8)
     def send(self, chat_id: int, text: str, **values: Any) -> dict[str, Any]: return self.call("sendMessage", {"chat_id": chat_id, "text": text, **values})
     def typing(self, chat_id: int, **values: Any) -> None: self.call("sendChatAction", {"chat_id": chat_id, "action": "typing", **values})
     def delete(self, chat_id: int, message_id: int) -> None: self.call("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
@@ -373,7 +401,7 @@ class Gateway(TelegramChannels):
         self.identity = identity(settings.root); self.instructions = InstructionComposer(settings.root, settings.data_dir, settings.instructions_file, settings.instructions_enabled)
         self.activity_root = settings.project / ".onmyoji" / "telegram"; self.archive_root = self.activity_root / "attachments"; self.staging_root = self.activity_root / "staging"
         self.archive_root.mkdir(parents=True, exist_ok=True); self.staging_root.mkdir(parents=True, exist_ok=True)
-        self.api: TelegramApi | None = None; self.bot_id: int | None = None; self.pair: tuple[str, float] | None = None; self.offset = 0; self.work = threading.BoundedSemaphore(settings.parallel); self.totp_sessions: dict[int, dict[str, Any]] = {}; self.config_sessions: dict[str, dict[str, Any]] = {}; self.menu_sessions: dict[str, MenuSession] = {}; self.channel_identify_sessions: dict[str, dict[str, Any]] = {}; self.menu_lock = threading.RLock(); self.last_error: str | None = None; self.cleanup_path = settings.data_dir / "state" / "totp-cleanup.json"; self.pending_deletions = json_file(self.cleanup_path, {}); self.app_server: CodexAppServer | None = None; self.app_server_lock = threading.RLock(); self.app_turns: dict[str, AppServerTurn] = {}; self.last_app_activity = time.monotonic(); self.turn_locks: dict[str, threading.Lock] = {}; self.turn_locks_lock = threading.Lock(); self.workers: set[str] = set(); self.workers_lock = threading.Lock()
+        self.api: TelegramApi | None = None; self.bot_id: int | None = None; self.pair: tuple[str, float] | None = None; self.offset = 0; self.work = threading.BoundedSemaphore(settings.parallel); self.totp_sessions: dict[int, dict[str, Any]] = {}; self.config_sessions: dict[str, dict[str, Any]] = {}; self.config_lock = threading.RLock(); self.menu_sessions: dict[str, MenuSession] = {}; self.channel_identify_sessions: dict[str, dict[str, Any]] = {}; self.menu_lock = threading.RLock(); self.last_error: str | None = None; self.cleanup_path = settings.data_dir / "state" / "totp-cleanup.json"; self.pending_deletions = json_file(self.cleanup_path, {}); self.app_server: CodexAppServer | None = None; self.app_server_lock = threading.RLock(); self.app_turns: dict[str, AppServerTurn] = {}; self.last_app_activity = time.monotonic(); self.turn_locks: dict[str, threading.Lock] = {}; self.turn_locks_lock = threading.Lock(); self.workers: set[str] = set(); self.workers_lock = threading.Lock()
 
     @staticmethod
     def _conversation_id(chat: dict[str, Any], message: dict[str, Any]) -> str:
@@ -1059,6 +1087,73 @@ class Gateway(TelegramChannels):
         effort = settings["owner_effort"] if self.settings.owner_execution_preferences and settings["owner_effort"] in self.settings.owner_allowed_efforts else self.settings.effort
         return model, effort
 
+    def _config_execution_choices(self, session: dict[str, Any], settings: dict[str, Any]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Retorna escolhas estáticas ou o catálogo já confirmado para esta sessão."""
+        models = tuple(session.get("models") or self.settings.owner_allowed_models)
+        configured = str(settings.get("owner_model") or "")
+        selected = configured if configured in models else (models[0] if models else "")
+        efforts_by_model = session.get("efforts_by_model")
+        efforts = tuple(efforts_by_model.get(selected, ()) if isinstance(efforts_by_model, dict) else self.settings.owner_allowed_efforts)
+        return models, efforts
+
+    def _refresh_config_model_catalog(self, session: dict[str, Any]) -> None:
+        """Consulta o App Server uma vez e só publica modelos visíveis e autorizados."""
+        response = self._app_client().request("model/list", {"limit": 100, "includeHidden": False}, timeout=25)
+        data = response.get("data")
+        if not isinstance(data, list):
+            raise CodexProtocolError("O Codex não retornou uma lista de modelos válida.")
+        allowed_models = set(self.settings.owner_allowed_models)
+        allowed_efforts = set(self.settings.owner_allowed_efforts)
+        models: list[str] = []
+        efforts_by_model: dict[str, tuple[str, ...]] = {}
+        for entry in data:
+            if not isinstance(entry, dict) or entry.get("hidden") is True:
+                continue
+            model = entry.get("model", entry.get("id", ""))
+            if not isinstance(model, str) or not model.strip() or model.strip() not in allowed_models:
+                continue
+            raw_efforts = entry.get("supportedReasoningEfforts", [])
+            efforts = tuple(dict.fromkeys(str(item.get("reasoningEffort")).strip() for item in raw_efforts if isinstance(item, dict) and isinstance(item.get("reasoningEffort"), str) and str(item["reasoningEffort"]).strip() in allowed_efforts)) if isinstance(raw_efforts, list) else ()
+            if efforts:
+                models.append(model.strip()); efforts_by_model[model.strip()] = efforts
+        if not models:
+            raise CodexProtocolError("Nenhum modelo permitido pelo setup está disponível para a conta atual do Codex.")
+        session["models"] = tuple(dict.fromkeys(models)); session["efforts_by_model"] = efforts_by_model
+
+    def _render_config(self, chat_id: int, token: str, session: dict[str, Any], settings: dict[str, Any], page: str | bool) -> None:
+        """Atualiza o controle efêmero já validado, preservando seu tópico de origem."""
+        models, efforts = self._config_execution_choices(session, settings)
+        effective = dict(settings)
+        if effective.get("owner_model") not in models: effective["owner_model"] = ""
+        if effective.get("owner_effort") not in efforts: effective["owner_effort"] = ""
+        text, keyboard = self._config_keyboard(token, effective, page, self.settings.voice_enabled, self.settings.owner_execution_preferences, models, efforts)
+        assert self.api
+        telegram_chat_id, topic_values = self._telegram_address(str(chat_id))
+        if "direct_messages_topic_id" in topic_values:
+            previous = int(session["message_id"])
+            sent = self.api.send(telegram_chat_id, text, protect_content=True, reply_markup=keyboard, **topic_values)
+            if not isinstance(sent.get("message_id"), int): raise TelegramApiError("Telegram não retornou o identificador da nova mensagem de configuração.")
+            session["message_id"] = sent["message_id"]
+            self._delete_later(telegram_chat_id, previous)
+        else:
+            self.api.edit(telegram_chat_id, int(session["message_id"]), text, keyboard)
+
+    def _close_config_with_error(self, chat_id: int, token: str, session: dict[str, Any], action: str, error: Exception | str) -> None:
+        """Finaliza uma sessão quebrada e devolve ao owner o motivo útil da falha."""
+        detail = _telegram_error_detail(error)
+        self._record_error(detail); self._diagnostic("config.render_failed", conversation=str(chat_id), action=action, error=detail)
+        with self.config_lock: self.config_sessions.pop(token, None)
+        try:
+            assert self.api
+            telegram_chat_id, _topic_values = self._telegram_address(str(chat_id))
+            self.api.delete(telegram_chat_id, int(session["message_id"]))
+        except Exception as close_error:
+            self._record_error(close_error); self._diagnostic("config.close_failed", conversation=str(chat_id), action=action, error=_telegram_error_detail(close_error))
+        try:
+            self._ephemeral(chat_id, f"Não foi possível concluir '{action}': {detail} O menu foi fechado; envie /config para tentar novamente.", 15)
+        except Exception as notify_error:
+            self._record_error(notify_error); self._diagnostic("config.error_notification_failed", conversation=str(chat_id), action=action, error=_telegram_error_detail(notify_error))
+
     @staticmethod
     def _config_keyboard(token: str, settings: dict[str, Any], thoughts: bool = False, voice_available: bool = False, execution_available: bool = False, allowed_models: tuple[str, ...] = (), allowed_efforts: tuple[str, ...] = ()) -> tuple[str, dict[str, Any]]:
         if not thoughts:
@@ -1069,6 +1164,8 @@ class Gateway(TelegramChannels):
         if thoughts == "execution":
             model = settings["owner_model"] or allowed_models[0]; effort = settings["owner_effort"] or allowed_efforts[0]
             return "Configurações › Execução", {"inline_keyboard": [[{"text": f"Modelo: {model}", "callback_data": f"cfg:{token}:models"}], [{"text": f"Raciocínio: {effort}", "callback_data": f"cfg:{token}:efforts"}], [{"text": "↺ Padrão do setup", "callback_data": f"cfg:{token}:execution-reset"}], [{"text": "‹ Voltar", "callback_data": f"cfg:{token}:back"}], [{"text": "Fechar", "callback_data": f"cfg:{token}:close"}]]}
+        if thoughts == "models_loading":
+            return "Configurações › Execução", {"inline_keyboard": [[{"text": "⌛ Consultando modelos disponíveis no Codex…", "callback_data": f"cfg:{token}:models-loading"}], [{"text": "Fechar", "callback_data": f"cfg:{token}:close"}]]}
         if thoughts == "models":
             selected = settings["owner_model"] or allowed_models[0]
             rows = [[{"text": f"{'✓ ' if model == selected else ''}{model}", "callback_data": f"cfg:{token}:model-{index}"}] for index, model in enumerate(allowed_models)]
@@ -1085,62 +1182,74 @@ class Gateway(TelegramChannels):
         token, settings = secrets.token_urlsafe(8), self._conversation_settings(chat_id); text, keyboard = self._config_keyboard(token, settings, voice_available=self.settings.voice_enabled, execution_available=self.settings.owner_execution_preferences, allowed_models=self.settings.owner_allowed_models, allowed_efforts=self.settings.owner_allowed_efforts)
         sent = self._ephemeral(chat_id, text, 180, reply_markup=keyboard)
         if isinstance(sent.get("message_id"), int):
-            self.config_sessions[token] = {"chat_id": str(chat_id), "message_id": sent["message_id"], "expires_at": time.time() + 180}
+            with self.config_lock: self.config_sessions[token] = {"chat_id": str(chat_id), "message_id": sent["message_id"], "expires_at": time.time() + 180}
             self._diagnostic("config.open", conversation=str(chat_id), message_id=sent["message_id"])
 
     def _config_callback(self, chat_id: int, callback: dict[str, Any], parts: list[str]) -> bool:
         if len(parts) != 3 or parts[0] != "cfg": return False
-        session = self.config_sessions.get(parts[1]); action = parts[2]
+        with self.config_lock: session = self.config_sessions.get(parts[1])
+        action = parts[2]
         self._diagnostic("config.callback", action=action, conversation=str(chat_id), session_found=bool(session), callback_message_id=callback.get("message", {}).get("message_id"))
         if not session or session["chat_id"] != str(chat_id) or time.time() > float(session["expires_at"]): self._ephemeral(chat_id, "Esta configuração expirou."); return True
         if action == "close":
-            self.config_sessions.pop(parts[1], None)
+            with self.config_lock: self.config_sessions.pop(parts[1], None)
             telegram_chat_id, _topic_values = self._telegram_address(str(chat_id))
             self._delete_later(telegram_chat_id, int(session["message_id"]))
             self._diagnostic("config.close", conversation=str(chat_id), message_id=session["message_id"])
             return True
         if action == "audio":
             try: self._set_reply_mode(chat_id, "text" if self._conversation_settings(chat_id)["reply_mode"] == "audio" else "audio")
-            except Exception as error: self._ephemeral(chat_id, str(error)); return True
-        settings = self._conversation_settings(chat_id)
-        if action in {"share", "delete"}:
-            column = "share_thoughts" if action == "share" else "delete_thoughts"; self.database.execute(f"UPDATE conversations SET {column} = NOT {column}, updated_at=? WHERE chat_id=?", (time.time(), str(chat_id))); self.database.commit(); settings = self._conversation_settings(chat_id); thoughts = True
-        elif action.startswith(("model-", "effort-")):
-            if not self.settings.owner_execution_preferences: return True
-            prefix, _, raw_index = action.partition("-")
-            permitted = self.settings.owner_allowed_models if prefix == "model" else self.settings.owner_allowed_efforts
-            try: index = int(raw_index)
-            except ValueError: index = -1
-            if not 0 <= index < len(permitted): return True
-            column = "owner_model" if prefix == "model" else "owner_effort"
-            if str(settings[column] or "") != permitted[index]:
-                self.database.execute(f"UPDATE conversations SET {column}=?, updated_at=? WHERE chat_id=?", (permitted[index], time.time(), str(chat_id)))
-                self.database.commit(); settings = self._conversation_settings(chat_id)
-            thoughts = "execution"
-        elif action in {"model", "effort", "execution-reset"}:
-            if not self.settings.owner_execution_preferences: self._ephemeral(chat_id, "Preferências de execução não estão liberadas pelo setup."); return True
-            if action == "execution-reset": self.database.execute("UPDATE conversations SET owner_model=NULL, owner_effort=NULL, updated_at=? WHERE chat_id=?", (time.time(), str(chat_id)))
-            else:
-                column, permitted, current = ("owner_model", self.settings.owner_allowed_models, str(settings["owner_model"] or "")) if action == "model" else ("owner_effort", self.settings.owner_allowed_efforts, str(settings["owner_effort"] or ""))
-                value = permitted[(permitted.index(current) + 1) % len(permitted)] if current in permitted else permitted[0]
-                self.database.execute(f"UPDATE conversations SET {column}=?, updated_at=? WHERE chat_id=?", (value, time.time(), str(chat_id)))
-            self.database.commit(); settings = self._conversation_settings(chat_id); thoughts = "execution"
-        else: thoughts = "execution" if action == "execution" else action if action in {"thoughts", "models", "efforts"} else False
-        if action not in {"thoughts", "share", "delete", "back", "audio", "execution", "models", "efforts", "model", "effort", "execution-reset"} and not action.startswith(("model-", "effort-")): self._ephemeral(chat_id, "Opção de configuração inválida."); return True
-        text, keyboard = self._config_keyboard(parts[1], settings, thoughts, self.settings.voice_enabled, self.settings.owner_execution_preferences, self.settings.owner_allowed_models, self.settings.owner_allowed_efforts)
+            except Exception as error: self._close_config_with_error(chat_id, parts[1], session, action, error); return True
+        if action not in {"thoughts", "share", "delete", "back", "audio", "execution", "models", "efforts", "model", "effort", "execution-reset"} and not action.startswith(("model-", "effort-")):
+            self._close_config_with_error(chat_id, parts[1], session, action, "Opção de configuração inválida."); return True
         try:
-            assert self.api
-            telegram_chat_id, topic_values = self._telegram_address(str(chat_id))
-            if "direct_messages_topic_id" in topic_values:
-                previous = int(session["message_id"])
-                sent = self.api.send(telegram_chat_id, text, protect_content=True, reply_markup=keyboard, **topic_values)
-                if not isinstance(sent.get("message_id"), int): raise RuntimeError("Telegram did not return the configuration message id.")
-                session["message_id"] = sent["message_id"]
-                self._delete_later(telegram_chat_id, previous)
-            else: self.api.edit(telegram_chat_id, int(session["message_id"]), text, keyboard)
+            settings = self._conversation_settings(chat_id)
+            if action in {"share", "delete"}:
+                column = "share_thoughts" if action == "share" else "delete_thoughts"
+                with self.database_lock: self.database.execute(f"UPDATE conversations SET {column} = NOT {column}, updated_at=? WHERE chat_id=?", (time.time(), str(chat_id))); self.database.commit()
+                settings, page = self._conversation_settings(chat_id), True
+            elif action.startswith(("model-", "effort-")):
+                if not self.settings.owner_execution_preferences: raise ValueError("Preferências de execução não estão liberadas pelo setup.")
+                prefix, _, raw_index = action.partition("-"); models, efforts = self._config_execution_choices(session, settings); permitted = models if prefix == "model" else efforts
+                try: index = int(raw_index)
+                except ValueError: index = -1
+                if not 0 <= index < len(permitted): raise ValueError("A opção escolhida não pertence mais ao catálogo atual do Codex.")
+                column = "owner_model" if prefix == "model" else "owner_effort"
+                with self.database_lock: self.database.execute(f"UPDATE conversations SET {column}=?, updated_at=? WHERE chat_id=?", (permitted[index], time.time(), str(chat_id))); self.database.commit()
+                settings, page = self._conversation_settings(chat_id), "execution"
+            elif action == "model":
+                if not self.settings.owner_execution_preferences: raise ValueError("Preferências de execução não estão liberadas pelo setup.")
+                permitted, _efforts = self._config_execution_choices(session, settings)
+                if not permitted: raise ValueError("Não há modelos permitidos pelo setup.")
+                current = str(settings["owner_model"] or ""); value = permitted[(permitted.index(current) + 1) % len(permitted)] if current in permitted else permitted[0]
+                with self.database_lock: self.database.execute("UPDATE conversations SET owner_model=?, updated_at=? WHERE chat_id=?", (value, time.time(), str(chat_id))); self.database.commit()
+                settings, page = self._conversation_settings(chat_id), "execution"
+            elif action == "models":
+                if not self.settings.owner_execution_preferences: raise ValueError("Preferências de execução não estão liberadas pelo setup.")
+                if isinstance(self.api, TelegramApi):
+                    self._render_config(chat_id, parts[1], session, settings, "models_loading")
+                    self._refresh_config_model_catalog(session)
+                    settings = self._conversation_settings(chat_id)
+                page = "models"
+            elif action in {"effort", "execution-reset"}:
+                if not self.settings.owner_execution_preferences: raise ValueError("Preferências de execução não estão liberadas pelo setup.")
+                if action == "execution-reset":
+                    with self.database_lock: self.database.execute("UPDATE conversations SET owner_model=NULL, owner_effort=NULL, updated_at=? WHERE chat_id=?", (time.time(), str(chat_id))); self.database.commit()
+                else:
+                    _models, permitted = self._config_execution_choices(session, settings)
+                    if not permitted: raise ValueError("O modelo atual não possui esforços de raciocínio permitidos pelo setup.")
+                    current = str(settings["owner_effort"] or ""); value = permitted[(permitted.index(current) + 1) % len(permitted)] if current in permitted else permitted[0]
+                    with self.database_lock: self.database.execute("UPDATE conversations SET owner_effort=?, updated_at=? WHERE chat_id=?", (value, time.time(), str(chat_id))); self.database.commit()
+                settings, page = self._conversation_settings(chat_id), "execution"
+            else:
+                page = "execution" if action == "execution" else action if action in {"thoughts", "efforts"} else False
+            models, efforts = self._config_execution_choices(session, settings)
+            if page in {"execution", "models", "efforts"} and (not models or not efforts): raise ValueError("A configuração de execução não possui modelo e esforço permitidos. Corrija-a no setup do Telegram.")
+            self._render_config(chat_id, parts[1], session, settings, page)
+            _telegram_chat_id, topic_values = self._telegram_address(str(chat_id))
             self._diagnostic("config.rendered", conversation=str(chat_id), action=action, message_id=session["message_id"], route="direct" if "direct_messages_topic_id" in topic_values else "thread" if "message_thread_id" in topic_values else "chat")
         except Exception as error:
-            self._record_error(error); self._diagnostic("config.render_failed", conversation=str(chat_id), action=action, error=self.last_error); self._ephemeral(chat_id, "Não foi possível atualizar esta configuração.")
+            self._close_config_with_error(chat_id, parts[1], session, action, error)
         return True
     def _turn(self, chat_id: int, text: str, attachments: list[dict[str, Any]] | None = None, turn_context: dict[str, Any] | None = None) -> None:
         with self.turn_locks_lock: lock = self.turn_locks.setdefault(chat_id, threading.Lock())
@@ -1301,8 +1410,14 @@ class Gateway(TelegramChannels):
         if not isinstance(chat.get("id"), int): chat = {**chat, "id": chat_id}
         conversation_id = self._conversation_id(chat, message)
         data = str(callback.get("data") or ""); parts = data.split(":")
-        try: self.api.call("answerCallbackQuery", {"callback_query_id": callback["id"]})
-        except Exception: pass
+        def acknowledge() -> None:
+            try:
+                acknowledgement = getattr(self.api, "answer_callback", None)
+                if callable(acknowledgement): acknowledgement(str(callback["id"]))
+                else: self.api.call("answerCallbackQuery", {"callback_query_id": callback["id"]})
+            except Exception as error:
+                self._record_error(error); self._diagnostic("callback.ack_failed", conversation=str(conversation_id), error=_telegram_error_detail(error))
+        threading.Thread(target=acknowledge, daemon=True).start()
         if len(parts) == 3 and parts[0] == "ag":
             with self.menu_lock: session = self.menu_sessions.get(parts[1])
             try: index = int(parts[2])
@@ -1310,10 +1425,12 @@ class Gateway(TelegramChannels):
             if not session or session.chat_id != chat_id or session.message_id != message.get("message_id") or not 0 <= index < len(session.options): self._ephemeral(conversation_id, "Seleção inválida ou expirada."); return
             session.selected = session.options[index]; session.completed.set(); return
         if len(parts) == 3 and parts[0] == "cfg":
-            session = self.config_sessions.get(parts[1])
+            with self.config_lock: session = self.config_sessions.get(parts[1])
             if session and session.get("message_id") == message.get("message_id"):
                 expected_chat_id, _topic_values = self._telegram_address(str(session["chat_id"]))
                 if expected_chat_id == int(chat["id"]): conversation_id = str(session["chat_id"])
+        if len(parts) == 3 and parts[0] == "cfg" and isinstance(self.api, TelegramApi):
+            threading.Thread(target=self._config_callback, args=(conversation_id, callback, parts), daemon=True).start(); return
         if self._config_callback(conversation_id, callback, parts): return
         if len(parts) < 3 or parts[0] != "totp": self._ephemeral(conversation_id, "Ação inválida ou expirada."); return
         session = self.totp_sessions.get(conversation_id)

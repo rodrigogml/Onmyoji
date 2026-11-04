@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import io
 import threading
+import time
 from urllib.error import HTTPError
 from pathlib import Path
 from dataclasses import replace
@@ -403,6 +404,39 @@ def test_config_execution_submenus_select_the_current_private_topic(tmp_path):
     gateway._callback({"id": "choose", "from": {"id": 9}, "message": callback_message, "data": f"cfg:{token}:model-1"})
     assert gateway._execution_preferences("private:9:42")[0] == "second-model"
     assert edited[-1][2] == "Configurações › Execução"
+
+
+def test_config_model_catalog_only_exposes_models_and_efforts_allowed_by_setup(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data))
+    gateway.settings = replace(gateway.settings, owner_allowed_models=("approved",), owner_allowed_efforts=("low", "high"))
+    gateway._app_client = lambda: type("Client", (), {"request": lambda *_args, **_kwargs: {"data": [
+        {"model": "approved", "supportedReasoningEfforts": [{"reasoningEffort": "low"}, {"reasoningEffort": "xhigh"}]},
+        {"model": "unapproved", "supportedReasoningEfforts": [{"reasoningEffort": "high"}]},
+    ]}})()
+    session = {}
+
+    gateway._refresh_config_model_catalog(session)
+
+    assert session == {"models": ("approved",), "efforts_by_model": {"approved": ("low",)}}
+
+
+def test_config_render_failure_closes_session_and_reports_sanitized_reason(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data)); gateway.contacts.add_owner({"id": 9, "first_name": "owner"})
+    sent, deleted = [], []
+    gateway.api = type("Api", (), {
+        "call": lambda *_args, **_kwargs: None,
+        "edit": lambda *_args: (_ for _ in ()).throw(RuntimeError("connection reset")),
+        "delete": lambda _self, chat, message: deleted.append((chat, message)),
+        "send": lambda _self, chat, text, **values: sent.append((chat, text, values)) or {"message_id": 17},
+    })()
+    gateway.config_sessions["token"] = {"chat_id": "9", "message_id": 7, "expires_at": time.time() + 60}
+
+    gateway._config_callback(9, {}, ["cfg", "token", "thoughts"])
+
+    assert "token" not in gateway.config_sessions and deleted == [(9, 7)]
+    assert "connection reset" in sent[-1][1] and "menu foi fechado" in sent[-1][1]
 
 
 def test_config_command_uses_direct_messages_topic_id_for_a_direct_message_topic(tmp_path):
