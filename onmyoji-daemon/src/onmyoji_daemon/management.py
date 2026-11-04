@@ -188,7 +188,7 @@ def installed_metadata(root: Path) -> dict:
 def set_enabled(root: Path, service: str, enabled: bool) -> tuple[bool, str]:
     if not is_installed(root): return False, "Instale primeiro o daemon desta instância."
     if service not in SERVICES: return False, "Serviço não registrado."
-    if enabled and service == "mini-apps":
+    if enabled and service in {"mini-apps", "gateway", "cloudflare-tunnel"}:
         ready, message = ensure_runtime(root, allow_install=False)
         if not ready: return False, message
     path = daemon_root(root) / "services.json"; values = _read_json(path)

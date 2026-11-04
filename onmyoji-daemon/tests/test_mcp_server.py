@@ -13,9 +13,14 @@ def test_application_delegates_to_registered_modules(tmp_path):
     definitions = application.definitions()
     assert "todoist.list_tasks" in {definition["name"] for definition in definitions}
     assert "mini_apps.publish" in {definition["name"] for definition in definitions}
+    assert "gateway.listeners_list" in {definition["name"] for definition in definitions}
+    assert "cloudflare_tunnel.provision" in {definition["name"] for definition in definitions}
     generic_invocation = ".".join(("mini_apps", "invoke"))
     assert generic_invocation not in {definition["name"] for definition in definitions}
     assert application.call("todoist.list_tasks", {}) == {"name": "todoist.list_tasks", "arguments": {}}
+    application.publication = Registry()
+    assert application.call("gateway.status", {}) == {"name": "gateway.status", "arguments": {}}
+    assert application.call("cloudflare_tunnel.status", {}) == {"name": "cloudflare_tunnel.status", "arguments": {}}
 
 
 def test_main_starts_the_stdio_server_with_the_resolved_root(tmp_path, monkeypatch):

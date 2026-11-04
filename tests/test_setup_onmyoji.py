@@ -86,6 +86,41 @@ class SystemSetupTests(unittest.TestCase):
         self.assertTrue(any("remove-instance" in call.args[0] for call in run.call_args_list))
         self.assertTrue(all(call.args[0] == "Daemon" for call in screen.call_args_list))
 
+    def test_publication_menu_diagnoses_without_starting_miniapps(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); project = root / "onmyoji-daemon"; project.mkdir()
+            (project / "setupDaemon.py").write_text("", encoding="utf-8")
+            manifest = root / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True); manifest.write_text("", encoding="utf-8")
+            answers = iter(["p", "2", "x", "x"])
+            completed = subprocess.CompletedProcess([], 0, stdout='{"ready": false}', stderr="")
+            with patch.object(MODULE, "prompt", side_effect=lambda _label: next(answers)), patch.object(MODULE, "screen") as screen, patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+                MODULE.daemon_menu(root)
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertTrue(any(command[-2:] == ["gateway", "status"] for command in commands))
+        self.assertTrue(any(command[-2:] == ["cloudflare-tunnel", "status"] for command in commands))
+        self.assertFalse(any("mini-apps" in command for command in commands))
+        self.assertIn("Publicação externa", [call.args[0] for call in screen.call_args_list])
+
+    def test_publication_installer_asks_for_directory_and_uses_async_wait(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); project = root / "onmyoji-daemon"; project.mkdir()
+            (project / "setupDaemon.py").write_text("", encoding="utf-8")
+            manifest = root / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True); manifest.write_text("", encoding="utf-8")
+            tunnel = manifest.parent / "services" / "cloudflare-tunnel" / "tunnel.toml"; tunnel.parent.mkdir(parents=True)
+            tunnel.write_text('schema_version = 1\ncloudflared_executable = "cloudflared"\n', encoding="utf-8")
+            selected = str(root / "configs" / "daemon" / "services" / "cloudflare-tunnel" / "custom-bin")
+            answers = iter(["p", "3", selected, "s", "x", "x"])
+            completed = subprocess.CompletedProcess([], 0, stdout='{"state": "running"}', stderr="")
+            with patch.object(MODULE, "prompt", side_effect=lambda _label: next(answers)) as prompt, patch.object(MODULE, "screen"), patch.object(MODULE, "flow_choice", return_value="Instalar"), patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+                MODULE.daemon_menu(root)
+            prompts = [call.args[0] for call in prompt.call_args_list]
+            self.assertTrue(any(label.startswith("Diretório de instalação [") for label in prompts))
+        installs = [call.args[0] for call in run.call_args_list if "install-cloudflared" in call.args[0]]
+        self.assertEqual(len(installs), 1)
+        self.assertIn("--wait", installs[0])
+        self.assertIn("--confirm", installs[0])
+        self.assertEqual(installs[0][installs[0].index("--install-directory") + 1], selected)
+
     def test_initial_configuration_starts_uninstalled_without_instance_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -130,12 +165,14 @@ class SystemSetupTests(unittest.TestCase):
         self.assertEqual(MODULE.preferred_reasoning_effort(model), "high")
 
     def test_wizard_normalizes_name_and_creates_shikigami_resources(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary, patch("builtins.input", return_value="  Exemplo   da   Silva "), patch.object(MODULE, "configure_initial_codex", side_effect=lambda _root, data: data | {"executable": sys.executable}), patch.object(MODULE, "choose_project_directory", side_effect=lambda root, _current: str(root)), patch.object(MODULE, "choose_sandbox", return_value="workspace-write"), patch.object(MODULE, "choose_approval_policy", return_value="on-request"):
+        with tempfile.TemporaryDirectory() as temporary, patch("builtins.input", side_effect=["  Exemplo   da   Silva ", "1", ""]), patch.object(MODULE, "configure_initial_codex", side_effect=lambda _root, data: data | {"executable": sys.executable}), patch.object(MODULE, "choose_project_directory", side_effect=lambda root, _current: str(root)), patch.object(MODULE, "choose_sandbox", return_value="workspace-write"), patch.object(MODULE, "choose_approval_policy", return_value="on-request"):
             root = Path(temporary)
             data, _message = MODULE.ensure_shikigami_configuration(root)
             installed = MODULE.initial_installation_wizard(root, data)
             self.assertIsNotNone(installed)
             self.assertEqual(installed["shikigami_identity"], "Exemplo da Silva")
+            self.assertEqual(installed["python_mode"], "isolated")
+            self.assertEqual(installed["python_base_executable"], sys.executable)
             self.assertTrue(installed["shikigami_installed"])
             self.assertFalse((root / "README.md").exists())
             self.assertFalse((root / "AGENTS.md").exists())

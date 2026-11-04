@@ -4,6 +4,10 @@ O `onmyoji-daemon` é o único processo residente de uma instância Shikigami. E
 
 Os serviços são registrados pelo código, iniciados como subprocessos locais e administrados por RPC autenticado em loopback. O endpoint, o token efêmero, o estado de habilitação, logs, banco SQLite e contatos ficam em `configs/daemon/`. Arquivos de atividade do agente nunca ficam no `CODEX_HOME`: o gateway usa exclusivamente `<workspace>/.onmyoji/telegram/`.
 
+O menu **Daemon > Publicação externa** administra os serviços `gateway` e
+`cloudflare-tunnel`, independentes de Mini Apps. Consulte a documentação de
+[publicação externa e migração](../onmyoji-daemon/docs/publicacao-externa.md).
+
 ## Administração da instância
 
 O menu `D. Daemon` distingue explicitamente três estados: daemon instalado na instância, processo local em segundo plano e serviço do sistema operacional. Instalar o daemon cria somente `configs/daemon/` e não inicia processos. O processo local e o serviço de SO são mutuamente exclusivos.

@@ -9,8 +9,10 @@ os arquivos da aplicação.
 | Conteúdo | Localização |
 | --- | --- |
 | Código e assets publicados | Um subdiretório do workspace configurado do Shikigami (`codex.project_directory`) |
-| Registro de publicações, sessões, TLS, Tunnel, eventos e uploads temporários | `configs/daemon/services/mini-apps/` |
-| Perfis de vault e referências de credenciais | `configs/mcp/credentials.toml` e `configs/daemon/services/mini-apps/tunnel.toml` |
+| Registro de aplicações, sessões, TLS e eventos | `configs/daemon/services/mini-apps/` |
+| Registro compartilhado de listeners e TLS do proxy público | `configs/daemon/services/gateway/` |
+| Configuração e executável Cloudflare Tunnel | `configs/daemon/services/cloudflare-tunnel/` |
+| Perfis de vault | `configs/mcp/credentials.toml` |
 
 O Gateway rejeita uma raiz fora do workspace, inclusive caminhos que escapem
 por link simbólico. Ele também rejeita qualquer diretório de estado fora de
@@ -22,23 +24,34 @@ Alterações no diretório publicado são consumidas diretamente pelo Gateway; n
 há sincronização de arquivos. Para mover uma Mini App, atualize sua publicação
 com a nova raiz e entrypoint válidos dentro do workspace.
 
-## Credencial do Cloudflare Tunnel
+## Publicação externa compartilhada
 
-O Tunnel seleciona um perfil de vault MCP e uma entrada KeePass. O token é
-resolvido diretamente pelo serviço interno `KeePassCredentialResolver`, somente
-em memória, sem expor uma ferramenta de vault, scripts intermediários, sessões
-ou arquivos temporários. A configuração do Tunnel persiste apenas
-`credential_profile`, `credential_entry_path` e o campo protegido utilizado.
+Mini Apps continua funcionando por HTTPS local quando o Gateway compartilhado
+ou o Tunnel estão parados. Ele declara os prefixos `a` e `oauth` ao Supervisor,
+que os associa ao processo conhecido e sincroniza o Gateway HTTP independente.
+O proxy preserva o path completo: as aplicações mantêm `/a/{app_id}/...`.
+
+O serviço não administra Cloudflare nem inicia `cloudflared`. Use **Daemon >
+Publicação externa** para configurar a infraestrutura compartilhada. A
+credencial do Tunnel é resolvida em memória pelo KeePass interno; sua configuração
+guarda somente referências. Consulte [Publicação externa](publicacao-externa.md).
+
+As respostas de publicação distinguem `local_url`, `public_url` configurada e
+`public_available`. Uma origem pública configurada pode permanecer consultável
+durante uma indisponibilidade. O diagnóstico separa prontidão local da pública.
 
 ## Callbacks OAuth de integrações MCP
 
-O Gateway recebe callbacks HTTPS para integrações explicitamente registradas no
+Mini Apps recebe callbacks HTTPS para integrações explicitamente registradas no
 broker interno: BTG e E-mail. Cada uma possui seu próprio caminho, adaptador,
 vínculo de configuração e armazenamento autorizado. Nenhum miniapp de arquivos
 precisa ser publicado para realizar o consentimento.
 
-O callback do E-mail usa `/oauth/mcp/email/callback`. O setup verifica a origem
-do Tunnel ativo e permite cadastrar a mesma URI no cliente OAuth do provedor.
+O callback do E-mail usa `/oauth/mcp/email/callback`; BTG usa
+`/oauth/mcp/btg/callback`. O Gateway compartilhado encaminha ambos, além de
+`/oauth/result/...`, pelo listener `oauth`. O broker continua em Mini Apps e
+obtém do Supervisor a origem e a disponibilidade públicas, sem ler a configuração
+interna do Tunnel. O setup permite cadastrar a mesma URI no cliente OAuth do provedor.
 O broker encaminha o retorno ao runtime MCP, onde tokens e PKCE são tratados
 internamente; credenciais e refresh tokens não são retornados ao navegador.
 O modo local de OAuth do E-mail funciona diretamente no setup sem o Gateway.

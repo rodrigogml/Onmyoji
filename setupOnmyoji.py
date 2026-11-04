@@ -2578,62 +2578,169 @@ def daemon_menu(root: Path) -> None:
             if not require_miniapps_running(): continue
             if choice == "2": completed = miniapps_command("tls", "status")
             elif choice == "3":
-                if prompt("Digite confiar para instalar a CA no computador: ").strip() != "confiar": result(False, "Cancelado."); continue
+                if prompt("Instalar a CA no computador? [s/N]: ").strip().casefold() not in {"s", "sim"}: result(False, "Cancelado."); continue
                 completed = miniapps_command("tls", "install-trust", "--confirm")
             else: result(False, "Opção inválida."); continue
             result(completed.returncode == 0, (completed.stdout or completed.stderr).strip())
 
-    def miniapps_public_menu() -> None:
+    def publication_command(*arguments: str, quiet: bool = True) -> subprocess.CompletedProcess[str]:
+        return command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), *arguments], quiet=quiet)
+
+    def tunnel_settings() -> dict[str, object]:
+        path = root / "configs" / "daemon" / "services" / "cloudflare-tunnel" / "tunnel.toml"
+        try: return tomllib.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError): return {}
+
+    def cloudflared_installed(executable: str) -> bool:
+        selected = shutil.which(executable) or (executable if Path(executable).is_file() else None)
+        if not selected: return False
+        try:
+            checked = subprocess.run([selected, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, check=False)
+        except (OSError, subprocess.SubprocessError): return False
+        return checked.returncode == 0 and "cloudflared" in checked.stdout.lower()
+
+    def start_publication_service(service: str) -> bool:
+        if not daemon_running():
+            result(False, "Inicie o daemon em Processo/Serviço do Daemon antes de executar esta ação.")
+            return False
+        return lifecycle("start", [service])
+
+    def install_publication_binary(update: bool = False) -> bool:
+        flow_heading("Atualizar cloudflared" if update else "Instalar cloudflared", "Binário oficial verificado; a versão anterior será preservada")
+        current = tunnel_settings()
+        if not current:
+            result(False, "Configure o Tunnel antes de instalar o executável.")
+            return False
+        suggested = str(current.get("install_directory") or root / "configs" / "daemon" / "services" / "cloudflare-tunnel" / "bin")
+        destination = prompt(f"Diretório de instalação [{suggested}]: ").strip() or suggested
+        if destination.casefold() == "x": return False
+        if not Path(destination).is_absolute():
+            result(False, "Informe um diretório absoluto acessível ao usuário do daemon.")
+            return False
+        arguments = ["cloudflare-tunnel", "update-cloudflared" if update else "install-cloudflared", "--install-directory", destination, "--confirm", "--wait"]
+        external = current.get("cloudflared_executable") not in {None, "", "cloudflared"} and not current.get("managed_version")
+        if external:
+            if prompt("Adotar instalação gerenciada preservando o executável externo? [s/N]: ").strip().casefold() not in {"s", "sim"}: return False
+            arguments.append("--adopt")
+        if prompt("Baixar e instalar a versão oficial neste diretório? [s/N]: ").strip().casefold() not in {"s", "sim"}: return False
+        if not start_publication_service("cloudflare-tunnel"): return False
+        completed = publication_command(*arguments, quiet=False)
+        result(completed.returncode == 0, "cloudflared instalado e validado." if completed.returncode == 0 else "A instalação não foi concluída; consulte o resultado acima.")
+        return completed.returncode == 0
+
+    def configure_publication() -> None:
+        flow_heading("Configurar publicação externa", "Um hostname compartilhado; token somente no KeePass")
+        current = tunnel_settings()
+        legacy = root / "configs" / "daemon" / "services" / "mini-apps" / "tunnel.toml"
+        if not current and legacy.is_file():
+            result(False, "Existe uma configuração legada. Use Migrar publicação existente para preservar o Tunnel e suas URLs.")
+            return
+        note("Use um domínio Cloudflare e uma entrada KeePass com permissão de edição do Tunnel e DNS da zona.")
+        values: dict[str, str] = {}
+        for key, label in (("account_id", "Cloudflare Account ID"), ("zone_id", "Cloudflare Zone ID"), ("hostname", "Hostname público")):
+            default = str(current.get(key) or "")
+            value = prompt(label + (f" [{default}]" if default else "") + ": ").strip() or default
+            if value.casefold() == "x": return
+            if not value:
+                result(False, f"{label} é obrigatório; configuração cancelada.")
+                return
+            values[key] = value
+        credential = configure_mcp_password_reference(root, "Cloudflare Tunnel", vault_entry_path(root, "Serviço", "CloudflareTunnel", "default", "APIToken"), str(current.get("credential_profile") or ""), str(current.get("credential_entry_path") or ""))
+        if credential is None: return
+        values["credential_profile"], values["credential_entry_path"] = credential
+        executable = str(current.get("cloudflared_executable") or "cloudflared")
+        values["cloudflared_executable"] = prompt(f"Executável cloudflared [{executable}]: ").strip() or executable
+        if values["cloudflared_executable"].casefold() == "x": return
+        completed = publication_command("cloudflare-tunnel", "configure", "--values", json.dumps(values))
+        result(completed.returncode == 0, (completed.stdout or completed.stderr).strip())
+        if completed.returncode != 0: return
+        selected = values["cloudflared_executable"]
+        if not cloudflared_installed(selected):
+            note("cloudflared ainda não está disponível. A instalação gerenciada permite escolher o diretório.")
+            install_publication_binary()
+
+    def publication_listeners() -> None:
+        if not start_publication_service("gateway"): return
+        completed = publication_command("gateway", "listeners", "list")
+        flow_heading("Listeners públicos", "Cada primeiro segmento possui um proprietário exclusivo")
+        result(completed.returncode == 0, (completed.stdout or completed.stderr).strip())
+        if completed.returncode != 0: return
+        selected = flow_choice("Ação sobre um listener", ["Somente consultar", "Habilitar", "Desabilitar", "Remover", "Restaurar"], "Somente consultar")
+        if selected in {None, "Somente consultar"}: return
+        prefix = prompt("Primeiro segmento do path: ").strip()
+        if not prefix or prefix.casefold() == "x": return
+        owner = prompt("Serviço proprietário: ").strip()
+        if not owner or owner.casefold() == "x": return
+        actions = {"Habilitar": "enable", "Desabilitar": "disable", "Remover": "remove", "Restaurar": "restore"}
+        if prompt(f"{selected} o listener {prefix}? [s/N]: ").strip().casefold() not in {"s", "sim"}: return
+        completed = publication_command("gateway", "listeners", actions[selected], prefix, "--owner", owner, "--confirm")
+        result(completed.returncode == 0, (completed.stdout or completed.stderr).strip())
+
+    def publication_migration() -> None:
+        flow_heading("Migrar publicação existente", "Mantém hostname, Tunnel ID, referências KeePass e configuração original")
+        inspection = publication_command("publication-migrate", "inspect")
+        result(inspection.returncode == 0, (inspection.stdout or inspection.stderr).strip())
+        if inspection.returncode != 0: return
+        action = flow_choice("Operação de migração", ["Somente consultar", "Migrar", "Rollback"], "Somente consultar")
+        if action in {None, "Somente consultar"}: return
+        note("A transição exige uma janela de manutenção. O rollback da infraestrutura exige reinstalar a versão anterior para reativar o controlador legado.")
+        if prompt(f"{'Migrar' if action == 'Migrar' else 'Restaurar infraestrutura anterior'} agora? [s/N]: ").strip().casefold() not in {"s", "sim"}: return
+        completed = publication_command("publication-migrate", "apply" if action == "Migrar" else "rollback", "--confirm", quiet=False)
+        result(completed.returncode == 0, "Operação concluída; confira o estado informado." if completed.returncode == 0 else "Operação interrompida; consulte o diagnóstico e o manifesto de migração.")
+
+    def publication_menu() -> None:
         while True:
-            diagnosis = miniapps_diagnosis()
-            if diagnosis is None: return
-            tunnel = diagnosis.get("tunnel", {}) if isinstance(diagnosis.get("tunnel"), dict) else {}
-            screen("Domínio e Cloudflare Tunnel", "Exposição pública opcional; todas as Mini Apps continuam protegidas por autenticação")
-            item("1.", "Entender pré-requisitos e configurar", "Domínio, permissões Cloudflare e vault MCP")
-            item("2.", "Provisionar Tunnel e DNS", "Cria/altera recursos Cloudflare após confirmação")
-            item("3.", "Consultar/iniciar/reiniciar Tunnel", "Em execução" if tunnel.get("running") else "Parado")
-            item("4.", "Baixar cloudflared oficial", "Somente se o executável não estiver disponível")
+            screen("Publicação externa", "Gateway HTTP e Cloudflare Tunnel independentes de Mini Apps")
+            item("1.", "Configurar hostname e referência KeePass")
+            item("2.", "Estado e diagnóstico")
+            item("3.", "Instalar ou atualizar cloudflared")
+            item("4.", "Provisionar Tunnel, ingress e DNS")
+            item("5.", "Administrar serviços", "Iniciar, parar, reiniciar, habilitar ou desabilitar")
+            item("6.", "Listeners públicos")
+            item("7.", "Porta HTTPS do Gateway")
+            item("8.", "Migrar publicação existente")
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
-            if choice == "1":
-                flow_heading("Preparar acesso público", "Reúna estes dados antes de criar qualquer recurso na Cloudflare")
-                print("  1. Um domínio já adicionado à Cloudflare.")
-                print("  2. Um token Cloudflare guardado em um perfil de vault MCP, com permissão Account > Cloudflare Tunnel > Edit e Zone > DNS > Edit.")
-                print("  3. Account ID e Zone ID, encontrados no painel Overview da conta e da zona.")
-                print("  4. Um hostname livre dentro da zona, por exemplo apps.seudominio.com.")
-                print("\n  O token é armazenado somente no KeePass e resolvido em memória pelo serviço interno de credenciais do MCP.")
-                if prompt("Digite configurar quando os dados estiverem prontos, ou X para voltar: ").strip().casefold() != "configurar": result(False, "Configuração pública adiada; o Gateway local continua disponível."); continue
-                print("\n  Account ID identifica sua conta Cloudflare; copie-o do painel da conta.")
-                account_id = prompt("Cloudflare Account ID: ").strip()
-                print("\n  Zone ID identifica a zona DNS do domínio; copie-o do Overview do domínio.")
-                zone_id = prompt("Cloudflare Zone ID: ").strip()
-                print("\n  Hostname é o endereço que será criado no DNS, por exemplo apps.seudominio.com.")
-                hostname = prompt("Hostname público: ").strip()
-                try:
-                    current = tomllib.loads((root / "configs" / "daemon" / "services" / "mini-apps" / "tunnel.toml").read_text(encoding="utf-8"))
-                except (OSError, tomllib.TOMLDecodeError):
-                    current = {}
-                credential = configure_mcp_password_reference(root, "Cloudflare Tunnel", vault_entry_path(root, "Serviço", "MiniApps", "default", "CloudflareTunnel"), str(current.get("credential_profile") or ""), str(current.get("credential_entry_path") or ""))
-                if credential is None:
-                    result(False, "Configuração do Tunnel cancelada.")
-                    continue
-                credential_profile, credential_entry = credential
-                print("\n  Pressione Enter se cloudflared estiver no PATH; caso contrário, informe o caminho do executável.")
-                executable = prompt("Executável cloudflared [cloudflared]: ").strip() or "cloudflared"
-                values = {"account_id": account_id, "zone_id": zone_id, "hostname": hostname, "credential_profile": credential_profile, "credential_entry_path": credential_entry, "cloudflared_executable": executable}
-                completed = miniapps_command("tunnel", "configure", "--values", json.dumps(values))
+            if choice == "1": configure_publication()
             elif choice == "2":
-                if prompt("Digite provisionar para criar/atualizar Tunnel, ingress e DNS: ").strip() != "provisionar": result(False, "Cancelado."); continue
-                completed = miniapps_command("tunnel", "provision", "--confirm")
+                flow_heading("Estado da publicação externa", "Disponibilidade local e externa são independentes")
+                for service in ("gateway", "cloudflare-tunnel"):
+                    completed = publication_command(service, "status")
+                    result(completed.returncode == 0, service + ": " + (completed.stdout or completed.stderr).strip())
             elif choice == "3":
-                action = prompt("Digite iniciar, reiniciar ou pressione Enter para consultar: ").strip().casefold()
-                completed = miniapps_command("tunnel", "start" if action == "iniciar" else "restart" if action == "reiniciar" else "status")
+                action = flow_choice("Executável cloudflared", ["Instalar", "Atualizar", "Restaurar versão anterior"], "Instalar")
+                if action == "Restaurar versão anterior":
+                    if prompt("Restaurar a versão anterior preservada do cloudflared? [s/N]: ").strip().casefold() not in {"s", "sim"}: continue
+                    if not start_publication_service("cloudflare-tunnel"): continue
+                    completed = publication_command("cloudflare-tunnel", "rollback-cloudflared", "--confirm", "--wait", quiet=False)
+                    result(completed.returncode == 0, "Versão anterior restaurada." if completed.returncode == 0 else "A versão anterior não pôde ser restaurada.")
+                elif action is not None: install_publication_binary(action == "Atualizar")
             elif choice == "4":
-                if prompt("Digite baixar para obter cloudflared oficial: ").strip() != "baixar": result(False, "Cancelado."); continue
-                completed = miniapps_command("tunnel", "install-cloudflared", "--confirm")
-            else: result(False, "Opção inválida."); continue
-            result(completed.returncode == 0, (completed.stdout or completed.stderr).strip())
+                if not tunnel_settings(): result(False, "Configure o Tunnel antes de provisionar."); continue
+                executable = str(tunnel_settings().get("cloudflared_executable") or "cloudflared")
+                if not cloudflared_installed(executable) and not install_publication_binary(): continue
+                if prompt("Provisionar hostname, ingress e DNS na Cloudflare? [s/N]: ").strip().casefold() not in {"s", "sim"}: continue
+                if not start_publication_service("gateway") or not start_publication_service("cloudflare-tunnel"): continue
+                completed = publication_command("cloudflare-tunnel", "provision", "--confirm", "--wait", quiet=False)
+                result(completed.returncode == 0, "Provisionamento concluído." if completed.returncode == 0 else "Provisionamento não concluído; confira a operação informada.")
+            elif choice == "5":
+                service = flow_choice("Serviço", ["Gateway HTTP", "Cloudflare Tunnel"], "Gateway HTTP")
+                if service is None: continue
+                action = flow_choice("Ação", ["Iniciar", "Parar", "Reiniciar", "Habilitar", "Desabilitar"], "Iniciar")
+                if action is not None: lifecycle({"Iniciar": "start", "Parar": "stop", "Reiniciar": "restart", "Habilitar": "enable", "Desabilitar": "disable"}[action], ["gateway" if service == "Gateway HTTP" else "cloudflare-tunnel"])
+            elif choice == "6": publication_listeners()
+            elif choice == "7":
+                if not start_publication_service("gateway"): continue
+                raw = prompt("Porta HTTPS do Gateway [39390]: ").strip() or "39390"
+                if raw.casefold() == "x": continue
+                try: port = int(raw)
+                except ValueError: result(False, "Informe uma porta numérica."); continue
+                if prompt("Salvar porta e aplicar no próximo reinício do Gateway? [s/N]: ").strip().casefold() not in {"s", "sim"}: continue
+                completed = publication_command("gateway", "configure", "--values", json.dumps({"http_port": port}), "--confirm")
+                result(completed.returncode == 0, (completed.stdout or completed.stderr).strip())
+            elif choice == "8": publication_migration()
+            else: result(False, "Opção inválida.")
 
     def miniapps_publications() -> None:
         if not require_miniapps_running(): return
@@ -2653,12 +2760,8 @@ def daemon_menu(root: Path) -> None:
 
     def miniapps_wizard() -> None:
         flow_heading("Assistente Mini Apps", "O acesso público é opcional; comece pelo objetivo de uso")
-        item("L.", "Somente neste computador", "Gateway HTTPS local e publicação no workspace")
-        item("P.", "Também em domínio público", "Cloudflare Tunnel, DNS e proteção da Mini App")
-        item("X.", "Voltar")
-        choice = prompt("Objetivo: ").strip().casefold()
-        if choice in {"x", "\x1b"}: return
-        if choice not in {"l", "p"}: result(False, "Escolha L ou P."); return
+        choice = flow_choice("Objetivo de uso", ["Somente neste computador", "Também em domínio público"], "Somente neste computador")
+        if choice is None: return
         service = miniapps_state()
         if service.get("state") != "running":
             if prompt("O gateway local precisa estar ativo. Habilitar e iniciar agora? [S/n]: ").strip().casefold() not in {"", "s", "sim"}: result(False, "O assistente precisa do gateway ativo para continuar."); return
@@ -2672,9 +2775,9 @@ def daemon_menu(root: Path) -> None:
             else: result(False, "A confiança local não foi confirmada. Isso não bloqueia o uso público; tente novamente em 'Gateway HTTPS e confiança local'. " + (completed.stdout or completed.stderr).strip())
         apps = diagnosis.get("apps", {}) if isinstance(diagnosis.get("apps"), dict) else {}
         if int(apps.get("total", 0)) == 0: print("\n  Próximo passo local: crie a Mini App dentro do workspace e publique-a pelo MCP Mini Apps.")
-        if choice == "p":
+        if choice == "Também em domínio público":
             print("\n  Agora você verá os pré-requisitos do domínio. Se ainda não tiver domínio, token ou IDs Cloudflare, escolha voltar: nenhuma configuração pública é obrigatória neste momento.")
-            miniapps_public_menu()
+            publication_menu()
 
     def miniapps_menu() -> None:
         while True:
@@ -2687,8 +2790,7 @@ def daemon_menu(root: Path) -> None:
             item("3.", "Gateway HTTPS e confiança local")
             item("4.", "Publicações Mini App")
             print()
-            item("5.", "Domínio e Cloudflare Tunnel")
-            item("6.", "Estado do Tunnel")
+            item("5.", "Publicação externa compartilhada", "Gateway HTTP e Cloudflare Tunnel")
             print()
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
@@ -2697,11 +2799,7 @@ def daemon_menu(root: Path) -> None:
             elif choice == "2": show_miniapps_diagnosis()
             elif choice == "3": miniapps_local_menu()
             elif choice == "4": miniapps_publications()
-            elif choice == "5": miniapps_public_menu()
-            elif choice == "6":
-                diagnosis = miniapps_diagnosis()
-                if diagnosis is not None:
-                    result(True, json.dumps(diagnosis.get("tunnel", {}), ensure_ascii=False))
+            elif choice == "5": publication_menu()
             else: result(False, "Opção inválida.")
 
     def uninstall_instance() -> None:
@@ -2725,7 +2823,8 @@ def daemon_menu(root: Path) -> None:
         item("3.", "Desinstalar daemon da instância", "Remove configurações e estado locais")
         print()
         item("T.", "Telegram", "Configuração, teste e pareamento")
-        item("M.", "MiniApps", "Gateway HTTPS e Cloudflare Tunnel")
+        item("M.", "MiniApps", "Aplicações, HTTPS local e OAuth")
+        item("P.", "Publicação externa", "Gateway HTTP e Cloudflare Tunnel compartilhados")
         print()
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
@@ -2738,10 +2837,11 @@ def daemon_menu(root: Path) -> None:
             if not installed(): result(False, "Instale o daemon pela opção 1 antes de operá-lo.")
             else: operation_menu()
         elif choice == "3": uninstall_instance()
-        elif choice in {"t", "m"}:
+        elif choice in {"t", "m", "p"}:
             if not installed(): result(False, "Instale o daemon pela opção 1 antes de configurar serviços.")
             elif choice == "t": telegram_menu()
-            else: miniapps_menu()
+            elif choice == "m": miniapps_menu()
+            else: publication_menu()
         else: result(False, "Opção inválida.")
 
 

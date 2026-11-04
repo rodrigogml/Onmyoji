@@ -11,7 +11,8 @@ def test_named_mini_apps_tools_replace_generic_invocation(tmp_path):
     names = {item["name"] for item in registry.definitions()}
     generic_invocation = ".".join(("mini_apps", "invoke"))
     assert generic_invocation not in names
-    assert {"mini_apps.status", "mini_apps.create", "mini_apps.publish", "mini_apps.tunnel_provision", "mini_apps.oauth_start"} <= names
+    assert {"mini_apps.status", "mini_apps.create", "mini_apps.publish", "mini_apps.oauth_start"} <= names
+    assert not any(name.startswith("mini_apps.tunnel_") for name in names)
 
 
 def test_mutations_require_confirmation_and_delegate_the_named_action(tmp_path):

@@ -7,7 +7,11 @@ from typing import Any, Callable
 
 
 class RpcError(RuntimeError):
-    pass
+    """Falha RPC com código e detalhes opcionais, compatível com erros textuais."""
+
+    def __init__(self, message: str, code: str | None = None, details: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.code, self.details = code, details
 
 
 class RpcServer:
@@ -35,7 +39,15 @@ class RpcServer:
                     response = {"ok": True, "result": value}
                 except Exception as error:
                     response = {"ok": False, "error": str(error)}
-                connection.sendall((json.dumps(response, ensure_ascii=False) + "\n").encode("utf-8"))
+                    code = getattr(error, "code", None)
+                    details = getattr(error, "details", None)
+                    if code: response["error_code"] = code
+                    if isinstance(details, dict): response["error_details"] = details
+                try:
+                    connection.sendall((json.dumps(response, ensure_ascii=False) + "\n").encode("utf-8"))
+                except OSError:
+                    # O cliente pode cancelar uma operação; isso não encerra o servidor.
+                    continue
 
     def close(self) -> None:
         self.socket.close()
@@ -45,5 +57,6 @@ def call(host: str, port: int, token: str, method: str, params: dict[str, Any] |
     request = json.dumps({"token": token, "method": method, "params": params or {}}, ensure_ascii=False).encode("utf-8") + b"\n"
     with socket.create_connection((host, port), timeout=timeout) as connection:
         connection.sendall(request); response = json.loads(connection.makefile("rb").readline(1_048_576).decode("utf-8"))
-    if not response.get("ok"): raise RpcError(str(response.get("error") or "remote failure"))
+    if not response.get("ok"):
+        raise RpcError(str(response.get("error") or "remote failure"), response.get("error_code"), response.get("error_details"))
     return response.get("result")

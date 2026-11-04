@@ -29,8 +29,7 @@ import uuid
 from aiohttp import web
 
 from .rpc import RpcServer
-from .miniapps_pki import ensure_material, install_trust, server_context
-from .miniapps_tunnel import TunnelController, TunnelError
+from .gateway.component.tls import ensure_material, install_trust, server_context
 from .mcp.oauth_broker import BTG_CALLBACK_PATH, BTG_INTEGRATION, EMAIL_CALLBACK_PATH, EMAIL_INTEGRATION, OAUTH_ADAPTERS, McpOAuthBroker, OAuthError
 
 
@@ -138,7 +137,8 @@ class MiniAppsGateway:
         self.sockets: dict[str, set[web.WebSocketResponse]] = {}
         self.http_loop: asyncio.AbstractEventLoop | None = None; self.http_thread: threading.Thread | None = None
         self.http_runner: web.AppRunner | None = None; self.last_error: str | None = None
-        self.tunnel = TunnelController(self.root, self.data_dir, f"https://localhost:{self.http_port}")
+        self.publication: dict[str, Any] = {"public_origin": None, "gateway_ready": False, "public_ready": False, "listeners": [], "tunnel": {"configured": False}}
+        self.http_ready = False
         self.oauth_broker: McpOAuthBroker | None = None
         self.oauth_callback_hits: dict[str, list[float]] = {}
         self._migrate()
@@ -206,13 +206,27 @@ class MiniAppsGateway:
     def _public(self, item: dict[str, Any]) -> dict[str, Any]:
         result = {key: item[key] for key in ("id", "alias", "root_path", "entrypoint", "python_executable", "state", "persistent", "created_at", "updated_at", "last_error")}
         local_url = f"https://localhost:{self.http_port}/a/{item['id']}/"
-        tunnel = self.tunnel.status(); hostname = tunnel.get("hostname") if tunnel.get("provisioned") else None
-        public_url = f"https://{hostname}/a/{item['id']}/" if hostname else None
+        publication = self.publication_status("a")
+        public_url = str(publication["public_origin"]).rstrip("/") + f"/a/{item['id']}/" if publication.get("public_origin") else None
         try: self._registered_paths(item); entrypoint_ok = True
         except ValueError: entrypoint_ok = False
         health = "ok" if entrypoint_ok and item["state"] not in {"ERROR", "EXPIRED"} else "degraded"
-        result.update({"auth_type": item["auth"].get("type"), "timeouts": item["policies"], "health": health, "url": public_url or local_url, "local_url": local_url, "public_url": public_url})
+        result.update({"auth_type": item["auth"].get("type"), "timeouts": item["policies"], "health": health, "url": public_url or local_url, "local_url": local_url, "public_url": public_url, "public_available": publication["available"]})
         return result
+
+    def publication_status(self, prefix: str) -> dict[str, Any]:
+        """Retorna a origem configurada e a disponibilidade confirmada pelo Daemon.
+
+        O snapshot não consulta serviços durante uma operação OAuth, evitando
+        chamadas RPC aninhadas. Uma URL configurada permanece consultável
+        quando o transporte externo está indisponível.
+        """
+        with self.lock:
+            snapshot = dict(self.publication)
+            listeners = list(snapshot.get("listeners") or [])
+        listener = next((item for item in listeners if item.get("path_prefix") == prefix), {})
+        snapshot["available"] = bool(snapshot.get("public_ready") and listener.get("enabled") and not listener.get("removed") and listener.get("ready"))
+        return snapshot
 
     def _registered_paths(self, item: dict[str, Any]) -> tuple[Path, Path]:
         workspace = self._workspace(); app_root = Path(str(item["root_path"])).resolve()
@@ -307,21 +321,23 @@ class MiniAppsGateway:
             "detail": f"{len(apps)} publicada(s); {len(unhealthy)} com atenção." if apps else "Nenhuma Mini App foi publicada ainda.",
             "action": "Crie a Mini App no workspace e publique-a pelo MCP Mini Apps." if not apps else "Use 'Publicações Mini App' para consultar URLs e estado.",
         })
-        tunnel = self.tunnel.status()
-        if not tunnel["configured"]:
+        publication = self.publication_status("a")
+        tunnel = dict(publication.get("tunnel") or {})
+        if not tunnel.get("configured"):
             tunnel_state, tunnel_detail, tunnel_action = "info", "Não configurado; exposição pública é opcional.", "Configure um domínio somente se precisar de acesso externo."
-        elif not tunnel["provisioned"]:
+        elif not tunnel.get("provisioned"):
             tunnel_state, tunnel_detail, tunnel_action = "action", "Configurado, mas o Tunnel e o DNS ainda não foram provisionados.", "Revise os dados e provisione o Tunnel com confirmação."
-        elif not tunnel["cloudflared_available"]:
+        elif not tunnel.get("cloudflared_available"):
             tunnel_state, tunnel_detail, tunnel_action = "action", "Tunnel provisionado, mas cloudflared não foi encontrado.", "Instale cloudflared oficial ou informe o caminho do executável."
-        elif not tunnel["running"]:
-            reason = str(tunnel.get("last_error") or "")
-            tunnel_state, tunnel_detail, tunnel_action = "action", "Tunnel provisionado, porém parado" + (f": {reason}" if reason else "."), "Corrija o motivo informado e inicie ou reinicie o Tunnel."
+        elif not tunnel.get("running"):
+            tunnel_state, tunnel_detail, tunnel_action = "action", "Tunnel provisionado, porém parado.", "Consulte Publicação externa para diagnosticar e iniciar o Tunnel."
+        elif not publication.get("available"):
+            tunnel_state, tunnel_detail, tunnel_action = "action", "Transporte iniciado, mas a publicação externa ainda não está disponível.", "Confira Gateway, listener e conexão Cloudflare no menu Publicação externa."
         else:
             tunnel_state, tunnel_detail, tunnel_action = "ok", f"Em execução para {tunnel['hostname']}.", ""
         checks.append({"id": "tunnel", "state": tunnel_state, "label": "Domínio e Cloudflare Tunnel", "detail": tunnel_detail, "action": tunnel_action})
         local_ready = gateway_ready and workspace_ready and tls_ready
-        public_ready = local_ready and tunnel["provisioned"] and tunnel["cloudflared_available"] and tunnel["running"]
+        public_ready = local_ready and publication["available"]
         return {
             "local_ready": local_ready,
             "public_ready": public_ready,
@@ -329,6 +345,7 @@ class MiniAppsGateway:
             "checks": checks,
             "apps": {"total": len(apps), "unhealthy": len(unhealthy), "items": app_summaries},
             "tunnel": tunnel,
+            "publication": {key: publication.get(key) for key in ("public_origin", "gateway_ready", "available", "checked_at")},
         }
 
     def inspect(self, app_id: str) -> dict[str, Any]: return self._public(self._app(app_id))
@@ -586,6 +603,12 @@ class MiniAppsGateway:
 
     def rpc(self, method: str, params: dict[str, Any]) -> Any:
         action = method.removeprefix("mini-apps.")
+        if action == "publication.describe":
+            return {"schema_version": 1, "listeners": [{"path_prefix": prefix, "target": f"https://127.0.0.1:{self.http_port}", "ca_file": str(self.data_dir / "tls" / "ca.pem"), "ready": self.http_ready} for prefix in ("a", "oauth")]}
+        if action == "publication.update":
+            with self.lock:
+                self.publication = {key: params.get(key) for key in ("public_origin", "gateway_ready", "public_ready", "listeners", "tunnel", "checked_at", "confirmed_at", "error_code", "last_error")}
+            return {"updated": True}
         if action.startswith("oauth."):
             integration = params.get("integration", BTG_INTEGRATION)
             if integration not in OAUTH_ADAPTERS: raise ValueError("Integração OAuth inválida")
@@ -610,17 +633,6 @@ class MiniAppsGateway:
         if action == "unpublish": return self.unpublish(str(params["id"]))
         if action == "reload": return self.reload(str(params["id"]))
         if action == "delete": return self.delete(str(params["id"]))
-        if action == "tunnel.status": return self.tunnel.status()
-        if action == "tunnel.configure": return self.tunnel.configure(params)
-        if action == "tunnel.provision":
-            result = self.tunnel.provision(bool(params.get("confirm", False))); self._event("tunnel.recovered" if result.get("provisioned") else "tunnel.failed"); return result
-        if action == "tunnel.start":
-            result = self.tunnel.start(); self._event("tunnel.started" if result.get("running") else "tunnel.failed"); return result
-        if action == "tunnel.install-cloudflared": return self.tunnel.install_cloudflared(bool(params.get("confirm", False)))
-        if action == "tunnel.stop":
-            result = self.tunnel.stop(); self._event("tunnel.stopped"); return result
-        if action == "tunnel.restart":
-            self.tunnel.stop(); result = self.tunnel.start(); self._event("tunnel.recovered" if result.get("running") else "tunnel.failed"); return result
         if action == "tls.status":
             ca, cert, _key = ensure_material(self.data_dir / "tls")
             return {"ready": True, "ca_certificate": str(ca), "gateway_certificate": str(cert)}
@@ -652,26 +664,11 @@ class MiniAppsGateway:
     async def admin_status(self, request: web.Request) -> web.StreamResponse:
         self._admin(request); return web.json_response(self.rpc("mini-apps.status", {}))
 
-    async def admin_tunnel(self, request: web.Request) -> web.StreamResponse:
-        self._admin(request)
-        try:
-            if request.method == "GET": return web.json_response(self.tunnel.status())
-            action = request.match_info.get("action")
-            values = await request.json() if request.can_read_body else {}
-            if action == "configure": return web.json_response(self.tunnel.configure(values))
-            if action == "provision": return web.json_response(self.tunnel.provision(bool(values.get("confirm", False))))
-            if action == "start": return web.json_response(self.tunnel.start())
-            if action == "stop": return web.json_response(self.tunnel.stop())
-            if action == "restart": self.tunnel.stop(); return web.json_response(self.tunnel.start())
-            if action == "install-cloudflared": return web.json_response(self.tunnel.install_cloudflared(bool(values.get("confirm", False))))
-        except TunnelError as error: raise web.HTTPBadRequest(text=str(error))
-        raise web.HTTPMethodNotAllowed(request.method, [])
-
     def _oauth_origin(self) -> str:
-        tunnel = self.tunnel.status()
-        if not self.http_runner or not tunnel.get("provisioned") or not tunnel.get("running"):
+        publication = self.publication_status("oauth")
+        if not self.http_ready or not publication.get("available") or not publication.get("public_origin"):
             raise OAuthError("Inicie o Gateway e o Tunnel provisionado para OAuth remoto")
-        return "https://" + str(tunnel["hostname"])
+        return str(publication["public_origin"]).rstrip("/")
 
     def _oauth_broker(self) -> McpOAuthBroker:
         with self.lock:
@@ -727,28 +724,46 @@ class MiniAppsGateway:
         app.router.add_route("*", "/internal/v1/apps/{app_id}", self.admin_request)
         app.router.add_route("POST", "/internal/v1/apps/{app_id}/{action:publish|unpublish|reload}", self.admin_request)
         app.router.add_route("GET", "/internal/v1/status", self.admin_status)
-        app.router.add_route("GET", "/internal/v1/tunnel", self.admin_tunnel)
-        app.router.add_route("POST", "/internal/v1/tunnel/{action:configure|provision|start|stop|restart|install-cloudflared}", self.admin_tunnel)
         app.router.add_route("GET", BTG_CALLBACK_PATH, self.mcp_oauth_callback)
         app.router.add_route("GET", EMAIL_CALLBACK_PATH, self.mcp_oauth_callback)
         app.router.add_route("GET", "/oauth/result/{session_id}", self.mcp_oauth_result)
         app.router.add_route("*", "/a/{app_id}/{tail:.*}", self.public_request)
         app.router.add_route("*", "/a/{app_id}", self.public_request)
         tls_dir = self.data_dir / "tls"; ensure_material(tls_dir)
-        self.http_runner = web.AppRunner(app, access_log=None); await self.http_runner.setup(); site = web.TCPSite(self.http_runner, "127.0.0.1", self.http_port, ssl_context=server_context(tls_dir)); await site.start()
+        self.http_runner = web.AppRunner(app, access_log=None)
+        await self.http_runner.setup()
+        try:
+            site = web.TCPSite(self.http_runner, "127.0.0.1", self.http_port, ssl_context=server_context(tls_dir))
+            await site.start()
+            self.http_ready = True
+        except BaseException:
+            await self.http_runner.cleanup()
+            self.http_runner = None
+            raise
 
     def start_http(self) -> None:
         ready = threading.Event()
+        errors: list[BaseException] = []
         def worker() -> None:
             self.http_loop = asyncio.new_event_loop(); asyncio.set_event_loop(self.http_loop)
-            try: self.http_loop.run_until_complete(self._http_main())
-            finally: ready.set()
-            self.http_loop.run_forever()
-        self.http_thread = threading.Thread(target=worker, name="onmyoji-miniapps-http", daemon=True); self.http_thread.start(); ready.wait(5)
-        if not self.http_runner: raise RuntimeError("Mini Apps HTTP não iniciou")
+            try:
+                self.http_loop.run_until_complete(self._http_main())
+            except BaseException as error:
+                errors.append(error)
+                self.http_loop.close()
+                return
+            finally:
+                ready.set()
+            try: self.http_loop.run_forever()
+            finally: self.http_loop.close()
+        self.http_thread = threading.Thread(target=worker, name="onmyoji-miniapps-http", daemon=True)
+        self.http_thread.start()
+        if not ready.wait(10) or errors or not self.http_ready:
+            raise RuntimeError("Mini Apps HTTP não iniciou") from (errors[0] if errors else None)
 
     def stop_http(self) -> None:
-        if self.http_loop:
+        self.http_ready = False
+        if self.http_loop and not self.http_loop.is_closed():
             if self.http_runner: asyncio.run_coroutine_threadsafe(self.http_runner.cleanup(), self.http_loop).result(5)
             self.http_loop.call_soon_threadsafe(self.http_loop.stop)
         if self.http_thread: self.http_thread.join(5)
@@ -757,9 +772,6 @@ class MiniAppsGateway:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(); parser.add_argument("--data-dir", type=Path, required=True); parser.add_argument("--onmyoji-root", type=Path, required=True); parser.add_argument("--host", default="127.0.0.1"); parser.add_argument("--port", type=int, required=True); parser.add_argument("--token", required=True); parser.add_argument("--http-port", type=int, default=39391); args = parser.parse_args(argv)
     gateway = MiniAppsGateway(args.onmyoji_root, args.data_dir, args.token, args.http_port); gateway.start_http()
-    if gateway.tunnel.status().get("provisioned"):
-        try: gateway.tunnel.start(); gateway._event("tunnel.started")
-        except Exception as error: gateway._event("tunnel.failed", error_code="startup", details=str(error))
     stopped = threading.Event()
     def handler(method: str, params: dict[str, Any]) -> Any:
         if method == "ping": return {"service": "mini-apps", "state": "running"}
@@ -767,8 +779,11 @@ def main(argv: list[str] | None = None) -> int:
         return gateway.rpc(method, params)
     try: RpcServer(args.host, args.port, args.token, handler).serve_forever(stopped)
     finally:
-        gateway.tunnel.stop(); gateway._event("tunnel.stopped"); gateway.stop_http()
+        gateway.stop_http()
     return 0
 
 
-if __name__ == "__main__": raise SystemExit(main())
+if __name__ == "__main__":
+    # As aplicações importam o contrato pelo nome público mesmo sob ``-m``.
+    sys.modules["onmyoji_daemon.miniapps"] = sys.modules[__name__]
+    raise SystemExit(main())

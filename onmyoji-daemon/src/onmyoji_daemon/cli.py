@@ -4,7 +4,9 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import sys
+import time
 
 from .rpc import RpcError, call
 from .supervisor import Supervisor, endpoint
@@ -16,6 +18,23 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+
+def _wait_publication_operation(host: str, port: int, token: str, response):
+    """Acompanha operações longas sem manter uma conexão RPC bloqueada."""
+    if isinstance(response, dict) and response.get("operation_id"):
+        print("› Operação: " + str(response["operation_id"]), file=sys.stderr, flush=True)
+    deadline, previous_progress = time.monotonic() + 900, None
+    while isinstance(response, dict) and response.get("operation_id") and response.get("state") in {"queued", "running", "pending"}:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("A operação continua em execução; consulte operation-status com seu identificador.")
+        progress = response.get("progress")
+        if progress and progress != previous_progress:
+            print("› " + str(progress), file=sys.stderr, flush=True)
+            previous_progress = progress
+        time.sleep(1)
+        response = call(host, port, token, "cloudflare-tunnel.operations.status", {"operation_id": response["operation_id"]}, timeout=5)
+    return response
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -47,18 +66,54 @@ def main(argv: list[str] | None = None) -> int:
     update_app = miniapps_sub.add_parser("update"); update_app.add_argument("id"); update_app.add_argument("--values", required=True, help="JSON parcial")
     for action in ("publish", "unpublish", "reload", "delete"):
         command = miniapps_sub.add_parser(action); command.add_argument("id")
-    tunnel = miniapps_sub.add_parser("tunnel"); tunnel_sub = tunnel.add_subparsers(dest="tunnel_action", required=True)
+    gateway = sub.add_parser("gateway"); gateway_sub = gateway.add_subparsers(dest="gateway_action", required=True)
+    gateway_sub.add_parser("status")
+    gateway_configure = gateway_sub.add_parser("configure"); gateway_configure.add_argument("--values", required=True); gateway_configure.add_argument("--confirm", action="store_true")
+    listeners = gateway_sub.add_parser("listeners"); listeners_sub = listeners.add_subparsers(dest="listener_action", required=True)
+    listeners_sub.add_parser("list")
+    for action in ("inspect", "enable", "disable", "remove", "restore"):
+        listener = listeners_sub.add_parser(action); listener.add_argument("path_prefix"); listener.add_argument("--owner"); listener.add_argument("--confirm", action="store_true")
+    tunnel = sub.add_parser("cloudflare-tunnel"); tunnel_sub = tunnel.add_subparsers(dest="tunnel_action", required=True)
     tunnel_sub.add_parser("status")
     config_tunnel = tunnel_sub.add_parser("configure"); config_tunnel.add_argument("--values", required=True)
-    provision_tunnel = tunnel_sub.add_parser("provision"); provision_tunnel.add_argument("--confirm", action="store_true")
-    for action in ("start", "stop", "restart"): tunnel_sub.add_parser(action)
-    install_cloudflared = tunnel_sub.add_parser("install-cloudflared"); install_cloudflared.add_argument("--confirm", action="store_true")
+    for action in ("provision", "install-cloudflared", "update-cloudflared", "rollback-cloudflared"):
+        operation = tunnel_sub.add_parser(action); operation.add_argument("--confirm", action="store_true"); operation.add_argument("--wait", action="store_true")
+        if action in {"install-cloudflared", "update-cloudflared"}:
+            operation.add_argument("--install-directory"); operation.add_argument("--version"); operation.add_argument("--adopt", action="store_true")
+    operation = tunnel_sub.add_parser("operation-status"); operation.add_argument("operation_id")
+    migration = sub.add_parser("publication-migrate"); migration.add_argument("migration_action", choices=["inspect", "apply", "rollback"]); migration.add_argument("--confirm", action="store_true")
     tls = miniapps_sub.add_parser("tls"); tls_sub = tls.add_subparsers(dest="tls_action", required=True); tls_sub.add_parser("status"); trust = tls_sub.add_parser("install-trust"); trust.add_argument("--confirm", action="store_true")
     args = parser.parse_args(argv); root = args.onmyoji_root.resolve()
     def install_service_action():
         return management.install_service(root, args.name, args.description, args.scope, args.run_as_user, args.run_as_group, args.use_sudo, args.windows_account, sys.stdin.read().rstrip("\r\n") if args.password_stdin else "", lambda message: print("› " + message, flush=True))
     if args.action == "run": Supervisor(root).run_forever(); return 0
     if args.action == "interactive": return interactive_main(["--onmyoji-root", str(root)])
+    if args.action == "publication-migrate":
+        from .publication_migration import PublicationMigration, MigrationError
+        try:
+            migration = PublicationMigration(root, progress=lambda message: print("› " + message, file=sys.stderr, flush=True))
+            response = migration.inspect() if args.migration_action == "inspect" else getattr(migration, args.migration_action)(args.confirm)
+        except (MigrationError, OSError, ValueError) as error:
+            print(f"Erro: {error}", file=sys.stderr); return 2
+        print(json.dumps(response, ensure_ascii=False)); return 0
+    if args.action == "cloudflare-tunnel" and args.tunnel_action == "configure":
+        from .cloudflare_tunnel import TunnelConfiguration, TunnelError
+        try:
+            values = json.loads(args.values)
+            if not isinstance(values, dict): raise ValueError("--values deve conter um objeto JSON.")
+            try: address = endpoint(root)
+            except FileNotFoundError: address = None
+            if address is not None and call(*address, "status", {"service": "cloudflare-tunnel"}, timeout=5).get("state") == "running":
+                # A configuração de um serviço ativo participa da mesma fila de
+                # provisionamento e instalação; o CLI não escreve por fora dela.
+                response = call(*address, "cloudflare-tunnel.configure", {**values, "confirm": True}, timeout=5)
+                response = _wait_publication_operation(*address, response)
+            else:
+                response = TunnelConfiguration(root).configure(values)
+        except (TunnelError, RpcError, OSError, ValueError) as error:
+            print(f"Erro: {error}", file=sys.stderr); return 2
+        print(json.dumps(response, ensure_ascii=False))
+        return 2 if isinstance(response, dict) and response.get("state") in {"failed", "interrupted", "cancelled"} else 0
     direct = {
         "prepare-instance": lambda: management.prepare_instance(root),
         "install-instance": lambda: management.install_instance(root, show_progress=True),
@@ -94,6 +149,27 @@ def main(argv: list[str] | None = None) -> int:
     if args.action == "list-services": method, params = "list-services", {}
     elif args.action in {"start", "stop", "restart", "enable", "disable", "status"}: method, params = args.action, {"service": args.service}
     elif args.action == "btg-monitor": method, params = "btg-monitor.status", {}
+    elif args.action == "gateway":
+        method, params = "gateway." + args.gateway_action, {}
+        if args.gateway_action == "configure":
+            try: values = json.loads(args.values)
+            except ValueError: parser.error("--values deve conter um objeto JSON válido.")
+            if not isinstance(values, dict): parser.error("--values deve conter um objeto JSON.")
+            params = {**values, "confirm": args.confirm}
+        elif args.gateway_action == "listeners":
+            method = "gateway.listeners." + args.listener_action
+            if args.listener_action != "list":
+                params = {"path_prefix": args.path_prefix, "confirm": args.confirm}
+                if args.owner: params["owner"] = args.owner
+    elif args.action == "cloudflare-tunnel":
+        method, params = "cloudflare-tunnel." + args.tunnel_action, {}
+        if args.tunnel_action in {"provision", "install-cloudflared", "update-cloudflared", "rollback-cloudflared"}:
+            params = {"confirm": args.confirm}
+            if args.tunnel_action in {"install-cloudflared", "update-cloudflared"}:
+                for key in ("install_directory", "version"):
+                    if getattr(args, key): params[key] = getattr(args, key)
+                if args.adopt: params["adopt"] = True
+        elif args.tunnel_action == "operation-status": method, params = "cloudflare-tunnel.operations.status", {"operation_id": args.operation_id}
     elif args.action == "telegram":
         methods = {"status": "telegram.status", "owners": "telegram.owners", "sync-commands": "telegram.sync-commands", "pair-request": "telegram.pair-request", "send": "telegram.send"}
         method = methods[args.telegram_action]; params = {"ttl_seconds": args.ttl} if args.telegram_action == "pair-request" else ({"chat_id": args.chat_id, "text": args.text} if args.telegram_action == "send" else {})
@@ -104,9 +180,6 @@ def main(argv: list[str] | None = None) -> int:
             params = {"confirm": args.confirm}
             if args.profile: params["profile"] = args.profile
             if args.session_id: params["session_id"] = args.session_id
-        elif action == "tunnel":
-            method = f"mini-apps.tunnel.{args.tunnel_action}"
-            params = json.loads(args.values) if args.tunnel_action == "configure" else ({"confirm": True} if args.tunnel_action in {"provision", "install-cloudflared"} and args.confirm else {})
         elif action == "tls":
             method = f"mini-apps.tls.{args.tls_action}"; params = {"confirm": True} if args.tls_action == "install-trust" and args.confirm else {}
         else:
@@ -121,12 +194,22 @@ def main(argv: list[str] | None = None) -> int:
     if args.action == "mini-apps" and args.miniapps_action == "oauth": timeout = 200 if args.oauth_action in {"start", "cancel", "info", "active", "cancel-active"} else 5
     try:
         response = call(host, port, token, method, params, timeout=timeout)
+        if args.action == "cloudflare-tunnel" and getattr(args, "wait", False):
+            response = _wait_publication_operation(host, port, token, response)
     except (OSError, RpcError, TimeoutError) as error:
-        print(f"Erro: {error}", file=sys.stderr)
+        if args.action in {"gateway", "cloudflare-tunnel"} and isinstance(error, RpcError) and isinstance(error.code, str) and re.fullmatch(r"[a-z0-9_]{1,80}", error.code):
+            failure = {"code": error.code, "message": str(error)}
+            prefix = error.details.get("path_prefix") if isinstance(error.details, dict) else None
+            if isinstance(prefix, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,62}", prefix): failure["details"] = {"path_prefix": prefix}
+            print(json.dumps({"error": failure}, ensure_ascii=False), file=sys.stderr)
+        else:
+            print(f"Erro: {error}", file=sys.stderr)
         return 2
     if args.action in {"start", "restart"} and isinstance(response, dict) and response.get("state") == "failed":
         print(f"Erro: {response.get('last_error') or 'serviço não iniciou'}", file=sys.stderr)
         return 2
+    if args.action == "cloudflare-tunnel" and isinstance(response, dict) and response.get("state") in {"failed", "interrupted", "cancelled"}:
+        print(json.dumps(response, ensure_ascii=False)); return 2
     print(json.dumps(response, ensure_ascii=False)); return 0
 
 

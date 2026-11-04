@@ -1,6 +1,6 @@
 # OAuth remoto do MCP no Gateway Mini Apps
 
-O Gateway Mini Apps recebe retornos OAuth das integrações MCP pelo Cloudflare Tunnel já configurado. A rota pública é estável por integração, enquanto cada autorização tem uma sessão temporária. O agente apresenta a URL de autorização ao usuário no chat ou Telegram; o usuário autentica no site do provedor e retorna à página de resultado do gateway.
+O Gateway HTTP compartilhado encaminha retornos OAuth pelo listener `oauth` para o broker em Mini Apps. O Cloudflare Tunnel tem ciclo de vida independente. A rota pública é estável por integração, enquanto cada autorização tem uma sessão temporária. O agente apresenta a URL de autorização ao usuário no chat ou Telegram; o usuário autentica no site do provedor e retorna à página de resultado. Consulte [Publicação externa](../../onmyoji-daemon/docs/publicacao-externa.md) para preparação e migração.
 
 O primeiro consumidor é o MCP BTG Empresas. O gateway cuida de sessão, callback, expiração e encaminhamento. O módulo MCP cuida de escopos, troca do código, conferência do recurso autorizado, renovação e armazenamento seguro dos tokens.
 
@@ -12,7 +12,7 @@ Esse endereço não depende de UUID de publicação, cookies de Mini App ou cria
 
 Requisitos para iniciar:
 
-- Gateway HTTPS e Tunnel provisionado em execução, com hostname estável.
+- Mini Apps, Gateway HTTP compartilhado e Tunnel provisionado em execução, com hostname estável e listener `oauth` disponível.
 - Perfil MCP BTG configurado.
 - Callback completo cadastrado no aplicativo do provedor e no perfil MCP, com correspondência exata.
 - Execução do gateway/adapter sob identidade capaz de acessar o provedor de segredos do perfil.

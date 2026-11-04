@@ -13,6 +13,10 @@ class ServiceSpec:
     namespace: str
     command: Callable[[Path], list[str]]
     description: str
+    publishes_http: bool = False
+    publication_port: int | None = None
+    publication_prefixes: tuple[str, ...] = ()
+    contain_process_tree: bool = False
 
 
 def runtime_python(data_dir: Path) -> str:
@@ -36,10 +40,20 @@ def btg_monitor_command(data_dir: Path) -> list[str]:
     return [runtime_python(data_dir), "-m", "onmyoji_daemon.btg_payments_monitor", "--data-dir", str(data_dir)]
 
 
+def gateway_command(data_dir: Path) -> list[str]:
+    return [runtime_python(data_dir), "-m", "onmyoji_daemon.gateway", "--data-dir", str(data_dir)]
+
+
+def cloudflare_tunnel_command(data_dir: Path) -> list[str]:
+    return [runtime_python(data_dir), "-m", "onmyoji_daemon.cloudflare_tunnel", "--data-dir", str(data_dir)]
+
+
 SERVICES: dict[str, ServiceSpec] = {
     "telegram": ServiceSpec("telegram", "telegram.", telegram_command, "Gateway Telegram da instância"),
-    "mini-apps": ServiceSpec("mini-apps", "mini-apps.", miniapps_command, "Gateway de Mini Apps da instância"),
+    "mini-apps": ServiceSpec("mini-apps", "mini-apps.", miniapps_command, "Gateway de Mini Apps da instância", True, 39391, ("a", "oauth")),
     "btg-payments-monitor": ServiceSpec("btg-payments-monitor", "btg-monitor.", btg_monitor_command, "Acompanhamento de pagamentos BTG por consultas"),
+    "gateway": ServiceSpec("gateway", "gateway.", gateway_command, "Gateway HTTP compartilhado da instância"),
+    "cloudflare-tunnel": ServiceSpec("cloudflare-tunnel", "cloudflare-tunnel.", cloudflare_tunnel_command, "Publicação Cloudflare Tunnel da instância", contain_process_tree=True),
 }
 
 # Namespace reservado para o futuro task-scheduler. Só um ServiceSpec poderá ativá-lo.

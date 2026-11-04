@@ -27,6 +27,7 @@ from .memory.tools import MemoryToolRegistry
 from .data_tables.tools import DataTablesToolRegistry
 from .telegram.tools import TelegramToolRegistry
 from .mini_apps.tools import MiniAppsToolRegistry
+from .publication.tools import PublicationMcpError, PublicationToolRegistry
 from .workflows import WorkflowRegistry
 from .instructions import McpInstructionRegistry
 from .email.tools import EmailToolRegistry
@@ -57,6 +58,7 @@ class McpApplication:
         self.data_tables = DataTablesToolRegistry(self.configuration)
         self.telegram = TelegramToolRegistry(self.configuration.root)
         self.mini_apps = MiniAppsToolRegistry(self.configuration.root)
+        self.publication = PublicationToolRegistry(self.configuration.root)
         self.workflows = WorkflowRegistry(self.configuration)
         self.instructions_registry = McpInstructionRegistry(self.configuration)
         self.email = EmailToolRegistry(self.configuration)
@@ -64,13 +66,15 @@ class McpApplication:
         self.ocr = OcrToolRegistry(self.configuration)
 
     def definitions(self) -> list[dict[str, Any]]:
-        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions() + self.cloudflare.definitions() + self.eccovox.definitions() + self.forward_email.definitions() + self.notion.definitions() + self.aws.definitions() + self.mysql.definitions() + self.ssh.definitions() + self.bis2cmd.definitions() + self.bis10cmd.definitions() + self.google.definitions() + self.spotify.definitions() + self.memory.definitions() + self.data_tables.definitions() + self.telegram.definitions() + self.mini_apps.definitions() + self.workflows.definitions() + self.email.definitions() + self.pdf.definitions() + self.ocr.definitions()
+        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions() + self.cloudflare.definitions() + self.eccovox.definitions() + self.forward_email.definitions() + self.notion.definitions() + self.aws.definitions() + self.mysql.definitions() + self.ssh.definitions() + self.bis2cmd.definitions() + self.bis10cmd.definitions() + self.google.definitions() + self.spotify.definitions() + self.memory.definitions() + self.data_tables.definitions() + self.telegram.definitions() + self.mini_apps.definitions() + self.publication.definitions() + self.workflows.definitions() + self.email.definitions() + self.pdf.definitions() + self.ocr.definitions()
 
     def instructions(self) -> str | None:
         """Publica as contribuições dos módulos MCP habilitados."""
         return self.instructions_registry.developer_instructions()
 
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if name.startswith(("gateway.", "cloudflare_tunnel.")):
+            return self.publication.call(name, arguments)
         if name.startswith("pdf."):
             return self.pdf.call(name, arguments)
         if name.startswith("ocr."):
@@ -136,6 +140,9 @@ def create_server(root: Path):
             return CallToolResult(content=[TextContent(type="text", text=text)], structured_content=data)
         except Exception as error:
             # Erros de domínio já são sanitizados; nunca serialize exceções ou tracebacks.
+            if isinstance(error, PublicationMcpError):
+                data = {"error": error.as_dict()}
+                return CallToolResult(content=[TextContent(type="text", text=json.dumps(data, ensure_ascii=False))], structured_content=data, is_error=True)
             return CallToolResult(content=[TextContent(type="text", text=str(error))], is_error=True)
 
     server = Server("Onmyoji", version="0.1.0", instructions=application.instructions(), on_list_tools=list_tools, on_call_tool=call_tool)

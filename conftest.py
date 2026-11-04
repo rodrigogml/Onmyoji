@@ -10,15 +10,16 @@ from __future__ import annotations
 import sys
 import tempfile
 import shutil
+import uuid
 from pathlib import Path
 
 import pytest
 
 
 ROOT = Path(__file__).resolve().parent
-TEST_TEMPORARY_ROOT = ROOT / "tmp" / "pytest-system"
-TEST_PYCACHE_ROOT = ROOT / "tmp" / "pycache"
-TEST_PYTEST_CACHE_ROOT = ROOT / "tmp" / "pytest-cache"
+TEST_SESSION_ROOT = ROOT / "tmp" / ("pytest-session-" + uuid.uuid4().hex)
+TEST_TEMPORARY_ROOT = TEST_SESSION_ROOT / "system"
+TEST_PYCACHE_ROOT = TEST_SESSION_ROOT / "pycache"
 
 
 def pytest_configure() -> None:
@@ -39,6 +40,12 @@ def pytest_configure() -> None:
 @pytest.hookimpl(trylast=True)
 def pytest_sessionfinish(session, exitstatus: int) -> None:
     """Remove os artefatos da suíte, inclusive quando algum teste falhar."""
-    del session, exitstatus
-    for path in (ROOT / ".pytest_cache", ROOT / "__pycache__", ROOT / "tmp" / "pytest", TEST_TEMPORARY_ROOT, TEST_PYCACHE_ROOT, TEST_PYTEST_CACHE_ROOT):
-        shutil.rmtree(path, ignore_errors=True)
+    del exitstatus
+    # Cada execução remove somente seus próprios artefatos. Suítes paralelas
+    # podem compartilhar o repositório sem apagar TemporaryDirectory alheio.
+    shutil.rmtree(TEST_SESSION_ROOT, ignore_errors=True)
+    basetemp = session.config.option.basetemp
+    if basetemp:
+        path = Path(basetemp).resolve()
+        if path.is_relative_to(ROOT / "tmp") and path != ROOT / "tmp":
+            shutil.rmtree(path, ignore_errors=True)

@@ -1,4 +1,4 @@
-"""PKI local e privada do Gateway de Mini Apps."""
+"""PKI local compartilhada pelos servidores HTTPS da instância."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
