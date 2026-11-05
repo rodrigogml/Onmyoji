@@ -304,7 +304,7 @@ class SystemSetupTests(unittest.TestCase):
             manifest = root / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True); manifest.write_text("", encoding="utf-8")
             tunnel = manifest.parent / "services" / "cloudflare-tunnel" / "tunnel.toml"; tunnel.parent.mkdir(parents=True)
             tunnel.write_text('schema_version = 1\naccount_id = "' + "a" * 32 + '"\nzone_id = "' + "b" * 32 + '"\nhostname = "akuma.example.com"\ncredential_profile = "principal"\ncredential_entry_path = "Akuma/Serviço/CloudflareTunnel:APIToken"\n', encoding="utf-8")
-            answers = iter(["p", "4", "s", "x", "x"])
+            answers = iter(["p", "4", "x", "x"])
             def execute(arguments, **_kwargs):
                 if arguments[-1] == "--version":
                     return subprocess.CompletedProcess(arguments, 0, stdout="cloudflared version 2026.11.0", stderr="")
@@ -331,6 +331,180 @@ class SystemSetupTests(unittest.TestCase):
                 MODULE.daemon_menu(root)
         self.assertFalse(any("configure" in call.args[0] or "provision" in call.args[0] for call in run.call_args_list))
 
+    def test_publication_existing_tunnel_is_inspected_before_confirmed_reuse(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); project = root / "onmyoji-daemon"; project.mkdir()
+            (project / "setupDaemon.py").write_text("", encoding="utf-8")
+            manifest = root / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True); manifest.write_text("", encoding="utf-8")
+            tunnel = manifest.parent / "services" / "cloudflare-tunnel" / "tunnel.toml"; tunnel.parent.mkdir(parents=True)
+            tunnel.write_text('schema_version = 1\naccount_id = "' + "a" * 32 + '"\nzone_id = "' + "b" * 32 + '"\nhostname = "akuma.example.com"\ncredential_profile = "principal"\ncredential_entry_path = "Akuma/Serviço/CloudflareTunnel:APIToken"\n', encoding="utf-8")
+            preview = {"status": "existing", "hostname": "akuma.example.com", "tunnel_id": "known-tunnel", "tunnel_name": "onmyoji-mini-apps", "current_origin": "https://localhost:39391", "new_origin": "https://localhost:39390", "preview_id": "a" * 32, "message": "Publicação existente localizada na Cloudflare."}
+            answers = iter(["p", "4", "s", "x", "x"])
+            events = []
+            def ask(label):
+                events.append(label)
+                return next(answers)
+            def execute(arguments, **kwargs):
+                events.append(arguments)
+                if arguments[-1] == "--version":
+                    return subprocess.CompletedProcess(arguments, 0, stdout="cloudflared version 2026.11.0", stderr="")
+                if "inspect-publication" in arguments:
+                    self.assertEqual(kwargs.get("stdout"), subprocess.PIPE)
+                    self.assertFalse(kwargs.get("capture_output", False))
+                    response = {"state": "succeeded", "result": preview}
+                elif arguments[-2:] == ["cloudflare-tunnel", "status"]:
+                    response = {"activated": True, "ca_file": str(root / "gateway-ca.pem"), "gateway_url": "https://localhost:39390"}
+                else:
+                    response = {"state": "running"}
+                return subprocess.CompletedProcess(arguments, 0, stdout=json.dumps(response), stderr="")
+            output = io.StringIO()
+            with patch.object(MODULE, "prompt", side_effect=ask), patch.object(MODULE, "screen"), patch.object(MODULE.shutil, "which", return_value="cloudflared"), patch.object(MODULE.subprocess, "run", side_effect=execute) as run, patch.object(MODULE.sys, "stdout", output):
+                MODULE.daemon_menu(root)
+            commands = [call.args[0] for call in run.call_args_list]
+            adoption = [command for command in commands if "adopt-publication" in command]
+            self.assertEqual(len(adoption), 1)
+            self.assertEqual(adoption[0][adoption[0].index("--preview-id") + 1], "a" * 32)
+            self.assertIn("--confirm", adoption[0]); self.assertIn("--wait", adoption[0])
+            self.assertFalse(any("provision" in command for command in commands))
+            inspection = next(index for index, item in enumerate(events) if isinstance(item, list) and "inspect-publication" in item)
+            confirmation = next(index for index, item in enumerate(events) if isinstance(item, str) and item.startswith("Reutilizar este Tunnel"))
+            self.assertLess(inspection, confirmation)
+            self.assertIn("onmyoji-mini-apps", output.getvalue())
+            self.assertIn("https://localhost:39391", output.getvalue())
+            self.assertIn("https://localhost:39390", output.getvalue())
+            self.assertFalse((manifest.parent / "services" / "mini-apps" / "tunnel.toml").exists())
+
+    def test_publication_existing_tunnel_decline_or_cancel_never_changes_remote_state(self) -> None:
+        for answer in ("", "n", "x"):
+            with self.subTest(answer=answer), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary); project = root / "onmyoji-daemon"; project.mkdir()
+                (project / "setupDaemon.py").write_text("", encoding="utf-8")
+                manifest = root / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True); manifest.write_text("", encoding="utf-8")
+                tunnel = manifest.parent / "services" / "cloudflare-tunnel" / "tunnel.toml"; tunnel.parent.mkdir(parents=True)
+                tunnel.write_text('schema_version = 1\naccount_id = "' + "a" * 32 + '"\nzone_id = "' + "b" * 32 + '"\nhostname = "akuma.example.com"\ncredential_profile = "principal"\ncredential_entry_path = "Akuma/Serviço/CloudflareTunnel:APIToken"\n', encoding="utf-8")
+                answers = iter(["p", "4", answer, "x", "x"])
+                def execute(arguments, **_kwargs):
+                    if arguments[-1] == "--version":
+                        return subprocess.CompletedProcess(arguments, 0, stdout="cloudflared version 2026.11.0", stderr="")
+                    if "inspect-publication" in arguments:
+                        response = {"state": "succeeded", "result": {"status": "existing", "hostname": "akuma.example.com", "tunnel_id": "known-tunnel", "tunnel_name": "old-tunnel", "current_origin": "https://localhost:39391", "new_origin": "https://localhost:39390", "preview_id": "a" * 32}}
+                    elif arguments[-2:] == ["cloudflare-tunnel", "status"]:
+                        response = {"activated": True, "ca_file": str(root / "gateway-ca.pem")}
+                    else:
+                        response = {"state": "running"}
+                    return subprocess.CompletedProcess(arguments, 0, stdout=json.dumps(response), stderr="")
+                with patch.object(MODULE, "prompt", side_effect=lambda _label: next(answers)), patch.object(MODULE, "screen"), patch.object(MODULE.shutil, "which", return_value="cloudflared"), patch.object(MODULE.subprocess, "run", side_effect=execute) as run:
+                    MODULE.daemon_menu(root)
+                commands = [call.args[0] for call in run.call_args_list]
+                self.assertTrue(any("inspect-publication" in command for command in commands))
+                self.assertFalse(any(action in command for command in commands for action in ("adopt-publication", "provision")))
+
+    def test_publication_inspection_failure_explains_permission_and_stops_before_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); project = root / "onmyoji-daemon"; project.mkdir()
+            (project / "setupDaemon.py").write_text("", encoding="utf-8")
+            manifest = root / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True); manifest.write_text("", encoding="utf-8")
+            tunnel = manifest.parent / "services" / "cloudflare-tunnel" / "tunnel.toml"; tunnel.parent.mkdir(parents=True)
+            tunnel.write_text('schema_version = 1\naccount_id = "' + "a" * 32 + '"\nzone_id = "' + "b" * 32 + '"\nhostname = "akuma.example.com"\ncredential_profile = "principal"\ncredential_entry_path = "Akuma/Serviço/CloudflareTunnel:APIToken"\n', encoding="utf-8")
+            answers = iter(["p", "4", "x", "x"])
+            def execute(arguments, **_kwargs):
+                if arguments[-1] == "--version":
+                    return subprocess.CompletedProcess(arguments, 0, stdout="cloudflared version 2026.11.0", stderr="")
+                if "inspect-publication" in arguments:
+                    response = {"state": "failed", "progress": "consultando DNS", "error_code": "cloudflare_http_error", "error": "Cloudflare retornou HTTP 403. Confira as permissões DNS do API Token."}
+                    return subprocess.CompletedProcess(arguments, 2, stdout=json.dumps(response), stderr="")
+                response = {"activated": True, "ca_file": str(root / "gateway-ca.pem")} if arguments[-2:] == ["cloudflare-tunnel", "status"] else {"state": "running"}
+                return subprocess.CompletedProcess(arguments, 0, stdout=json.dumps(response), stderr="")
+            output = io.StringIO()
+            with patch.object(MODULE, "prompt", side_effect=lambda _label: next(answers)) as prompts, patch.object(MODULE, "screen"), patch.object(MODULE.shutil, "which", return_value="cloudflared"), patch.object(MODULE.subprocess, "run", side_effect=execute) as run, patch.object(MODULE.sys, "stdout", output):
+                MODULE.daemon_menu(root)
+            commands = [call.args[0] for call in run.call_args_list]
+            self.assertFalse(any(action in command for command in commands for action in ("adopt-publication", "provision")))
+            self.assertFalse(any("[s/N]" in call.args[0] for call in prompts.call_args_list))
+            self.assertIn("403", output.getvalue()); self.assertIn("permissões DNS", output.getvalue())
+
+    def test_publication_diagnosis_pending_transport_is_not_reported_ready(self) -> None:
+        for checks, expected_ready in (([{"state": "pending", "label": "Conexão Cloudflare", "detail": "Conexão não confirmada."}], False), ([{"state": "ok", "label": "Conexão Cloudflare", "detail": "Conectado."}, {"state": "pending", "label": "Mini Apps (opcional)", "detail": "Não configurado."}], True)):
+            with self.subTest(checks=checks), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary); project = root / "onmyoji-daemon"; project.mkdir()
+                (project / "setupDaemon.py").write_text("", encoding="utf-8")
+                manifest = root / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True); manifest.write_text("", encoding="utf-8")
+                answers = iter(["p", "!", "x", "x"])
+                with patch.object(MODULE, "prompt", side_effect=lambda _label: next(answers)), patch.object(MODULE, "screen"), patch.object(MODULE.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout="{}", stderr="")), patch.object(MODULE, "diagnose_publication", return_value=checks), patch.object(MODULE, "result") as result:
+                    MODULE.daemon_menu(root)
+                self.assertEqual(result.call_args.args[0], expected_ready)
+
+    def test_publication_restore_selects_backup_and_sends_confirmed_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); project = root / "onmyoji-daemon"; project.mkdir()
+            (project / "setupDaemon.py").write_text("", encoding="utf-8")
+            manifest = root / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True); manifest.write_text("", encoding="utf-8")
+            directory = manifest.parent / "services" / "cloudflare-tunnel" / "publication-recovery"; directory.mkdir(parents=True)
+            for identifier, state in (("a" * 32, "applied"), ("b" * 32, "failed"), ("c" * 32, "prepared"), ("d" * 32, "rolled_back")):
+                (directory / (identifier + ".json")).write_text(json.dumps({"state": state}), encoding="utf-8")
+            (directory / ("e" * 32 + ".json")).write_text("{invalid", encoding="utf-8")
+            (directory / "invalid-name.json").write_text('{"state":"applied"}', encoding="utf-8")
+            answers = iter(["p", "9", "2", "s", "x", "x"])
+            completed = subprocess.CompletedProcess([], 0, stdout='{"state":"running"}', stderr="")
+            output = io.StringIO()
+            with patch.object(MODULE, "prompt", side_effect=lambda _label: next(answers)) as prompts, patch.object(MODULE, "screen"), patch.object(MODULE.subprocess, "run", return_value=completed) as run, patch.object(MODULE.sys, "stdout", output):
+                MODULE.daemon_menu(root)
+            rollback = [call.args[0] for call in run.call_args_list if "rollback-publication" in call.args[0]]
+            self.assertEqual(len(rollback), 1)
+            self.assertEqual(rollback[0][rollback[0].index("--preview-id") + 1], "a" * 32)
+            self.assertIn("--confirm", rollback[0]); self.assertIn("--wait", rollback[0])
+            self.assertTrue(any(call.args[0] == "Opção [1]: " for call in prompts.call_args_list))
+            self.assertIn("a" * 32 + " · applied", output.getvalue())
+            self.assertIn("b" * 32 + " · failed", output.getvalue())
+            self.assertNotIn("c" * 32, output.getvalue()); self.assertNotIn("d" * 32, output.getvalue())
+            self.assertNotIn("invalid-name", output.getvalue())
+
+    def test_publication_restore_cancel_at_selection_or_confirmation_never_starts_or_mutates(self) -> None:
+        for responses in (("x",), ("", ""), ("", "n"), ("", "x")):
+            with self.subTest(responses=responses), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary); project = root / "onmyoji-daemon"; project.mkdir()
+                (project / "setupDaemon.py").write_text("", encoding="utf-8")
+                manifest = root / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True); manifest.write_text("", encoding="utf-8")
+                directory = manifest.parent / "services" / "cloudflare-tunnel" / "publication-recovery"; directory.mkdir(parents=True)
+                (directory / ("a" * 32 + ".json")).write_text('{"state":"applied"}', encoding="utf-8")
+                answers = iter(["p", "9", *responses, "x", "x"])
+                completed = subprocess.CompletedProcess([], 0, stdout='{"state":"running"}', stderr="")
+                with patch.object(MODULE, "prompt", side_effect=lambda _label: next(answers)), patch.object(MODULE, "screen"), patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+                    MODULE.daemon_menu(root)
+                self.assertFalse(any(action in call.args[0] for call in run.call_args_list for action in ("start", "rollback-publication")))
+
+    def test_publication_restore_explains_when_no_applied_backup_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); project = root / "onmyoji-daemon"; project.mkdir()
+            (project / "setupDaemon.py").write_text("", encoding="utf-8")
+            manifest = root / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True); manifest.write_text("", encoding="utf-8")
+            answers = iter(["p", "9", "x", "x"])
+            output = io.StringIO()
+            with patch.object(MODULE, "prompt", side_effect=lambda _label: next(answers)), patch.object(MODULE, "screen"), patch.object(MODULE.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout="{}", stderr="")) as run, patch.object(MODULE, "flow_choice") as choice, patch.object(MODULE.sys, "stdout", output):
+                MODULE.daemon_menu(root)
+            choice.assert_not_called()
+            self.assertIn("Não há backup", output.getvalue())
+            self.assertFalse(any(action in call.args[0] for call in run.call_args_list for action in ("start", "rollback-publication")))
+
+    def test_publication_restore_failure_retains_backup_and_reports_incomplete_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); project = root / "onmyoji-daemon"; project.mkdir()
+            (project / "setupDaemon.py").write_text("", encoding="utf-8")
+            manifest = root / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True); manifest.write_text("", encoding="utf-8")
+            directory = manifest.parent / "services" / "cloudflare-tunnel" / "publication-recovery"; directory.mkdir(parents=True)
+            backup = directory / ("a" * 32 + ".json"); backup.write_text('{"state":"applied"}', encoding="utf-8")
+            answers = iter(["p", "9", "", "s", "x", "x"])
+            def execute(arguments, **_kwargs):
+                if "rollback-publication" in arguments:
+                    return subprocess.CompletedProcess(arguments, 2, stdout='{"state":"failed","error_code":"remote_changed"}', stderr="")
+                return subprocess.CompletedProcess(arguments, 0, stdout='{"state":"running"}', stderr="")
+            output = io.StringIO()
+            with patch.object(MODULE, "prompt", side_effect=lambda _label: next(answers)), patch.object(MODULE, "screen"), patch.object(MODULE.subprocess, "run", side_effect=execute), patch.object(MODULE.sys, "stdout", output):
+                MODULE.daemon_menu(root)
+            self.assertIn("restauração não foi concluída", output.getvalue())
+            self.assertIn("backup foi preservado", output.getvalue())
+            self.assertEqual(json.loads(backup.read_text(encoding="utf-8"))["state"], "applied")
+
     def test_publication_wizard_prepares_gateway_and_requests_remote_confirmation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); project = root / "onmyoji-daemon"; project.mkdir()
@@ -344,6 +518,8 @@ class SystemSetupTests(unittest.TestCase):
                     response = {"http_port": 39390}
                 elif arguments[-2:] == ["cloudflare-tunnel", "status"]:
                     response = {"activated": True, "ca_file": str(root / "gateway-ca.pem"), "gateway_url": "https://localhost:39390"}
+                elif "inspect-publication" in arguments:
+                    response = {"state": "succeeded", "result": {"status": "new", "hostname": "akuma.example.com", "new_origin": "https://localhost:39390", "message": "Nenhuma publicação existente encontrada."}}
                 elif "configure" in arguments:
                     values = json.loads(arguments[arguments.index("--values") + 1])
                     tunnel = manifest.parent / "services" / "cloudflare-tunnel" / "tunnel.toml"; tunnel.parent.mkdir(parents=True)
@@ -383,6 +559,10 @@ class SystemSetupTests(unittest.TestCase):
                     response = [{"name": "gateway"}, {"name": "cloudflare-tunnel"}]
                 elif arguments[-2:] == ["gateway", "status"]:
                     response = {"http_port": 39390}
+                elif arguments[-2:] == ["cloudflare-tunnel", "status"]:
+                    response = {"activated": True, "ca_file": str(root / "gateway-ca.pem"), "gateway_url": "https://localhost:39390"}
+                elif "inspect-publication" in arguments:
+                    response = {"state": "succeeded", "result": {"status": "new", "hostname": "akuma.example.com", "new_origin": "https://localhost:39390", "message": "Nenhuma publicação existente encontrada."}}
                 elif arguments[-1] == "--version":
                     return subprocess.CompletedProcess(arguments, 0, stdout="cloudflared version 2026.11.0", stderr="")
                 else:

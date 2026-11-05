@@ -1576,8 +1576,9 @@ def daemon_menu(root: Path) -> None:
         except (AttributeError, OSError):
             return False
 
-    def command(arguments: list[str], quiet: bool = False, input_value: str | None = None) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(arguments, cwd=str(project), env=environment, text=True, encoding="utf-8", errors="replace", capture_output=quiet, input=input_value)
+    def command(arguments: list[str], quiet: bool = False, input_value: str | None = None, capture_stdout: bool = False) -> subprocess.CompletedProcess[str]:
+        output = {"stdout": subprocess.PIPE} if capture_stdout else {"capture_output": quiet}
+        return subprocess.run(arguments, cwd=str(project), env=environment, text=True, encoding="utf-8", errors="replace", input=input_value, **output)
 
     def lifecycle(action: str, extra: list[str] | None = None, input_value: str | None = None) -> bool:
         visible = action in {"install-service", "configure-windows-service-account", "remove-service", "service-start", "service-stop", "service-restart", "service-force-stop"}
@@ -2586,8 +2587,8 @@ def daemon_menu(root: Path) -> None:
             else: result(False, "Opção inválida."); continue
             result(completed.returncode == 0, (completed.stdout or completed.stderr).strip())
 
-    def publication_command(*arguments: str, quiet: bool = True) -> subprocess.CompletedProcess[str]:
-        return command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), *arguments], quiet=quiet)
+    def publication_command(*arguments: str, quiet: bool = True, read_result: bool = False) -> subprocess.CompletedProcess[str]:
+        return command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), *arguments], quiet=quiet, capture_stdout=read_result)
 
     def tunnel_settings() -> dict[str, object]:
         path = root / "configs" / "daemon" / "services" / "cloudflare-tunnel" / "tunnel.toml"
@@ -2599,8 +2600,9 @@ def daemon_menu(root: Path) -> None:
         checks = diagnose_publication(root, progress=lambda message: print("    → " + message, flush=True))
         print()
         print_checks(checks)
-        ready = bool(checks) and not any(check.get("state") == "error" for check in checks)
-        result(ready, "Diagnóstico concluído; confira também os itens pendentes." if ready else "Há pré-requisitos pendentes. Use W para configurar ou siga os próximos passos indicados.")
+        required = [check for check in checks if check.get("label") != "Mini Apps (opcional)"]
+        ready = bool(required) and all(check.get("state") == "ok" for check in required)
+        result(ready, "Publicação externa pronta; Gateway e conexão do Tunnel confirmados." if ready else "A publicação externa ainda não está pronta. Siga os próximos passos indicados ou execute W.")
         return ready
 
     def cloudflared_installed(executable: str) -> bool:
@@ -2697,7 +2699,7 @@ def daemon_menu(root: Path) -> None:
         current = tunnel_settings()
         legacy = root / "configs" / "daemon" / "services" / "mini-apps" / "tunnel.toml"
         if not current.get("account_id") and legacy.is_file():
-            result(False, "Existe uma configuração legada. Use Migrar publicação existente para preservar o Tunnel e suas URLs.")
+            result(False, "Existe uma configuração legada. Use 8. Migrar configuração legada para preservar o Tunnel e suas URLs.")
             return False
         note("1. API Token: autoriza o acesso à Cloudflare e será salvo no campo senha do KeePass.")
         note("Crie um API Token com Account > Cloudflare Tunnel > Edit e Zone > DNS > Edit, limitado à conta e à zona utilizadas.")
@@ -2745,8 +2747,8 @@ def daemon_menu(root: Path) -> None:
             result(False, "Configure Cloudflare e a credencial primeiro: opção 1 ou W. A instalação do binário, opção 3, é independente."); return False
         executable = str(current.get("cloudflared_executable") or "cloudflared")
         if not cloudflared_installed(executable) and not install_publication_binary(): return False
-        note(f"Será publicada a origem HTTPS do Gateway em https://{current['hostname']}; a operação configura o Tunnel, o ingress e o DNS.")
-        if prompt("Provisionar hostname, ingress e DNS na Cloudflare? [s/N]: ").strip().casefold() not in {"s", "sim"}: return False
+        flow_heading("Verificar e preparar a publicação Cloudflare", "Recupera publicações existentes sem depender da instalação anterior")
+        note("O Gateway e o serviço administrativo serão preparados localmente. A consulta remota não altera Tunnel, ingress nem DNS.")
         if not start_publication_service("gateway") or not start_publication_service("cloudflare-tunnel"): return False
         note("Aguardando o Supervisor confirmar a origem HTTPS e a CA do Gateway no serviço Tunnel.")
         deadline, origin = time.monotonic() + 10, {}
@@ -2758,7 +2760,44 @@ def daemon_menu(root: Path) -> None:
             time.sleep(0.25)
         else:
             result(False, "O Supervisor não confirmou a origem HTTPS em 10 segundos. Nenhuma solicitação de provisionamento foi enviada; consulte o diagnóstico (!)."); return False
-        completed = publication_command("cloudflare-tunnel", "provision", "--confirm", "--wait", quiet=False)
+        note("Consultando o DNS, a conta e a configuração remota com o API Token do KeePass.")
+        try:
+            inspected = publication_command("cloudflare-tunnel", "inspect-publication", "--wait", quiet=False, read_result=True)
+        except (OSError, subprocess.SubprocessError) as error:
+            result(False, f"Não foi possível executar a consulta Cloudflare: {error}"); return False
+        try: inspection = json.loads(inspected.stdout or "{}")
+        except ValueError: inspection = {}
+        if inspected.returncode != 0:
+            detail = inspection.get("error") if isinstance(inspection, dict) else None
+            stage = inspection.get("progress") if isinstance(inspection, dict) else None
+            code = inspection.get("error_code") if isinstance(inspection, dict) else None
+            result(False, "A consulta Cloudflare falhou. " + (f"Etapa: {stage}. " if stage else "") + (f"Código: {code}. " if code else "") + str(detail or "Confira o diagnóstico acima; nenhuma substituição foi solicitada."))
+            return False
+        preview = inspection.get("result") if isinstance(inspection, dict) and inspection.get("state") == "succeeded" else None
+        if not isinstance(preview, dict) or preview.get("status") not in {"new", "existing"}:
+            result(False, "A consulta não retornou uma prévia válida. Reinicie o serviço Cloudflare Tunnel para carregar o código atualizado e tente novamente."); return False
+        if preview["status"] == "existing":
+            preview_id = preview.get("preview_id")
+            if not isinstance(preview_id, str) or not re.fullmatch(r"[a-f0-9]{32}", preview_id):
+                result(False, "A consulta não retornou um identificador de prévia válido. Execute a consulta novamente."); return False
+            note(f"Publicação existente encontrada: {preview.get('hostname')}")
+            note(f"Tunnel: {preview.get('tunnel_name')} · ID {preview.get('tunnel_id')}")
+            if preview.get("configured_tunnel_id") and preview["configured_tunnel_id"] != preview.get("tunnel_id"):
+                note(f"O ID local {preview['configured_tunnel_id']} difere do DNS. Ao confirmar, o ID local será substituído pelo Tunnel encontrado acima.")
+            note(f"Origem atual: {preview.get('current_origin') or 'sem origem cadastrada'}")
+            note(f"Nova origem: {preview.get('new_origin')}")
+            note(str(preview.get("message") or "O Tunnel e seu DNS serão reutilizados; a origem e a validação TLS desta publicação serão atualizadas."))
+            note("DNS: o CNAME existente será preservado." if preview.get("dns_action") == "reuse" else "DNS: será criado o CNAME ausente para este Tunnel.")
+            note(f"Identificador da prévia e do backup: {preview_id}.")
+            note("Uma cópia da configuração anterior será guardada para restauração. As permissões de escrita são verificadas pela Cloudflare ao aplicar a alteração.")
+            if prompt("Reutilizar este Tunnel e substituir a configuração desta publicação? [s/N]: ").strip().casefold() not in {"s", "sim"}:
+                note("Reutilização cancelada; nenhuma substituição foi solicitada à Cloudflare."); return False
+            arguments = ["cloudflare-tunnel", "adopt-publication", "--preview-id", preview_id, "--confirm", "--wait"]
+        else:
+            note(f"Nenhuma publicação anterior foi encontrada para https://{current['hostname']}. Será criada a publicação para {preview.get('new_origin')}.")
+            if prompt("Provisionar hostname, ingress e DNS na Cloudflare? [s/N]: ").strip().casefold() not in {"s", "sim"}: return False
+            arguments = ["cloudflare-tunnel", "provision", "--confirm", "--wait"]
+        completed = publication_command(*arguments, quiet=False)
         result(completed.returncode == 0, "Provisionamento concluído; confira a conexão no diagnóstico (!)." if completed.returncode == 0 else "Provisionamento não concluído; confira a etapa, o código de erro e o resultado acima.")
         return completed.returncode == 0
 
@@ -2812,7 +2851,7 @@ def daemon_menu(root: Path) -> None:
         print("\n  4. Preparar o Gateway HTTPS local")
         note("O certificado e a origem HTTPS são locais; confirme a porta que será usada pelo Tunnel.")
         if not configure_publication_gateway(): return
-        print("\n  5. Provisionar e iniciar o Tunnel")
+        print("\n  5. Descobrir, reutilizar ou criar a publicação e iniciar o Tunnel")
         if not provision_publication(): return
         print("\n  6. Retomar Gateway e Tunnel após reiniciar o daemon")
         if prompt("Habilitar os dois serviços para início automático com o daemon? [S/n]: ").strip().casefold() in {"", "s", "sim"}:
@@ -2839,7 +2878,7 @@ def daemon_menu(root: Path) -> None:
         result(completed.returncode == 0, (completed.stdout or completed.stderr).strip())
 
     def publication_migration() -> None:
-        flow_heading("Migrar publicação existente", "Mantém hostname, Tunnel ID, referências KeePass e configuração original")
+        flow_heading("Migrar configuração legada", "Usa o arquivo antigo de Mini Apps e mantém hostname, Tunnel ID e referências KeePass")
         inspection = publication_command("publication-migrate", "inspect")
         result(inspection.returncode == 0, (inspection.stdout or inspection.stderr).strip())
         if inspection.returncode != 0: return
@@ -2849,6 +2888,29 @@ def daemon_menu(root: Path) -> None:
         if prompt(f"{'Migrar' if action == 'Migrar' else 'Restaurar infraestrutura anterior'} agora? [s/N]: ").strip().casefold() not in {"s", "sim"}: return
         completed = publication_command("publication-migrate", "apply" if action == "Migrar" else "rollback", "--confirm", quiet=False)
         result(completed.returncode == 0, "Operação concluída; confira o estado informado." if completed.returncode == 0 else "Operação interrompida; consulte o diagnóstico e o manifesto de migração.")
+
+    def restore_publication() -> None:
+        flow_heading("Restaurar publicação anterior", "Usa o backup de uma reutilização confirmada neste setup")
+        directory = root / "configs" / "daemon" / "services" / "cloudflare-tunnel" / "publication-recovery"
+        backups = []
+        for path in sorted(directory.glob("*.json"), reverse=True):
+            if not re.fullmatch(r"[a-f0-9]{32}", path.stem): continue
+            try: saved = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError): continue
+            if isinstance(saved, dict) and saved.get("state") in {"applied", "applying", "failed", "rolling_back"}:
+                backups.append((path.stem, str(saved["state"])))
+        if not backups:
+            result(False, "Não há backup de substituição aplicada disponível para restaurar. As prévias apenas consultadas não alteraram a Cloudflare."); return
+        labels = [f"{identifier} · {state}" for identifier, state in backups]
+        selected = flow_choice("Backup da publicação a restaurar", labels, labels[0])
+        if selected is None: return
+        identifier = backups[labels.index(selected)][0]
+        note("A restauração recupera a origem e o TLS anteriores. Um CNAME anterior é preservado; somente um CNAME criado pela substituição pode ser removido.")
+        note("A origem antiga precisa estar em execução para atender requisições. Alterações posteriores ao backup impedem a restauração automática.")
+        if prompt("Restaurar a configuração anterior desta publicação? [s/N]: ").strip().casefold() not in {"s", "sim"}: return
+        if not start_publication_service("cloudflare-tunnel"): return
+        completed = publication_command("cloudflare-tunnel", "rollback-publication", "--preview-id", identifier, "--confirm", "--wait", quiet=False)
+        result(completed.returncode == 0, "Configuração anterior restaurada; confira a disponibilidade da origem antiga." if completed.returncode == 0 else "A restauração não foi concluída. Confira a etapa e o erro acima; o backup foi preservado.")
 
     def publication_menu() -> None:
         while True:
@@ -2860,11 +2922,12 @@ def daemon_menu(root: Path) -> None:
             item("1.", "Configurar Cloudflare e credencial", "Token no KeePass, Account ID, Zone ID e hostname")
             item("2.", "Estado e diagnóstico", "Disponível mesmo sem configuração ou serviços iniciados")
             item("3.", "Instalar ou atualizar cloudflared")
-            item("4.", "Provisionar Tunnel, ingress e DNS")
+            item("4.", "Preparar ou recuperar publicação", "Detecta e permite reutilizar Tunnel, ingress e DNS existentes")
             item("5.", "Administrar serviços", "Iniciar, parar, reiniciar, habilitar ou desabilitar")
             item("6.", "Listeners públicos")
             item("7.", "Porta HTTPS do Gateway")
-            item("8.", "Migrar publicação existente")
+            item("8.", "Migrar configuração legada", "Quando a instalação conserva o arquivo antigo de Mini Apps")
+            item("9.", "Restaurar publicação anterior", "Backup de uma reutilização confirmada neste setup")
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
@@ -2888,6 +2951,7 @@ def daemon_menu(root: Path) -> None:
             elif choice == "6": publication_listeners()
             elif choice == "7": configure_publication_gateway()
             elif choice == "8": publication_migration()
+            elif choice == "9": restore_publication()
             else: result(False, "Opção inválida.")
 
     def miniapps_publications() -> None:

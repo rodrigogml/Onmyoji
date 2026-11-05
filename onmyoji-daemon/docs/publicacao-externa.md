@@ -29,6 +29,9 @@ runtime, credencial KeePass, executável, serviços, origem HTTPS e conexão. O
 diagnóstico funciona mesmo sem configuração ou serviços iniciados, apresenta
 cada etapa e indica a ação para resolver cada pendência. Ele não instala,
 inicia nem provisiona recursos. A opção 2 mantém acesso ao mesmo diagnóstico.
+A última operação relevante mostra etapa, código de erro e próximo passo;
+instalar outro binário não oculta uma falha de publicação. Pendências impedem
+que o resultado anuncie a publicação como pronta. Mini Apps é opcional.
 A presença da credencial no cofre não comprova suas permissões Cloudflare;
 a confirmação remota acontece no provisionamento explícito.
 
@@ -65,6 +68,7 @@ e as [permissões do API Token para Tunnel e DNS](https://developers.cloudflare.
 | Identidade, origem e referências KeePass do Tunnel | `configs/daemon/services/cloudflare-tunnel/tunnel.toml` |
 | Versões gerenciadas do executável | `configs/daemon/services/cloudflare-tunnel/bin/versions/`, salvo diretório personalizado |
 | Checkpoints da migração | `configs/daemon/services/cloudflare-tunnel/migration.json` |
+| Prévias e backups de recuperação remota | `configs/daemon/services/cloudflare-tunnel/publication-recovery/<preview_id>.json` |
 
 O Gateway usa inicialmente `127.0.0.1:39390`. Sua porta é configurável e entra
 em vigor após reinício. Mini Apps mantém o HTTPS local, normalmente em `39391`.
@@ -104,6 +108,60 @@ o SHA-256 oficial continua sendo exigido nas novas instalações gerenciadas.
 
 O provisionamento aguarda a confirmação da origem HTTPS e da CA pelo Supervisor
 antes de enviar qualquer alteração à Cloudflare.
+
+### Recuperar uma publicação após reinstalar
+
+O wizard e **4. Preparar ou recuperar publicação** consultam DNS e Tunnels da
+conta com a credencial KeePass selecionada. Um CNAME para `*.cfargotunnel.com`
+permite descobrir a identidade do Tunnel sem arquivos da instalação anterior.
+Sem DNS, a consulta usa o ID configurado ou procura o nome do Tunnel.
+
+Quando encontra uma publicação compatível, o setup mostra hostname, nome e ID
+do Tunnel, origem atual, nova origem e se o CNAME será reutilizado ou criado.
+Se o ID local divergir do DNS, a prévia informa a troca do ID local que será
+feita somente após confirmação.
+Somente após a confirmação **Reutilizar este Tunnel e substituir a configuração
+desta publicação? [s/N]** aplica a origem HTTPS e a CA do Gateway atual. O Tunnel
+é preservado; o DNS compatível permanece intacto. Sem publicação anterior, a
+criação de Tunnel, ingress e DNS exige sua própria confirmação.
+
+A consulta valida leitura na API e acesso ao token de execução. Permissão de
+escrita só é comprovada ao aplicar a operação: um token administrativo deve
+permitir editar Cloudflare Tunnel na conta e DNS na zona. O token de execução
+do conector não substitui esse API Token. Falhas HTTP indicam a operação e a
+revisão necessária sem expor a credencial.
+
+Cada prévia de reutilização recebe um ID e um snapshot local, sem tokens. Sua
+aplicação vale por quinze minutos e compara novamente configuração local, CA,
+DNS e ingress remoto; qualquer divergência exige nova consulta e confirmação.
+Os backups continuam disponíveis para restauração após esse prazo. A consulta
+nunca altera os recursos Cloudflare, mas pode salvar a prévia local.
+
+> [!IMPORTANT]
+> A recuperação automática aceita um Tunnel administrado remotamente e
+> exclusivo deste hostname, sem filtros de caminho ou outras publicações.
+> DNS externo, Tunnels locais e regras compartilhadas recebem diagnóstico
+> acionável; o setup não apaga recursos alheios para resolver conflitos.
+
+**9. Restaurar publicação anterior** lista backups de substituições iniciadas
+ou concluídas e pede confirmação. Restaura o ingress anterior e as definições
+locais, preservando o DNS preexistente; pode remover somente o CNAME criado
+pela própria substituição. Mudanças externas posteriores impedem a restauração
+automática. A disponibilidade restaurada depende da execução da origem antiga;
+o rollback não reinstala aplicações nem configurações legadas.
+
+As mesmas operações estão disponíveis no CLI:
+
+```powershell
+python -B -m onmyoji_daemon.cli --onmyoji-root C:/x/Onmyoji cloudflare-tunnel inspect-publication --wait
+python -B -m onmyoji_daemon.cli --onmyoji-root C:/x/Onmyoji cloudflare-tunnel adopt-publication --preview-id <id-da-previa> --confirm --wait
+python -B -m onmyoji_daemon.cli --onmyoji-root C:/x/Onmyoji cloudflare-tunnel rollback-publication --preview-id <id-da-previa> --confirm --wait
+```
+
+No MCP, use `cloudflare_tunnel.inspect_publication`,
+`cloudflare_tunnel.adopt_publication` e `cloudflare_tunnel.rollback_publication`.
+As duas escritas exigem `preview_id` e `confirm=true`. Todas retornam
+`operation_id` para acompanhamento e nunca repetem a escrita após reinício.
 
 Atualizações são explícitas. A versão anterior permanece disponível e o menu
 permite restaurá-la. Um executável externo só é substituído como referência
@@ -205,7 +263,7 @@ duas gerações simultâneas. Paradas explícitas encerram normalmente.
 > A migração é explícita e exige uma janela de manutenção. Atualize o código e
 > reinicie o Daemon para registrar os novos serviços antes de executá-la.
 
-Use **Publicação externa > Migrar publicação existente**, ou
+Use **Publicação externa > 8. Migrar configuração legada**, ou
 `publication-migrate inspect|apply|rollback`. Aplicação e rollback exigem
 `--confirm`. A configuração original de Mini Apps permanece intacta.
 

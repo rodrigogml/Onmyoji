@@ -26,6 +26,63 @@ def _detail(error: Exception, token: str = "") -> str:
     return value[-240:] or type(error).__name__
 
 
+def _operation_check(path: Path, token: str = "") -> dict[str, str] | None:
+    """Lê o resultado administrativo sem retomar ou modificar operações antigas.
+
+    Instalar o executável ou inspecionar com sucesso não resolve uma publicação
+    que falhou. Uma inspeção posterior com erro tem prioridade para orientar a
+    próxima tentativa; adoção/restauração posteriores substituem o erro antigo.
+    """
+    label = "Última operação Cloudflare"
+    try:
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(saved, dict) or type(saved.get("schema_version")) is not int or saved["schema_version"] != 1 or not isinstance(saved.get("operations"), dict):
+            raise ValueError("Formato de histórico inválido")
+        records = list(saved["operations"].values())
+        if any(not isinstance(item, dict) or type(item.get("created_at")) not in (int, float) for item in records):
+            raise ValueError("Registro de operação inválido")
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return {"state": "error", "label": label, "detail": "O histórico local das operações está ilegível ou possui formato inválido.", "action": "Confira configs/daemon/services/cloudflare-tunnel/operations.json e os logs do Cloudflare Tunnel antes de repetir a operação."}
+    if not records:
+        return None
+    publications = [item for item in records if str(item.get("operation", "")).startswith(("provision", "recover", "adopt")) or item.get("operation") == "rollback-publication"]
+    latest = max(publications or records, key=lambda item: item["created_at"])
+    inspections = [item for item in records if item.get("operation") == "inspect-publication"]
+    if inspections:
+        inspected = max(inspections, key=lambda item: item["created_at"])
+        if not publications or (inspected["created_at"] > latest["created_at"] and inspected.get("state") != "succeeded"):
+            latest = inspected
+    operation = _detail(RuntimeError(str(latest.get("operation") or "não identificada")), token)
+    state = latest.get("state")
+    stage = _detail(RuntimeError(str(latest.get("progress") or "etapa não informada")), token)
+    if state == "succeeded":
+        detail = "A configuração remota anterior foi restaurada; isso não confirma que a origem atual esteja pronta." if latest.get("operation") == "rollback-publication" else "A prontidão atual é verificada nos itens abaixo."
+        return {"state": "ok", "label": label, "detail": f"Operação {operation} concluída. {detail}", "action": ""}
+    if state in {"queued", "running"}:
+        return {"state": "pending", "label": label, "detail": f"Operação {operation} ainda sem conclusão registrada. Etapa: {stage}.", "action": "Consulte a operação em andamento. Se o serviço foi reiniciado, confira o resultado antes de solicitar outra execução."}
+    code = str(latest.get("error_code") or "operation_failed")
+    code = code if re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", code) else "operation_failed"
+    error = _detail(RuntimeError(str(latest.get("error") or "A operação não foi concluída.")), token)
+    actions = {
+        "dns_conflict": "Use W. Wizard para consultar a publicação existente na Cloudflare e confirmar sua reutilização; não é necessário apagar o Tunnel ou o DNS manualmente.",
+        "ingress_conflict": "Use W. Wizard para revisar a origem remota existente e confirmar a recuperação; alterações posteriores à confirmação exigem uma nova consulta.",
+        "cloudflare_http_error": "Confira o API Token no KeePass, sua validade e permissões para a conta/Tunnel e a zona DNS; um token de execução do conector não substitui o API Token administrativo.",
+        "cloudflare_rejected": "Confira no API Token administrativo as permissões de Cloudflare Tunnel e DNS da conta/zona selecionadas; execute o wizard para consultar novamente.",
+        "cloudflare_unavailable": "Confira acesso à Internet e à API da Cloudflare; repita a consulta pelo wizard antes de provisionar.",
+        "operation_interrupted": "A execução anterior não foi repetida automaticamente. Use W. Wizard para consultar o estado remoto antes de confirmar uma nova operação.",
+        "credential_missing": "Selecione no wizard a entrada KeePass que contém o API Token administrativo da Cloudflare.",
+        "invalid_preview": "Consulte novamente a publicação existente pelo wizard e confirme a prévia válida antes de aplicar a recuperação.",
+        "stale_preview": "A configuração local ou remota mudou, ou a prévia expirou. Consulte novamente pelo wizard e confirme as diferenças atualizadas.",
+        "sensitive_remote_config": "Revise na Cloudflare a configuração remota que contém autenticação ou campos sensíveis; esses valores não serão copiados para o backup de recuperação.",
+        "unsupported_remote_tunnel": "Confira na Cloudflare a conta e o Tunnel associado ao hostname; a recuperação requer um Tunnel ativo e gerenciado remotamente pela Cloudflare.",
+        "recovery_verification_failed": "Preserve o backup da recuperação e consulte o estado remoto. Use a restauração da publicação anterior somente após revisar e confirmar a operação.",
+    }
+    action = actions.get(code, "Use W. Wizard para conferir a configuração e o estado remoto; corrija o erro desta etapa antes de confirmar uma nova tentativa.")
+    return {"state": "error", "label": label, "detail": f"Operação {operation} {'interrompida' if state == 'interrupted' else 'falhou'}. Etapa: {stage}. Código: {code}. {error}", "action": action}
+
+
 def diagnose(root: Path, progress: Callable[[str], None] | None = None) -> list[dict[str, str]]:
     """Retorna pendências independentes com o próximo passo, sem escritas ou provisionamento.
 
@@ -104,6 +161,11 @@ def diagnose(root: Path, progress: Callable[[str], None] | None = None) -> list[
         except (OSError, ValueError, RuntimeError) as error:
             add("error", label, "Falha na consulta de estado: " + _detail(error, address[2]), "Reinicie esse serviço e consulte seus logs no diagnóstico do Daemon.")
 
+    step("Conferindo o resultado da última operação administrativa da Cloudflare.")
+    operation = _operation_check(services_dir / "cloudflare-tunnel" / "operations.json", address[2] if address else "")
+    if operation is not None:
+        checks.append(operation)
+
     step("Verificando configuração, identificadores e hostname Cloudflare.")
     settings = read_toml(services_dir / "cloudflare-tunnel" / "tunnel.toml", "Arquivo de configuração do Tunnel")
     fields = (("account_id", "Cloudflare Account ID"), ("zone_id", "Cloudflare Zone ID"), ("hostname", "Hostname público"))
@@ -120,7 +182,7 @@ def diagnose(root: Path, progress: Callable[[str], None] | None = None) -> list[
             add("error", "Formato da configuração Cloudflare", _detail(error), "Revise os identificadores e use um hostname DNS completo, sem https://, porta ou path.")
     legacy = services_dir / "mini-apps" / "tunnel.toml"
     if legacy.is_file():
-        add("pending" if not settings.get("hostname") else "ok", "Publicação legada", "Existe configuração do Tunnel no diretório antigo de Mini Apps.", "Use 8. Migrar publicação existente para preservar o Tunnel e o hostname antigos.")
+        add("pending" if not settings.get("hostname") else "ok", "Publicação legada", "Existe configuração do Tunnel no diretório antigo de Mini Apps.", "Use 8. Migrar configuração legada para preservar o Tunnel e o hostname antigos.")
 
     step("Verificando perfil KeePass e a presença da credencial, sem obter o token.")
     profile, entry = settings.get("credential_profile"), settings.get("credential_entry_path")

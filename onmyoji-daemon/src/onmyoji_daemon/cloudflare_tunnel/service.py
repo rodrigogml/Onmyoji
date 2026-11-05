@@ -8,12 +8,13 @@ import threading
 from typing import Any
 
 from ..mcp.credentials import CredentialError, KeePassCredentialResolver
-from .client import CloudflareClient
+from .client import CloudflareClient, gateway_ingress
 from .configuration import TunnelConfiguration, TunnelDefinition, validate_origin
 from .exception import TunnelError
 from .installer import CloudflaredInstaller
 from .operations import TunnelOperations
 from .process import TunnelProcess
+from .recovery import PublicationRecovery
 
 
 class TunnelService:
@@ -177,6 +178,7 @@ class TunnelService:
         validate_origin(settings["gateway_url"], settings.get("ca_file", ""))
         client = self._client(settings)
         if not definition.tunnel_id:
+            progress("consultando o DNS antes de criar um novo Tunnel")
             client.inspect_dns(definition, "")
             progress("criando Tunnel remoto")
             created = client.create_tunnel(definition, True)
@@ -186,9 +188,8 @@ class TunnelService:
         previous = None
         if settings.get("provisioned_gateway_url") and settings.get("provisioned_ca_file"):
             remote = client.get_configuration(definition)
-            expected = [{"hostname": definition.hostname, "service": settings["provisioned_gateway_url"],
-                         "originRequest": {"caPool": settings["provisioned_ca_file"], "noTLSVerify": False}},
-                        {"service": "http_status:404"}]
+            expected = gateway_ingress(remote.get("config", {}), settings["provisioned_gateway_url"], settings["provisioned_ca_file"])
+            expected[0] = {"hostname": definition.hostname, **expected[0]}
             if isinstance(remote, dict) and isinstance(remote.get("config"), dict) and remote["config"].get("ingress") == expected:
                 previous = remote
         client.ensure_dns(definition, definition.tunnel_id, True)
@@ -199,6 +200,30 @@ class TunnelService:
             progress("iniciando conector provisionado")
             self._start_with_recovery()
         return self.status()
+
+    def _inspect_publication(self, progress) -> dict[str, Any]:
+        settings = self.configuration.settings()
+        self._definition(settings)
+        if self.origin and any(settings.get(key) != value for key, value in self.origin.items()):
+            settings = self.configuration.configure(self.origin, validate_credentials=False)
+        progress("obtendo o API Token administrativo na referência KeePass configurada")
+        return PublicationRecovery(self.configuration, self._client(settings)).inspect(settings, progress)
+
+    def _recover_publication(self, params: dict[str, Any], progress, rollback: bool = False) -> dict[str, Any]:
+        settings = self.configuration.settings()
+        self._definition(settings)
+        if not rollback and self.origin and any(settings.get(key) != value for key, value in self.origin.items()):
+            raise TunnelError("stale_preview", "A origem do Gateway mudou após a prévia; consulte novamente pelo wizard.")
+        recovery = PublicationRecovery(self.configuration, self._client(settings))
+        if rollback:
+            result = recovery.rollback(params.get("preview_id"), settings, progress)
+            self._stop_connector()
+        else:
+            result = recovery.apply(params.get("preview_id"), settings, progress)
+        if self.activated and not self.closing.is_set() and self._ingress_ready(self.configuration.settings()):
+            progress("iniciando o conector com a publicação confirmada")
+            self._start_with_recovery()
+        return {**result, "status": self.status()}
 
     def _install(self, params: dict[str, Any], progress, rollback: bool = False, use_existing: bool = False) -> dict[str, Any]:
         installer = CloudflaredInstaller(self.configuration)
@@ -243,7 +268,9 @@ class TunnelService:
             return self._activate(params)
         if action == "operations.status":
             return self.operations.status(str(params.get("operation_id", "")))
-        if action not in {"configure", "provision", "install-cloudflared", "update-cloudflared", "rollback-cloudflared", "use-cloudflared"}:
+        if action == "inspect-publication":
+            return self.operations.start(action, self._inspect_publication)
+        if action not in {"configure", "provision", "adopt-publication", "rollback-publication", "install-cloudflared", "update-cloudflared", "rollback-cloudflared", "use-cloudflared"}:
             raise TunnelError("unknown_method", "Operação Cloudflare Tunnel não suportada.")
         if params.get("confirm") is not True:
             raise TunnelError("confirmation_required", "A operação administrativa exige confirm=true.")
@@ -252,6 +279,8 @@ class TunnelService:
             return self.operations.start(action, lambda progress: self._configure(values, progress))
         if action == "provision":
             return self.operations.start(action, self._provision)
+        if action in {"adopt-publication", "rollback-publication"}:
+            return self.operations.start(action, lambda progress: self._recover_publication(params, progress, action == "rollback-publication"))
         return self.operations.start(action, lambda progress: self._install(params, progress, action == "rollback-cloudflared", action == "use-cloudflared"))
 
     def _monitor(self) -> None:

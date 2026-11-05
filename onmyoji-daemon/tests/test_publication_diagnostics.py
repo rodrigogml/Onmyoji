@@ -149,3 +149,158 @@ def test_cli_diagnostic_runs_without_required_daemon_endpoint(tmp_path, monkeypa
     assert checks and any(item["state"] == "pending" for item in checks)
     assert "Verificando" in output.err
     assert list(tmp_path.iterdir()) == []
+
+
+def write_operations(root: Path, operations: dict) -> Path:
+    path = root / "configs" / "daemon" / "services" / "cloudflare-tunnel" / "operations.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"schema_version": 1, "operations": operations}), encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("code, expected", [
+    ("dns_conflict", "reutilização"),
+    ("ingress_conflict", "origem remota"),
+    ("cloudflare_http_error", "API Token administrativo"),
+    ("cloudflare_rejected", "permissões"),
+    ("cloudflare_unavailable", "Internet"),
+    ("operation_interrupted", "estado remoto"),
+    ("credential_missing", "entrada KeePass"),
+    ("invalid_preview", "prévia válida"),
+    ("stale_preview", "diferenças atualizadas"),
+    ("sensitive_remote_config", "campos sensíveis"),
+    ("unsupported_remote_tunnel", "gerenciado remotamente"),
+    ("recovery_verification_failed", "backup"),
+    ("unknown_error", "corrija o erro"),
+])
+def test_failed_operation_reports_stage_code_and_action_without_writing(tmp_path, code, expected):
+    path = write_operations(tmp_path, {"abc": {
+        "operation": "provision", "created_at": 10, "state": "failed",
+        "progress": "verificando hostname e DNS", "error_code": code,
+        "error": "Não foi possível aplicar a publicação.",
+    }})
+    before = path.read_bytes()
+
+    check = by_label(diagnostics.diagnose(tmp_path))["Última operação Cloudflare"]
+
+    assert check["state"] == "error"
+    assert "verificando hostname e DNS" in check["detail"]
+    assert code in check["detail"]
+    assert "Não foi possível aplicar a publicação." in check["detail"]
+    assert expected in check["action"]
+    assert before == path.read_bytes()
+
+
+def test_binary_install_success_does_not_hide_unresolved_publication_error(tmp_path):
+    write_operations(tmp_path, {
+        "provision": {"operation": "provision", "created_at": 10, "state": "failed", "error_code": "dns_conflict"},
+        "install": {"operation": "install-cloudflared", "created_at": 20, "state": "succeeded"},
+    })
+    check = by_label(diagnostics.diagnose(tmp_path))["Última operação Cloudflare"]
+    assert check["state"] == "error"
+    assert "dns_conflict" in check["detail"]
+
+
+def test_later_recovery_success_replaces_previous_provision_error(tmp_path):
+    write_operations(tmp_path, {
+        "old": {"operation": "provision", "created_at": 10, "state": "failed", "error_code": "dns_conflict"},
+        "new": {"operation": "adopt-publication", "created_at": 20, "state": "succeeded"},
+    })
+    checks = by_label(diagnostics.diagnose(tmp_path))
+    assert checks["Última operação Cloudflare"]["state"] == "ok"
+    assert "dns_conflict" not in checks["Última operação Cloudflare"]["detail"]
+    assert checks["Conexão Cloudflare"]["state"] == "pending"
+
+
+@pytest.mark.parametrize("operation", ["provision", "adopt-publication"])
+def test_successful_inspection_does_not_hide_unresolved_remote_write_error(tmp_path, operation):
+    write_operations(tmp_path, {
+        "write": {"operation": operation, "created_at": 10, "state": "failed", "error_code": "ingress_conflict"},
+        "inspect": {"operation": "inspect-publication", "created_at": 20, "state": "succeeded"},
+    })
+    check = by_label(diagnostics.diagnose(tmp_path))["Última operação Cloudflare"]
+    assert check["state"] == "error"
+    assert operation in check["detail"]
+    assert "ingress_conflict" in check["detail"]
+
+
+def test_failed_inspection_after_provision_failure_reports_new_permission_error(tmp_path):
+    write_operations(tmp_path, {
+        "write": {"operation": "provision", "created_at": 10, "state": "failed", "error_code": "dns_conflict"},
+        "inspect": {"operation": "inspect-publication", "created_at": 20, "state": "failed", "error_code": "cloudflare_http_error", "error": "HTTP 403"},
+    })
+    check = by_label(diagnostics.diagnose(tmp_path))["Última operação Cloudflare"]
+    assert check["state"] == "error"
+    assert "inspect-publication" in check["detail"]
+    assert "403" in check["detail"]
+    assert "permissões" in check["action"]
+    assert "dns_conflict" not in check["detail"]
+
+
+def test_successful_inspection_clears_previous_inspection_error_but_not_provision_error(tmp_path):
+    write_operations(tmp_path, {
+        "write": {"operation": "provision", "created_at": 10, "state": "failed", "error_code": "dns_conflict"},
+        "old-inspect": {"operation": "inspect-publication", "created_at": 20, "state": "failed", "error_code": "cloudflare_http_error"},
+        "new-inspect": {"operation": "inspect-publication", "created_at": 30, "state": "succeeded"},
+    })
+    check = by_label(diagnostics.diagnose(tmp_path))["Última operação Cloudflare"]
+    assert check["state"] == "error"
+    assert "dns_conflict" in check["detail"]
+    assert "cloudflare_http_error" not in check["detail"]
+
+
+def test_successful_rollback_replaces_old_error_without_claiming_current_origin_ready(tmp_path):
+    write_operations(tmp_path, {
+        "adopt": {"operation": "adopt-publication", "created_at": 10, "state": "failed", "error_code": "operation_failed"},
+        "rollback": {"operation": "rollback-publication", "created_at": 20, "state": "succeeded"},
+        "inspect": {"operation": "inspect-publication", "created_at": 30, "state": "succeeded"},
+    })
+    checks = by_label(diagnostics.diagnose(tmp_path))
+    check = checks["Última operação Cloudflare"]
+    assert check["state"] == "ok"
+    assert "restaurada" in check["detail"]
+    assert "não confirma" in check["detail"]
+    assert checks["Conexão Cloudflare"]["state"] == "pending"
+
+
+def test_failed_inspection_is_reported_even_without_previous_publication_operation(tmp_path):
+    write_operations(tmp_path, {
+        "inspect": {"operation": "inspect-publication", "created_at": 10, "state": "failed", "error_code": "cloudflare_http_error"},
+        "install": {"operation": "install-cloudflared", "created_at": 20, "state": "succeeded"},
+    })
+    check = by_label(diagnostics.diagnose(tmp_path))["Última operação Cloudflare"]
+    assert check["state"] == "error"
+    assert "inspect-publication" in check["detail"]
+
+
+@pytest.mark.parametrize("state, expected", [("queued", "pending"), ("running", "pending"), ("interrupted", "error")])
+def test_incomplete_operation_never_reports_readiness(tmp_path, state, expected):
+    write_operations(tmp_path, {"op": {"operation": "provision", "created_at": 10, "state": state, "progress": "consulta remota", "error_code": "operation_interrupted"}})
+    check = by_label(diagnostics.diagnose(tmp_path))["Última operação Cloudflare"]
+    assert check["state"] == expected
+    assert "consulta remota" in check["detail"]
+
+
+@pytest.mark.parametrize("body", ["{invalid", "[]", '{"schema_version":1,"operations":[]}', '{"schema_version":1,"operations":{"x":{}}}'])
+def test_invalid_operation_history_is_actionable_and_other_checks_continue(tmp_path, body):
+    path = write_operations(tmp_path, {})
+    path.write_text(body, encoding="utf-8")
+    checks = by_label(diagnostics.diagnose(tmp_path))
+    assert checks["Última operação Cloudflare"]["state"] == "error"
+    assert "operations.json" in checks["Última operação Cloudflare"]["action"]
+    assert "Conexão Cloudflare" in checks
+    assert path.read_text(encoding="utf-8") == body
+
+
+def test_operation_error_is_sanitized_before_presentation(tmp_path):
+    write_operations(tmp_path, {"op": {
+        "operation": "provision", "created_at": 10, "state": "failed",
+        "progress": "token=stage-secret", "error_code": "cloudflare_http_error",
+        "error": "HTTP 403 token=api-secret https://api.example.test/?secret=hidden-value",
+    }})
+    check = by_label(diagnostics.diagnose(tmp_path))["Última operação Cloudflare"]
+    detail = json.dumps(check)
+    assert "403" in detail
+    assert "stage-secret" not in detail
+    assert "api-secret" not in detail
+    assert "hidden-value" not in detail

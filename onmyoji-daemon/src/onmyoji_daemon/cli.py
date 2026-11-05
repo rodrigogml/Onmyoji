@@ -24,14 +24,20 @@ def _wait_publication_operation(host: str, port: int, token: str, response):
     """Acompanha operações longas sem manter uma conexão RPC bloqueada."""
     if isinstance(response, dict) and response.get("operation_id"):
         print("› Operação: " + str(response["operation_id"]), file=sys.stderr, flush=True)
-    deadline, previous_progress = time.monotonic() + 900, None
+    started = time.monotonic()
+    deadline, previous_progress, last_notice = started + 900, None, started
     while isinstance(response, dict) and response.get("operation_id") and response.get("state") in {"queued", "running", "pending"}:
-        if time.monotonic() >= deadline:
+        now = time.monotonic()
+        if now >= deadline:
             raise TimeoutError("A operação continua em execução; consulte operation-status com seu identificador.")
         progress = response.get("progress")
         if progress and progress != previous_progress:
             print("› " + str(progress), file=sys.stderr, flush=True)
             previous_progress = progress
+            last_notice = now
+        elif now - last_notice >= 15:
+            print("› Ainda em andamento: " + str(progress or "aguardando resposta da operação") + ".", file=sys.stderr, flush=True)
+            last_notice = now
         time.sleep(1)
         response = call(host, port, token, "cloudflare-tunnel.operations.status", {"operation_id": response["operation_id"]}, timeout=5)
     return response
@@ -76,6 +82,13 @@ def main(argv: list[str] | None = None) -> int:
         listener = listeners_sub.add_parser(action); listener.add_argument("path_prefix"); listener.add_argument("--owner"); listener.add_argument("--confirm", action="store_true")
     tunnel = sub.add_parser("cloudflare-tunnel"); tunnel_sub = tunnel.add_subparsers(dest="tunnel_action", required=True)
     tunnel_sub.add_parser("status")
+    inspect_publication = tunnel_sub.add_parser("inspect-publication", help="Consulta DNS e Tunnel remoto e prepara uma prévia sem alterar a Cloudflare")
+    inspect_publication.add_argument("--wait", action="store_true")
+    for action in ("adopt-publication", "rollback-publication"):
+        recovery = tunnel_sub.add_parser(action)
+        recovery.add_argument("--preview-id", required=True)
+        recovery.add_argument("--confirm", action="store_true")
+        recovery.add_argument("--wait", action="store_true")
     config_tunnel = tunnel_sub.add_parser("configure"); config_tunnel.add_argument("--values", required=True)
     for action in ("provision", "install-cloudflared", "update-cloudflared", "rollback-cloudflared"):
         operation = tunnel_sub.add_parser(action); operation.add_argument("--confirm", action="store_true"); operation.add_argument("--wait", action="store_true")
@@ -169,8 +182,9 @@ def main(argv: list[str] | None = None) -> int:
                 if args.owner: params["owner"] = args.owner
     elif args.action == "cloudflare-tunnel":
         method, params = "cloudflare-tunnel." + args.tunnel_action, {}
-        if args.tunnel_action in {"provision", "install-cloudflared", "update-cloudflared", "rollback-cloudflared", "use-cloudflared"}:
+        if args.tunnel_action in {"provision", "install-cloudflared", "update-cloudflared", "rollback-cloudflared", "use-cloudflared", "adopt-publication", "rollback-publication"}:
             params = {"confirm": args.confirm}
+            if args.tunnel_action in {"adopt-publication", "rollback-publication"}: params["preview_id"] = args.preview_id
             if args.tunnel_action == "use-cloudflared": params["executable"] = args.executable
             if args.tunnel_action in {"install-cloudflared", "update-cloudflared"}:
                 for key in ("install_directory", "version"):

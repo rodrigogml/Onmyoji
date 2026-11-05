@@ -37,6 +37,9 @@ class PublicationToolRegistry:
             "cloudflare_tunnel.status": ("Consulta o Cloudflare Tunnel independente das Mini Apps.", False, {}, []),
             "cloudflare_tunnel.configure": ("Atualiza a configuração do Tunnel preservando IDs e referências KeePass existentes.", True, {"values": {"type": "object"}}, ["values"]),
             "cloudflare_tunnel.provision": ("Provisiona o hostname único, ingress e DNS; retorna operation_id para acompanhamento.", True, {}, []),
+            "cloudflare_tunnel.inspect_publication": ("Descobre a publicação existente por DNS/conta e retorna uma prévia para recuperação, sem alterar a Cloudflare; acompanhe pelo operation_id.", False, {}, []),
+            "cloudflare_tunnel.adopt_publication": ("Reutiliza a publicação da prévia confirmada, atualizando a origem e TLS do Gateway; retorna operation_id.", True, {"preview_id": {"type": "string", "pattern": "^[a-f0-9]{32}$"}}, ["preview_id"]),
+            "cloudflare_tunnel.rollback_publication": ("Restaura a configuração remota anterior de uma recuperação confirmada, recusando mudanças posteriores; retorna operation_id.", True, {"preview_id": {"type": "string", "pattern": "^[a-f0-9]{32}$"}}, ["preview_id"]),
             "cloudflare_tunnel.install_cloudflared": ("Instala cloudflared oficial; retorna operation_id para acompanhamento.", True, {"install_directory": {"type": "string"}, "version": {"type": "string"}, "adopt": {"type": "boolean"}}, []),
             "cloudflare_tunnel.update_cloudflared": ("Atualiza cloudflared oficial; retorna operation_id para acompanhamento.", True, {"install_directory": {"type": "string"}, "version": {"type": "string"}, "adopt": {"type": "boolean"}}, []),
             "cloudflare_tunnel.rollback_cloudflared": ("Restaura a versão anterior preservada do cloudflared.", True, {}, []),
@@ -80,6 +83,7 @@ class PublicationToolRegistry:
             method, params = service + ".configure", {**arguments["values"], "confirm": True}
         else:
             action = action.replace("listeners_", "listeners.").replace("install_cloudflared", "install-cloudflared").replace("update_cloudflared", "update-cloudflared").replace("rollback_cloudflared", "rollback-cloudflared").replace("operation_status", "operations.status")
+            action = {"inspect_publication": "inspect-publication", "adopt_publication": "adopt-publication", "rollback_publication": "rollback-publication"}.get(action, action)
             method = service + "." + action
         try:
             host, port, token = self.endpoint_reader(self.root)
