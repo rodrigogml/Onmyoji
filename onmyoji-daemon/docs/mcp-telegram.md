@@ -6,7 +6,9 @@ O módulo `telegram` permite ao agente consultar destinos registrados e enviar t
 
 Configure o módulo em **Daemon > Gateway Telegram**, incluindo credencial do bot no vault MCP, owners e destinos autorizados. O estado privado e a configuração ficam em `configs/daemon/services/telegram/`.
 
-As ferramentas são publicadas quando a configuração do gateway está habilitada. Não há perfis independentes em `telegram.*`: o módulo usa o gateway da instância. Para executar as chamadas, o daemon e o Gateway Telegram precisam estar disponíveis.
+Ao habilitar o serviço **Gateway Telegram** no setup, o MCP interno publica automaticamente `telegram.list_channels`, `telegram.send` e `telegram.remove_channel`. Desabilitar o serviço oculta essas ferramentas e bloqueia novas chamadas pelo módulo. Não há perfil ou configuração adicional de publicação em `telegram.*`.
+
+A publicação acompanha o estado do ciclo de vida do serviço em `configs/daemon/services.json`. O campo legado `enabled` de `services/telegram/config.toml` não controla essa disponibilidade e não exige ajuste nas instalações existentes. Se o estado do serviço estiver ausente, ilegível ou em formato inválido, as ferramentas ficam ocultas. Para executar as chamadas, o daemon e o Gateway Telegram precisam estar disponíveis.
 
 ## Ferramentas e dados
 

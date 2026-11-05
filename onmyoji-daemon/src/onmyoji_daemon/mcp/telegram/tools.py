@@ -1,25 +1,27 @@
 """Definições MCP para envios externos autorizados pelo usuário."""
 from __future__ import annotations
 
-import tomllib
+import json
 from pathlib import Path
 from typing import Any
 
 from .service import TelegramMcpError, TelegramMcpService
-from ...instance import telegram_configuration_path
 
 
 class TelegramToolRegistry:
-    """Publica o canal somente quando o gateway Telegram está habilitado."""
+    """Publica ferramentas conforme a habilitação do serviço Telegram no daemon."""
 
     def __init__(self, root: Path): self.root = root.resolve()
 
     def available(self) -> bool:
-        path = telegram_configuration_path(self.root)
+        """Consulta o estado do ciclo de vida; estado ausente ou inválido não publica ferramentas."""
+        path = self.root / "configs" / "daemon" / "services.json"
         try:
-            return bool(tomllib.loads(path.read_text(encoding="utf-8")).get("enabled") is True)
-        except (OSError, tomllib.TOMLDecodeError):
+            values = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
             return False
+        service = values.get("telegram") if isinstance(values, dict) else None
+        return isinstance(service, dict) and bool(service.get("enabled", False))
 
     def definitions(self) -> list[dict[str, Any]]:
         if not self.available(): return []
