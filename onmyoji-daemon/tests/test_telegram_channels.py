@@ -167,7 +167,7 @@ def test_create_topic_never_registers_generated_destination(tmp_path):
     assert gw._pending_external("group:-1000:17")[1] == [result["message_id"]]
 
 
-def test_file_is_limited_to_workspace_and_retained_by_destination(tmp_path):
+def test_file_is_limited_to_authorized_roots_and_retained_by_destination(tmp_path):
     gw = gateway_for(tmp_path)
     api = gw.api = FakeApi()
     gw._channel_register("9", "Owner", 9)
@@ -182,7 +182,7 @@ def test_file_is_limited_to_workspace_and_retained_by_destination(tmp_path):
     forbidden = tmp_path.parent / "forbidden-file-test.txt"
     forbidden.write_text("não publicar", encoding="utf-8")
     try:
-        with pytest.raises(ValueError, match="fora do workspace"):
+        with pytest.raises(ValueError, match="fora das raízes autorizadas"):
             gw._outbound_send({"channel": "9", "path": str(forbidden), "kind": "document"})
     finally:
         forbidden.unlink(missing_ok=True)
