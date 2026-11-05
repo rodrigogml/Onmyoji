@@ -20,6 +20,26 @@ A publicação acompanha o estado do ciclo de vida do serviço em `configs/daemo
 
 Consulte os destinos antes de enviar quando o destinatário não for inequívoco. O envio exige autorização explícita do usuário; a confirmação técnica não substitui a escolha correta do destino. `kind` aceita `document`, `photo`, `audio` e `voice`.
 
+## Descoberta pelo agente
+
+Quando o serviço está habilitado, o contrato `telegram-mcp.md` acompanha o
+handshake do servidor MCP e a composição das instruções dos clientes Codex.
+Ele orienta a descoberta de `telegram.list_channels` e a consulta sem filtro
+quando o usuário pedir o catálogo completo. Memória e ferramentas da conversa
+ativa não substituem a listagem. Uma falha de consulta deve ser informada como
+falha, sem presumir ausência de destinos.
+
+O contrato do canal Telegram também explicita essa distinção. Ele é relido a
+cada turno e reaplicado ao retomar a mesma thread; atualizar essas instruções
+não exige apagar a conversa. O bloco MCP passa a integrar o handshake dos
+novos processos do servidor.
+
+Iniciar uma interação externa significa enviar uma nova mensagem a um destino
+cadastrado por `telegram.send`. `new_topic` permite criar um tópico quando
+explicitamente solicitado e aceito pelo destino. Retransmissão por esse método
+é um novo envio de conteúdo; encaminhamento nativo de mensagens não é exposto
+pelo contrato atual.
+
 ## Arquivos e contexto da conversa
 
 Arquivos enviados devem existir, ser regulares e usar caminho absoluto dentro do Work ou de uma raiz de arquivos declarada por um MCP ativo. O gateway rejeita links, junctions, caminhos fora dessas raízes e arquivos acima do limite. Assim, um anexo já baixado pelo E-mail ou uma saída documental pode seguir diretamente para o Telegram sem cópia intermediária.

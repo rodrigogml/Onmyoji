@@ -1,5 +1,7 @@
+from onmyoji_daemon import management
 from onmyoji_daemon.mcp.configuration import McpConfiguration
 from onmyoji_daemon.mcp.server import McpApplication, create_server, main
+from onmyoji_daemon.mcp.telegram.tools import TelegramToolRegistry
 
 
 class Registry:
@@ -42,3 +44,22 @@ def test_server_advertises_workflow_routes_only_when_memory_is_enabled(tmp_path)
     instructions = create_server(tmp_path).create_initialization_options().instructions
     assert instructions and "memory-decision" in instructions
     assert "workflows.read" in instructions
+
+
+def test_server_initialization_explains_available_telegram_destinations(tmp_path):
+    management.prepare_instance(tmp_path)
+    assert create_server(tmp_path).create_initialization_options().instructions is None
+    ok, message = management.set_enabled(tmp_path, "telegram", True)
+    assert ok, message
+
+    server = create_server(tmp_path)
+    instructions = server.create_initialization_options().instructions
+    assert instructions == TelegramToolRegistry(tmp_path).developer_instructions()
+    assert "[ONMYŌJI — TELEGRAM MCP]" in instructions
+    assert "telegram.list_channels" in instructions and "telegram.send" in instructions
+    advertised = {item["name"] for item in server.document_application.definitions()}
+    assert {"telegram.list_channels", "telegram.send"} <= advertised
+
+    ok, message = management.set_enabled(tmp_path, "telegram", False)
+    assert ok, message
+    assert create_server(tmp_path).create_initialization_options().instructions is None

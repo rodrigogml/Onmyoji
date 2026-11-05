@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .configuration import McpConfiguration
+from .telegram.tools import TelegramToolRegistry
 from .workflows import WorkflowRegistry
 
 
@@ -26,10 +27,14 @@ class McpInstructionRegistry:
         self.configuration = configuration
 
     def contributions(self) -> tuple[McpInstructionContribution, ...]:
+        contributions = []
         workflow_instructions = WorkflowRegistry(self.configuration).developer_instructions()
-        if not workflow_instructions:
-            return ()
-        return (McpInstructionContribution("workflows-mcp", workflow_instructions),)
+        if workflow_instructions:
+            contributions.append(McpInstructionContribution("workflows-mcp", workflow_instructions))
+        telegram_instructions = TelegramToolRegistry(self.configuration.root).developer_instructions()
+        if telegram_instructions:
+            contributions.append(McpInstructionContribution("telegram-mcp", telegram_instructions))
+        return tuple(contributions)
 
     def developer_instructions(self) -> str | None:
         """Compõe o bloco a ser entregue no handshake e no App Server."""

@@ -31,6 +31,13 @@ class TelegramToolRegistry:
             {"name": "telegram.remove_channel", "description": "Remove um destino Telegram registrado somente por pedido explícito do owner. Exige confirm=true.", "input_schema": {"type": "object", "properties": {"channel": {"type": "string"}, "confirm": {"type": "boolean"}}, "required": ["channel", "confirm"], "additionalProperties": False}},
         ]
 
+    def developer_instructions(self) -> str | None:
+        """Publica o contrato de descoberta e envio quando o módulo está ativo."""
+        if not self.available():
+            return None
+        resource = Path(__file__).resolve().parents[4] / "resources" / "instructions" / "telegram-mcp.md"
+        return resource.read_text(encoding="utf-8").strip()
+
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if not self.available(): raise TelegramMcpError("A integração Telegram não está habilitada.")
         service = TelegramMcpService(self.root)

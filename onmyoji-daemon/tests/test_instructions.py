@@ -4,9 +4,11 @@ from pathlib import Path
 
 import pytest
 
+from onmyoji_daemon import management
 from onmyoji_daemon.instructions import InstructionComposer, InstructionError, TelegramTurnContext
 from onmyoji_daemon.mcp.configuration import McpConfiguration
 from onmyoji_daemon.mcp.instructions import McpInstructionRegistry
+from onmyoji_daemon.mcp.telegram.tools import TelegramToolRegistry
 
 
 def test_composition_has_order_and_overlay(tmp_path):
@@ -43,6 +45,72 @@ def test_mcp_contributions_use_the_same_availability_as_the_composer(tmp_path):
     contributions = McpInstructionRegistry(configuration).contributions()
     assert [item.source for item in contributions] == ["workflows-mcp"]
     assert "memory-learning" in contributions[0].content
+
+
+def test_telegram_mcp_instructions_follow_the_same_lifecycle_as_its_tools(tmp_path):
+    management.prepare_instance(tmp_path)
+    configuration = McpConfiguration(tmp_path)
+    telegram = TelegramToolRegistry(tmp_path)
+    assert telegram.definitions() == []
+    assert telegram.developer_instructions() is None
+    assert McpInstructionRegistry(configuration).contributions() == ()
+
+    ok, message = management.set_enabled(tmp_path, "telegram", True)
+    assert ok, message
+    contributions = McpInstructionRegistry(configuration).contributions()
+    assert [item.source for item in contributions] == ["telegram-mcp"]
+    assert contributions[0].content == telegram.developer_instructions()
+    assert "telegram.list_channels" in contributions[0].content
+    assert "telegram.send" in contributions[0].content
+    assert "telegram_gateway" in contributions[0].content
+
+    ok, message = management.set_enabled(tmp_path, "telegram", False)
+    assert ok, message
+    assert telegram.definitions() == []
+    assert telegram.developer_instructions() is None
+    assert McpInstructionRegistry(configuration).contributions() == ()
+
+
+@pytest.mark.parametrize("telegram_turn", [False, True])
+def test_registered_destinations_are_explained_in_all_agent_entry_points(tmp_path, telegram_turn):
+    management.prepare_instance(tmp_path)
+    personal = tmp_path / "instructions.md"
+    original = "Personalidade própria da instância.\n".encode("utf-8")
+    personal.write_bytes(original)
+    composer = InstructionComposer(tmp_path, tmp_path / "configs" / "daemon" / "services" / "telegram", "instructions.md")
+    disabled = composer.compose(identity="Exemplo", telegram=telegram_turn)
+    assert "[ONMYŌJI — TELEGRAM MCP]" not in disabled.text
+
+    ok, message = management.set_enabled(tmp_path, "telegram", True)
+    assert ok, message
+    enabled = composer.compose(identity="Exemplo", telegram=telegram_turn)
+    assert enabled.text.count("[ONMYŌJI — TELEGRAM MCP]") == 1
+    assert "telegram.list_channels" in enabled.text
+    assert "telegram.send" in enabled.text
+    assert "telegram-mcp" in enabled.sources
+    assert enabled.baseline_hash != disabled.baseline_hash
+    assert personal.read_bytes() == original
+
+    ok, message = management.set_enabled(tmp_path, "telegram", False)
+    assert ok, message
+    disabled_again = composer.compose(identity="Exemplo", telegram=telegram_turn)
+    assert "[ONMYŌJI — TELEGRAM MCP]" not in disabled_again.text
+    assert disabled_again.baseline_hash == disabled.baseline_hash
+
+
+def test_telegram_and_workflow_instructions_are_combined_without_replacing_each_other(tmp_path):
+    management.prepare_instance(tmp_path)
+    configuration = McpConfiguration(tmp_path)
+    configuration.save_memory({"schema_version": 1, "enabled": True, "max_results": 5})
+    ok, message = management.set_enabled(tmp_path, "telegram", True)
+    assert ok, message
+
+    registry = McpInstructionRegistry(configuration)
+    contributions = registry.contributions()
+    assert {item.source for item in contributions} == {"workflows-mcp", "telegram-mcp"}
+    instructions = registry.developer_instructions()
+    assert instructions == "\n\n".join(item.content for item in contributions)
+    assert "workflows.read" in instructions and "telegram.list_channels" in instructions
 
 
 def test_channel_capability_restarts_baseline_but_reply_mode_is_overlay_only(tmp_path):

@@ -79,6 +79,7 @@ def test_tools_remain_hidden_for_missing_or_invalid_service_state(tmp_path: Path
 
     assert not registry.available()
     assert registry.definitions() == []
+    assert registry.developer_instructions() is None
     with pytest.raises(TelegramMcpError, match="não está habilitada"):
         registry.call("telegram.list_channels", {})
 
