@@ -16,6 +16,9 @@ ou publicação da instância em uso. O procedimento operacional está em
 | Streaming, WebSocket, timeout antes dos headers, conexão interrompida após headers e limite de upload chunked inclusive com resposta antecipada | `test_gateway_http.py` |
 | URLs locais disponíveis sem publicação externa e callbacks BTG/E-mail durante RPC OAuth ocupado | `test_miniapps_publication.py`, `test_miniapps.py` |
 | Namespaces RPC/MCP/CLI, erros estruturados e remoção das APIs antigas | `test_publication_rpc.py`, `test_publication_admin.py`, `test_publication_stdio.py` |
+| Comandos do teste público temporário, confirmação explícita, identidade da tentativa e pré-requisitos com erro estruturado | `test_publication_test_cli.py` |
+| Link temporário por tentativa, confirmação somente pelo path correto, expiração, cancelamento e limpeza sem Mini Apps | `test_gateway_publication_test.py` |
+| Link no setup, pré-requisitos, espera com X/Ctrl+C, confirmação no limite do prazo e falhas sanitizadas | `tests/test_setup_publication_test.py` na raiz |
 | Configuração parcial, conflitos DNS/ingress, operação assíncrona e interrupção sem repetição automática | `test_cloudflare_tunnel.py`, `test_cloudflare_tunnel_service.py` |
 | Release oficial, asset existente, SHA-256, permissões, atualização e rollback preservando a versão anterior | `test_cloudflare_tunnel_installer.py` |
 | Instalação sem conta/token, metadados parciais distintos de Tunnel configurado e diagnóstico sem serviços ou escritas | `test_cloudflare_tunnel_installer.py`, `test_cloudflare_tunnel_service.py`, `test_publication_diagnostics.py` |

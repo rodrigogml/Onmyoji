@@ -515,9 +515,11 @@ class SystemSetupTests(unittest.TestCase):
                 if arguments[-1] == "list-services":
                     response = [{"name": "gateway"}, {"name": "cloudflare-tunnel"}]
                 elif arguments[-2:] == ["gateway", "status"]:
-                    response = {"http_port": 39390}
+                    response = {"http_port": 39390, "ready": True, "public_origin": "https://akuma.example.com"}
                 elif arguments[-2:] == ["cloudflare-tunnel", "status"]:
-                    response = {"activated": True, "ca_file": str(root / "gateway-ca.pem"), "gateway_url": "https://localhost:39390"}
+                    response = {"activated": True, "ca_file": str(root / "gateway-ca.pem"), "gateway_url": "https://localhost:39390", "configured": True, "provisioned": True, "running": True, "connected": True, "ingress_ready": True}
+                elif "publication-test" in arguments:
+                    response = {"test_id": "a" * 32, "url": "https://akuma.example.com/internal/publication-test/test", "expires_in_seconds": 120, "state": "waiting"} if "start" in arguments else {"state": "confirmed"}
                 elif "inspect-publication" in arguments:
                     response = {"state": "succeeded", "result": {"status": "new", "hostname": "akuma.example.com", "new_origin": "https://localhost:39390", "message": "Nenhuma publicação existente encontrada."}}
                 elif "configure" in arguments:
@@ -542,6 +544,9 @@ class SystemSetupTests(unittest.TestCase):
         self.assertTrue(any(call.args[0] == "Porta HTTPS local do Gateway [39390]: " for call in prompts.call_args_list))
         self.assertTrue(any(command[-2:] == ["enable", "gateway"] for command in commands))
         self.assertTrue(any(command[-2:] == ["enable", "cloudflare-tunnel"] for command in commands))
+        public_tests = [index for index, command in enumerate(commands) if command[-3:] == ["publication-test", "start", "--confirm"]]
+        self.assertEqual(len(public_tests), 1)
+        self.assertGreater(public_tests[0], next(index for index, command in enumerate(commands) if command[-2:] == ["enable", "cloudflare-tunnel"]))
         self.assertFalse(any("mini-apps" in command for command in commands))
         self.assertEqual(diagnose.call_count, 1)
         self.assertTrue(all(call.args[0] in {"Daemon", "Publicação externa"} for call in screens.call_args_list))

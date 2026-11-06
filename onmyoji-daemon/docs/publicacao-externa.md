@@ -109,6 +109,53 @@ o SHA-256 oficial continua sendo exigido nas novas instalações gerenciadas.
 O provisionamento aguarda a confirmação da origem HTTPS e da CA pelo Supervisor
 antes de enviar qualquer alteração à Cloudflare.
 
+### Confirmar o caminho público pelo navegador
+
+Ao concluir a preparação do Tunnel, o setup oferece um teste por clique. Também
+é possível repeti-lo em **Publicação externa > T. Testar acesso público**. O teste
+exige o Gateway HTTPS pronto e o Tunnel configurado, provisionado e conectado, com o ingress
+confirmado para a origem atual. Se faltar algum requisito, o setup explica a
+pendência; concluir a configuração não equivale a confirmar acesso público.
+Mini Apps não participa desse teste.
+
+O setup mostra um link HTTPS no hostname configurado, com um path imprevisível
+criado somente para aquela tentativa. Abra o link no navegador: a página informa
+que a requisição chegou ao listener HTTPS do Gateway, e o setup recebe a mesma
+confirmação. Somente o `GET` no path exato da sessão, dentro do prazo,
+confirma a tentativa. DNS resolvido, processo ativo e respostas de
+outras páginas não substituem esse acesso.
+
+A tentativa dura até 120 segundos. `X` cancela a espera e encerra o teste;
+expiração, cancelamento, conclusão ou encerramento do Gateway invalidam o
+endpoint. Uma nova tentativa gera outro link. O endpoint usa um caminho sob
+`/internal/publication-test/`, reservado ao Gateway, sem criar um listener
+persistente ou ocupar prefixos das aplicações. O nonce do link e o estado da
+tentativa ficam somente em memória, sem tokens Cloudflare na URL ou gravação
+do link em logs HTTP.
+
+> [!NOTE]
+> O resultado confirma a chegada desta requisição ao Gateway da instância.
+> O link usa o hostname configurado; os headers recebidos não autenticam a
+> origem pública da requisição, pois podem ser reescritos pelo conector.
+> Não testa autenticação nem funcionamento dos consumidores, como `/a/` e
+> `/oauth/`. Regras Cloudflare Access, WAF, DNS ou conectividade podem impedir
+> o clique de chegar; nesse caso o setup não declara o domínio validado.
+
+O CLI oferece o mesmo contrato para acompanhamento manual:
+
+```powershell
+python -B -m onmyoji_daemon.cli --onmyoji-root C:/x/Onmyoji gateway publication-test start --confirm
+python -B -m onmyoji_daemon.cli --onmyoji-root C:/x/Onmyoji gateway publication-test status <test_id>
+python -B -m onmyoji_daemon.cli --onmyoji-root C:/x/Onmyoji gateway publication-test cancel <test_id>
+```
+
+`start` retorna o link e um `test_id` administrativo distinto do nonce público.
+`status` retorna `waiting`, `confirmed`, `expired` ou `cancelled`; consultar o
+estado não confirma o teste. Se a espera for abandonada, a expiração ainda
+encerra o endpoint sem depender do setup. Os testes automatizados exercitam o
+contrato localmente; a confirmação do domínio real exige o clique autorizado
+na instalação em operação.
+
 ### Recuperar uma publicação após reinstalar
 
 O wizard e **4. Preparar ou recuperar publicação** consultam DNS e Tunnels da

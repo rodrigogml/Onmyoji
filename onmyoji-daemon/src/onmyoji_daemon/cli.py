@@ -76,6 +76,11 @@ def main(argv: list[str] | None = None) -> int:
     gateway = sub.add_parser("gateway"); gateway_sub = gateway.add_subparsers(dest="gateway_action", required=True)
     gateway_sub.add_parser("status")
     gateway_configure = gateway_sub.add_parser("configure"); gateway_configure.add_argument("--values", required=True); gateway_configure.add_argument("--confirm", action="store_true")
+    publication_test = gateway_sub.add_parser("publication-test", help="Confirma a chegada ao Gateway pelo link público temporário")
+    publication_test_sub = publication_test.add_subparsers(dest="publication_test_action", required=True)
+    publication_test_sub.add_parser("start").add_argument("--confirm", action="store_true")
+    for action in ("status", "cancel"):
+        publication_test_sub.add_parser(action).add_argument("test_id")
     listeners = gateway_sub.add_parser("listeners"); listeners_sub = listeners.add_subparsers(dest="listener_action", required=True)
     listeners_sub.add_parser("list")
     for action in ("inspect", "enable", "disable", "remove", "restore"):
@@ -175,6 +180,9 @@ def main(argv: list[str] | None = None) -> int:
             except ValueError: parser.error("--values deve conter um objeto JSON válido.")
             if not isinstance(values, dict): parser.error("--values deve conter um objeto JSON.")
             params = {**values, "confirm": args.confirm}
+        elif args.gateway_action == "publication-test":
+            method = "gateway.publication-test." + args.publication_test_action
+            params = {"confirm": args.confirm} if args.publication_test_action == "start" else {"test_id": args.test_id}
         elif args.gateway_action == "listeners":
             method = "gateway.listeners." + args.listener_action
             if args.listener_action != "list":

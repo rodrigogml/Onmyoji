@@ -112,6 +112,21 @@ def prompt(label: str) -> str:
     return input(Ui.text(f"› {label}", Ui.violet, Ui.bold))
 
 
+def publication_test_cancelled() -> bool:
+    """Consulta X sem deixar uma thread de leitura pendente após o teste público."""
+    if not sys.stdin.isatty():
+        return False
+    if os.name == "nt":
+        import msvcrt
+        while msvcrt.kbhit():
+            if msvcrt.getwch().casefold() in {"x", "\x1b"}:
+                return True
+        return False
+    import select
+    ready, _, _ = select.select([sys.stdin], [], [], 0)
+    return bool(ready) and sys.stdin.readline().strip().casefold() in {"x", "\x1b"}
+
+
 def result(ok: bool, message: str) -> None:
     label, color = ("+ OK", Ui.green) if ok else ("! ERRO", Ui.red)
     print("\n    " + Ui.text(label, Ui.bold, color) + "  " + Ui.text(message, color))
@@ -2605,6 +2620,80 @@ def daemon_menu(root: Path) -> None:
         result(ready, "Publicação externa pronta; Gateway e conexão do Tunnel confirmados." if ready else "A publicação externa ainda não está pronta. Siga os próximos passos indicados ou execute W.")
         return ready
 
+    def test_publication() -> bool:
+        """Confirma acesso ao link público temporário, com prazo e cancelamento local."""
+        flow_heading("Teste de acesso público", "Confirmação pelo navegador, independente de Mini Apps")
+
+        def response(*arguments: str) -> dict[str, object]:
+            completed = publication_command(*arguments)
+            if completed.returncode != 0:
+                raise ValueError("publication_test_unavailable")
+            value = json.loads(completed.stdout or "{}")
+            if not isinstance(value, dict):
+                raise ValueError("invalid_publication_test_response")
+            return value
+
+        test_id, state = "", "waiting"
+        try:
+            gateway = response("gateway", "status")
+            tunnel = response("cloudflare-tunnel", "status")
+            if gateway.get("ready") is not True or not str(gateway.get("public_origin") or "").startswith("https://"):
+                result(False, "O teste exige o Gateway HTTPS pronto e um hostname público configurado. Prepare a publicação na opção 4 e repita em T. Testar acesso público.")
+                return False
+            if any(tunnel.get(key) is not True for key in ("configured", "provisioned", "running", "connected", "ingress_ready")):
+                result(False, "O teste exige o Tunnel provisionado, conectado e com ingress confirmado para o Gateway atual. Consulte o diagnóstico (!) e repita em T. Testar acesso público.")
+                return False
+            started = response("gateway", "publication-test", "start", "--confirm")
+            identifier = started.get("test_id")
+            if not isinstance(identifier, str) or not re.fullmatch(r"[a-f0-9]{32}", identifier):
+                raise ValueError("invalid_publication_test_response")
+            test_id = identifier
+            url, duration = started.get("url"), started.get("expires_in_seconds")
+            if started.get("state") != "waiting" or not isinstance(url, str) or not url.startswith("https://") or any(character.isspace() for character in url) or type(duration) is not int or not 1 <= duration <= 120:
+                raise ValueError("invalid_publication_test_response")
+            note("Abra este link em um navegador. Para conferir o acesso externo, você pode usar o celular fora da rede local:")
+            print(f"\n    {url}\n", flush=True)
+            note(f"Aguardando a abertura do link por até {duration} segundos. X cancela" + ("." if os.name == "nt" else " (pressione Enter após X)."))
+            deadline = time.monotonic() + duration
+            next_poll, next_notice = 0.0, time.monotonic() + 10
+            while True:
+                if publication_test_cancelled():
+                    result(False, "Teste de acesso público cancelado.")
+                    return False
+                now = time.monotonic()
+                if now >= next_poll or now >= deadline:
+                    checked = response("gateway", "publication-test", "status", test_id)
+                    state = str(checked.get("state") or "")
+                    if state == "confirmed":
+                        result(True, "Acesso público confirmado: o Gateway recebeu a abertura do link HTTPS de teste.")
+                        return True
+                    if state in {"expired", "cancelled"}:
+                        result(False, "O link de teste expirou sem confirmação. Repita em T. Testar acesso público." if state == "expired" else "Teste de acesso público cancelado.")
+                        return False
+                    if state != "waiting":
+                        raise ValueError("invalid_publication_test_response")
+                    next_poll = now + 1
+                if now >= deadline:
+                    break
+                if now >= next_notice:
+                    note("Ainda aguardando a abertura do link; X cancela.")
+                    next_notice = now + 10
+                time.sleep(0.2)
+            result(False, "O link de teste expirou sem confirmação. Repita em T. Testar acesso público.")
+            return False
+        except KeyboardInterrupt:
+            result(False, "Teste de acesso público cancelado.")
+            return False
+        except (OSError, ValueError, subprocess.SubprocessError):
+            result(False, "Não foi possível confirmar o teste público. Confira o diagnóstico (!) e se o Gateway e o Daemon estão atualizados; repita em T. Testar acesso público.")
+            return False
+        finally:
+            if test_id and state not in {"confirmed", "expired", "cancelled"}:
+                try:
+                    publication_command("gateway", "publication-test", "cancel", test_id)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+
     def cloudflared_installed(executable: str) -> bool:
         selected = shutil.which(executable) or (executable if Path(executable).is_file() else None)
         if not selected: return False
@@ -2858,6 +2947,8 @@ def daemon_menu(root: Path) -> None:
             if not lifecycle("enable", ["gateway"]) or not lifecycle("enable", ["cloudflare-tunnel"]): return
         print("\n  7. Diagnóstico final")
         show_publication_diagnosis()
+        print("\n  8. Confirmar o acesso pelo link público")
+        test_publication()
         note("Para publicar Mini Apps e OAuth, abra Daemon > M. Mini Apps > W. O acesso local pode ser validado separadamente.")
 
     def publication_listeners() -> None:
@@ -2918,6 +3009,7 @@ def daemon_menu(root: Path) -> None:
             item("!.", "Diagnóstico da publicação externa", "Pré-requisitos, KeePass, Gateway, binário e conexão")
             print()
             item("W.", "Wizard de publicação externa", "Configura e prepara Gateway e Tunnel passo a passo")
+            item("T.", "Testar acesso público", "Link temporário e confirmação pelo navegador")
             print()
             item("1.", "Configurar Cloudflare e credencial", "Token no KeePass, Account ID, Zone ID e hostname")
             item("2.", "Estado e diagnóstico", "Disponível mesmo sem configuração ou serviços iniciados")
@@ -2933,7 +3025,9 @@ def daemon_menu(root: Path) -> None:
             if choice in {"x", "\x1b"}: return
             if choice in {"!", "2"}: show_publication_diagnosis()
             elif choice == "w": publication_wizard()
-            elif choice == "1": configure_publication()
+            elif choice == "t": test_publication()
+            elif choice == "1":
+                if configure_publication(): test_publication()
             elif choice == "3":
                 action = flow_choice("Executável cloudflared", ["Instalar", "Atualizar", "Restaurar versão anterior"], "Instalar")
                 if action == "Restaurar versão anterior":
@@ -2942,7 +3036,8 @@ def daemon_menu(root: Path) -> None:
                     completed = publication_command("cloudflare-tunnel", "rollback-cloudflared", "--confirm", "--wait", quiet=False)
                     result(completed.returncode == 0, "Versão anterior restaurada." if completed.returncode == 0 else "A versão anterior não pôde ser restaurada.")
                 elif action is not None: install_publication_binary(action == "Atualizar")
-            elif choice == "4": provision_publication()
+            elif choice == "4":
+                if provision_publication(): test_publication()
             elif choice == "5":
                 service = flow_choice("Serviço", ["Gateway HTTP", "Cloudflare Tunnel"], "Gateway HTTP")
                 if service is None: continue

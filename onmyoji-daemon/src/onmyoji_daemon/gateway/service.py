@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 from aiohttp import web
 
 from .component.proxy import HttpProxy, MAX_BODY_BYTES
+from .component.publication_test import PublicationTest
 from .component.tls import ensure_material, server_context
 from .exception import GatewayError
 from .repository import ListenerRegistry
@@ -24,7 +25,8 @@ class PublicGateway:
 
     Somente o Supervisor, autenticado pelo token RPC privado deste serviço,
     fornece declarações e contexto público. Destinos retornam indisponíveis
-    após reinício até a próxima declaração de uma geração viva.
+    após reinício até a próxima declaração de uma geração viva. O teste público
+    efêmero responde no próprio listener HTTPS, sem publicar consumidores.
     """
 
     def __init__(self, root: Path, data_dir: Path, token: str, http_port: int | None = None):
@@ -46,6 +48,7 @@ class PublicGateway:
         self.ready = False
         self.last_error: str | None = None
         self.proxy = HttpProxy(self.registry, self._origin, lambda: f"localhost:{self.http_port}")
+        self.publication_test = PublicationTest()
 
     def _configuration(self) -> dict:
         try:
@@ -98,6 +101,8 @@ class PublicGateway:
         # arbitrary errors returned by a remote API.
         fields = {"configured", "provisioned", "running", "connected", "ingress_ready", "hostname", "cloudflared_available", "last_error", "state"}
         with self.context_lock:
+            if origin != self.public_origin:
+                self.publication_test.close()
             self.public_origin = origin
             self.tunnel = {key: value for key, value in tunnel.items() if key in fields and isinstance(value, (str, bool, int, type(None)))}
         return self.status()
@@ -125,11 +130,28 @@ class PublicGateway:
                     raise GatewayError("invalid_ca", "A CA do destino não contém certificados válidos.") from None
 
     def rpc(self, method: str, params: dict[str, Any]) -> Any:
+        """Administra o Gateway e a tentativa efêmera de acesso público.
+
+        Iniciar o teste exige confirmação (``confirmation_required``) e origem,
+        HTTPS e Tunnel prontos (``publication_unavailable``). Consultar ou cancelar
+        uma sessão desconhecida resulta em ``test_not_found``.
+        """
         action = method.removeprefix("gateway.")
         if action == "status":
             return self.status()
         if action == "configure":
             return self.configure(params)
+        if action == "publication-test.start":
+            if params.get("confirm") is not True:
+                raise GatewayError("confirmation_required", "Criar o teste temporário exige confirm=true.")
+            with self.context_lock:
+                if not self.ready or not self.public_origin or not all(self.tunnel.get(field) is True for field in ("configured", "provisioned", "running", "connected", "ingress_ready")):
+                    raise GatewayError("publication_unavailable", "Teste indisponível: inicie Gateway e Tunnel, conclua o provisionamento e aguarde a conexão em Publicação externa.")
+                return self.publication_test.start(self.public_origin)
+        if action == "publication-test.status":
+            return self.publication_test.status(params.get("test_id"))
+        if action == "publication-test.cancel":
+            return self.publication_test.cancel(params.get("test_id"))
         if action == "publication.context":
             return self.context(params)
         if action == "publication.sync":
@@ -149,7 +171,11 @@ class PublicGateway:
         app = web.Application(client_max_size=MAX_BODY_BYTES)
         app.on_startup.append(self.proxy.start)
         app.on_cleanup.append(self.proxy.close)
-        app.router.add_route("*", "/{tail:.*}", self.proxy.handle)
+        async def handle(request):
+            if request.raw_path.startswith(PublicationTest.PATH_PREFIX):
+                return await self.publication_test.handle(request)
+            return await self.proxy.handle(request)
+        app.router.add_route("*", "/{tail:.*}", handle)
         ensure_material(self.data_dir / "tls")
         runner = web.AppRunner(app, access_log=None, auto_decompress=False)
         await runner.setup()
@@ -194,7 +220,9 @@ class PublicGateway:
             raise GatewayError("http_start_failed", self.last_error or "O listener HTTPS não iniciou.")
 
     def stop_http(self) -> None:
-        self.ready = False
+        with self.context_lock:
+            self.ready = False
+            self.publication_test.close()
         if self.http_loop and self.http_loop.is_running():
             if self.http_runner:
                 asyncio.run_coroutine_threadsafe(self.http_runner.cleanup(), self.http_loop).result(10)
