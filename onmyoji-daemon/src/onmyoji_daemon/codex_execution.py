@@ -16,6 +16,7 @@ from .management import daemon_python, runtime_ready
 from .mcp.codex import CodexMcpRegistration
 from .mcp.reconciliation import McpReconciliation
 from .shikigami_skills import ShikigamiSkillMaterializer
+from .shikigami_agents import ShikigamiAgentMaterializer
 from .instructions import InstructionComposer, InstructionError
 from .instance import identity
 
@@ -126,6 +127,7 @@ class CodexLaunch:
         """Aplica uma pendência MCP sem exigir reinicialização do gateway."""
         try:
             self.synchronize_shikigami_skills()
+            self.synchronize_shikigami_agents()
             McpReconciliation(self.root).reconcile_if_pending(CodexMcpRegistration(self.root, self.executable))
         except Exception as error:
             raise CodexExecutionError(str(error)) from error
@@ -134,6 +136,19 @@ class CodexLaunch:
         """Mantém no workspace somente as skills próprias do Shikigami."""
         try:
             return ShikigamiSkillMaterializer(self.root).synchronize(self.workspace)
+        except Exception as error:
+            raise CodexExecutionError(str(error)) from error
+
+    def synchronize_shikigami_agents(self) -> bool:
+        """Distribui perfis opcionais somente após certificação G4 do runtime."""
+        from .codex_capabilities import load_profile_capability
+
+        try:
+            materializer = ShikigamiAgentMaterializer(self.root)
+            configured = materializer.configuration()
+            needs_gate = any(record["enabled"] for record in configured.values()) or materializer.runtime_state_path.exists() or materializer.runtime_backup_path.exists()
+            capability = load_profile_capability(self.root, self.executable, self.workspace) if needs_gate else None
+            return materializer.synchronize(self.workspace, capability=capability)
         except Exception as error:
             raise CodexExecutionError(str(error)) from error
 

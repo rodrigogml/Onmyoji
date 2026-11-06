@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any, Callable
 
 from ...rpc import call
@@ -47,7 +48,12 @@ class TelegramMcpService:
         result = self._call("telegram.channels.remove", {"channel": self._channel(channel)})
         return result if isinstance(result, dict) else {"removed": False}
 
-    def send(self, channel: object, text: object = "", file_path: object = "", kind: object = "document", new_topic: object = "", confirm: object = False) -> dict[str, Any]:
+    def send(self, channel: object, text: object = "", file_path: object = "", kind: object = "document", new_topic: object = "", confirm: object = False, idempotency_key: object = None) -> dict[str, Any]:
+        """Solicita um efeito confirmado, sem repetir RPC ou envio incerto.
+
+        A chave opcional identifica a mesma solicitação e não concede autoridade.
+        Timeout da ponte pode ocorrer após envio: o retorno usa ``sent: null``.
+        """
         if confirm is not True:
             raise TelegramMcpError("Confirme o envio externo com confirm=true.")
         if not isinstance(text, str) or not isinstance(file_path, str) or not isinstance(kind, str) or not isinstance(new_topic, str):
@@ -55,6 +61,10 @@ class TelegramMcpService:
         if not text.strip() and not file_path.strip():
             raise TelegramMcpError("Informe texto e/ou arquivo para enviar.")
         params: dict[str, Any] = {"channel": self._channel(channel), "text": text}
+        if idempotency_key is not None:
+            if not isinstance(idempotency_key, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", idempotency_key):
+                raise TelegramMcpError("A chave de idempotência deve ter de 1 a 128 caracteres seguros.")
+            params["idempotency_key"] = idempotency_key
         if file_path.strip():
             path = Path(file_path).expanduser()
             if not path.is_absolute() or not path.is_file() or path.is_symlink():
@@ -64,8 +74,11 @@ class TelegramMcpService:
             params.update({"path": str(path.resolve()), "kind": kind})
         if new_topic.strip():
             params["new_topic"] = new_topic.strip()
-        result = self._call("telegram.outbound.send", params, timeout=120)
-        return result if isinstance(result, dict) else {"sent": True}
+        try:
+            result = self._call("telegram.outbound.send", params, timeout=120)
+        except TelegramMcpError:
+            return {"sent": None, "uncertain": True, "retry_safe": False, "channel": params["channel"], "stage": "gateway_rpc"}
+        return result if isinstance(result, dict) else {"sent": None, "uncertain": True, "retry_safe": False, "channel": params["channel"], "stage": "gateway_rpc"}
 
     def send_location(self, channel: object, latitude: object, longitude: object, horizontal_accuracy: object = OMITTED, new_topic: object = "", confirm: object = False, reply_context: object = OMITTED) -> dict[str, Any]:
         """Envia um ponto fixo autorizado e só confirma uma entrega com recibo válido.

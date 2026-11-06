@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -211,3 +212,141 @@ def test_confirmed_send_returns_warning_instead_of_ambiguous_error_if_archive_fa
     result = gw._outbound_send({"channel": "9", "path": str(doc), "kind": "document"})
     assert result["sent"] and "warning" in result
     assert len(gw.api.files) == 1
+
+
+def test_outbound_confirmation_after_new_never_enters_the_new_generation(tmp_path):
+    gw = gateway_for(tmp_path)
+    gw._channel_register("9", "Owner", 9)
+    class ResetApi(FakeApi):
+        def send(self, *args, **kwargs):
+            result = super().send(*args, **kwargs)
+            gw._new_conversation("9")
+            return result
+    gw.api = ResetApi()
+    result = gw._outbound_send({"channel": "9", "text": "Resultado antigo"})
+    assert result["sent"] is True and "warning" in result
+    assert gw._generation("9") == 1
+    assert gw._pending_external("9") == ("", [])
+    assert not gw.database.execute("SELECT 1 FROM bot_messages WHERE generation=1").fetchone()
+
+
+def test_external_file_copy_revalidates_generation_before_inserting_attachment(tmp_path, monkeypatch):
+    from onmyoji_daemon import telegram_channels
+    gw = gateway_for(tmp_path); gw.api = FakeApi()
+    gw._channel_register("9", "Owner", 9)
+    document = tmp_path / "report.txt"; document.write_text("Fictício", encoding="utf-8")
+    original = telegram_channels.shutil.copy2
+    def reset_during_copy(*args, **kwargs):
+        result = original(*args, **kwargs)
+        gw._new_conversation("9")
+        return result
+    monkeypatch.setattr(telegram_channels.shutil, "copy2", reset_during_copy)
+    result = gw._outbound_send({"channel": "9", "path": str(document), "kind": "document"})
+    assert result["sent"] is True and "warning" in result
+    assert not gw.database.execute("SELECT 1 FROM conversation_attachments WHERE generation=1").fetchone()
+    assert gw._pending_external("9") == ("", [])
+
+
+def test_new_after_topic_creation_does_not_send_message_or_create_again(tmp_path):
+    gw = gateway_for(tmp_path)
+    gw._channel_register("group:-1000:12", "Equipe", 9)
+    class ResetApi(FakeApi):
+        def call(self, method, params=None):
+            result = super().call(method, params)
+            if method == "createForumTopic": gw._new_conversation("group:-1000:12")
+            return result
+    gw.api = ResetApi()
+    result = gw._outbound_send({"channel": "group:-1000:12", "new_topic": "Fictício", "text": "Exemplo"})
+    assert result["sent"] is False and result["topic_created"] is True
+    assert result["retry_safe"] is False and len(gw.api.calls) == 1
+    assert gw.api.sent == []
+
+
+def test_explicit_key_reuses_confirmed_delivery_without_rearchiving(tmp_path):
+    gw = gateway_for(tmp_path); gw.api = FakeApi()
+    gw._channel_register("9", "Owner", 9)
+    document = tmp_path / "report.txt"; document.write_text("Fictício", encoding="utf-8")
+    params = {"channel": "9", "path": str(document), "kind": "document", "idempotency_key": "request-123"}
+    first = gw._outbound_send(params)
+    second = gw._outbound_send(params)
+    assert first["sent"] is True and second["already_sent"] is True
+    assert first["message_id"] == second["message_id"]
+    assert len(gw.api.files) == 1
+    assert gw.database.execute("SELECT COUNT(*) FROM conversation_attachments").fetchone()[0] == 1
+
+
+def test_identical_text_without_explicit_key_is_two_legitimate_sends(tmp_path):
+    gw = gateway_for(tmp_path); gw.api = FakeApi(); gw._channel_register("9", "Owner", 9)
+    assert gw._outbound_send({"channel": "9", "text": "Mesmo texto"})["sent"]
+    assert gw._outbound_send({"channel": "9", "text": "Mesmo texto"})["sent"]
+    assert len(gw.api.sent) == 2
+
+
+@pytest.mark.parametrize("key", ["", "bad key", "../outside", "a" * 129, 1, []])
+def test_invalid_explicit_key_does_not_send(tmp_path, key):
+    gw = gateway_for(tmp_path); gw.api = FakeApi(); gw._channel_register("9", "Owner", 9)
+    with pytest.raises(ValueError, match="idempotência"):
+        gw._outbound_send({"channel": "9", "text": "Fictício", "idempotency_key": key})
+    assert gw.api.sent == []
+
+
+def test_key_reuse_with_different_payload_is_rejected(tmp_path):
+    gw = gateway_for(tmp_path); gw.api = FakeApi(); gw._channel_register("9", "Owner", 9)
+    gw._outbound_send({"channel": "9", "text": "Primeiro", "idempotency_key": "request-123"})
+    with pytest.raises(ValueError, match="solicitação diferente"):
+        gw._outbound_send({"channel": "9", "text": "Outro", "idempotency_key": "request-123"})
+    assert len(gw.api.sent) == 1
+
+
+def test_timeout_is_uncertain_and_same_key_never_resends(tmp_path):
+    gw = gateway_for(tmp_path); gw._channel_register("9", "Owner", 9)
+    class TimeoutApi(FakeApi):
+        def send(self, *args, **kwargs):
+            super().send(*args, **kwargs)
+            raise TimeoutError("ACK perdido")
+    gw.api = TimeoutApi()
+    params = {"channel": "9", "text": "Fictício", "idempotency_key": "request-123"}
+    for _index in range(2):
+        result = gw._outbound_send(params)
+        assert result["sent"] is None and result["uncertain"] is True and result["retry_safe"] is False
+    assert len(gw.api.sent) == 1
+    assert gw._pending_external("9") == ("", [])
+
+
+def test_topic_creation_timeout_does_not_create_a_second_topic(tmp_path):
+    gw = gateway_for(tmp_path); gw._channel_register("group:-1000:12", "Equipe", 9)
+    class TimeoutApi(FakeApi):
+        def call(self, method, params=None):
+            super().call(method, params)
+            raise TimeoutError("ACK perdido")
+    gw.api = TimeoutApi()
+    params = {"channel": "group:-1000:12", "new_topic": "Fictício", "text": "Fictício", "idempotency_key": "request-123"}
+    for _index in range(2):
+        result = gw._outbound_send(params)
+        assert result["sent"] is None and result["topic_created"] is None and result["stage"] == "topic"
+    assert len(gw.api.calls) == 1 and gw.api.sent == []
+
+
+def test_topic_and_message_confirmation_are_reused_separately(tmp_path):
+    gw = gateway_for(tmp_path); gw.api = FakeApi(); gw._channel_register("group:-1000:12", "Equipe", 9)
+    params = {"channel": "group:-1000:12", "new_topic": "Fictício", "text": "Fictício", "idempotency_key": "request-123"}
+    first = gw._outbound_send(params); second = gw._outbound_send(params)
+    assert first["message_id"] == second["message_id"] and second["already_sent"]
+    assert len(gw.api.calls) == 1 and len(gw.api.sent) == 1
+    assert len(gw._channels_list()) == 1
+
+
+def test_simultaneous_replay_of_explicit_key_has_one_local_send(tmp_path):
+    gw = gateway_for(tmp_path); gw.api = FakeApi(); gw._channel_register("9", "Owner", 9)
+    params = {"channel": "9", "text": "Fictício", "idempotency_key": "request-123"}
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(lambda _index: gw._outbound_send(params), range(4)))
+    assert all(result["sent"] for result in results)
+    assert len(gw.api.sent) == 1
+
+
+def test_missing_confirmation_is_not_reported_as_success(tmp_path):
+    gw = gateway_for(tmp_path); gw.api = FakeApi(); gw._channel_register("9", "Owner", 9)
+    gw.api.send = lambda *_args, **_kwargs: {"message_id": True}
+    result = gw._outbound_send({"channel": "9", "text": "Fictício", "idempotency_key": "request-123"})
+    assert result["sent"] is None and result["uncertain"]

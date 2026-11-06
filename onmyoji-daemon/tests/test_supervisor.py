@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 from pathlib import Path
@@ -96,23 +97,31 @@ def test_configuration_revision_requires_the_running_process_to_match(tmp_path, 
 
 
 def test_runtime_install_creates_private_environment(tmp_path, monkeypatch):
-    executable = tmp_path / "configs" / "daemon" / "venv" / "Scripts" / "python.exe"
-    monkeypatch.setattr(management, "daemon_python", lambda _root: executable)
-    readiness = iter((False, True))
-    monkeypatch.setattr(management, "_runtime_ready", lambda _executable: next(readiness))
+    executable = tmp_path / "venv" / ("Scripts/python.exe" if management.os.name == "nt" else "bin/python")
+    base_python = tmp_path / "base-python.exe"; base_python.touch()
+    manifest = tmp_path / "configs" / "onmyoji-system.toml"; manifest.parent.mkdir(parents=True)
+    manifest.write_text('[python]\nmode = "isolated"\nbase_python = ' + json.dumps(str(base_python)) + '\n', encoding="utf-8")
+    monkeypatch.setattr(management, "_runtime_ready", lambda _executable: False)
     calls = []
-    monkeypatch.setattr(management.subprocess, "run", lambda command, **_kwargs: calls.append(command) or SimpleNamespace(returncode=0, stdout="", stderr=""))
+    def run(command, **_kwargs):
+        calls.append(command)
+        if command[1:5] == ["-I", "-B", "-m", "venv"]:
+            executable.parent.mkdir(parents=True); executable.touch()
+        return 0, ""
+    monkeypatch.setattr(management.shared_runtime, "run_with_progress", run)
+    monkeypatch.setattr(management.subprocess, "Popen", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("O teste não deve executar processos externos.")))
 
     ok, message = management.ensure_runtime(tmp_path)
 
-    assert ok and "validado" in message
-    assert calls[0][:3] == [management.sys.executable, "-m", "venv"]
-    assert "--without-pip" in calls[0]
-    assert calls[1][0] == management.sys.executable and calls[1][-1] == "--version"
-    assert calls[2][0] == management.sys.executable and "install" in calls[2]
-    assert "--target" in calls[2]
-    assert "--editable" not in calls[2]
-    assert any(str(value).startswith("aiohttp>=") for value in calls[2])
+    assert ok and "pronto" in message
+    assert len(calls) == 3
+    assert calls[0] == [str(base_python), "-I", "-B", "-m", "venv", str(tmp_path / "venv")]
+    assert calls[1][0] == str(executable) and "install" in calls[1]
+    assert "--target" not in calls[1] and "--editable" not in calls[1]
+    assert all(requirement in calls[1] for requirement in management.runtime_requirements())
+    assert calls[2][0] == str(executable) and calls[2][1:4] == ["-I", "-B", "-c"]
+    assert "aiohttp" in calls[2][-1] and "cryptography" in calls[2][-1]
+    assert not (tmp_path / "configs" / "daemon" / "venv").exists()
 
 
 def test_windows_service_host_is_prepared_inside_dedicated_environment(tmp_path, monkeypatch):
@@ -169,22 +178,27 @@ def test_windows_service_action_reports_when_start_does_not_reach_running(tmp_pa
 
 
 def test_external_runtime_is_not_changed_without_install_permission(tmp_path, monkeypatch):
-    manifest = tmp_path / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True)
+    manifest = tmp_path / "configs" / "onmyoji-system.toml"; manifest.parent.mkdir(parents=True)
     executable = tmp_path / "python.exe"; executable.touch()
-    manifest.write_text('[runtime]\nmode = "global"\nexecutable = "' + str(executable).replace("\\", "\\\\") + '"\n', encoding="utf-8")
-    monkeypatch.setattr(management, "_runtime_ready", lambda _executable: False)
+    manifest.write_text('[python]\nmode = "global"\nexecutable = ' + json.dumps(str(executable)) + '\n', encoding="utf-8")
+    checked = []
+    monkeypatch.setattr(management, "_runtime_ready", lambda value: checked.append(value) or False)
     calls = []
     monkeypatch.setattr(management.subprocess, "run", lambda command, **_kwargs: calls.append(command) or SimpleNamespace(returncode=0, stdout="", stderr=""))
+    monkeypatch.setattr(management.shared_runtime, "run_with_progress", lambda command, **_kwargs: calls.append(command) or (0, ""))
 
     ok, message = management.ensure_runtime(tmp_path, allow_install=False)
 
-    assert not ok and "Instalar/validar daemon" in message
+    assert not ok and "não possui os componentes" in message and "manutenção" in message
+    assert checked == [executable]
     assert calls == []
+    assert not (tmp_path / "venv").exists()
 
 
 def test_daemon_python_uses_selected_external_runtime(tmp_path):
     manifest = tmp_path / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True)
-    manifest.write_text('[runtime]\nmode = "existing"\nexecutable = "C:/Python/venv/Scripts/python.exe"\n', encoding="utf-8")
+    manifest.write_text('[runtime]\nmode = "existing"\nexecutable = "C:/legacy/Scripts/python.exe"\n', encoding="utf-8")
+    (tmp_path / "configs" / "onmyoji-system.toml").write_text('[python]\nmode = "global"\nexecutable = "C:/Python/venv/Scripts/python.exe"\n', encoding="utf-8")
 
     assert management.daemon_python(tmp_path) == Path("C:/Python/venv/Scripts/python.exe")
 
@@ -199,11 +213,14 @@ def test_systemd_unit_uses_explicit_account_only_for_system_scope(tmp_path):
     assert "WantedBy=default.target" in user
 
 
-def test_miniapps_uses_private_daemon_python_when_available(tmp_path):
+def test_miniapps_uses_supervisor_python_and_ignores_instance_venvs(tmp_path, monkeypatch):
     data_dir = tmp_path / "configs" / "daemon" / "services" / "mini-apps"
-    executable = data_dir.parent.parent / "venv" / ("Scripts/python.exe" if management.os.name == "nt" else "bin/python")
-    executable.parent.mkdir(parents=True); executable.touch()
+    relative = "Scripts/python.exe" if management.os.name == "nt" else "bin/python"
+    for environment in (tmp_path / "venv", tmp_path / "configs" / "daemon" / "venv"):
+        executable = environment / relative
+        executable.parent.mkdir(parents=True); executable.touch()
+    monkeypatch.delenv("ONMYOJI_DAEMON_PYTHON", raising=False)
 
     command = miniapps_command(data_dir)
 
-    assert command[0] == str(executable)
+    assert command[0] == str(Path(management.sys.executable))

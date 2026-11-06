@@ -20,6 +20,11 @@ def shikigami_skills_path(root: Path) -> Path:
     return root.resolve() / "shikigami-skills"
 
 
+def shikigami_agents_path(root: Path) -> Path:
+    """Retorna a fonte opcional de perfis TOML próprios da instância."""
+    return root.resolve() / "shikigami-agents"
+
+
 def identity(root: Path) -> str:
     """Retorna a identidade configurada localmente ou um fallback seguro."""
     try:

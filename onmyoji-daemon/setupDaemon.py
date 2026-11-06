@@ -118,20 +118,31 @@ def keepass_validation(root: Path) -> list[dict[str, str]]:
 
 
 def telegram_data(root: Path) -> dict:
-    return tomllib.loads(target(root).read_text(encoding="utf-8"))
+    """Lê os formatos editáveis e recusa downgrade de configuração desconhecida."""
+    data = tomllib.loads(target(root).read_text(encoding="utf-8"))
+    if type(data.get("schema_version")) is not int or data["schema_version"] not in {1, 2}:
+        raise ValueError("Versão de configuração do Gateway não suportada; não regravar com este setup.")
+    return data
 
 
 def save_telegram(root: Path, profile: str, entry: str, data: dict | None = None) -> None:
     data = data or telegram_data(root)
+    if type(data.get("schema_version")) is not int or data["schema_version"] not in {1, 2}:
+        raise ValueError("Versão de configuração do Gateway não suportada; não regravar com este setup.")
     telegram = data.setdefault("telegram", {}); telegram["vault_profile"] = profile; telegram["token_entry"] = entry
     agent, limits, totp, voice = data.setdefault("agent", {}), data.setdefault("limits", {}), data.setdefault("totp", {}), data.setdefault("voice_reply", {})
     # A permissão de enviar mídia pertence ao gateway, não ao provedor EccoVox.
     telegram["agent_outbound_media"] = bool(telegram.get("agent_outbound_media", voice.pop("agent_outbound_media", False)))
     telegram["default_share_thoughts"] = bool(telegram.get("default_share_thoughts", True))
     telegram["default_delete_thoughts"] = bool(telegram.get("default_delete_thoughts", True))
-    lines = ["schema_version = 1", f"enabled = {str(bool(data.get('enabled', False))).lower()}", "", "[telegram]", f"vault_profile = {json.dumps(profile, ensure_ascii=False)}", f"token_entry = {json.dumps(entry, ensure_ascii=False)}", f"poll_timeout_seconds = {int(telegram.get('poll_timeout_seconds', 30))}", f"agent_outbound_media = {str(bool(telegram['agent_outbound_media'])).lower()}", f"default_share_thoughts = {str(bool(telegram['default_share_thoughts'])).lower()}", f"default_delete_thoughts = {str(bool(telegram['default_delete_thoughts'])).lower()}", "", "[agent]", f"max_parallel_conversations = {int(agent.get('max_parallel_conversations', 1))}", f"turn_timeout_seconds = {int(agent.get('turn_timeout_seconds', 900))}", "", "[limits]", f"max_attachment_bytes = {int(limits.get('max_attachment_bytes', 20971520))}", f"max_batch_attachment_bytes = {int(limits.get('max_batch_attachment_bytes', 52428800))}", f"max_pending_items = {int(limits.get('max_pending_items', 50))}", f"max_retained_attachment_bytes = {int(limits.get('max_retained_attachment_bytes', 262144000))}", f"max_outbound_media_bytes = {int(limits.get('max_outbound_media_bytes', 20971520))}", f"max_outbound_media_per_turn = {int(limits.get('max_outbound_media_per_turn', 3))}", "", "[voice_reply]", f"enabled = {str(bool(voice.get('enabled', False))).lower()}", f"eccovox_profile = {json.dumps(str(voice.get('eccovox_profile', '')), ensure_ascii=False)}", f"language = {json.dumps(str(voice.get('language', '')), ensure_ascii=False)}", f"voice = {json.dumps(str(voice.get('voice', '')), ensure_ascii=False)}", f"speed = {float(voice.get('speed', 1.0))}", f"response_format = {json.dumps(str(voice.get('response_format', 'opus')), ensure_ascii=False)}", f"max_text_characters = {int(voice.get('max_text_characters', 3500))}", f"auto_off_minutes = {int(voice.get('auto_off_minutes', 15))}", f"fallback_to_text = {str(bool(voice.get('fallback_to_text', True))).lower()}", "", "[totp]", f"enabled = {str(bool(totp.get('enabled', False))).lower()}", f"real_password_entry = {json.dumps(str(totp.get('real_password_entry', '')), ensure_ascii=False)}", f"fake_password_entry = {json.dumps(str(totp.get('fake_password_entry', '')), ensure_ascii=False)}", f"period_seconds = {int(totp.get('period_seconds', 30))}", ""]
+    lines = ["schema_version = 2", f"enabled = {str(bool(data.get('enabled', False))).lower()}", "", "[telegram]", f"vault_profile = {json.dumps(profile, ensure_ascii=False)}", f"token_entry = {json.dumps(entry, ensure_ascii=False)}", f"poll_timeout_seconds = {int(telegram.get('poll_timeout_seconds', 30))}", f"agent_outbound_media = {str(bool(telegram['agent_outbound_media'])).lower()}", f"default_share_thoughts = {str(bool(telegram['default_share_thoughts'])).lower()}", f"default_delete_thoughts = {str(bool(telegram['default_delete_thoughts'])).lower()}", "", "[agent]", f"max_parallel_conversations = {int(agent.get('max_parallel_conversations', 1))}", f"turn_timeout_seconds = {int(agent.get('turn_timeout_seconds', 900))}", "", "[limits]", f"max_attachment_bytes = {int(limits.get('max_attachment_bytes', 20971520))}", f"max_batch_attachment_bytes = {int(limits.get('max_batch_attachment_bytes', 52428800))}", f"max_pending_items = {int(limits.get('max_pending_items', 50))}", f"max_retained_attachment_bytes = {int(limits.get('max_retained_attachment_bytes', 262144000))}", f"max_outbound_media_bytes = {int(limits.get('max_outbound_media_bytes', 20971520))}", f"max_outbound_media_per_turn = {int(limits.get('max_outbound_media_per_turn', 3))}", "", "[voice_reply]", f"enabled = {str(bool(voice.get('enabled', False))).lower()}", f"eccovox_profile = {json.dumps(str(voice.get('eccovox_profile', '')), ensure_ascii=False)}", f"language = {json.dumps(str(voice.get('language', '')), ensure_ascii=False)}", f"voice = {json.dumps(str(voice.get('voice', '')), ensure_ascii=False)}", f"speed = {float(voice.get('speed', 1.0))}", f"response_format = {json.dumps(str(voice.get('response_format', 'opus')), ensure_ascii=False)}", f"max_text_characters = {int(voice.get('max_text_characters', 3500))}", f"auto_off_minutes = {int(voice.get('auto_off_minutes', 15))}", f"fallback_to_text = {str(bool(voice.get('fallback_to_text', True))).lower()}", "", "[totp]", f"enabled = {str(bool(totp.get('enabled', False))).lower()}", f"real_password_entry = {json.dumps(str(totp.get('real_password_entry', '')), ensure_ascii=False)}", f"fake_password_entry = {json.dumps(str(totp.get('fake_password_entry', '')), ensure_ascii=False)}", f"period_seconds = {int(totp.get('period_seconds', 30))}", ""]
     agent_end = lines.index("", lines.index("[agent]") + 1)
     lines[agent_end:agent_end] = [f"owner_execution_preferences = {str(bool(agent.get('owner_execution_preferences', True))).lower()}", f"owner_allowed_models = {json.dumps(agent.get('owner_allowed_models', []), ensure_ascii=False)}", f"owner_allowed_reasoning_efforts = {json.dumps(agent.get('owner_allowed_reasoning_efforts', []), ensure_ascii=False)}"]
+    agent_end = lines.index("", lines.index("[agent]") + 1)
+    policy = agent.get("busy_input_policy", "queue")
+    lines[agent_end:agent_end] = [f"busy_input_policy = {json.dumps(policy if isinstance(policy, str) and policy in {'queue', 'steer'} else 'queue')}", f"interrupt_grace_seconds = {int(agent.get('interrupt_grace_seconds', 15))}", f"post_turn_results = {str(agent.get('post_turn_results') is True).lower()}"]
+    limits_end = lines.index("", lines.index("[limits]") + 1)
+    lines[limits_end:limits_end] = [f"preparation_workers = {int(limits.get('preparation_workers', 4))}"]
     target(root).write_text("\n".join(lines), encoding="utf-8", newline="\n")
     path = target(root)
     rendered = path.read_text(encoding="utf-8")
@@ -228,6 +239,24 @@ def save_max_parallel_conversations(root: Path, maximum: int) -> None:
         raise ValueError("O máximo de conversas em paralelo deve estar entre 1 e 16.")
     data = telegram_data(root); agent = data.setdefault("agent", {})
     agent["max_parallel_conversations"] = maximum
+    telegram = data.get("telegram", {})
+    save_telegram(root, str(telegram.get("vault_profile") or ""), str(telegram.get("token_entry") or ""), data)
+
+
+def save_gateway_execution(root: Path, policy: str, preparation_workers: int, interrupt_grace_seconds: int, post_turn_results: bool) -> None:
+    """Persiste intenção de fila/steering sem certificar capacidades do runtime."""
+    if not isinstance(policy, str) or policy not in {"queue", "steer"}:
+        raise ValueError("A política de entrada deve ser queue ou steer.")
+    if type(preparation_workers) is not int or not 1 <= preparation_workers <= 16:
+        raise ValueError("As preparações paralelas devem estar entre 1 e 16.")
+    if type(interrupt_grace_seconds) is not int or not 1 <= interrupt_grace_seconds <= 60:
+        raise ValueError("A graça de interrupção deve estar entre 1 e 60 segundos.")
+    if type(post_turn_results) is not bool:
+        raise ValueError("A preferência de entrega pós-turno deve ser booleana.")
+    data = telegram_data(root)
+    agent, limits = data.setdefault("agent", {}), data.setdefault("limits", {})
+    agent.update({"busy_input_policy": policy, "interrupt_grace_seconds": interrupt_grace_seconds, "post_turn_results": post_turn_results})
+    limits["preparation_workers"] = preparation_workers
     telegram = data.get("telegram", {})
     save_telegram(root, str(telegram.get("vault_profile") or ""), str(telegram.get("token_entry") or ""), data)
 
@@ -589,7 +618,12 @@ def test_telegram(root: Path) -> tuple[bool, str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--onmyoji-root", default=str(ROOT)); parser.add_argument("--action", choices=["bootstrap", "daemon-bootstrap", "validate", "validation-json", "keepass-validation-json", "daemon-validation-json", "instructions-status", "profiles", "set-runtime", "set-credential", "set-totp", "set-app-server", "set-owner-execution-preferences", "set-default-thought-preferences", "set-max-parallel-conversations", "set-voice-reply", "set-agent-outbound-media", "check-entry", "write-token", "test-telegram", "test-agent"], default="bootstrap"); parser.add_argument("--profile"); parser.add_argument("--entry"); parser.add_argument("--real-entry"); parser.add_argument("--fake-entry"); parser.add_argument("--runtime-mode"); parser.add_argument("--python"); parser.add_argument("--base-python"); parser.add_argument("--enabled", action="store_true"); parser.add_argument("--disabled", action="store_true"); parser.add_argument("--idle-timeout", type=int); parser.add_argument("--auto-off-minutes", type=int); parser.add_argument("--voice"); parser.add_argument("--language"); parser.add_argument("--models", default=""); parser.add_argument("--efforts", default=""); parser.add_argument("--share-thoughts", choices=["true", "false"]); parser.add_argument("--delete-thoughts", choices=["true", "false"]); parser.add_argument("--max-parallel-conversations", type=int); args = parser.parse_args()
+    parser = argparse.ArgumentParser(); parser.add_argument("--onmyoji-root", default=str(ROOT)); parser.add_argument("--action", choices=["bootstrap", "daemon-bootstrap", "validate", "validation-json", "keepass-validation-json", "daemon-validation-json", "instructions-status", "profiles", "set-runtime", "set-credential", "set-totp", "set-app-server", "set-owner-execution-preferences", "set-default-thought-preferences", "set-max-parallel-conversations", "set-gateway-execution", "set-voice-reply", "set-agent-outbound-media", "check-entry", "write-token", "test-telegram", "test-agent"], default="bootstrap"); parser.add_argument("--profile"); parser.add_argument("--entry"); parser.add_argument("--real-entry"); parser.add_argument("--fake-entry"); parser.add_argument("--runtime-mode"); parser.add_argument("--python"); parser.add_argument("--base-python"); parser.add_argument("--enabled", action="store_true"); parser.add_argument("--disabled", action="store_true"); parser.add_argument("--idle-timeout", type=int); parser.add_argument("--auto-off-minutes", type=int); parser.add_argument("--voice"); parser.add_argument("--language"); parser.add_argument("--models", default=""); parser.add_argument("--efforts", default=""); parser.add_argument("--share-thoughts", choices=["true", "false"]); parser.add_argument("--delete-thoughts", choices=["true", "false"]); parser.add_argument("--max-parallel-conversations", type=int)
+    parser.add_argument("--busy-input-policy", choices=["queue", "steer"])
+    parser.add_argument("--preparation-workers", type=int, default=4)
+    parser.add_argument("--interrupt-grace-seconds", type=int, default=15)
+    parser.add_argument("--post-turn-results", choices=["true", "false"], default="false")
+    args = parser.parse_args()
     root = Path(args.onmyoji_root).resolve()
     if args.action == "bootstrap": print(bootstrap(root)); return 0
     if args.action == "daemon-bootstrap": print(bootstrap_daemon(root)); return 0
@@ -615,6 +649,10 @@ def main() -> int:
     if args.action == "set-max-parallel-conversations":
         if args.max_parallel_conversations is None: parser.error("--max-parallel-conversations é obrigatório")
         bootstrap(root); save_max_parallel_conversations(root, args.max_parallel_conversations); print("Limite de conversas em paralelo salvo."); return 0
+    if args.action == "set-gateway-execution":
+        if args.busy_input_policy is None: parser.error("--busy-input-policy é obrigatório")
+        bootstrap(root); save_gateway_execution(root, args.busy_input_policy, args.preparation_workers, args.interrupt_grace_seconds, args.post_turn_results == "true")
+        print("Preferências de execução do Gateway salvas; capacidades efetivas dependem dos gates certificados."); return 0
     if args.action == "set-voice-reply":
         bootstrap(root); staging = save_voice_reply(root, args.enabled, args.profile or "", args.auto_off_minutes or 15, args.voice, args.language)
         print(f"Configuração de resposta por áudio salva. Staging autorizado: {staging}" if staging else "Configuração de resposta por áudio salva."); return 0

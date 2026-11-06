@@ -159,7 +159,8 @@ def test_completed_turn_hides_context_and_rejects_previously_issued_token(gatewa
     active = active_turn(gateway)
     token = tool_call(gateway, active, "get_channel_state")["location_reply_context"]
     active.completed.set()
-    assert "location_reply_context" not in tool_call(gateway, active, "get_channel_state")
+    with pytest.raises(RuntimeError, match="turno ativo|contexto encerrado"):
+        tool_call(gateway, active, "get_channel_state")
     result = gateway._reply_send_location({"reply_context": token, "latitude": 0, "longitude": 0})
     assert result["sent"] is False and result["stage"] == "authorization"
     assert gateway.api.calls == []
@@ -170,7 +171,8 @@ def test_context_from_previous_conversation_generation_is_never_reauthorized(gat
     token = tool_call(gateway, active, "get_channel_state")["location_reply_context"]
     gateway.database.execute("UPDATE conversations SET generation=generation+1 WHERE chat_id='9'")
     gateway.database.commit()
-    assert "location_reply_context" not in tool_call(gateway, active, "get_channel_state")
+    with pytest.raises(RuntimeError, match="turno ativo|contexto encerrado"):
+        tool_call(gateway, active, "get_channel_state")
     result = gateway._reply_send_location({"reply_context": token, "latitude": 0, "longitude": 0})
     assert result["sent"] is False and result["stage"] == "authorization"
     assert gateway.api.calls == []
@@ -189,7 +191,8 @@ def test_new_conversation_during_delivery_keeps_reply_record_in_original_generat
     assert gateway._reply_send_location({"reply_context": token, "latitude": 0, "longitude": 0}) == {"sent": True, "message_id": 700}
     assert gateway._generation("9") == 1
     assert gateway.database.execute("SELECT chat_id, generation, telegram_message_id FROM bot_messages").fetchall() == [("9", 0, 700)]
-    assert "location_reply_context" not in tool_call(gateway, active, "get_channel_state")
+    with pytest.raises(RuntimeError, match="turno ativo|contexto encerrado"):
+        tool_call(gateway, active, "get_channel_state")
     rejected = gateway._reply_send_location({"reply_context": token, "latitude": 0, "longitude": 0})
     assert rejected["sent"] is False and rejected["stage"] == "authorization"
     assert len(gateway.api.calls) == 1
@@ -330,6 +333,6 @@ def test_old_thread_keeps_id_and_existing_state_tool_issues_context_for_native_r
 
 
 def test_location_tool_rejects_calls_without_active_turn(gateway):
-    with pytest.raises(RuntimeError, match="Turno do Telegram não está ativo"):
+    with pytest.raises(RuntimeError, match="turno ativo|contexto encerrado"):
         gateway._app_server_request("item/tool/call", {"namespace": "telegram_gateway", "threadId": "absent", "tool": "send_location", "arguments": {"latitude": 0, "longitude": 0}})
     assert gateway.api.calls == []

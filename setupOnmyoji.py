@@ -27,6 +27,8 @@ DAEMON_SOURCE = ROOT / "onmyoji-daemon" / "src"
 if str(DAEMON_SOURCE) not in sys.path:
     sys.path.insert(0, str(DAEMON_SOURCE))
 from onmyoji_daemon.codex_execution import CodexExecutionError, CodexLaunch
+from onmyoji_daemon.codex_capabilities import CapabilitySet, load_profile_capability
+from onmyoji_daemon.shikigami_agents import ShikigamiAgentMaterializationError, ShikigamiAgentMaterializer
 from onmyoji_daemon.instance import telegram_configuration_path
 from onmyoji_daemon.mcp.configuration import McpConfiguration
 from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialResolver
@@ -1499,6 +1501,106 @@ def python_menu(root: Path) -> None:
             result(False, "Opção inválida.")
 
 
+def agent_profiles_menu(root: Path) -> None:
+    """Administra somente fontes locais válidas e habilitações opcionais."""
+    materializer = ShikigamiAgentMaterializer(root)
+    while True:
+        try:
+            profiles = materializer.discover()
+            configured = materializer.configuration()
+            launch = CodexLaunch.from_data(root, load_system(root))
+            capability = load_profile_capability(root, launch.executable, launch.workspace)
+        except CodexExecutionError:
+            capability = {"supported": False, "reason": "codex_configuration_missing"}
+        except (OSError, ShikigamiAgentMaterializationError) as error:
+            result(False, str(error)); return
+        screen("Perfis de agentes do Shikigami", "Fontes TOML opcionais; nenhuma especialização é criada pelo setup")
+        note("Fonte: shikigami-agents/<id>.toml · cópias: workspace/.codex/agents/<id>.toml.")
+        reason = str(capability.get("reason") or "g4_unverified")
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,95}", reason): reason = "g4_unverified"
+        note("Distribuição disponível para os três clientes." if capability.get("supported") is True else "Distribuição indisponível: " + reason + ". O gate G4 precisa ser comprovado antes de habilitar perfis.")
+        identifiers = sorted(profiles)
+        if not identifiers:
+            note("Nenhum perfil específico encontrado; a delegação nativa continua disponível conforme o runtime.")
+        for index, identifier in enumerate(identifiers, 1):
+            enabled = configured.get(identifier, {}).get("enabled") is True
+            item(f"{index}.", identifier, ("Habilitado" if enabled else "Desabilitado") + " · " + profiles[identifier].description)
+        item("X.", "Voltar")
+        selected = prompt("Opção: ").strip().casefold()
+        if selected in {"x", "\x1b"}: return
+        if not selected.isdigit() or not 1 <= int(selected) <= len(identifiers):
+            result(False, "Opção inválida."); continue
+        identifier = identifiers[int(selected) - 1]
+        enable = configured.get(identifier, {}).get("enabled") is not True
+        if enable and capability.get("supported") is not True:
+            result(False, "O perfil não foi habilitado: descoberta e snapshot de runtime ainda não foram comprovados."); continue
+        answer = prompt(f"{'Habilitar' if enable else 'Desabilitar'} o perfil {identifier}? [s/N]: ").strip().casefold()
+        if answer in {"x", "\x1b", "", "n", "não", "nao"}: continue
+        if answer not in {"s", "sim"}:
+            result(False, "Responda S ou N; X cancela."); continue
+        try:
+            materializer.set_enabled(identifier, enable)
+            result(True, "Habilitação local salva. A próxima abertura gerenciada sincronizará as cópias em ponto seguro.")
+        except (OSError, ShikigamiAgentMaterializationError) as error:
+            result(False, str(error))
+
+
+def configure_gateway_execution(root: Path) -> bool:
+    """Configura a intenção local e informa o fallback efetivo das capacidades."""
+    flow_heading("Entradas durante execução", "Fila, direcionamento e acompanhamento do coordenador")
+    try:
+        settings = tomllib.loads(telegram_configuration_path(root).read_text(encoding="utf-8"))
+        if type(settings.get("schema_version")) is not int or settings["schema_version"] not in {1, 2}:
+            raise ValueError("Versão de configuração não suportada.")
+        agent, limits = settings.get("agent", {}), settings.get("limits", {})
+        policy = str(agent.get("busy_input_policy") or "queue")
+        workers = min(16, max(1, int(limits.get("preparation_workers", 4))))
+        grace = min(60, max(1, int(agent.get("interrupt_grace_seconds", 15))))
+        post_turn = agent.get("post_turn_results") is True
+    except FileNotFoundError:
+        policy, workers, grace, post_turn = "queue", 4, 15, False
+    except (OSError, ValueError, TypeError, AttributeError):
+        result(False, "A configuração do Gateway está inválida; corrija-a antes de salvar."); return False
+    capabilities = CapabilitySet.from_instance(root)
+    effective = "steer" if policy == "steer" and capabilities.supports("steering") else "queue"
+    note(f"Política configurada: {policy if policy in {'queue', 'steer'} else 'queue'} · efetiva: {effective}.")
+    if not capabilities.supports("steering"):
+        note("Direcionamento indisponível: " + capabilities.reason("steering") + "; mensagens serão enfileiradas.")
+    if not capabilities.supports("post_turn"):
+        note("Entrega pós-turno indisponível: " + capabilities.reason("post_turn") + "; o principal acompanha filhos dentro do turno.")
+    choices = ["Enfileirar mensagens", "Direcionar o turno ativo quando suportado"]
+    selected = flow_choice("Mensagens recebidas durante trabalho", choices, choices[1] if policy == "steer" else choices[0])
+    if selected is None: return False
+    policy = "steer" if selected == choices[1] else "queue"
+    for field, label, current, minimum, maximum in (("preparation_workers", "Preparações de anexos e voz em paralelo", workers, 1, 16), ("interrupt_grace_seconds", "Graça da interrupção, em segundos", grace, 1, 60)):
+        raw = prompt(f"{label} [{current}] ({minimum} a {maximum}): ").strip()
+        if raw.casefold() in {"x", "\x1b"}: return False
+        try: value = int(raw) if raw else current
+        except ValueError: result(False, "Informe um número inteiro válido."); return False
+        if not minimum <= value <= maximum:
+            result(False, f"Informe um número entre {minimum} e {maximum}."); return False
+        if field == "preparation_workers": workers = value
+        else: grace = value
+    answer = prompt(f"Solicitar entrega pós-turno quando houver capacidade comprovada? [{'S/n' if post_turn else 's/N'}]: ").strip().casefold()
+    if answer in {"x", "\x1b"}: return False
+    if answer not in {"", "s", "sim", "n", "não", "nao"}:
+        result(False, "Responda S ou N; X cancela."); return False
+    requested_post_turn = post_turn if not answer else answer in {"s", "sim"}
+    arguments = [sys.executable, str(root / "onmyoji-daemon" / "setupDaemon.py"), "--onmyoji-root", str(root), "--action", "set-gateway-execution", "--busy-input-policy", policy, "--preparation-workers", str(workers), "--interrupt-grace-seconds", str(grace), "--post-turn-results", str(requested_post_turn).lower()]
+    try:
+        changed = subprocess.run(arguments, cwd=str(root / "onmyoji-daemon"), text=True, encoding="utf-8", errors="replace", capture_output=True)
+    except OSError:
+        result(False, "Não foi possível salvar a configuração local do Gateway."); return False
+    if changed.returncode != 0:
+        result(False, "Não foi possível salvar a configuração local do Gateway."); return False
+    result(True, "Preferências locais salvas; reinicie o Gateway para aplicar.")
+    if policy == "steer" and not capabilities.supports("steering"):
+        note("A intenção de direcionar foi salva; a política efetiva permanece fila enquanto G1 não estiver comprovado.")
+    if requested_post_turn and not capabilities.supports("post_turn"):
+        note("A entrega pós-turno permanece desativada efetivamente até comprovar seus gates de runtime.")
+    return True
+
+
 def codex_menu(root: Path) -> None:
     data = load_system(root)
     while True:
@@ -1512,6 +1614,7 @@ def codex_menu(root: Path) -> None:
         item("6.", "Sandbox", str(data["sandbox_mode"]))
         item("7.", "Política de aprovação", str(data["approval_policy"]))
         item("8.", "Diretórios adicionais de escrita", f"{len(data['additional_writable_directories'])} configurado(s)")
+        item("9.", "Perfis de agentes do Shikigami", "Fontes TOML opcionais e compatibilidade de distribuição")
         print()
         item("C.", "Executar Codex-CLI", "CLI nativo com modelo, sandbox e diretórios configurados")
         item("I.", "Console interativo Onmyōji", "App Server com developer instructions compostas")
@@ -1567,6 +1670,7 @@ def codex_menu(root: Path) -> None:
             value = choose_approval_policy(root, workspace, str(data["sandbox_mode"]), str(data["approval_policy"]))
             if value: data = update_system(root, data, "approval_policy", value)
         elif choice == "8": data = manage_writable_directories(root, data)
+        elif choice == "9": agent_profiles_menu(root)
         elif choice == "c": launch_codex(root, data)
         elif choice == "i": launch_onmyoji_interactive(root, data)
         else: result(False, "Opção inválida.")
@@ -2353,7 +2457,7 @@ def daemon_menu(root: Path) -> None:
                             subprocess.run([editor, str(local_file)], check=False)
                         checked = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "instructions-status"], quiet=True)
                         result(checked.returncode == 0, "Instruções salvas e validadas." if checked.returncode == 0 else (checked.stdout or checked.stderr).strip())
-                        if checked.returncode == 0: note("A alteração cria uma nova conversa Codex na próxima mensagem do Telegram.")
+                        if checked.returncode == 0: note("A alteração será reaplicada ao retomar a mesma thread na próxima mensagem do Telegram.")
                     except (OSError, ValueError) as error: result(False, f"Não foi possível abrir o editor: {error}")
             elif choice == "14":
                 enabled_media = prompt(f"Habilitar o envio de arquivos, fotos e áudio pelo agente? [{'S' if outbound_media else 'n'}]: ").strip().casefold() or ("s" if outbound_media else "n")
@@ -2519,6 +2623,7 @@ def daemon_menu(root: Path) -> None:
             item("8.", "Padrão de pensamentos", "Comportamento inicial de novas conversas e /new")
             item("9.", "Figurinhas do agente", "Catálogo e explicações de uso")
             item("10.", "Paralelismo de respostas", "Máximo de conversas processadas simultaneamente")
+            item("11.", "Entradas durante execução", "Fila, direcionamento e entrega pós-turno condicionada")
             print()
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
@@ -2535,6 +2640,8 @@ def daemon_menu(root: Path) -> None:
             elif choice == "8": configure_default_thoughts()
             elif choice == "9": configure_stickers()
             elif choice == "10": configure_parallel_responses()
+            elif choice == "11":
+                if configure_gateway_execution(root): offer_restart()
             else: result(False, "Opção inválida.")
 
     def miniapps_command(*arguments: str) -> subprocess.CompletedProcess[str]:

@@ -6,11 +6,20 @@ autenticação RPC do daemon; ele nunca descobre destinos passivamente.
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
+import re
 import secrets
 import shutil
 import time
+import threading
 from typing import Any
+import weakref
+
+from .telegram_delivery import DeliveryOwner, DeliverySuppressed, DeliveryUncertain
+
+_EXTERNAL_LOCKS: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
+_EXTERNAL_LOCKS_GUARD = threading.Lock()
 
 from .telegram_location import OMITTED, LocationValidationError, normalize_location, normalize_stored_location
 
@@ -259,8 +268,21 @@ class TelegramChannels:
             self.api.send(chat_id, "Canal removido do catálogo.", **origin_topic)
         elif action == "identify":
             current = str(row[4])
-            self.channel_identify_sessions[str(row[0])] = {"owner_id": sender_id, "expires_at": time.time() + 300}
-            self.api.send(chat_id, f"Nome atual do canal: {current}\nEnvie agora o nome visual que deseja usar ou pressione /channel para sair.", **origin_topic)
+            conversation = str(row[0])
+            with self.database_lock:
+                generation = self._generation(conversation)
+                identify = {"owner_id": sender_id, "generation": generation, "expires_at": time.time() + 300}
+                with self.control_state_lock: self.channel_identify_sessions[conversation] = identify
+            def current_identification() -> bool:
+                with self.database_lock:
+                    valid = generation == self._generation(conversation)
+                    with self.control_state_lock: return valid and self.channel_identify_sessions.get(conversation) is identify
+            if current_identification():
+                sent = self.api.send(chat_id, f"Nome atual do canal: {current}\nEnvie agora o nome visual que deseja usar ou pressione /channel para sair.", **origin_topic)
+                identifier = sent.get("message_id") if isinstance(sent, dict) else None
+                if not current_identification() and isinstance(identifier, int):
+                    try: self.api.delete(chat_id, identifier)
+                    except Exception: self._record_error("Não foi possível remover um controle de identificação encerrado.")
         else:
             with self.database_lock:
                 existing = self.database.execute(
@@ -310,6 +332,11 @@ class TelegramChannels:
         return True
 
     def _outbound_send(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Envia ao catálogo sem atribuir efeitos em voo à geração seguinte.
+
+        Uma chave explícita permite reaproveitar confirmação local. Sem ACK,
+        tanto tópico como mensagem permanecem incertos; não há retry automático.
+        """
         if not self.api: raise RuntimeError("Gateway Telegram indisponível.")
         channel = str(params.get("channel") or "")
         if not channel or not self._channel_registered(channel):
@@ -323,6 +350,11 @@ class TelegramChannels:
             raise ValueError("Criação de tópico exige grupo cadastrado e nome de até 128 caracteres.")
         if len(text) > (1024 if path_string else 4000):
             raise ValueError("Mensagem ou legenda excede o limite do Telegram.")
+        request_key = params.get("idempotency_key")
+        if request_key is not None and (not isinstance(request_key, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", request_key)):
+            raise ValueError("A chave de idempotência deve ter de 1 a 128 caracteres seguros.")
+        self._ensure_conversation(channel)
+        generation = self._generation(channel)
         path = None
         kind = str(params.get("kind") or "document")
         routes = {"document": ("sendDocument", "document"), "photo": ("sendPhoto", "photo"),
@@ -338,37 +370,85 @@ class TelegramChannels:
             if size > self.settings.max_outbound_media_bytes:
                 raise ValueError("Arquivo excede o limite de envio do gateway.")
             if kind not in routes: raise ValueError("Tipo de anexo inválido.")
-            self._ensure_conversation(channel)
             with self.database_lock:
                 total = self.database.execute(
                     "SELECT COALESCE(SUM(size), 0) FROM conversation_attachments "
                     "WHERE chat_id=? AND generation=?",
-                    (channel, self._generation(channel))).fetchone()[0]
+                    (channel, generation)).fetchone()[0]
             if int(total) + size > self.settings.max_retained_attachment_bytes:
                 raise ValueError("Retenção de anexos da conversa atingiu o limite.")
-        effective = channel
+        file_hash = None
+        if path is not None:
+            digest = hashlib.sha256()
+            with path.open("rb") as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(block)
+            file_hash = digest.hexdigest()
+        fingerprint = hashlib.sha256(json.dumps({"channel": channel, "text": text, "title": title, "kind": kind, "file_name": path.name if path else None, "file_sha256": file_hash}, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+        effect_key = hashlib.sha256(f"{channel}:{request_key}".encode("utf-8")).hexdigest() if request_key is not None else None
+        effective, topic_created = channel, False
         if title:
-            created = self.api.call("createForumTopic", {"chat_id": chat_id, "name": title})
-            topic_id = created.get("message_thread_id") if isinstance(created, dict) else None
-            if not isinstance(topic_id, int): raise RuntimeError("Telegram não retornou o tópico criado.")
+            def create_topic() -> dict[str, Any]:
+                created = self.api.call("createForumTopic", {"chat_id": chat_id, "name": title})
+                identifier = created.get("message_thread_id") if isinstance(created, dict) else None
+                if not isinstance(identifier, int) or isinstance(identifier, bool):
+                    raise DeliveryUncertain("Telegram não confirmou o tópico; não repetir sua criação.")
+                return {"message_id": identifier}
+            try:
+                created = self._external_effect(channel, generation, effect_key, "topic", fingerprint, {"channel": channel, "name": title}, create_topic)
+            except ValueError:
+                raise
+            except DeliverySuppressed:
+                return {"sent": False, "uncertain": False, "retry_safe": False, "channel": channel, "topic_created": False, "warning": "Conversa reiniciada antes da criação do tópico; solicitação não repetida."}
+            except Exception:
+                self._record_error("Criação de tópico sem confirmação; não repetir automaticamente.")
+                return {"sent": None, "uncertain": True, "retry_safe": False, "channel": channel, "topic_created": None, "stage": "topic"}
+            topic_id, topic_created = created["message_id"], True
             topic_values = {"message_thread_id": topic_id}
             effective = f"group:{chat_id}:{topic_id}"
-            self._remember_channel_label(effective, self._channel_label(channel)[0], title)
-        if path is not None:
-            method, field = routes[kind]
-            sent = self.api.send_file(method, chat_id, path, field, caption=text, **topic_values)
+            if generation != self._generation(channel):
+                return {"sent": False, "uncertain": False, "retry_safe": False, "channel": effective, "topic_created": True, "warning": "O tópico foi confirmado, mas a conversa foi reiniciada antes da mensagem; não repetir a criação."}
+            try:
+                self._remember_channel_label(effective, self._channel_label(channel)[0], title)
+                self._ensure_conversation(effective)
+            except Exception:
+                self._record_error("Tópico confirmado; não foi possível preparar seu contexto local.")
+                return {"sent": False, "uncertain": False, "retry_safe": False, "channel": effective, "topic_created": True, "warning": "Tópico confirmado, mas a mensagem não foi enviada porque o contexto local não pôde ser preparado; não repetir a criação."}
         else:
-            sent = self.api.send(chat_id, text, **topic_values)
-        message_id = sent.get("message_id") if isinstance(sent, dict) else None
-        if not isinstance(message_id, int): raise RuntimeError("Telegram não confirmou o ID da mensagem enviada.")
+            self._ensure_conversation(effective)
+        effective_generation = generation if effective == channel else self._generation(effective)
+        if generation != self._generation(channel):
+            return {"sent": False, "uncertain": False, "retry_safe": False, "channel": effective, "topic_created": topic_created, "warning": "Conversa reiniciada antes do envio; solicitação não repetida."}
+        def send_message() -> dict[str, Any]:
+            if generation != self._generation(channel) or effective_generation != self._generation(effective):
+                raise DeliverySuppressed("A geração do destino mudou antes do envio.")
+            if path is not None:
+                method, field = routes[kind]
+                return self.api.send_file(method, chat_id, path, field, caption=text, **topic_values)
+            return self.api.send(chat_id, text, **topic_values)
+        try:
+            sent = self._external_effect(effective, effective_generation, effect_key, "message", fingerprint, {"channel": effective, "text": text, "path": str(path) if path else "", "kind": kind}, send_message)
+        except ValueError:
+            raise
+        except DeliverySuppressed:
+            return {"sent": False, "uncertain": False, "retry_safe": False, "channel": effective, "topic_created": topic_created, "warning": "Conversa reiniciada antes do envio; solicitação não repetida."}
+        except Exception:
+            self._record_error("Envio Telegram externo sem confirmação; não repetir automaticamente.")
+            return {"sent": None, "uncertain": True, "retry_safe": False, "channel": effective, "topic_created": topic_created, "stage": "message"}
+        message_id = sent["message_id"]
         # Um envio confirmado não deve parecer falha de transporte se a persistência
         # local falhar; o aviso impede repetição inadvertida da mensagem.
-        response = {"sent": True, "channel": effective, "message_id": message_id, "topic_created": bool(title)}
+        response = {"sent": True, "channel": effective, "message_id": message_id, "topic_created": topic_created}
+        if sent.get("already_sent"):
+            response["already_sent"] = True
+            return response
         try:
-            attachment = self._archive_external_file(effective, path, kind) if path is not None else None
-            self._external_outbound_record(effective, message_id, text, attachment)
-        except Exception as error:
-            self._record_error(error)
+            if generation != self._generation(channel) or effective_generation != self._generation(effective):
+                raise DeliverySuppressed("Conversa reiniciada depois do envio confirmado.")
+            attachment = self._archive_external_file(effective, path, kind, effective_generation) if path is not None else None
+            self._external_outbound_record(effective, message_id, text, attachment, effective_generation)
+        except Exception:
+            self._record_error("Telegram confirmou o envio; preservação do contexto local não foi concluída.")
             response["warning"] = "Telegram confirmou o envio, mas não foi possível preservar integralmente o contexto local."
         return response
 
@@ -379,6 +459,9 @@ class TelegramChannels:
         retornam ``sent=False`` com etapa e diagnóstico fixo, sem incluir dados
         geográficos ou a exceção da API. Recibo confirmado continua sendo sucesso
         se a persistência local falhar posteriormente.
+
+        A geração do destino é fixada antes do primeiro efeito. Uma resposta
+        tardia nunca atribui o envio ao contexto posterior a ``/new``.
         """
         channel = params.get("channel")
         effective = channel if isinstance(channel, str) else ""
@@ -406,9 +489,13 @@ class TelegramChannels:
             return failed("argument_validation", str(error))
         if not self.api:
             return failed("gateway", "Gateway Telegram indisponível; a localização não foi enviada.")
+        self._ensure_conversation(channel)
+        generation = self._generation(channel)
         chat_id, topic_values = self._telegram_address(channel)
         if title:
             try:
+                if generation != self._generation(channel):
+                    return failed("gateway", "A conversa foi reiniciada antes da criação do tópico; a localização não foi enviada.")
                 created = self.api.call("createForumTopic", {"chat_id": chat_id, "name": title})
             except Exception:
                 topic_created = None
@@ -420,6 +507,15 @@ class TelegramChannels:
             topic_created = True
             topic_values = {"message_thread_id": topic_id}
             effective = f"group:{chat_id}:{topic_id}"
+            if generation != self._generation(channel):
+                return failed("gateway", "O tópico foi confirmado, mas a conversa foi reiniciada antes do envio da localização; não repita a criação.")
+            try:
+                self._ensure_conversation(effective)
+            except Exception:
+                return failed("gateway", "O tópico foi confirmado, mas seu contexto local não pôde ser preparado; a localização não foi enviada.")
+        effective_generation = generation if effective == channel else self._generation(effective)
+        if generation != self._generation(channel) or effective_generation != self._generation(effective):
+            return failed("gateway", "A conversa foi reiniciada antes do envio da localização.")
         values = {key: value for key, value in location.items() if key != "kind"}
         try:
             sent = self.api.call("sendLocation", {"chat_id": chat_id, **topic_values, **values})
@@ -430,7 +526,9 @@ class TelegramChannels:
             return failed("receipt_validation", "Telegram não retornou um recibo válido; a entrega da localização é indeterminada. Não repita automaticamente.", "unknown")
         response = {"sent": True, "channel": effective, "message_id": message_id, "topic_created": topic_created}
         try:
-            self._external_outbound_record(effective, message_id, "", None, location=location)
+            if generation != self._generation(channel) or effective_generation != self._generation(effective):
+                raise DeliverySuppressed("Conversa reiniciada depois do envio confirmado da localização.")
+            self._external_outbound_record(effective, message_id, "", None, effective_generation, location=location)
             if title:
                 self._remember_channel_label(effective, self._channel_label(channel)[0], title)
         except Exception:
@@ -439,11 +537,45 @@ class TelegramChannels:
             response["warning"] = "Telegram confirmou o envio, mas não foi possível preservar integralmente o contexto local."
         return response
 
-    def _archive_external_file(self, channel: str, path: Path, kind: str) -> dict[str, Any]:
+    def _external_effect(self, channel: str, generation: int, request_key: str | None, stage: str, fingerprint: str, payload: dict[str, Any], send: Any) -> dict[str, Any]:
+        ledger = getattr(self, "deliveries", None)
+        def checked_send() -> dict[str, Any]:
+            try:
+                result = send()
+            except DeliverySuppressed as error:
+                error.kind = "not_sent"
+                raise
+            if not isinstance(result, dict) or not isinstance(result.get("message_id"), int) or isinstance(result.get("message_id"), bool):
+                raise DeliveryUncertain("Destino não confirmou o identificador do efeito externo.")
+            return result
+        if request_key is not None and ledger is not None:
+            key = f"external:{request_key}:{stage}"
+            with _EXTERNAL_LOCKS_GUARD:
+                lane = _EXTERNAL_LOCKS.get((id(self), request_key))
+                if lane is None:
+                    lane = threading.RLock(); _EXTERNAL_LOCKS[(id(self), request_key)] = lane
+            with lane:
+                with ledger.store.lock:
+                    row = ledger.store.db.execute("SELECT payload,generation,state FROM gateway_deliveries WHERE delivery_key=?", (key,)).fetchone()
+                if row:
+                    try: previous = json.loads(row[0])
+                    except (ValueError, TypeError): raise ValueError("A confirmação anterior da chave não pode ser verificada.") from None
+                    if not isinstance(previous, dict) or previous.get("request_sha256") != fingerprint:
+                        raise ValueError("A chave de idempotência já pertence a uma solicitação diferente.")
+                    if row[1] != generation and row[2] != "sent":
+                        raise DeliverySuppressed("A chave pertence a uma geração já encerrada.")
+                return ledger.effect(DeliveryOwner(channel, generation), key, "external_" + stage, request_key, {**payload, "request_sha256": fingerprint}, checked_send)
+        if generation != self._generation(channel):
+            raise DeliverySuppressed("O destino foi reiniciado antes do envio.")
+        return checked_send()
+
+    def _archive_external_file(self, channel: str, path: Path, kind: str, generation: int | None = None) -> dict[str, Any]:
         """Retém somente arquivo explicitamente enviado, no escopo do destino."""
         conversation_uuid = self._ensure_conversation(channel)
-        generation = self._generation(channel)
+        generation = self._generation(channel) if generation is None else generation
         with self.database_lock:
+            if generation != self._generation(channel):
+                raise DeliverySuppressed("A geração mudou antes de preservar o anexo.")
             total = self.database.execute(
                 "SELECT COALESCE(SUM(size), 0) FROM conversation_attachments WHERE chat_id=? AND generation=?",
                 (channel, generation)).fetchone()[0]
@@ -455,6 +587,8 @@ class TelegramChannels:
         try:
             shutil.copy2(path, archive)
             with self.database_lock:
+                if generation != self._generation(channel):
+                    raise DeliverySuppressed("A geração mudou durante a preservação do anexo.")
                 self.database.execute(
                     "INSERT INTO conversation_attachments (id, chat_id, generation, kind, name, mime_type, size, archive_path, created_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -476,11 +610,13 @@ class TelegramChannels:
         wanted = {value.get("id") for (raw,) in rows if isinstance((value := json.loads(raw or "null")), dict)}
         return [row for row in self._attachment_rows(channel, 50) if row["id"] in wanted]
 
-    def _external_outbound_record(self, channel: str, message_id: int, text: str, attachment: dict[str, Any] | None, *, location: dict[str, Any] | None = None) -> None:
+    def _external_outbound_record(self, channel: str, message_id: int, text: str, attachment: dict[str, Any] | None, generation: int | None = None, *, location: dict[str, Any] | None = None) -> None:
         structured = {"location": normalize_stored_location(location)} if location is not None else {}
         self._ensure_conversation(channel)
-        generation = self._generation(channel)
+        generation = self._generation(channel) if generation is None else generation
         with self.database_lock:
+            if generation != self._generation(channel):
+                raise DeliverySuppressed("A geração mudou antes de registrar o envio externo.")
             self.database.execute("""
                 INSERT OR IGNORE INTO telegram_external_messages
                   (conversation_id, generation, message_id, text, attachment, created_at, delivered, structured_content)

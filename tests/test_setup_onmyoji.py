@@ -1051,6 +1051,91 @@ class SystemSetupTests(unittest.TestCase):
             self.assertEqual(len(inactive), 50)
             self.assertEqual(len(conflict), 50)
 
+    def test_codex_menu_exposes_optional_agent_profiles(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with patch.object(MODULE, "load_system", return_value=MODULE.default_system()), patch.object(MODULE, "validate_system", return_value=(False, "pendente")), patch.object(MODULE, "prompt", side_effect=["9", "x"]), patch.object(MODULE, "agent_profiles_menu") as profiles, patch.object(MODULE, "screen"):
+                MODULE.codex_menu(root)
+            profiles.assert_called_once_with(root)
+
+    def test_agent_profiles_empty_is_valid_and_does_not_create_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); output = io.StringIO()
+            with patch.object(MODULE, "prompt", return_value="x"), patch.object(MODULE, "screen"), patch.object(MODULE.sys, "stdout", output):
+                MODULE.agent_profiles_menu(root)
+            self.assertIn("Nenhum perfil específico", output.getvalue())
+            self.assertFalse((root / "shikigami-agents").exists())
+            self.assertFalse((root / "configs" / "shikigami" / "agents.toml").exists())
+
+    def test_agent_profile_cannot_be_enabled_without_g4(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); workspace = root / "workspace"; workspace.mkdir()
+            source = root / "shikigami-agents" / "reviewer.toml"; source.parent.mkdir()
+            source.write_text('name="reviewer"\ndescription="Revisão"\ndeveloper_instructions="Confira"\n', encoding="utf-8")
+            data = MODULE.default_system() | {"executable": "codex", "project_directory": str(workspace)}
+            output = io.StringIO()
+            with patch.object(MODULE, "load_system", return_value=data), patch.object(MODULE, "load_profile_capability", return_value={"supported": False, "reason": "g4_unverified"}), patch.object(MODULE, "prompt", side_effect=["1", "x"]), patch.object(MODULE, "screen"), patch.object(MODULE.sys, "stdout", output):
+                MODULE.agent_profiles_menu(root)
+            self.assertIn("não foi habilitado", output.getvalue())
+            self.assertFalse((root / "configs" / "shikigami" / "agents.toml").exists())
+
+    def test_agent_profile_setup_saves_only_local_enablement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); workspace = root / "workspace"; workspace.mkdir()
+            source = root / "shikigami-agents" / "reviewer.toml"; source.parent.mkdir()
+            source.write_text('name="reviewer"\ndescription="Revisão"\ndeveloper_instructions="Confira"\n', encoding="utf-8")
+            data = MODULE.default_system() | {"executable": "codex", "project_directory": str(workspace)}
+            with patch.object(MODULE, "load_system", return_value=data), patch.object(MODULE, "load_profile_capability", return_value={"supported": True, "reason": "supported"}), patch.object(MODULE, "prompt", side_effect=["1", "s", "x"]), patch.object(MODULE, "screen"):
+                MODULE.agent_profiles_menu(root)
+            self.assertTrue(MODULE.ShikigamiAgentMaterializer(root).configuration()["reviewer"]["enabled"])
+            self.assertFalse((workspace / ".codex").exists())
+            self.assertFalse((root / "config.toml").exists())
+
+    def test_gateway_execution_flow_defaults_and_no_new_screen(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); capability = MagicMock(); capability.supports.return_value = False; capability.reason.return_value = "g1_unverified"
+            completed = subprocess.CompletedProcess([], 0, "Salvo", "")
+            with patch.object(MODULE.CapabilitySet, "from_instance", return_value=capability), patch.object(MODULE, "flow_choice", return_value="Enfileirar mensagens"), patch.object(MODULE, "prompt", side_effect=["", "", ""]), patch.object(MODULE, "screen") as screen, patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+                self.assertTrue(MODULE.configure_gateway_execution(root))
+            screen.assert_not_called()
+            args = run.call_args.args[0]
+            self.assertEqual(args[args.index("--busy-input-policy") + 1], "queue")
+            self.assertEqual(args[args.index("--preparation-workers") + 1], "4")
+            self.assertEqual(args[args.index("--interrupt-grace-seconds") + 1], "15")
+            self.assertEqual(args[args.index("--post-turn-results") + 1], "false")
+
+    def test_gateway_execution_reports_fallback_without_claiming_support(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); capability = MagicMock(); capability.supports.return_value = False; capability.reason.return_value = "g1_unverified"
+            output = io.StringIO(); completed = subprocess.CompletedProcess([], 0, "Salvo", "")
+            with patch.object(MODULE.CapabilitySet, "from_instance", return_value=capability), patch.object(MODULE, "flow_choice", return_value="Direcionar o turno ativo quando suportado"), patch.object(MODULE, "prompt", side_effect=["6", "20", "s"]), patch.object(MODULE.sys, "stdout", output), patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+                self.assertTrue(MODULE.configure_gateway_execution(root))
+            args = run.call_args.args[0]
+            self.assertEqual(args[args.index("--busy-input-policy") + 1], "steer")
+            self.assertEqual(args[args.index("--post-turn-results") + 1], "true")
+            self.assertIn("política efetiva permanece fila", output.getvalue())
+            self.assertIn("permanece desativada efetivamente", output.getvalue())
+
+    def test_gateway_execution_cancel_and_invalid_input_do_not_save(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); capability = MagicMock(); capability.supports.return_value = False; capability.reason.return_value = "g1_unverified"
+            for answers in (["x"], ["0"], ["17"], ["abc"], ["", "301"], ["", "", "talvez"]):
+                with self.subTest(answers=answers), patch.object(MODULE.CapabilitySet, "from_instance", return_value=capability), patch.object(MODULE, "flow_choice", return_value="Enfileirar mensagens"), patch.object(MODULE, "prompt", side_effect=answers), patch.object(MODULE.subprocess, "run") as run:
+                    self.assertFalse(MODULE.configure_gateway_execution(root))
+                    run.assert_not_called()
+
+    def test_gateway_execution_cancel_selection_does_not_save(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "flow_choice", return_value=None), patch.object(MODULE.subprocess, "run") as run:
+            self.assertFalse(MODULE.configure_gateway_execution(Path(temporary)))
+        run.assert_not_called()
+
+    def test_gateway_execution_failure_does_not_echo_private_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = io.StringIO()
+            with patch.object(MODULE, "flow_choice", return_value="Enfileirar mensagens"), patch.object(MODULE, "prompt", side_effect=["", "", ""]), patch.object(MODULE.sys, "stdout", output), patch.object(MODULE.subprocess, "run", side_effect=OSError("token=segredo")):
+                self.assertFalse(MODULE.configure_gateway_execution(Path(temporary)))
+            self.assertNotIn("segredo", output.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

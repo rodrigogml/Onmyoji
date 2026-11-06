@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 from pathlib import Path
 
@@ -44,6 +45,7 @@ def gateway(tmp_path):
     instance.warnings = []
     instance._ephemeral = lambda channel, text, *_args, **_kwargs: instance.warnings.append((channel, text))
     yield instance
+    instance.stop_event.set()
     instance.database.close()
 
 
@@ -53,6 +55,37 @@ def private_message(**fields):
 
 def queued(gateway):
     return gateway.database.execute("SELECT chat_id, text, turn_context, structured_content FROM inbox_items ORDER BY created_at").fetchall()
+
+
+def completed_app_server(gateway, requests):
+    """Conclui um turno falso correlacionado, mantendo o dispatcher e a inbox reais."""
+    epoch = "fixed-location-test-epoch"
+
+    class Client:
+        process_epoch = epoch
+
+        def request(self, method, params):
+            assert method == "turn/start"
+            requests.append((method, params))
+            thread, turn = params["threadId"], "turn-" + str(len(requests))
+            for sequence, (event, details) in enumerate((
+                ("turn/started", {"turn": {"id": turn, "status": "inProgress"}}),
+                ("item/completed", {"item": {"id": "location-final", "type": "agentMessage", "phase": "final_answer", "text": "Recebido"}}),
+                ("turn/completed", {"turn": {"id": turn, "status": "completed"}}),
+            ), 1):
+                gateway._app_event(event, {"threadId": thread, "turnId": turn, **details}, {"process_epoch": epoch, "sequence": sequence})
+            return {"turn": {"id": turn}}
+
+    gateway._app_client = lambda: Client()
+    gateway._app_thread = lambda *_args: "thread-test"
+
+
+def consume_queued(gateway):
+    """Aguarda o fechamento do dispatcher sem iniciar polling ou serviços externos."""
+    gateway.stop_event.clear()
+    gateway._wake_worker("9")
+    with gateway.workers_changed:
+        assert gateway.workers_changed.wait_for(lambda: not gateway.workers, timeout=3)
 
 
 @pytest.mark.parametrize("topic,channel", [({}, "9"), ({"message_thread_id": 42}, "private:9:42"), ({"direct_messages_topic": {"topic_id": 900000000001}}, "direct:9:900000000001")])
@@ -106,9 +139,41 @@ def test_rejected_location_keeps_valid_text_and_attachment(gateway, location):
     assert len(gateway.warnings) == 1
 
 
-def test_edited_location_remains_ignored(gateway):
-    gateway._update({"edited_message": private_message(location={"latitude": 1, "longitude": 2})})
-    assert queued(gateway) == [] and gateway.warnings == []
+def test_edited_location_is_a_deduplicated_revision_without_changing_accepted_input(gateway):
+    """O contrato de revisão do plano §7.1 preserva a localização já aceita."""
+    def receive(update):
+        source, inserted = gateway.store.ingest(str(gateway.bot_id), update, "9", gateway._generation("9"))
+        if inserted:
+            row = next(row for row in gateway.store.ingress_pending("9") if row[0] == source)
+            assert gateway.store.ingress_claim(source)
+            semaphore = threading.BoundedSemaphore(1)
+            semaphore.acquire()
+            gateway._prepare_ingress(row, update, source, semaphore)
+        return source, inserted
+
+    original_source, inserted = receive({"update_id": 50, "message": private_message(location={"latitude": 1, "longitude": 2})})
+    assert inserted
+    original = gateway.store.next_input("9", 0)
+    execution = gateway.store.reserve("9", 0, original["id"], 30)
+    operation = gateway.store.operation(original["id"], execution, "turn/start", None)
+    gateway.store.operation_result(operation, "accepted")
+    edited = {"update_id": 51, "edited_message": private_message(edit_date=1793966500, location={"latitude": 3, "longitude": 4})}
+
+    edited_source, inserted = receive(edited)
+    assert inserted and edited_source != original_source
+    assert receive(edited) == (edited_source, False)
+
+    rows = gateway.database.execute(
+        "SELECT id,source_key,state,structured_content FROM inbox_items ORDER BY sequence",
+    ).fetchall()
+    assert len(rows) == 2
+    assert rows[0][0:3] == (original["id"], original_source, "accepted")
+    assert rows[1][0] != original["id"] and rows[1][1:3] == (edited_source, "pending")
+    assert json.loads(rows[0][3])["location"] == {"kind": "static", "latitude": 1, "longitude": 2}
+    assert json.loads(rows[1][3])["location"] == {"kind": "static", "latitude": 3, "longitude": 4}
+    assert json.loads(rows[0][3])["message_id"] == json.loads(rows[1][3])["message_id"] == 321
+    assert gateway.store.next_input("9", 0)["id"] == rows[1][0]
+    assert gateway.store.checkpoint(str(gateway.bot_id)) == 52 and gateway.warnings == []
 
 
 def group_message(sender=7, **fields):
@@ -170,14 +235,8 @@ def test_group_context_window_and_new_generation_isolate_locations(gateway):
 
 def test_point_content_reaches_agent_without_becoming_trusted_instructions(gateway):
     requests = []
-    def request(method, params):
-        requests.append((method, params))
-        active = gateway.app_turns["thread-test"]
-        active.status, active.final_text = "completed", "Recebido"
-        active.completed.set()
-        return {"turn": {"id": "turn-test"}}
-    gateway._app_client = lambda: type("Client", (), {"request": staticmethod(request)})()
-    gateway._app_thread = lambda *_args: "thread-test"
+    completed_app_server(gateway, requests)
+    gateway.stop_event.clear()
     context = gateway._turn_context("9", {"id": 9}, "", [], has_location=True)
     structured = {"location": POINT, "message_id": 321, "timestamp": "2026-11-06T12:00:00Z"}
 
@@ -196,13 +255,18 @@ def test_point_content_reaches_agent_without_becoming_trusted_instructions(gatew
 def test_queue_survives_restart_and_consumes_static_content(gateway):
     gateway._enqueue_turn("9", "", [], gateway._turn_context("9", {"id": 9}, "", [], has_location=True), {"location": POINT})
     restored = Gateway(gateway.settings)
-    calls = []
-    restored._turn = lambda *args: calls.append(args)
+    requests = []
+    completed_app_server(restored, requests)
     try:
-        restored._worker("9")
-        assert calls[0][4] == {"location": POINT}
-        assert restored.database.execute("SELECT COUNT(*) FROM inbox_items").fetchone()[0] == 0
+        consume_queued(restored)
+        envelope = json.loads(requests[0][1]["input"][0]["text"])["telegram_turn"]
+        assert envelope["location"] == POINT and envelope["content"] == ""
+        assert restored.database.execute("SELECT state, structured_content FROM inbox_items").fetchall() == [("done", json.dumps({"location": POINT}, ensure_ascii=False, allow_nan=False))]
+        assert restored.database.execute("SELECT state,result FROM execution_turns").fetchall() == [("terminal", "completed")]
+        consume_queued(restored)
+        assert len(requests) == 1
     finally:
+        restored.stop_event.set()
         restored.database.close()
 
 
@@ -212,6 +276,7 @@ def test_turn_dispatch_preserves_location_content_and_topic(gateway):
     gateway.api = type("Api", (), {"typing": lambda *_args, **_kwargs: None})()
     context = gateway._turn_context("private:9:42", {"id": 9}, "", [], has_location=True)
     structured = {"location": POINT}
+    gateway.stop_event.clear()
     gateway._turn("private:9:42", "", [], context, structured)
     assert received == [("private:9:42", "", [], context, structured)]
 
@@ -238,25 +303,29 @@ def test_unavailable_diagnostic_does_not_drop_valid_text_with_corrupted_location
     def failed_diagnostic(*_args, **_kwargs):
         raise OSError("diagnostic unavailable")
     monkeypatch.setattr(gateway, "_diagnostic", failed_diagnostic)
-    gateway.stop_event.clear()
-    calls = []
-    gateway._turn = lambda *args: calls.append(args)
+    requests = []
+    completed_app_server(gateway, requests)
+    consume_queued(gateway)
 
-    gateway._worker("9")
-
-    assert calls == [("9", "texto preservado", [], {})]
-    assert gateway.database.execute("SELECT COUNT(*) FROM inbox_items").fetchone()[0] == 0
+    envelope = json.loads(requests[0][1]["input"][0]["text"])["telegram_turn"]
+    assert envelope["content"] == "texto preservado" and "location" not in envelope
+    assert gateway.database.execute("SELECT state FROM inbox_items WHERE id='corrupt'").fetchone() == ("done",)
+    consume_queued(gateway)
+    assert len(requests) == 1
 
 
 @pytest.mark.parametrize("raw", ["not-json", "[]", '{"location":{"kind":"static","latitude":91,"longitude":2}}', '{"location":{"kind":"static","latitude":NaN,"longitude":2}}'])
 def test_corrupted_stored_location_is_discarded_without_exposing_payload(gateway, raw):
     gateway.database.execute("INSERT INTO inbox_items(id, chat_id, generation, text, attachment_ids, turn_context, structured_content, state, created_at) VALUES ('old','9',0,'texto','[]','{}',?,'pending',?)", (raw, time.time()))
     gateway.database.commit()
-    gateway.stop_event.clear()
-    calls = []
-    gateway._turn = lambda *args: calls.append(args)
-    gateway._worker("9")
-    assert calls == [("9", "texto", [], {})]
+    requests = []
+    completed_app_server(gateway, requests)
+    consume_queued(gateway)
+    envelope = json.loads(requests[0][1]["input"][0]["text"])["telegram_turn"]
+    assert envelope["content"] == "texto" and "location" not in envelope
+    assert gateway.database.execute("SELECT state FROM inbox_items WHERE id='old'").fetchone() == ("done",)
+    consume_queued(gateway)
+    assert len(requests) == 1
     state = json.loads((gateway.settings.data_dir / "state" / "gateway-status.json").read_text(encoding="utf-8"))
     diagnostic = state["diagnostics"][-1]
     assert diagnostic["event"] == "location.content_discarded"

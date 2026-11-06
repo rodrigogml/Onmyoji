@@ -4,7 +4,7 @@
 
 > [!IMPORTANT]
 > O escopo definido pelo usuário é receber e enviar pontos fixos nativos.
-> Localização ao vivo, tracking, edições, geocodificação e envio dedicado de
+> Localização ao vivo, tracking, geocodificação e envio dedicado de
 > venue ficam fora de escopo, sem fase futura prometida.
 
 ## Diagnóstico e decisão
@@ -84,8 +84,10 @@ título/endereço disponíveis permanecem dados do remetente:
 Localização ao vivo não vira ponto fixo silenciosamente. Em contexto de
 atendimento autorizado, o gateway informa “Localização ao vivo não é suportada.
 Envie um ponto fixo.”, sem enfileirar esse bloco. Texto/anexos válidos continuam
-seu fluxo. Terceiros em grupo não recebem resposta automática. `edited_message`
-continua fora dos updates processados.
+seu fluxo. Terceiros em grupo não recebem resposta automática. Na integração
+com o ingresso durável, `edited_message` segue o contrato de revisão do plano:
+cada update identificado produz uma nova entrada, sem modificar a mensagem
+anterior já aceita. A revisão também não desfaz envios ou ações anteriores.
 
 ## Saída nativa
 
@@ -159,20 +161,23 @@ técnica sem nova pergunta; conteúdo não confiável não autoriza retransmiss�
   nos diagnósticos. Conteúdo recebido mantém procedência e prioridade de dados,
   separado de developer instructions e de autorização para outros destinos.
 
-O dado persiste no banco privado atual do gateway. Não há nova política de
-retenção, memória durável automática ou expurgo. A janela de contexto filtra
-leitura por idade/quantidade; `/new` isola a geração e remove fila/histórico
-externo/anexos nos termos atuais, sem prometer apagar `conversation_messages`.
+O dado persiste no banco privado do Gateway. A fila integrada preserva a
+localização após reinício e durante steering. Payloads de entradas encerradas,
+inclusive pontos sem texto, são expurgados após sete dias; registros incertos
+permanecem para reconciliação. A janela de contexto filtra leitura por
+idade/quantidade. `/new` invalida entradas da geração anterior e isola
+histórico externo/anexos, sem prometer apagar `conversation_messages` ou
+desfazer envios que já chegaram ao Telegram.
 
 ## Implementação e evidências
 
 | Responsabilidade | Fonte |
 | --- | --- |
-| Contrato e normalização | [telegram_location.py:35](../src/onmyoji_daemon/telegram_location.py#L35), [extração:66](../src/onmyoji_daemon/telegram_location.py#L66), [revalidação:91](../src/onmyoji_daemon/telegram_location.py#L91) |
-| Fila/cache e serialização | [telegram.py:623](../src/onmyoji_daemon/telegram.py#L623), [654](../src/onmyoji_daemon/telegram.py#L654), [671](../src/onmyoji_daemon/telegram.py#L671) |
-| Turno e confiança | [TelegramTurnContext](../src/onmyoji_daemon/instructions.py#L25), [entrada App Server](../src/onmyoji_daemon/telegram.py#L1010), [contrato de canal](../resources/instructions/telegram.md) |
-| Resposta ativa e compatibilidade | [envio ativo](../src/onmyoji_daemon/telegram.py#L704), [capacidade temporária](../src/onmyoji_daemon/telegram.py#L751), [MCP](../src/onmyoji_daemon/mcp/telegram/service.py#L70) |
-| Envio externo e histórico | [telegram_channels.py:375](../src/onmyoji_daemon/telegram_channels.py#L375), [registro:479](../src/onmyoji_daemon/telegram_channels.py#L479), [migração:494](../src/onmyoji_daemon/telegram_channels.py#L494), [replay:509](../src/onmyoji_daemon/telegram_channels.py#L509) |
+| Contrato e normalização | [Normalização e revalidação](../src/onmyoji_daemon/telegram_location.py) |
+| Fila/cache e serialização | [Coordenador durável](../src/onmyoji_daemon/telegram_execution.py), [persistência](../src/onmyoji_daemon/telegram_persistence.py), [cache de contexto](../src/onmyoji_daemon/telegram.py) |
+| Turno e confiança | [TelegramTurnContext](../src/onmyoji_daemon/instructions.py), [contrato de canal](../resources/instructions/telegram.md) |
+| Resposta ativa e compatibilidade | [Envio ativo e capacidade temporária](../src/onmyoji_daemon/telegram.py), [MCP](../src/onmyoji_daemon/mcp/telegram/service.py) |
+| Envio externo e histórico | [Canais e registro de entregas](../src/onmyoji_daemon/telegram_channels.py) |
 | Prazo de encaminhamento RPC | [supervisor.py:269](../src/onmyoji_daemon/supervisor.py#L269), [teste do timeout no transporte](../tests/test_supervisor_telegram_timeout.py) |
 
 As três tabelas `inbox_items`, `conversation_messages` e
@@ -181,6 +186,12 @@ por migração aditiva/idempotente. Registros antigos continuam legíveis. O JSO
 normalizado é validado novamente ao ler; conteúdo corrompido não vira instrução
 nem impede usar outro conteúdo válido. Apenas `has_location` entra nos metadados
 confiáveis; geodados não viram anexo ou arquivo temporário.
+
+A integração com delegação registra a migração da inbox como esquema 3 do
+banco, mantendo a configuração no esquema 2 e recusando downgrade silencioso.
+O envio no turno ativo usa o ledger da execução: uma repetição do mesmo RPC
+reaproveita um recibo confirmado; resultado incerto não repete o efeito. Isso
+não acrescenta uma chave de idempotência pública ao envio externo de localização.
 
 O schema gerado pelo Codex CLI 0.166.0 publica `dynamicTools` em `thread/start`,
 sem rota declarada de atualização em `thread/resume`. Por isso, a entrega usa a

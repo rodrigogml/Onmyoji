@@ -107,8 +107,9 @@ def test_app_server_does_not_pass_profiles_to_the_codex_subcommand(tmp_path):
     with patch("onmyoji_daemon.telegram.CodexLaunch.from_system") as configured, patch("onmyoji_daemon.telegram.subprocess.Popen", side_effect=lambda command, **_kwargs: captured.setdefault("command", command) and Process()):
         configured.return_value.app_server_launch.return_value = launch
         client = CodexAppServer(settings)
-        client.request = lambda *_args, **_kwargs: {}
-        client.notify = lambda *_args, **_kwargs: None
+        client._launch_workers = lambda _runtime: None
+        client._request_runtime = lambda *_args, **_kwargs: {}
+        client._send_runtime = lambda *_args, **_kwargs: None
         client.start()
         client.stop()
 
@@ -226,7 +227,11 @@ def test_app_server_thoughts_are_shared_deduplicated_and_cleaned(tmp_path):
     active = AppServerTurn(9, "thread", __import__("threading").Event()); gateway.app_turns["thread"] = active
     notification = {"threadId": "thread", "item": {"type": "reasoning", "summary": ["Plano seguro."]}}
     gateway._app_notification("item/completed", notification); gateway._app_notification("item/completed", notification)
-    assert sent == [(9, "💭 Plano seguro.", {"protect_content": True})] and active.thought_ids == [71]
+    assert sent == [(9, "💭 Plano seguro.", {"parse_mode": "HTML", "protect_content": True})] and active.thought_ids == [71]
+    gateway._cleanup_thoughts(active)
+    assert deleted == []
+    gateway._app_notification("turn/completed", {"threadId": "thread", "turn": {"status": "completed"}})
+    active.terminal_announced = True
     gateway._cleanup_thoughts(active)
     assert deleted == [(9, 71)]
 
@@ -431,7 +436,7 @@ def test_config_render_failure_closes_session_and_reports_sanitized_reason(tmp_p
         "delete": lambda _self, chat, message: deleted.append((chat, message)),
         "send": lambda _self, chat, text, **values: sent.append((chat, text, values)) or {"message_id": 17},
     })()
-    gateway.config_sessions["token"] = {"chat_id": "9", "message_id": 7, "expires_at": time.time() + 60}
+    gateway.config_sessions["token"] = {"chat_id": "9", "generation": gateway._generation("9"), "message_id": 7, "expires_at": time.time() + 60}
 
     gateway._config_callback(9, {}, ["cfg", "token", "thoughts"])
 
@@ -623,7 +628,7 @@ def test_agent_receives_a_structured_media_upload_failure(tmp_path):
     gateway = Gateway(replace(Settings.load(tmp_path, data), agent_outbound_media=True))
 
     class Api:
-        def send_file(_self, *_args, **_kwargs): raise TelegramMediaUploadError("Telegram API HTTP 400 ao executar sendPhoto: Bad Request: invalid photo")
+        def send_file(_self, *_args, **_kwargs): raise TelegramMediaUploadError("Telegram API HTTP 400 ao executar sendPhoto: Bad Request: invalid photo", kind="not_sent")
 
     active = AppServerTurn(9, "turn-1", threading.Event(), conversation_id="private:9")
     gateway.api = Api(); gateway.app_turns[active.thread_id] = active; outbox = gateway._outbox(active.conversation_id, active.thread_id); active.outbox = outbox
@@ -632,7 +637,7 @@ def test_agent_receives_a_structured_media_upload_failure(tmp_path):
     response = gateway._app_server_request("item/tool/call", {"namespace": "telegram_gateway", "threadId": active.thread_id, "tool": "send_file", "arguments": {"file_name": "picture.png", "kind": "photo"}})
 
     payload = json.loads(response["contentItems"][0]["text"])
-    assert response["success"] is True and payload == {"sent": False, "stage": "telegram_api", "error": "Telegram API HTTP 400 ao executar sendPhoto: Bad Request: invalid photo"}
+    assert response["success"] is True and payload == {"sent": False, "uncertain": False, "retry_safe": False, "stage": "telegram_api", "error": "Falha operacional registrada; confira a etapa e o código de diagnóstico."}
     state = json.loads((data / "state" / "gateway-status.json").read_text(encoding="utf-8"))
     assert state["diagnostics"][-1]["event"] == "media.send_failed"
 

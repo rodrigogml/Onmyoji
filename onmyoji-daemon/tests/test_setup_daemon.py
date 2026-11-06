@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import tomllib
+import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -15,6 +16,67 @@ def setup_module():
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
     return module
+
+
+def test_gateway_execution_defaults_and_preservation_across_other_actions(tmp_path):
+    module = setup_module(); module.bootstrap(tmp_path)
+    initial = module.telegram_data(tmp_path)
+    assert initial["agent"]["busy_input_policy"] == "queue"
+    assert initial["agent"]["interrupt_grace_seconds"] == 15
+    assert initial["agent"]["post_turn_results"] is False
+    assert initial["limits"]["preparation_workers"] == 4
+    module.save_gateway_execution(tmp_path, "steer", 6, 20, True)
+    module.save_default_thought_preferences(tmp_path, False, True)
+    saved = module.telegram_data(tmp_path)
+    assert saved["agent"]["busy_input_policy"] == "steer"
+    assert saved["agent"]["interrupt_grace_seconds"] == 20
+    assert saved["agent"]["post_turn_results"] is True
+    assert saved["limits"]["preparation_workers"] == 6
+    assert saved["telegram"]["default_share_thoughts"] is False
+
+
+@pytest.mark.parametrize("schema", [1, 2])
+def test_setup_reads_both_editable_versions_and_always_saves_version_two(tmp_path, schema):
+    module = setup_module(); module.bootstrap(tmp_path)
+    content = module.target(tmp_path).read_text(encoding="utf-8").replace("schema_version = 2", f"schema_version = {schema}", 1)
+    module.target(tmp_path).write_text(content, encoding="utf-8")
+    assert module.telegram_data(tmp_path)["schema_version"] == schema
+    module.save_default_thought_preferences(tmp_path, True, False)
+    saved = module.telegram_data(tmp_path)
+    assert saved["schema_version"] == 2
+    assert saved["telegram"]["default_delete_thoughts"] is False
+
+
+@pytest.mark.parametrize("value", ["0", "3", "true", '"2"'])
+def test_setup_refuses_unknown_schema_without_rewriting(tmp_path, value):
+    module = setup_module(); module.bootstrap(tmp_path)
+    content = module.target(tmp_path).read_text(encoding="utf-8").replace("schema_version = 2", f"schema_version = {value}", 1)
+    module.target(tmp_path).write_text(content, encoding="utf-8")
+    original = module.target(tmp_path).read_bytes()
+    with pytest.raises(ValueError, match="não suportada"):
+        module.telegram_data(tmp_path)
+    with pytest.raises(ValueError, match="não suportada"):
+        module.save_telegram(tmp_path, "fixture", "fixture", {"schema_version": 3})
+    assert module.target(tmp_path).read_bytes() == original
+
+
+@pytest.mark.parametrize("policy,workers,grace,post", [(None, 4, 15, False), ("invalid", 4, 15, False), ([], 4, 15, False), ("queue", 0, 15, False), ("queue", 17, 15, False), ("queue", True, 15, False), ("queue", 4, 0, False), ("queue", 4, 61, False), ("queue", 4, 301, False), ("queue", 4, True, False), ("queue", 4, 15, "false")])
+def test_gateway_execution_rejects_invalid_values_without_changing_config(tmp_path, policy, workers, grace, post):
+    module = setup_module(); module.bootstrap(tmp_path)
+    original = module.target(tmp_path).read_bytes()
+    with pytest.raises(ValueError):
+        module.save_gateway_execution(tmp_path, policy, workers, grace, post)
+    assert module.target(tmp_path).read_bytes() == original
+
+
+def test_gateway_execution_cli_persists_intent_without_network(tmp_path):
+    module = setup_module()
+    arguments = ["setupDaemon.py", "--onmyoji-root", str(tmp_path), "--action", "set-gateway-execution", "--busy-input-policy", "steer", "--preparation-workers", "3", "--interrupt-grace-seconds", "12", "--post-turn-results", "true"]
+    with patch.object(sys, "argv", arguments), patch.object(module.subprocess, "run") as run:
+        assert module.main() == 0
+    assert module.telegram_data(tmp_path)["agent"]["busy_input_policy"] == "steer"
+    assert module.telegram_data(tmp_path)["limits"]["preparation_workers"] == 3
+    run.assert_not_called()
 
 
 def test_voice_setup_authorizes_only_telegram_staging(tmp_path):

@@ -13,6 +13,8 @@
 !/shikigami-template/**
 !/shikigami-skills/
 !/shikigami-skills/**
+!/shikigami-agents/
+!/shikigami-agents/*.toml
 !/docs/
 !/docs/**
 !/etc/

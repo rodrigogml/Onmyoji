@@ -26,17 +26,17 @@ A validação mostra cada dependência separadamente: instalação do daemon, TO
 
 Quando TOTP é configurado e habilitado, o setup usa o mesmo perfil KeePass do bot para conferir as entradas das senhas real e falsa. Para cada uma, permite reutilizar uma senha existente, informar outra e substituí-la, ou criar a entrada; o gateway só inicia se ambas continuarem existentes e com senha utilizável. Os comandos privados de cada owner incluem `/new`, `/config` e `/totp`. O fluxo TOTP pede uma senha real ou falsa mantida no KeePass, lista entradas paginadas, devolve o código em mensagem copiável e agenda a exclusão das mensagens auxiliares.
 
-`/config` abre um menu efêmero e privado por conversa para controlar `Compartilha Pensamentos` e `Excluir Pensamentos`; ambas começam habilitadas e são persistidas no SQLite do gateway. Durante um turno App Server, summaries públicos de reasoning e mensagens commentary são enviados como mensagens protegidas iniciadas por `💭`, com deduplicação. Quando a exclusão está habilitada, elas são apagadas após a resposta final, falha ou cancelamento. Comandos desconhecidos, TOTP desabilitado, sessões expiradas e configurações TOTP incompletas recebem uma resposta descritiva em vez de descarte silencioso.
+`/config` abre um menu efêmero e privado por conversa para controlar `Compartilha Pensamentos` e `Excluir Pensamentos`; ambas começam habilitadas e são persistidas no SQLite do gateway. Durante um turno App Server, comentários e resumos disponibilizados pelo Codex são enviados como mensagens protegidas iniciadas por `💭`, com deduplicação por item e execução. Isso não promete acesso ao raciocínio interno completo. Quando a exclusão está habilitada, a limpeza pertence ao turno concluído e aguarda a confirmação da resposta final ou do aviso terminal. Nova mensagem, fila ou steering não apaga essas atualizações; entrega incerta preserva os pensamentos até resolução. Comandos desconhecidos, TOTP desabilitado, sessões expiradas e configurações TOTP incompletas recebem uma resposta descritiva em vez de descarte silencioso.
 
 O gateway aceita inicialmente uma identidade Telegram. Pairing, owners e conversas ficam isolados na instância; mensagens de remetentes que não sejam owners em DM são ignoradas.
 
 ## Anexos Telegram
 
-Fotos, documentos e mensagens de voz são baixados de forma limitada e autenticada, com máximo de 20 MiB por arquivo, 50 MiB por mensagem e 250 MiB retidos por conversa, valores ajustáveis em `configs/daemon/services/telegram/config.toml`. A fila é persistida no SQLite por conversa; um processo interrompido devolve itens em execução à fila ao iniciar novamente, e cada conversa é atendida serialmente.
+Fotos, documentos e mensagens de voz são baixados de forma limitada e autenticada, com máximo de 20 MiB por arquivo, 50 MiB por mensagem e 250 MiB retidos por conversa, valores ajustáveis em `configs/daemon/services/telegram/config.toml`. A entrada é registrada e deduplicada no SQLite antes de avançar o checkpoint do polling. A ordem é preservada por conversa; com política `steer` e capacidade certificada, novas entradas elegíveis podem direcionar o turno ativo. Reiniciar o Gateway não recoloca cegamente solicitações em execução na fila: operações que podem ter sido aceitas ficam incertas até reconciliação ou decisão.
 
-Os arquivos retidos ficam em `<workspace>/.onmyoji/telegram/attachments/<chat>/<geração>/`. O App Server recebe fotos como `localImage`; documentos e vozes recebem um caminho temporário. Quando o perfil MCP EccoVox autoriza essa área de staging, mensagens de voz também recebem transcrição local. O agente pode listar os metadados da conversa e materializar um anexo de forma explícita pela ferramenta dinâmica `telegram_gateway`, sempre restrita ao owner, à conversa e à geração atuais. O staging é removido ao fim do turno, e `/new` remove a fila e todos os anexos retidos da geração anterior.
+Os arquivos retidos ficam em `<workspace>/.onmyoji/telegram/attachments/<identificador-local>/<geração>/`. O App Server recebe fotos como `localImage`; documentos e vozes recebem um caminho temporário. Quando o perfil MCP EccoVox autoriza essa área de staging, mensagens de voz também recebem transcrição local. O agente pode listar os metadados da conversa e materializar um anexo de forma explícita pela ferramenta dinâmica `telegram_gateway`, sempre restrita ao owner, à conversa e à geração atuais. O staging é liberado ao fechar o turno e seus consumidores. `/new` isola a geração seguinte imediatamente, invalida trabalho antigo e adia a remoção de anexos ainda usados até confirmar encerramento ou perda do processo.
 
-O envio de anexos requer o modo App Server habilitado. No modo `codex exec`, o gateway recusa o anexo explicitamente, em vez de expor caminhos ou executar uma importação insegura.
+O Gateway exige App Server, inclusive para mensagens somente textuais; não há execução alternativa por `codex exec`. CLI nativo e Console são entradas locais independentes e usam o mesmo contrato central de configuração.
 
 ## Respostas em áudio e mídia de saída
 
@@ -45,3 +45,50 @@ O perfil MCP EccoVox define a voz padrão usada pelas ferramentas MCP de síntes
 Quando o modo é áudio, o gateway inclui uma orientação transitória para resposta falável no turno e sintetiza a resposta final localmente pelo EccoVox. A falha de síntese é informada e, por padrão, entrega a resposta em texto. O áudio e qualquer arquivo de saída vivem somente no staging/outbox do turno, dentro do workspace, e são apagados ao fim.
 
 Se `agent_outbound_media` estiver habilitado, o agente pode solicitar `get_outbox` e `send_file`; o gateway aceita exclusivamente arquivos regulares do outbox daquele turno, limita tamanho e envia somente à DM ativa. O modelo nunca informa chat, owner ou um caminho arbitrário ao gateway.
+
+## Execução assíncrona e recuperação do Gateway
+
+`[agent].busy_input_policy = "queue"` mantém o padrão compatível. A opção `"steer"`
+permite novas entradas ao turno ativo somente quando o runtime, o tipo de input e
+a origem forem elegíveis. `/fila <texto>` pede processamento posterior;
+`/direcionar <texto>` pede direcionamento, com fallback informado para fila.
+`/cancel` solicita interrupção do turno e preserva a fila. `/resolver` consulta e
+tenta reconciliar incertezas; `/resolver descartar` libera solicitações incertas
+localmente, sem reenviar nem desfazer efeitos externos. Esses controles são do
+owner na conversa privada.
+
+Processo, thread e turno têm ciclos diferentes: um item de resposta final não
+encerra o turno, `turn/completed` não encerra necessariamente o processo, e
+`thread/resume` não inicia geração. Nova mensagem com processo parado exige
+handshake, retomada da thread e `turn/start`. `/new` abre nova geração, mas seu
+primeiro despacho aguarda a execução antiga deixar de estar não terminal.
+
+Antes da geração, o Gateway salva uma identidade nativa do processo em estado
+privado. Após crash, confere PID, criação, executável e instância antes de
+encerrar um órfão conhecido ou abrir outro App Server. PID reutilizado é
+preservado; identidade inacessível mantém a abertura bloqueada para não deixar
+duas execuções sem coordenação. O mecanismo não reconecta stdio perdido.
+
+`[agent].post_turn_results` começa `false`. Quando habilitada e certificada, a
+continuidade pós-turno acompanha somente filhos ligados ao principal pelo
+runtime e entrega resultados como dados para uma continuação coordenada. O
+runtime validado permite filho terminar depois do turno enquanto o processo
+vive, mas perde a execução ativa do filho ao encerrar o App Server. Não há
+promessa de worker durável ou retomada automática depois dessa perda.
+
+Uma outbox local registra tentativas e confirmações; não cria garantia de
+entrega única em Telegram ou serviços externos. Timeout após possível envio
+permanece incerto e não causa reenvio automático. Consulte os
+[contratos detalhados e controles](../onmyoji-daemon/docs/Telegram.md) e o
+[relatório de compatibilidade](../onmyoji-daemon/docs/validation/delegacao-app-server.md).
+
+A migração eleva a configuração do Gateway para esquema 2 antes de gravar o
+banco novo, preservando backup privado do TOML e snapshot SQLite anterior quando
+há dados. O binário antigo recusa a configuração nova. A volta de versão deve
+ser feita por modo fila/recuperação ou por restauração consistente com o serviço
+parado, após reconciliar efeitos externos; restaurar banco não desfaz envios.
+
+O banco integrado está no esquema 3, preservando localização estruturada na
+fila durável e no redirecionamento. Isso não muda o esquema 2 da configuração.
+O [registro de integração](../onmyoji-daemon/docs/implementation/integracao-delegacao-gateway.md)
+distingue a validação do projeto da aplicação posterior à instância.

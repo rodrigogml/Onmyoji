@@ -67,7 +67,7 @@ class InstructionComposer:
         try: raw = path.read_bytes()
         except OSError as error: raise InstructionError(f"Não foi possível ler {path.name}: {error}") from error
         if len(raw) > limit: raise InstructionError(f"{path.name} excede o limite de {limit} bytes.")
-        try: text = raw.decode("utf-8")
+        try: text = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
         except UnicodeDecodeError as error: raise InstructionError(f"{path.name} deve usar UTF-8.") from error
         if not text.strip(): raise InstructionError(f"{path.name} não pode estar vazio.")
         return text.strip()
