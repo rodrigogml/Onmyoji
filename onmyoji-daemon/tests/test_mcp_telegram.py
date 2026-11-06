@@ -11,7 +11,7 @@ from onmyoji_daemon.mcp.telegram.tools import TelegramToolRegistry
 from onmyoji_daemon.supervisor import Supervisor
 
 
-TELEGRAM_TOOLS = {"telegram.list_channels", "telegram.send", "telegram.remove_channel"}
+TELEGRAM_TOOLS = {"telegram.list_channels", "telegram.send", "telegram.send_location", "telegram.remove_channel"}
 
 
 def test_tools_remain_hidden_when_enable_requires_daemon_installation(tmp_path: Path) -> None:

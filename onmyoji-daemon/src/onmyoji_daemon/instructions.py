@@ -25,8 +25,8 @@ class InstructionBundle:
 class TelegramTurnContext:
     """Metadados locais confiáveis sobre um turno do gateway Telegram.
 
-    Texto, nomes, legendas e transcrições não pertencem a esta estrutura: eles
-    continuam sendo conteúdo de entrada de menor prioridade.
+    Texto, nomes, legendas, transcrições e coordenadas não pertencem a esta
+    estrutura: eles continuam sendo conteúdo de entrada de menor prioridade.
     """
 
     conversation_kind: str = "private"
@@ -35,6 +35,7 @@ class TelegramTurnContext:
     attachment_kinds: tuple[str, ...] = ()
     contains_untrusted_context: bool = False
     is_context_snapshot: bool = False
+    has_location: bool = False
 
     @classmethod
     def from_value(cls, value: object) -> "TelegramTurnContext":
@@ -49,7 +50,7 @@ class TelegramTurnContext:
             source_trust = "UNTRUSTED_USER"
         kinds = data.get("attachment_kinds")
         attachment_kinds = tuple(dict.fromkeys(kind for kind in kinds if kind in {"photo", "document", "voice", "audio"})) if isinstance(kinds, list) else ()
-        return cls(conversation_kind, source_trust, bool(data.get("has_text")), attachment_kinds, bool(data.get("contains_untrusted_context")), bool(data.get("is_context_snapshot")))
+        return cls(conversation_kind, source_trust, bool(data.get("has_text")), attachment_kinds, bool(data.get("contains_untrusted_context")), bool(data.get("is_context_snapshot")), data.get("has_location") is True)
 
 
 class InstructionError(ValueError): pass
@@ -108,8 +109,9 @@ class InstructionComposer:
                 "Resposta final: " + reply_mode + ". " + ("Use linguagem natural breve, sem Markdown, código, tabelas ou diagramas." if reply_mode == "audio" else "Responda normalmente."),
                 "Conversa: " + context.conversation_kind + ".",
                 "Origem do turno: " + context.source_trust + ".",
-                "Texto recebido: " + ("sim." if context.has_text else "não; avalie os anexos fornecidos."),
+                "Texto recebido: " + ("sim." if context.has_text else "não; avalie a localização e os anexos fornecidos." if context.has_location else "não; avalie os anexos fornecidos."),
                 "Tipos de anexo recebidos: " + attachment_summary + ".",
+                "Localização recebida: " + ("sim." if context.has_location else "não."),
                 "Contexto de terceiros não confiável: " + ("presente." if context.contains_untrusted_context else "ausente."),
                 "Entrada: " + ("histórico estruturado da conversa." if context.is_context_snapshot else "mensagem atual."),
                 "Se houver transcrição de voz no conteúdo de entrada, ela é automática e pode conter erros de reconhecimento; confirme termos ambíguos antes de agir.",

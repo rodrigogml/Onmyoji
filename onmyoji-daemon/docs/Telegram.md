@@ -4,6 +4,31 @@ O Gateway Telegram recebe mensagens e anexos, inicia o Codex App Server quando
 necessário e encaminha a conversa ao agente com o mesmo contexto de execução
 configurado para a instância.
 
+## Localização fixa
+
+O Gateway recebe pontos fixos nativos do Telegram mesmo sem texto e entrega
+ao agente latitude, longitude e, quando informada, precisão horizontal como
+raio de incerteza em metros. Um venue é normalizado como ponto fixo único,
+preservando título/endereço disponíveis como dados do remetente. Isso não
+comprova GPS ou presença atual nem autoriza retransmitir o ponto.
+
+Na DM, os dados seguem em `telegram_turn.location`; em grupos, no campo
+`location` da mensagem no histórico estruturado. Coordenadas permanecem no
+conteúdo de entrada, fora das developer instructions. Valem os mesmos owners,
+disparos por menção/reply, tópicos, janela de contexto e isolamento da conversa.
+
+Quando o pedido autorizado exigir devolver um ponto, o agente usa
+`telegram_gateway.send_location`, sem arquivo/outbox, com mídia de saída
+habilitada. A ferramenta envia um cartão nativo somente à conversa ativa.
+Threads antigas preservam seu histórico e podem usar a capacidade temporária
+de resposta obtida por `get_channel_state`, através de `telegram.send_location`.
+Envios a outros destinos continuam sujeitos ao catálogo e à autorização externa.
+
+Localização ao vivo, tracking, edições e geocodificação ficam fora de escopo.
+Um compartilhamento live recebe aviso de tipo não suportado nos contextos de
+atendimento autorizados, sem acompanhamento. Veja os contratos, exemplos e
+registro de desenvolvimento em [Localização Telegram](telegram-location.md).
+
 ## Anexos no workspace
 
 Anexos recebidos pelo Telegram são arquivos de trabalho do agente. Por isso,

@@ -23,6 +23,7 @@ from urllib.request import Request, urlopen
 
 from .rpc import RpcServer
 from .telegram_channels import TelegramChannels
+from .telegram_location import OMITTED, LocationValidationError, UnsupportedLocationError, normalize_location, normalize_stored_location, parse_message_location
 from .instructions import InstructionComposer, TelegramTurnContext
 from .instance import identity, telegram_configuration_path
 from .codex_execution import CodexExecutionError, CodexLaunch
@@ -254,6 +255,8 @@ class AppServerTurn:
     reply_to_message_id: int | None = None
     source_trust: str = "UNTRUSTED_USER"
     sticker_only_sent: bool = False
+    location_reply_context: str = field(default_factory=lambda: secrets.token_urlsafe(32))
+    conversation_generation: int | None = None
 
 
 @dataclass
@@ -387,12 +390,15 @@ class Gateway(TelegramChannels):
             except sqlite3.OperationalError: pass
         self.database.execute("CREATE TABLE IF NOT EXISTS conversation_attachments(id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, generation INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, mime_type TEXT, size INTEGER NOT NULL, archive_path TEXT NOT NULL, created_at REAL NOT NULL)")
         self.database.execute("CREATE INDEX IF NOT EXISTS attachment_scope ON conversation_attachments(chat_id, generation, created_at)")
-        self.database.execute("CREATE TABLE IF NOT EXISTS inbox_items(id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, generation INTEGER NOT NULL, text TEXT NOT NULL, attachment_ids TEXT NOT NULL, turn_context TEXT NOT NULL DEFAULT '{}', state TEXT NOT NULL, created_at REAL NOT NULL)")
+        self.database.execute("CREATE TABLE IF NOT EXISTS inbox_items(id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, generation INTEGER NOT NULL, text TEXT NOT NULL, attachment_ids TEXT NOT NULL, turn_context TEXT NOT NULL DEFAULT '{}', structured_content TEXT NOT NULL DEFAULT '{}', state TEXT NOT NULL, created_at REAL NOT NULL)")
         try: self.database.execute("ALTER TABLE inbox_items ADD COLUMN turn_context TEXT NOT NULL DEFAULT '{}'")
         except sqlite3.OperationalError: pass
         self.database.execute("CREATE INDEX IF NOT EXISTS inbox_scope ON inbox_items(chat_id, generation, state, created_at)")
         self.database.execute("CREATE TABLE IF NOT EXISTS outbound_intents(id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, generation INTEGER NOT NULL, kind TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, telegram_message_id INTEGER, created_at REAL NOT NULL, completed_at REAL)")
-        self.database.execute("CREATE TABLE IF NOT EXISTS conversation_messages(id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, generation INTEGER NOT NULL, telegram_message_id INTEGER, sender_id INTEGER, sender_name TEXT, trust TEXT NOT NULL, text TEXT NOT NULL, attachment_ids TEXT NOT NULL, created_at REAL NOT NULL)")
+        self.database.execute("CREATE TABLE IF NOT EXISTS conversation_messages(id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, generation INTEGER NOT NULL, telegram_message_id INTEGER, sender_id INTEGER, sender_name TEXT, trust TEXT NOT NULL, text TEXT NOT NULL, attachment_ids TEXT NOT NULL, structured_content TEXT NOT NULL DEFAULT '{}', created_at REAL NOT NULL)")
+        for table in ("inbox_items", "conversation_messages"):
+            if "structured_content" not in {row[1] for row in self.database.execute(f"PRAGMA table_info({table})")}:
+                self.database.execute(f"ALTER TABLE {table} ADD COLUMN structured_content TEXT NOT NULL DEFAULT '{{}}'")
         self.database.execute("CREATE INDEX IF NOT EXISTS message_scope ON conversation_messages(chat_id, generation, created_at)")
         self.database.execute("CREATE TABLE IF NOT EXISTS bot_messages(chat_id TEXT NOT NULL, generation INTEGER NOT NULL, telegram_message_id INTEGER NOT NULL, created_at REAL NOT NULL, PRIMARY KEY(chat_id, generation, telegram_message_id))")
         self.database.execute("UPDATE inbox_items SET state='pending' WHERE state='running'")
@@ -602,8 +608,8 @@ class Gateway(TelegramChannels):
         prefix = str(conversation_id).split(":", 1)[0]
         return {"private": "private", "group": "group", "forum": "forum_topic", "direct": "direct_topic"}.get(prefix, "private")
 
-    def _turn_context(self, conversation_id: str, sender: dict[str, Any], text: str, attachments: list[dict[str, Any]], *, contains_untrusted_context: bool = False, is_context_snapshot: bool = False) -> dict[str, Any]:
-        return {
+    def _turn_context(self, conversation_id: str, sender: dict[str, Any], text: str, attachments: list[dict[str, Any]], *, contains_untrusted_context: bool = False, is_context_snapshot: bool = False, has_location: bool = False) -> dict[str, Any]:
+        context = {
             "conversation_kind": self._conversation_kind(conversation_id),
             "source_trust": self._trust(sender),
             "has_text": bool(text.strip()),
@@ -611,36 +617,64 @@ class Gateway(TelegramChannels):
             "contains_untrusted_context": contains_untrusted_context,
             "is_context_snapshot": is_context_snapshot,
         }
+        if has_location: context["has_location"] = True
+        return context
 
-    def _cache_message(self, conversation_id: str, message: dict[str, Any], sender: dict[str, Any], text: str, attachments: list[dict[str, Any]]) -> None:
+    def _structured_location_content(self, value: object) -> dict[str, Any]:
+        """Recupera somente conteúdo geográfico estático válido, sem expor dados no diagnóstico."""
+        try:
+            data = json.loads(value) if isinstance(value, str) else value
+            if not isinstance(data, dict): raise ValueError("Invalid structured content")
+            if not data: return {}
+            if "location" not in data: return {}
+            result: dict[str, Any] = {"location": normalize_stored_location(data["location"])}
+            message_id = data.get("message_id")
+            if isinstance(message_id, int) and not isinstance(message_id, bool) and message_id > 0:
+                result["message_id"] = message_id
+            timestamp = data.get("timestamp")
+            if isinstance(timestamp, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", timestamp):
+                try: time.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ")
+                except ValueError: pass
+                else: result["timestamp"] = timestamp
+            return result
+        except (TypeError, ValueError, OverflowError):
+            try: self._diagnostic("location.content_discarded", reason="invalid_structured_content")
+            except Exception: pass
+            return {}
+
+    def _cache_message(self, conversation_id: str, message: dict[str, Any], sender: dict[str, Any], text: str, attachments: list[dict[str, Any]], structured_content: dict[str, Any] | None = None) -> None:
         generation = self._generation(conversation_id)
         self._ensure_conversation(conversation_id)
         message_id = message.get("message_id")
         if not isinstance(message_id, int): return
         created_at = float(message.get("date") or time.time())
         with self.database_lock:
-            self.database.execute("INSERT OR IGNORE INTO conversation_messages(id, chat_id, generation, telegram_message_id, sender_id, sender_name, trust, text, attachment_ids, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (secrets.token_urlsafe(12), conversation_id, generation, message_id, sender.get("id") if isinstance(sender.get("id"), int) else None, str(sender.get("username") or sender.get("first_name") or "unknown"), self._trust(sender), text, json.dumps([item["id"] for item in attachments]), created_at))
+            self.database.execute("INSERT OR IGNORE INTO conversation_messages(id, chat_id, generation, telegram_message_id, sender_id, sender_name, trust, text, attachment_ids, structured_content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (secrets.token_urlsafe(12), conversation_id, generation, message_id, sender.get("id") if isinstance(sender.get("id"), int) else None, str(sender.get("username") or sender.get("first_name") or "unknown"), self._trust(sender), text, json.dumps([item["id"] for item in attachments]), json.dumps(self._structured_location_content(structured_content or {}), ensure_ascii=False, allow_nan=False), created_at))
             self.database.commit()
 
     def _context_snapshot(self, conversation_id: str) -> tuple[str, list[dict[str, Any]], dict[str, bool]]:
         generation = self._generation(conversation_id); maximum, age = self._context_limits(conversation_id); now = time.time()
         with self.database_lock:
-            all_rows = self.database.execute("SELECT telegram_message_id, sender_name, trust, text, attachment_ids, created_at FROM conversation_messages WHERE chat_id=? AND generation=? ORDER BY created_at, rowid", (conversation_id, generation)).fetchall()
+            all_rows = self.database.execute("SELECT telegram_message_id, sender_name, trust, text, attachment_ids, created_at, structured_content FROM conversation_messages WHERE chat_id=? AND generation=? ORDER BY created_at, rowid", (conversation_id, generation)).fetchall()
         filtered = [row for row in all_rows if not age or float(row[5]) >= now - age]
         selected = filtered[-maximum:] if maximum else filtered
         dropped = len(all_rows) - len(selected)
         payload = {"conversation_context": {"included_messages": [{"message_id": row[0], "sender": row[1], "trust": row[2], "text": row[3], "attachment_ids": json.loads(str(row[4])), "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(row[5])))} for row in selected], "context_window": {"included_messages": len(selected), "dropped_messages": dropped, "cutoff_reasons": ([name for name, enabled in (("max_age", bool(age and any(float(row[5]) < now - age for row in all_rows))), ("max_messages", bool(maximum and len(filtered) > maximum))) if enabled])}}}
+        for item, row in zip(payload["conversation_context"]["included_messages"], selected):
+            structured = self._structured_location_content(row[6])
+            if "location" in structured: item["location"] = structured["location"]
         attachments = {item["id"]: item for item in self._attachment_rows(conversation_id, 50)}
         wanted = [attachment_id for row in selected for attachment_id in json.loads(str(row[4]))]
         summary = {"contains_untrusted_context": any(str(row[2]) != "OWNER" for row in selected)}
-        return json.dumps(payload, ensure_ascii=False), [attachments[item] for item in dict.fromkeys(wanted) if item in attachments], summary
+        if any("location" in item for item in payload["conversation_context"]["included_messages"]): summary["has_location"] = True
+        return json.dumps(payload, ensure_ascii=False, allow_nan=False), [attachments[item] for item in dict.fromkeys(wanted) if item in attachments], summary
 
-    def _enqueue_turn(self, chat_id: int, text: str, attachments: list[dict[str, Any]], turn_context: dict[str, Any] | None = None) -> None:
+    def _enqueue_turn(self, chat_id: int, text: str, attachments: list[dict[str, Any]], turn_context: dict[str, Any] | None = None, structured_content: dict[str, Any] | None = None) -> None:
         generation = self._generation(chat_id)
         with self.database_lock:
             pending = self.database.execute("SELECT COUNT(*) FROM inbox_items WHERE chat_id=? AND generation=? AND state IN ('pending', 'running')", (str(chat_id), generation)).fetchone()[0]
             if int(pending) >= self.settings.max_pending_items: raise RuntimeError("A fila desta conversa atingiu o limite configurado.")
-            self.database.execute("INSERT INTO inbox_items(id, chat_id, generation, text, attachment_ids, turn_context, state, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)", (secrets.token_urlsafe(12), str(chat_id), generation, text, json.dumps([item["id"] for item in attachments]), json.dumps(turn_context or {}, ensure_ascii=False), time.time())); self.database.commit()
+            self.database.execute("INSERT INTO inbox_items(id, chat_id, generation, text, attachment_ids, turn_context, structured_content, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)", (secrets.token_urlsafe(12), str(chat_id), generation, text, json.dumps([item["id"] for item in attachments]), json.dumps(turn_context or {}, ensure_ascii=False), json.dumps(self._structured_location_content(structured_content or {}), ensure_ascii=False, allow_nan=False), time.time())); self.database.commit()
         with self.workers_lock:
             if chat_id in self.workers: return
             self.workers.add(chat_id); threading.Thread(target=self._worker, args=(chat_id,), daemon=True).start()
@@ -650,20 +684,84 @@ class Gateway(TelegramChannels):
             while not self.stop_event.is_set():
                 generation = self._generation(chat_id)
                 with self.database_lock:
-                    row = self.database.execute("SELECT id, text, attachment_ids, turn_context FROM inbox_items WHERE chat_id=? AND generation=? AND state='pending' ORDER BY created_at LIMIT 1", (str(chat_id), generation)).fetchone()
+                    row = self.database.execute("SELECT id, text, attachment_ids, turn_context, structured_content FROM inbox_items WHERE chat_id=? AND generation=? AND state='pending' ORDER BY created_at LIMIT 1", (str(chat_id), generation)).fetchone()
                     if row: self.database.execute("UPDATE inbox_items SET state='running' WHERE id=?", (str(row[0]),)); self.database.commit()
                 if not row: return
                 try:
                     wanted = json.loads(str(row[2])); available = {item["id"]: item for item in self._attachment_rows(chat_id, 50)}; attachments = [available[item] for item in wanted if item in available]
                     try: turn_context = json.loads(str(row[3]))
                     except (TypeError, ValueError): turn_context = {}
-                    self._turn(chat_id, str(row[1]), attachments, turn_context)
+                    structured = self._structured_location_content(row[4])
+                    if structured: self._turn(chat_id, str(row[1]), attachments, turn_context, structured)
+                    else: self._turn(chat_id, str(row[1]), attachments, turn_context)
                     with self.database_lock: self.database.execute("DELETE FROM inbox_items WHERE id=?", (str(row[0]),)); self.database.commit()
                 except Exception as error:
                     self._record_error(error)
                     with self.database_lock: self.database.execute("DELETE FROM inbox_items WHERE id=?", (str(row[0]),)); self.database.commit()
         finally:
             with self.workers_lock: self.workers.discard(chat_id)
+
+    def _send_active_location(self, active: AppServerTurn, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Envia um ponto fixo somente ao turno autorizado, sem registrar geodados em diagnósticos.
+
+        Falhas retornam ausência de entrega confirmada. Depois do recibo Telegram,
+        falha no registro local mantém sucesso com aviso para evitar reenvio.
+        """
+        def failed(stage: str, error: str) -> dict[str, Any]:
+            try: self._diagnostic("location.send_failed", conversation=active.conversation_id, stage=stage)
+            except Exception: pass
+            return {"sent": False, "stage": stage, "error": error}
+
+        if not self.settings.agent_outbound_media:
+            return failed("capability", "Envio de mídia pelo agente está desabilitado.")
+        if active.source_trust not in {"OWNER", "AUTHORIZED_USER"} or active.completed.is_set() or active.status != "inProgress":
+            return failed("authorization", "Somente um turno ativo de owner ou usuário autorizado pode enviar localização.")
+        generation = self._generation(active.conversation_id)
+        if active.conversation_generation is None:
+            active.conversation_generation = generation
+        if active.conversation_generation != generation:
+            return failed("authorization", "O contexto de resposta expirou após o reinício da conversa.")
+        if set(arguments) - {"latitude", "longitude", "horizontal_accuracy"}:
+            return failed("argument_validation", "Os dados de localização contêm campos não permitidos.")
+        try:
+            location = normalize_location(arguments.get("latitude"), arguments.get("longitude"), arguments.get("horizontal_accuracy", OMITTED))
+        except LocationValidationError as error:
+            return failed("argument_validation", str(error))
+        if not self.api:
+            return failed("gateway", "Gateway Telegram indisponível.")
+        values = {key: value for key, value in location.items() if key != "kind"}
+        try:
+            sent = self.api.call("sendLocation", {"chat_id": active.chat_id, **active.telegram_topic_values, **values})
+        except Exception:
+            return failed("telegram_api", "Não foi possível confirmar o envio da localização. Ele pode ter ocorrido; não repita automaticamente.")
+        message_id = sent.get("message_id") if isinstance(sent, dict) else None
+        if isinstance(message_id, bool) or not isinstance(message_id, int) or message_id <= 0:
+            return failed("receipt_validation", "Telegram não confirmou o identificador da mensagem. O envio pode ter ocorrido; não repita automaticamente.")
+        response: dict[str, Any] = {"sent": True, "message_id": message_id}
+        try:
+            with self.database_lock:
+                self.database.execute("INSERT OR IGNORE INTO bot_messages(chat_id, generation, telegram_message_id, created_at) VALUES (?, ?, ?, ?)", (active.conversation_id, generation, message_id, time.time()))
+                self.database.commit()
+        except Exception:
+            response["warning"] = "Telegram confirmou o envio, mas não foi possível preservar integralmente o contexto local."
+        try: self._diagnostic("location.sent", conversation=active.conversation_id, message_id=message_id)
+        except Exception: pass
+        return response
+
+    def _reply_send_location(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Resolve a capacidade efêmera de uma thread antiga sem aceitar um destino arbitrário.
+
+        O token é emitido somente pela ferramenta da conversa ativa e deixa de
+        funcionar ao terminar o turno. Nunca autoriza envio para outro contexto.
+        """
+        token = params.get("reply_context")
+        if not isinstance(token, str) or not token.isascii() or not 1 <= len(token) <= 128:
+            return {"sent": False, "stage": "authorization", "error": "Contexto de resposta inválido ou expirado."}
+        with self.app_server_lock:
+            active = next((item for item in self.app_turns.values() if secrets.compare_digest(item.location_reply_context, token)), None)
+        if active is None:
+            return {"sent": False, "stage": "authorization", "error": "Contexto de resposta inválido ou expirado."}
+        return self._send_active_location(active, {key: value for key, value in params.items() if key != "reply_context"})
 
     def _app_server_request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method != "item/tool/call" or params.get("namespace") != "telegram_gateway": raise RuntimeError("Ferramenta do gateway não autorizada.")
@@ -672,7 +770,16 @@ class Gateway(TelegramChannels):
         with self.app_server_lock: active = self.app_turns.get(thread_id)
         if not active: raise RuntimeError("Turno do Telegram não está ativo.")
         arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
-        if tool == "get_channel_state": return {"contentItems": [{"type": "inputText", "text": json.dumps(self._channel_state(active.conversation_id), ensure_ascii=False)}], "success": True}
+        if tool == "get_channel_state":
+            state = self._channel_state(active.conversation_id)
+            generation = self._generation(active.conversation_id)
+            if active.conversation_generation is None:
+                active.conversation_generation = generation
+            if self.settings.agent_outbound_media and active.source_trust in {"OWNER", "AUTHORIZED_USER"} and not active.completed.is_set() and active.status == "inProgress" and active.conversation_generation == generation:
+                state["location_reply_context"] = active.location_reply_context
+            return {"contentItems": [{"type": "inputText", "text": json.dumps(state, ensure_ascii=False)}], "success": True}
+        if tool == "send_location":
+            return {"contentItems": [{"type": "inputText", "text": json.dumps(self._send_active_location(active, arguments), ensure_ascii=False, allow_nan=False)}], "success": True}
         if tool == "set_reply_mode":
             state = self._set_reply_mode(active.conversation_id, str(arguments.get("mode") or "")); active.reply_mode = state["reply_mode"]
             return {"contentItems": [{"type": "inputText", "text": json.dumps(state, ensure_ascii=False)}], "success": True}
@@ -848,7 +955,7 @@ class Gateway(TelegramChannels):
 
     def _app_thread(self, chat_id: int, client: CodexAppServer, turn_context: dict[str, Any] | None = None) -> str:
         state = self._channel_state(chat_id); bundle = self.instructions.compose(identity=self.identity, telegram=True, reply_mode=str(state["reply_mode"]), outbound_media=self.settings.agent_outbound_media, telegram_context=TelegramTurnContext.from_value(turn_context))
-        tool_contract = f"{bundle.baseline_hash}:telegram-tools-v2"
+        tool_contract = f"{bundle.baseline_hash}:telegram-tools-v3"
         row = self.database.execute("SELECT codex_thread_id, instruction_baseline_hash FROM conversations WHERE chat_id=?", (str(chat_id),)).fetchone(); thread_id = str(row[0]) if row and row[0] else ""
         revised = bool(thread_id and str(row[1] or "") != tool_contract)
         params = {"cwd": str(self.settings.project), "approvalPolicy": self.settings.approval, "sandbox": self.settings.sandbox, "developerInstructions": bundle.text}
@@ -870,6 +977,7 @@ class Gateway(TelegramChannels):
         tools = [{"type": "namespace", "name": "telegram_gateway", "description": "Interface restrita à DM Telegram ativa.", "tools": [{"type": "function", "name": "get_channel_state", "description": "Consulta o modo de resposta da conversa ativa.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "set_reply_mode", "description": "Define a resposta final como texto ou áudio nesta conversa.", "inputSchema": {"type": "object", "properties": {"mode": {"type": "string", "enum": ["text", "audio"]}}, "required": ["mode"], "additionalProperties": False}}, {"type": "function", "name": "get_outbox", "description": "Reserva o diretório exclusivo deste turno para mídia recém-criada.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "send_file", "description": "Envia arquivo do outbox por file_name ou arquivo existente em raiz autorizada por file_path. Caminho direto exige owner autorizado.", "inputSchema": {"type": "object", "properties": {"file_name": {"type": "string"}, "file_path": {"type": "string"}, "kind": {"type": "string", "enum": ["photo", "document", "audio"]}, "caption": {"type": "string"}}, "required": ["kind"], "additionalProperties": False}}, {"type": "function", "name": "list_stickers", "description": "Lista IDs e contextos das figurinhas pré-cadastradas para a conversa ativa.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "send_sticker", "description": "Envia uma figurinha pré-cadastrada pelo seu ID, sem legenda.", "inputSchema": {"type": "object", "properties": {"sticker_id": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["sticker_id"], "additionalProperties": False}}, {"type": "function", "name": "list_attachments", "description": "Lista os metadados dos anexos retidos na conversa atual.", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False}}, {"type": "function", "name": "materialize_attachment", "description": "Copia um anexo retido para o staging seguro do turno atual.", "inputSchema": {"type": "object", "properties": {"attachment_id": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["attachment_id"], "additionalProperties": False}}]}]
         tools[0]["tools"].extend([{"type": "function", "name": "send_message", "description": "Envia mensagem adicional somente à DM Telegram ativa; pode expirar automaticamente.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "minLength": 1, "maxLength": 4000}, "ttl_seconds": {"type": "integer", "minimum": 0, "maximum": 86400}, "protect_content": {"type": "boolean"}}, "required": ["text"], "additionalProperties": False}}, {"type": "function", "name": "ask_menu", "description": "Exibe opções ao owner da DM ativa e aguarda a seleção com prazo limitado.", "inputSchema": {"type": "object", "properties": {"question": {"type": "string", "minLength": 1, "maxLength": 4000}, "options": {"type": "array", "minItems": 2, "maxItems": 20, "items": {"type": "object", "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 64}, "label": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["id", "label"], "additionalProperties": False}}, "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": 300}, "protect_content": {"type": "boolean"}}, "required": ["question", "options"], "additionalProperties": False}}])
         tools[0]["description"] = "Interface restrita à conversa Telegram ativa. Cada ferramenta declara o escopo em que funciona."
+        tools[0]["tools"].append({"type": "function", "name": "send_location", "description": "Envia um ponto geográfico fixo nativo somente à conversa ativa. Exige origem autorizada e mídia de saída habilitada; não acompanha localização ao vivo.", "inputSchema": {"type": "object", "properties": {"latitude": {"type": "number", "minimum": -90, "maximum": 90}, "longitude": {"type": "number", "minimum": -180, "maximum": 180}, "horizontal_accuracy": {"type": "number", "minimum": 0, "maximum": 1500, "description": "Raio de incerteza opcional em metros; omita quando desconhecido."}}, "required": ["latitude", "longitude"], "additionalProperties": False}})
         for tool in tools[0]["tools"]:
             if tool["name"] == "send_message":
                 tool["description"] = "Envia mensagem adicional à conversa Telegram ativa; pode expirar automaticamente."
@@ -899,16 +1007,17 @@ class Gateway(TelegramChannels):
         except Exception as error:
             self._record_error(f"Transcrição de voz indisponível: {error}"); return None
 
-    def _app_turn(self, chat_id: int, text: str, attachments: list[dict[str, Any]] | None = None, turn_context: dict[str, Any] | None = None) -> tuple[str | None, str]:
+    def _app_turn(self, chat_id: int, text: str, attachments: list[dict[str, Any]] | None = None, turn_context: dict[str, Any] | None = None, structured_content: dict[str, Any] | None = None) -> tuple[str | None, str]:
         context = TelegramTurnContext.from_value(turn_context)
-        telegram_chat_id, telegram_topic_values = self._telegram_address(str(chat_id)); client = self._app_client(); thread_id = self._app_thread(chat_id, client, turn_context); state = self._channel_state(chat_id); active = AppServerTurn(telegram_chat_id, thread_id, threading.Event(), reply_mode=state["reply_mode"], telegram_topic_values=telegram_topic_values, conversation_id=str(chat_id), source_trust=context.source_trust)
+        telegram_chat_id, telegram_topic_values = self._telegram_address(str(chat_id)); client = self._app_client(); thread_id = self._app_thread(chat_id, client, turn_context); state = self._channel_state(chat_id); active = AppServerTurn(telegram_chat_id, thread_id, threading.Event(), reply_mode=state["reply_mode"], telegram_topic_values=telegram_topic_values, conversation_id=str(chat_id), source_trust=context.source_trust, conversation_generation=self._generation(chat_id))
         with self.app_server_lock: self.app_turns[thread_id] = active
         try:
             external_context, external_ids = self._pending_external(str(chat_id))
             try: content: Any = json.loads(text) if context.is_context_snapshot else text
             except (TypeError, ValueError): content = text
-            turn_input = {"telegram_turn": {"provenance": {"conversation_kind": context.conversation_kind, "source_trust": context.source_trust, "contains_untrusted_context": context.contains_untrusted_context}, "content": content or "O usuário enviou anexos sem mensagem textual."}}
-            inputs: list[dict[str, Any]] = [{"type": "text", "text": (external_context + "\n\n" if external_context else "") + json.dumps(turn_input, ensure_ascii=False)}]
+            structured = self._structured_location_content(structured_content or {})
+            turn_input = {"telegram_turn": {"provenance": {"conversation_kind": context.conversation_kind, "source_trust": context.source_trust, "contains_untrusted_context": context.contains_untrusted_context}, "content": content if content or structured else "O usuário enviou anexos sem mensagem textual.", **structured}}
+            inputs: list[dict[str, Any]] = [{"type": "text", "text": (external_context + "\n\n" if external_context else "") + json.dumps(turn_input, ensure_ascii=False, allow_nan=False)}]
             for attachment in [*(attachments or []), *self._external_attachment_rows(str(chat_id), external_ids)]:
                 staged = self._stage_attachment(chat_id, attachment, active)
                 attachment_input: dict[str, Any] = {"id": attachment["id"], "kind": attachment["kind"], "name": attachment["name"], "mime_type": attachment.get("mime_type"), "local_path": str(staged)}
@@ -1002,15 +1111,34 @@ class Gateway(TelegramChannels):
             return
         if command == "/config": self._open_config(conversation_id); return
         if text.startswith("/"): self._ephemeral(conversation_id, "Comando inválido. Use /new, /config, /channel ou /totp quando habilitado."); return
+        structured: dict[str, Any] = {}
+        location_error = ""
+        try:
+            location = parse_message_location(message)
+            if location is not None:
+                structured["location"] = location
+                message_id, timestamp = message.get("message_id"), message.get("date")
+                if isinstance(message_id, int) and not isinstance(message_id, bool) and message_id > 0: structured["message_id"] = message_id
+                if isinstance(timestamp, int) and not isinstance(timestamp, bool) and timestamp >= 0:
+                    try: structured["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(timestamp))
+                    except (ValueError, OverflowError, OSError): pass
+        except UnsupportedLocationError:
+            location_error = "Localização ao vivo não é suportada. Envie um ponto fixo."
+        except LocationValidationError:
+            location_error = "A localização recebida é inválida; envie novamente."
+        if location_error: self._ephemeral(conversation_id, location_error)
         contains_attachment = any(isinstance(message.get(name), (dict, list)) and message.get(name) for name in ("photo", "document", "voice"))
-        if not text and not contains_attachment and SERVICE_MESSAGE_FIELDS.intersection(message): return
-        if not text and not contains_attachment: self._ephemeral(conversation_id, "Mensagem sem texto ou anexo reconhecido."); return
+        if not text and not contains_attachment and not structured and (location_error or SERVICE_MESSAGE_FIELDS.intersection(message)): return
+        if not text and not contains_attachment and not structured: self._ephemeral(conversation_id, "Mensagem sem texto ou anexo reconhecido."); return
         if contains_attachment and not self.settings.app_server_enabled:
             self._ephemeral(conversation_id, "Anexos exigem que o App Server esteja habilitado na configuração do Gateway Telegram."); return
         try: attachments = self._collect_attachments(conversation_id, message) if contains_attachment else []
         except Exception as error:
             self._record_error(error); self._ephemeral(conversation_id, f"Não foi possível receber o anexo: {error}"); return
-        try: self._enqueue_turn(conversation_id, text, attachments, self._turn_context(conversation_id, sender, text, attachments))
+        try:
+            context = self._turn_context(conversation_id, sender, text, attachments, has_location=bool(structured))
+            if structured: self._enqueue_turn(conversation_id, text, attachments, context, structured)
+            else: self._enqueue_turn(conversation_id, text, attachments, context)
         except Exception as error: self._record_error(error); self._ephemeral(conversation_id, f"Não foi possível enfileirar a mensagem: {error}")
 
     def _group_message(self, conversation_id: str, chat: dict[str, Any], sender: dict[str, Any], message: dict[str, Any], text: str) -> None:
@@ -1036,11 +1164,21 @@ class Gateway(TelegramChannels):
                 self.api.send(int(chat["id"]), f"Janela deste canal: {maximum} mensagens; {age} segundos.", **thread_values)
             return
         attachments: list[dict[str, Any]] = []
+        structured: dict[str, Any] = {}
+        location_error = ""
+        try:
+            location = parse_message_location(message)
+            if location is not None: structured["location"] = location
+        except UnsupportedLocationError:
+            location_error = "Localização ao vivo não é suportada. Envie um ponto fixo."
+        except LocationValidationError:
+            location_error = "A localização recebida é inválida; envie novamente."
         has_attachment = any(isinstance(message.get(name), (dict, list)) and message.get(name) for name in ("photo", "document", "voice"))
         if has_attachment and self.settings.app_server_enabled:
             try: attachments = self._collect_attachments(conversation_id, message)
             except Exception as error: self._record_error(error); return
-        if text or attachments: self._cache_message(conversation_id, message, sender, text, attachments)
+        if structured: self._cache_message(conversation_id, message, sender, text, attachments, structured)
+        elif text or attachments: self._cache_message(conversation_id, message, sender, text, attachments)
         if sender.get("id") not in self.contacts.owners(): return
         entities = message.get("entities") or message.get("caption_entities") or []
         mentioned = any(isinstance(entity, dict) and entity.get("type") == "mention" and isinstance(entity.get("offset"), int) and isinstance(entity.get("length"), int) and bool(getattr(self, "bot_username", "")) and text[entity["offset"]:entity["offset"] + entity["length"]].casefold() == f"@{self.bot_username}".casefold() for entity in entities)
@@ -1049,8 +1187,11 @@ class Gateway(TelegramChannels):
         known_reply = isinstance(reply_id, int) and bool(self.database.execute("SELECT 1 FROM bot_messages WHERE chat_id=? AND generation=? AND telegram_message_id=?", (conversation_id, self._generation(conversation_id), reply_id)).fetchone())
         direct_reply = known_reply or (self.bot_id is not None and reply_from.get("id") == self.bot_id)
         if not (mentioned or direct_reply): return
+        if location_error:
+            self._ephemeral(conversation_id, location_error)
+            if not text and not attachments: return
         snapshot, cached_attachments, summary = self._context_snapshot(conversation_id)
-        try: self._enqueue_turn(conversation_id, snapshot, cached_attachments, self._turn_context(conversation_id, sender, text, cached_attachments, contains_untrusted_context=summary["contains_untrusted_context"], is_context_snapshot=True))
+        try: self._enqueue_turn(conversation_id, snapshot, cached_attachments, self._turn_context(conversation_id, sender, text, cached_attachments, contains_untrusted_context=summary["contains_untrusted_context"], is_context_snapshot=True, has_location=summary.get("has_location", False)))
         except Exception as error: self._record_error(error)
 
     def _delete_received_command(self, chat_id: int, message: dict[str, Any]) -> None:
@@ -1251,9 +1392,11 @@ class Gateway(TelegramChannels):
         except Exception as error:
             self._close_config_with_error(chat_id, parts[1], session, action, error)
         return True
-    def _turn(self, chat_id: int, text: str, attachments: list[dict[str, Any]] | None = None, turn_context: dict[str, Any] | None = None) -> None:
+    def _turn(self, chat_id: int, text: str, attachments: list[dict[str, Any]] | None = None, turn_context: dict[str, Any] | None = None, structured_content: dict[str, Any] | None = None) -> None:
         with self.turn_locks_lock: lock = self.turn_locks.setdefault(chat_id, threading.Lock())
-        with lock: self._turn_serial(chat_id, text, attachments or [], turn_context)
+        with lock:
+            if structured_content: self._turn_serial(chat_id, text, attachments or [], turn_context, structured_content)
+            else: self._turn_serial(chat_id, text, attachments or [], turn_context)
 
     @staticmethod
     def _public_turn_error(error: Exception | str) -> str:
@@ -1263,7 +1406,7 @@ class Gateway(TelegramChannels):
             return "O workspace do Codex está sem créditos. Adicione créditos ao workspace e tente novamente."
         return "O agente não conseguiu concluir esta solicitação."
 
-    def _turn_serial(self, chat_id: int, text: str, attachments: list[dict[str, Any]], turn_context: dict[str, Any] | None = None) -> None:
+    def _turn_serial(self, chat_id: int, text: str, attachments: list[dict[str, Any]], turn_context: dict[str, Any] | None = None, structured_content: dict[str, Any] | None = None) -> None:
         telegram_chat_id, topic_values = self._telegram_address(str(chat_id))
         self.work.acquire()
         typing_stop = threading.Event()
@@ -1277,7 +1420,8 @@ class Gateway(TelegramChannels):
         try:
             mode = self._channel_state(chat_id)["reply_mode"]
             if self.settings.app_server_enabled:
-                answer, mode = self._app_turn(chat_id, text, attachments, turn_context)
+                if structured_content: answer, mode = self._app_turn(chat_id, text, attachments, turn_context, structured_content)
+                else: answer, mode = self._app_turn(chat_id, text, attachments, turn_context)
             else: raise RuntimeError("O Gateway Telegram exige que o App Server esteja habilitado.")
             if answer and self.api:
                 if mode == "audio":
@@ -1457,6 +1601,8 @@ class Gateway(TelegramChannels):
             if not channel: raise ValueError("Informe o identificador do canal.")
             return self._channels_remove(channel)
         if method == "telegram.outbound.send": return self._outbound_send(params)
+        if method == "telegram.outbound.send_location": return self._outbound_send_location(params)
+        if method == "telegram.reply.send_location": return self._reply_send_location(params)
         if method == "telegram.send":
             if not self.api: raise RuntimeError("listener unavailable")
             self.api.send(int(params["chat_id"]), str(params["text"])); return {"sent": True}
