@@ -34,6 +34,9 @@ from .instructions import McpInstructionRegistry
 from .email.tools import EmailToolRegistry
 from .pdf.tools import PdfToolRegistry
 from .ocr.tools import OcrToolRegistry
+from .excel.tools import ExcelToolRegistry
+from .excel.exception import ExcelExceptions
+from .document_processing.contracts import DocumentError
 
 
 class McpApplication:
@@ -65,9 +68,10 @@ class McpApplication:
         self.email = EmailToolRegistry(self.configuration)
         self.pdf = PdfToolRegistry(self.configuration)
         self.ocr = OcrToolRegistry(self.configuration)
+        self.excel = ExcelToolRegistry(self.configuration)
 
     def definitions(self) -> list[dict[str, Any]]:
-        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions() + self.cloudflare.definitions() + self.eccovox.definitions() + self.forward_email.definitions() + self.notion.definitions() + self.aws.definitions() + self.mysql.definitions() + self.ssh.definitions() + self.bis2cmd.definitions() + self.bis10cmd.definitions() + self.google.definitions() + self.spotify.definitions() + self.memory.definitions() + self.data_tables.definitions() + self.telegram.definitions() + self.mini_apps.definitions() + self.publication.definitions() + self.workflows.definitions() + self.email.definitions() + self.pdf.definitions() + self.ocr.definitions()
+        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions() + self.cloudflare.definitions() + self.eccovox.definitions() + self.forward_email.definitions() + self.notion.definitions() + self.aws.definitions() + self.mysql.definitions() + self.ssh.definitions() + self.bis2cmd.definitions() + self.bis10cmd.definitions() + self.google.definitions() + self.spotify.definitions() + self.memory.definitions() + self.data_tables.definitions() + self.telegram.definitions() + self.mini_apps.definitions() + self.publication.definitions() + self.workflows.definitions() + self.email.definitions() + self.pdf.definitions() + self.ocr.definitions() + self.excel.definitions()
 
     def instructions(self) -> str | None:
         """Publica as contribuições dos módulos MCP habilitados."""
@@ -80,6 +84,8 @@ class McpApplication:
             return self.pdf.call(name, arguments)
         if name.startswith("ocr."):
             return self.ocr.call(name, arguments)
+        if name.startswith("excel."):
+            return self.excel.call(name, arguments)
         if name.startswith("email."):
             return self.email.call(name, arguments)
         if name.startswith("btg."):
@@ -133,7 +139,7 @@ def create_server(root: Path):
 
     async def call_tool(_ctx, params):
         try:
-            if params.name.startswith(("pdf.", "ocr.", "bis10cmd.")):
+            if params.name.startswith(("pdf.", "ocr.", "excel.", "bis10cmd.")):
                 data = await asyncio.to_thread(application.call, params.name, params.arguments or {})
             else:
                 data = application.call(params.name, params.arguments or {})
@@ -141,7 +147,10 @@ def create_server(root: Path):
             return CallToolResult(content=[TextContent(type="text", text=text)], structured_content=data)
         except Exception as error:
             # Erros de domínio já são sanitizados; nunca serialize exceções ou tracebacks.
-            if isinstance(error, (PublicationMcpError, Bis10CmdError)):
+            if params.name.startswith("excel.") and isinstance(error, DocumentError):
+                data = {"error": {"code": error.code, "message": str(error)}}
+                return CallToolResult(content=[TextContent(type="text", text=json.dumps(data, ensure_ascii=False))], structured_content=data, is_error=True)
+            if isinstance(error, (PublicationMcpError, Bis10CmdError, ExcelExceptions)):
                 data = {"error": error.as_dict()}
                 return CallToolResult(content=[TextContent(type="text", text=json.dumps(data, ensure_ascii=False))], structured_content=data, is_error=True)
             return CallToolResult(content=[TextContent(type="text", text=str(error))], is_error=True)
@@ -162,6 +171,7 @@ async def serve(root: Path) -> None:
     finally:
         server.document_application.pdf.close()
         server.document_application.ocr.close()
+        server.document_application.excel.close()
 
 
 def main(argv: list[str] | None = None) -> int:

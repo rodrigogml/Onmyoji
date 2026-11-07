@@ -120,6 +120,10 @@ class Jobs:
     implicitamente. IDs e consultas são sempre limitados ao perfil selecionado.
     """
 
+    allowed_namespaces = frozenset({"pdf", "ocr"})
+    worker_module = "onmyoji_daemon.mcp.document_processing.worker"
+    timeout_code = "timeout"
+
     def __new__(cls, root: Path, namespace: str):
         key = (str(Path(root).resolve()), namespace)
         with _instances_lock:
@@ -137,7 +141,7 @@ class Jobs:
     def _initialize(self, root: Path, namespace: str):
         if self._initialized:
             return
-        require(namespace in {"pdf", "ocr"}, "invalid_namespace", "Módulo de documentos inválido.")
+        require(namespace in self.allowed_namespaces, "invalid_namespace", "Módulo de documentos inválido.")
         self._initialized = True
         self.root = Path(root).resolve()
         self.namespace = namespace
@@ -339,7 +343,7 @@ class Jobs:
                 state.update(status="cancelled", finished_at=time.time())
                 process = self._processes.pop(job_id, None)
                 if process:
-                    _stop_process(process)
+                    self._stop_worker(job_id, process)
                 _close_windows_job(self._job_handles.pop(job_id, None))
                 self._rollback_completed(job_id)
                 self._passwords.pop(job_id, None)
@@ -360,7 +364,7 @@ class Jobs:
         environment = execution_environment(directory, source)
         options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
         password = self._passwords.get(identifier)
-        process = subprocess.Popen([sys.executable, "-B", "-m", "onmyoji_daemon.mcp.document_processing.worker", str(directory / "request.json")], cwd=str(directory), stdin=subprocess.PIPE if password is not None else subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=environment, **options)
+        process = subprocess.Popen([sys.executable, "-B", "-m", self.worker_module, str(directory / "request.json")], cwd=str(directory), stdin=subprocess.PIPE if password is not None else subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=environment, **options)
         if password is not None:
             try:
                 require(process.stdin is not None, "worker_unavailable", "Não foi possível transmitir a senha direta ao processo documental.")
@@ -377,6 +381,14 @@ class Jobs:
                 _stop_process(process)
                 raise
         return process
+
+    def _stop_worker(self, identifier: str, process: subprocess.Popen) -> None:
+        """Encerra o worker; módulos com processos externos podem especializar."""
+        _stop_process(process)
+
+    def _worker_failure(self, identifier: str, process: subprocess.Popen) -> dict | None:
+        """Permite detectar falhas específicas antes de aceitar uma conclusão."""
+        return None
 
     def _rollback_completed(self, identifier: str) -> None:
         try:
@@ -420,29 +432,32 @@ class Jobs:
                     try:
                         self._safe_directory(identifier)
                     except (OSError, ValueError):
-                        _stop_process(process)
+                        self._stop_worker(identifier, process)
                         self._rollback_completed(identifier)
                         state.update(status="failed", finished_at=time.time(), error={"code": "workspace_changed", "message": "O workspace ou diretório de trabalho mudou durante a execução."})
                         del self._processes[identifier]
                         _close_windows_job(self._job_handles.pop(identifier, None))
                         continue
+                    failure = self._worker_failure(identifier, process)
+                    if failure is not None:
+                        self._stop_worker(identifier, process)
                     exit_code = process.poll()
                     if exit_code is None and time.time() - state["started_at"] <= state["timeout_seconds"]:
                         continue
                     timed_out = exit_code is None
                     if timed_out:
-                        _stop_process(process)
+                        self._stop_worker(identifier, process)
                     try:
                         completion = json.loads(self._job_file(identifier, "completion.json").read_text(encoding="utf-8"))
                         result_exists = self._job_file(identifier, "result.json").is_file()
                     except (OSError, ValueError):
                         completion = {}
                         result_exists = False
-                    if not timed_out and exit_code == 0 and completion.get("ok") is True and result_exists:
+                    if failure is None and not timed_out and exit_code == 0 and completion.get("ok") is True and result_exists:
                         state.update(status="succeeded", artifacts=completion.get("artifacts", []))
                     else:
                         self._rollback_completed(identifier)
-                        state.update(status="failed", error={"code": "timeout" if timed_out else completion.get("error", {}).get("code", "worker_failed"), "message": "A execução excedeu o prazo configurado." if timed_out else completion.get("error", {}).get("message", "O processo documental não concluiu a operação.")})
+                        state.update(status="failed", error=failure or {"code": self.timeout_code if timed_out else completion.get("error", {}).get("code", "worker_failed"), "message": "A execução excedeu o prazo configurado." if timed_out else completion.get("error", {}).get("message", "O processo documental não concluiu a operação.")})
                     state["finished_at"] = time.time()
                     self._persist(identifier, state)
                     self._passwords.pop(identifier, None)
@@ -468,7 +483,7 @@ class Jobs:
         self._closed.set()
         with self._lock:
             for identifier, process in self._processes.items():
-                _stop_process(process)
+                self._stop_worker(identifier, process)
                 self._rollback_completed(identifier)
             for identifier, state in self._records.items():
                 if state["status"] not in TERMINAL:

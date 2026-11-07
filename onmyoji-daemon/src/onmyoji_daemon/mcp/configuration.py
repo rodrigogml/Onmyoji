@@ -197,6 +197,22 @@ class McpConfiguration:
         from .document_processing.configuration import load_configuration
         return load_configuration(self.root, "ocr")
 
+    def excel(self) -> dict[str, Any]:
+        from .excel.config.configuration import load_configuration
+        return load_configuration(self.root)
+
+    def save_excel(self, data: dict) -> None:
+        from .excel.config.configuration import render_configuration, validate_configuration
+        try:
+            validate_configuration(self.root, data)
+        except ValueError as error:
+            raise McpConfigurationError(str(error)) from error
+        self._save(self.root / "configs" / "mcp" / "excel.toml", render_configuration(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def enabled_excel_profiles(self) -> list[dict]:
+        return [{"name": name, **profile} for name, profile in sorted(self.excel()["profiles"].items()) if profile["enabled"]]
+
     def save_document_profiles(self, namespace: str, data: dict) -> None:
         from .document_processing.configuration import validate_configuration, render_configuration
         try:

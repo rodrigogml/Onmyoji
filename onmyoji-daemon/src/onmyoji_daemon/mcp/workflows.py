@@ -43,6 +43,8 @@ class WorkflowRegistry:
         for module in ("pdf", "ocr"):
             if self.configuration.enabled_document_profiles(module):
                 workflows.append(Workflow(module + "-operations", module, f"Antes de usar {module}.* em documentos ou imagens, consulte seleções, jobs, saídas e limites em {module}-operations.", module + "-operations.md"))
+        if self.configuration.enabled_excel_profiles():
+            workflows.append(Workflow("excel-operations", "excel", "Antes de usar excel.* em pastas de trabalho, consulte tipos, snapshots, jobs, cálculo, VBA e preservação em excel-operations.", "excel-operations.md"))
         return tuple(workflows)
 
     def developer_instructions(self) -> str | None:

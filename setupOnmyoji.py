@@ -49,7 +49,7 @@ APPROVALS = ["on-request", "never"]
 PYTHON_COMPONENTS = (
     ("aiohttp", "Daemon", "Daemon, Telegram e Mini Apps"),
     ("cryptography", "Daemon", "Daemon e certificados locais"),
-    ("pywin32", "Daemon (Windows)", "Serviço do Windows"),
+    ("pywin32", "Windows e Excel", "Serviço do Windows e MCP Excel desktop"),
     ("boto3", "Daemon", "MCP AWS"),
     ("paramiko", "Daemon", "MCP SSH"),
     ("setuptools", "Base MCP", "Host MCP e instalação de componentes"),

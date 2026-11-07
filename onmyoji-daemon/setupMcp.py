@@ -47,6 +47,7 @@ from onmyoji_daemon.mcp.btg.configuration import BtgConfigurationError, DEFAULT_
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
 from onmyoji_daemon.mcp.email.setup import email_menu
 from onmyoji_daemon.mcp.document_processing.setup import document_menu
+from onmyoji_daemon.mcp.excel.config.setup import excel_menu
 
 
 def ask(label: str, current: str = "", required: bool = False) -> str | None:
@@ -2281,6 +2282,7 @@ def integrations_menu(config: McpConfiguration) -> None:
         integration_item("17.", "E-mail", config.email()["accounts"])
         integration_item("18.", "PDF", config.pdf()["profiles"])
         integration_item("19.", "OCR", config.ocr()["profiles"])
+        integration_item("20.", "Excel", config.excel()["profiles"])
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}:
@@ -2323,6 +2325,8 @@ def integrations_menu(config: McpConfiguration) -> None:
             email_menu(config, sys.modules[__name__])
         elif choice in {"18", "19"}:
             document_menu(config, sys.modules[__name__], "pdf" if choice == "18" else "ocr")
+        elif choice == "20":
+            excel_menu(config, sys.modules[__name__])
         else:
             result(False, "Opção inválida.")
 
