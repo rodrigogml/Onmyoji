@@ -21,6 +21,7 @@ from .mysql.tools import MySQLToolRegistry
 from .ssh.tools import SshToolRegistry
 from .bis2cmd.tools import Bis2CmdToolRegistry
 from .bis10cmd.tools import Bis10CmdToolRegistry
+from .bis10cmd import Bis10CmdError
 from .google.tools import GoogleToolRegistry
 from .spotify.tools import SpotifyToolRegistry
 from .memory.tools import MemoryToolRegistry
@@ -132,7 +133,7 @@ def create_server(root: Path):
 
     async def call_tool(_ctx, params):
         try:
-            if params.name.startswith(("pdf.", "ocr.")):
+            if params.name.startswith(("pdf.", "ocr.", "bis10cmd.")):
                 data = await asyncio.to_thread(application.call, params.name, params.arguments or {})
             else:
                 data = application.call(params.name, params.arguments or {})
@@ -140,7 +141,7 @@ def create_server(root: Path):
             return CallToolResult(content=[TextContent(type="text", text=text)], structured_content=data)
         except Exception as error:
             # Erros de domínio já são sanitizados; nunca serialize exceções ou tracebacks.
-            if isinstance(error, PublicationMcpError):
+            if isinstance(error, (PublicationMcpError, Bis10CmdError)):
                 data = {"error": error.as_dict()}
                 return CallToolResult(content=[TextContent(type="text", text=json.dumps(data, ensure_ascii=False))], structured_content=data, is_error=True)
             return CallToolResult(content=[TextContent(type="text", text=str(error))], is_error=True)
