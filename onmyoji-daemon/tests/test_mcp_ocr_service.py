@@ -250,9 +250,10 @@ def test_model_cache_rejects_windows_paths_that_exceed_the_legacy_limit(tmp_path
     models = tmp_path / "models"; models.mkdir()
     (models / "weights.bin").write_bytes(b"resource")
     monkeypatch.setattr(runtime.os, "name", "nt")
+    component_length = max(1, 261 - len(str(tmp_path / "d" / "weights.bin")))
 
     with pytest.raises(DocumentError) as failure:
-        runtime.copy_model_cache(models, tmp_path / ("d" * 180))
+        runtime.copy_model_cache(models, tmp_path / ("d" * component_length))
 
     assert failure.value.code == "model_cache_path_too_long"
 
