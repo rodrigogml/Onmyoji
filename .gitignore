@@ -5,6 +5,7 @@
 !/.gitattributes
 !/AGENTS.md
 !/README.md
+!/*.proposed.md
 !/setupOnmyoji.py
 !/bootstrapShikigami.py
 !/pytest.ini
