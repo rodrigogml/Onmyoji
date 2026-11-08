@@ -4,7 +4,7 @@ Esta é a base comum e versionada do Onmyōji. Ela fornece o daemon, os scripts 
 
 ## Hierarquia da instância
 
-Os arquivos da base — `onmyoji-daemon/`, `setupOnmyoji.py`, `docs/` e os recursos na raiz — pertencem ao upstream `Onmyoji`. Melhorias reutilizáveis da base devem ser feitas e publicadas no upstream. As fontes de skills específicas da instância ficam em `shikigami-skills/` e podem ser versionadas pelo repositório próprio do Shikigami.
+Os arquivos da base — `onmyoji-daemon/`, `setupOnmyoji.py`, `docs/` e os recursos na raiz — pertencem ao projeto `Onmyoji`. Melhorias reutilizáveis da base devem ser desenvolvidas neste repositório e publicadas no seu remoto (`origin`). As fontes de skills específicas da instância ficam em `shikigami-skills/` e podem ser versionadas pelo repositório próprio do Shikigami.
 
 `configs/`, `skills/`, `sessions/`, `state/`, `log/`, `tmp/` e diretórios equivalentes são locais e não versionados. Nunca coloque segredos, tokens, credenciais, bancos de conversas, logs ou staging em fontes versionáveis.
 
@@ -17,6 +17,10 @@ O workspace do agente é externo ao `CODEX_HOME`. Arquivos de trabalho, saídas,
 ## GitHub
 
 GitHub é exclusivamente o repositório remoto de versionamento. Não crie nem mantenha workflows, automações, verificações de qualidade ou qualquer dependência operacional em `.github/`; testes, validações e decisões de qualidade pertencem ao código e à execução local do projeto.
+
+Após concluir e validar cada alteração, faça imediatamente o commit e o push para o remoto deste repositório (`origin`), sem aguardar nova solicitação do usuário. O commit deve conter somente os arquivos da alteração validada.
+
+Arquivos `.proposed` fazem parte do fluxo versionado: não devem ser ignorados nem excluídos do commit enquanto aguardam avaliação. Ao criar ou atualizar uma proposta, faça o commit e o push do arquivo `.proposed` para o `origin`. A proposta só deve ser incorporada ao arquivo original após a aprovação do usuário. Depois da incorporação aprovada, exclua o arquivo `.proposed` e inclua no mesmo commit tanto a alteração do arquivo original quanto a exclusão da proposta; em seguida, faça o push desse commit.
 
 ## Interface dos scripts de setup
 
