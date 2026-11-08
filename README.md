@@ -37,6 +37,29 @@ Uma instância de Shikigami começa ao clonar esta base em um repositório local
 
 As alterações de implementação, identidade, conhecimento ou configuração que sejam específicas de um Shikigami devem ser versionadas e, quando desejado, enviadas somente ao repositório desse Shikigami. Elas não devem ser publicadas no `upstream` do Onmyōji. Em sentido inverso, melhorias genéricas na base — como integrações, scripts, daemon, skills compartilhadas e documentação comum — pertencem ao repositório central e podem ser incorporadas pelas instâncias a partir do `upstream`.
 
+## Organização de documentação e instruções
+
+O `README.md` e o `AGENTS.md` da raiz deste repositório pertencem ao Onmyōji. Os arquivos de mesmo nome em `shikigami-template/`, junto com `instructions.md`, são modelos destinados ao projeto consumidor, o Shikigami.
+
+Durante o bootstrap, esses modelos são copiados para a raiz do Shikigami e recebem a identidade da instância. O README e o AGENTS herdados da raiz do Onmyōji são substituídos intencionalmente: a documentação e as instruções dessa raiz passam a representar o projeto consumidor. As cópias podem então evoluir conforme as necessidades da instância.
+
+| Arquivo no Onmyōji | Responsabilidade e conteúdo |
+| --- | --- |
+| `README.md` | Documentação da base Onmyōji: propósito, arquitetura, instalação, componentes, integrações e organização de pastas. Esta convenção de distribuição das instruções também pertence a ele. |
+| `AGENTS.md` | Instruções para desenvolver e manter o Onmyōji: convenções de código, testes, documentação, organização do repositório e procedimentos de alteração da base. |
+| `shikigami-template/README.md` | Modelo mínimo, quase vazio, para documentar o Shikigami consumidor: finalidade, escopo, capacidades, uso, integrações e organização próprios. Seu conteúdo é definido conforme a instância. |
+| `shikigami-template/AGENTS.md` | Regras operacionais gerais e reutilizáveis por todos os Shikigamis: condução de tarefas, métodos de trabalho, procedimentos e roteamentos. Após a inicialização, pode receber particularidades do consumidor. |
+| `shikigami-template/instructions.md` | Núcleo de comportamento permanente do Shikigami, incorporado às developer instructions: identidade, postura, comunicação, veracidade e limites de atuação. Contém instruções diretas e objetivas destinadas a orientar todos os turnos. |
+
+Para classificar uma nova orientação:
+
+- **README:** informações que explicam o que é o projeto, como utilizá-lo e como ele se organiza.
+- **AGENTS:** regras que determinam como executar uma tarefa ou proceder em uma situação.
+- **instructions:** princípios de comportamento que devem orientar continuamente o agente, independentemente da tarefa.
+
+> [!NOTE]
+> A distinção entre “regras” no AGENTS e “leis” no instructions expressa a diferença entre procedimentos de trabalho e comportamento permanente. Ambos contêm instruções obrigatórias no seu escopo; o instructions concentra o núcleo que deve permanecer evidente no contexto do agente.
+
 ## Estrutura
 
 ### Estrutura do Onmyōji
