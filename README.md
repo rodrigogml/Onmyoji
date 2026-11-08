@@ -6,7 +6,7 @@
 </p>
 
 > [!CAUTION]
-> Este README não deve ser atualizado por agentes sem solicitação explícita do usuário.
+> Agentes não devem alterar este README diretamente. Toda mudança deve ser preparada em uma cópia completa `README-AAAA-MM-DD.proposed.md`, preservando o conteúdo não alterado. A incorporação ao README original só pode ocorrer após aprovação explícita do usuário, conforme o fluxo definido no `AGENTS.md`.
 
 ## Sobre o projeto
 
@@ -35,7 +35,7 @@ O Onmyōji é um projeto centralizado para criar, configurar e operar agentes de
 
 Uma instância de Shikigami começa ao clonar esta base em um repositório local. Recomenda-se configurar o repositório padrão do Onmyōji como `upstream` e o repositório particular da instância como `origin`: assim, a instância pode receber evoluções reutilizáveis da base sem confundir seu código e suas definições próprias com o projeto central.
 
-As alterações de implementação, identidade, conhecimento ou configuração que sejam específicas de um Shikigami devem ser versionadas e, quando desejado, enviadas somente ao repositório desse Shikigami. Elas não devem ser publicadas no `upstream` do Onmyōji. Em sentido inverso, melhorias genéricas na base — como integrações, scripts, daemon, skills compartilhadas e documentação comum — pertencem ao repositório central e podem ser incorporadas pelas instâncias a partir do `upstream`.
+As alterações de implementação, identidade, conhecimento ou configuração que sejam específicas de um Shikigami devem ser versionadas e, quando desejado, enviadas somente ao repositório desse Shikigami. Elas não devem ser publicadas no `upstream` do Onmyōji. Em sentido inverso, melhorias genéricas na base — como integrações, scripts, daemon, infraestrutura de skills e documentação comum — pertencem ao repositório central e podem ser incorporadas pelas instâncias a partir do `upstream`.
 
 ## Organização de documentação e instruções
 
@@ -64,7 +64,7 @@ Para classificar uma nova orientação:
 
 ### Estrutura do Onmyōji
 
-O repositório do Onmyōji concentra os componentes reutilizáveis. Ele não armazena dados operacionais nem personalizações de uma instância; esses elementos pertencem ao repositório e ao ambiente local de cada Shikigami.
+O repositório do Onmyōji concentra os componentes reutilizáveis. Seu conteúdo versionado não inclui dados operacionais nem personalizações de uma instância; esses elementos pertencem ao ambiente local ou ao repositório próprio de cada Shikigami.
 
 ```text
 Onmyōji/
@@ -157,6 +157,7 @@ Workflows fornecidos por serviços MCP, como memória e autoria de schemas Data 
 | [Data Tables](onmyoji-daemon/docs/mcp-data-tables.md) | Oferece tabelas e registros estruturados para skills do Shikigami, com schemas e migrações aplicados pelo setup. |
 | [EccoVox](onmyoji-daemon/docs/mcp-eccovox.md) | Transcreve arquivos de áudio e sintetiza fala usando o runtime local EccoVox. |
 | [E-mail](onmyoji-daemon/docs/mcp-email.md) | Acessa contas IMAP, POP3 e SMTP com senha ou OAuth Google/Microsoft. Permite consultar e organizar mensagens, tratar anexos, manter rascunhos e enviar e-mails sob demanda. |
+| [Excel](onmyoji-daemon/docs/mcp-excel.md) | Inspeciona, valida e transforma pastas de trabalho, preservando a fonte e publicando alterações em um novo destino. Usa leitura direta de OOXML ou uma instância oculta do Excel desktop, conforme a operação. |
 | [Forward Email](onmyoji-daemon/docs/mcp-forward-email.md) | Administra domínios e aliases do provedor Forward Email, incluindo verificações DNS e SMTP e geração de senha de alias. |
 | [Google](onmyoji-daemon/docs/mcp-google.md) | Integra Gmail, contatos, Drive e Calendar com autenticação OAuth. |
 | [Memória](onmyoji-daemon/docs/mcp-memory.md) | Pesquisa e mantém instruções duráveis que orientam decisões e aprendizados do agente. |
@@ -166,6 +167,7 @@ Workflows fornecidos por serviços MCP, como memória e autoria de schemas Data 
 | [OCR](onmyoji-daemon/docs/mcp-ocr.md) | Reconhece texto em imagens e TIFF multipágina, com idiomas configuráveis, análise de layout e tabelas pelo motor avançado e integração ao MCP de PDF. |
 | [Omie](onmyoji-daemon/docs/mcp-omie.md) | Integra cadastros, operações financeiras e NF-e do ERP Omie. |
 | [PDF](onmyoji-daemon/docs/mcp-pdf.md) | Lê, pesquisa, extrai e compõe PDFs; manipula páginas, imagens, formulários, anotações e tarjas, com OCR, proteção e validação por jobs locais. |
+| [Revisão de arquivos](onmyoji-daemon/docs/file-review.md) | Compara um arquivo original com uma proposta `.proposed.md`, permite incorporar ou ignorar alterações por bloco, editar o resultado e aplicar o conteúdo aprovado por meio de uma Mini App. |
 | [Spotify](onmyoji-daemon/docs/mcp-spotify.md) | Consulta o catálogo e gerencia biblioteca, playlists, seguimento e reprodução. |
 | [SSH](onmyoji-daemon/docs/mcp-ssh.md) | Executa comandos remotos e transfere arquivos por SFTP, com autenticação por senha ou chave privada. |
 | [Telegram](onmyoji-daemon/docs/mcp-telegram.md) | Consulta destinos registrados e envia mensagens e arquivos por meio do Gateway Telegram. |

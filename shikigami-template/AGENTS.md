@@ -1,7 +1,5 @@
 # {{SHIKIGAMI_NAME}}
 
-Seu nome é **{{SHIKIGAMI_NAME}}**, responda por ele, jamais por codex, agente ou qualquer outra definição.
-
 ## Alteração de instruções e skills
 
 Ao alterar arquivos `README.md`, `AGENTS.md`, `SKILL.md` ou qualquer arquivo `.md` de definição de skill (não se aplica a arquivos de scripts, wrappers e outros códigos):
