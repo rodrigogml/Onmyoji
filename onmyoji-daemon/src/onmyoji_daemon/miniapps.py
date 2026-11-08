@@ -76,9 +76,16 @@ class HttpRequest:
 
 @dataclass
 class HttpResponse:
+    """Resposta da aplicação; ``close_publication`` revoga seu acesso após concluir.
+
+    A resposta final ainda é entregue ao cliente. A despublicação invalida as
+    sessões e preserva o código e o registro da Mini App no workspace.
+    """
+
     status: int = 200
     headers: list[tuple[str, str]] = field(default_factory=list)
     body: bytes | str | AsyncIterable[bytes] | None = b""
+    close_publication: bool = False
 
     @classmethod
     def json(cls, value: Any, status: int = 200) -> "HttpResponse":
@@ -277,6 +284,87 @@ class MiniAppsGateway:
         with self.lock: ids = [str(row[0]) for row in self.db.execute("SELECT id FROM apps WHERE state != 'DELETED' ORDER BY created_at DESC")]
         return [self._public(self._app(app_id)) for app_id in ids]
 
+    def _file_reviews(self):
+        from .file_review.service import FileReviewService
+
+        return FileReviewService(self.root, self._workspace(), self.data_dir / "file-reviews")
+
+    def create_file_review(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Publica o modelo confiável de revisão usando o claim existente.
+
+        Exige ``confirm=true`` e dois arquivos referenciados explicitamente.
+        Falhas de validação conservam os códigos do serviço de revisão; a
+        ausência de confirmação produz ``confirmation_required``.
+        """
+        from .file_review.exception import FileReviewError
+
+        if params.get("confirm") is not True:
+            raise FileReviewError("confirmation_required", "Confirme a criação com confirm=true.")
+        policies = {}
+        for key in ("claim_timeout", "lifetime", "idle_timeout"):
+            if key in params:
+                value = params[key]
+                if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                    raise FileReviewError("invalid_timeout", "Os prazos da revisão devem ser inteiros positivos.")
+                policies[key] = value
+        service = self._file_reviews()
+        review = service.create(params.get("original_path"), params.get("proposed_path"))
+        review_id = review["review_id"]
+        app_root = self._workspace() / "file-reviews" / review_id
+        origins = [f"https://localhost:{self.http_port}", f"https://127.0.0.1:{self.http_port}"]
+        public_origin = self.publication_status("a").get("public_origin")
+        if public_origin:
+            origins.append(str(public_origin).rstrip("/"))
+        wrapper = (
+            '"""Entrada do modelo de revisão do Onmyōji; dados permanecem locais."""\n'
+            "from pathlib import Path\n"
+            "from onmyoji_daemon.file_review.app import FileReviewApp\n\n"
+            "def create_app():\n"
+            f"    return FileReviewApp(Path({str(self.root)!r}), Path({str(self._workspace())!r}), "
+            f"Path({str(self.data_dir / 'file-reviews')!r}), {review_id!r}, {origins!r})\n"
+        )
+        publication = None
+        try:
+            (app_root / "app.py").write_text(wrapper, encoding="utf-8", newline="\n")
+            publication = self.create({"root_path": str(app_root), "entrypoint": "app.py", "alias": "Revisão de " + review["filename"], "auth": {"type": "claim"}, "single_client": True, **policies})
+            service.bind_publication(review_id, publication["id"])
+        except Exception:
+            if publication:
+                self.unpublish(publication["id"])
+            service.cancel(review_id)
+            raise
+        self._event("file_review.created", publication["id"])
+        return {**service.status(review_id), "publication": publication, "claim_url": publication["claim_url"]}
+
+    def file_review_status(self, review_id: str) -> dict[str, Any]:
+        """Consulta a revisão sem retornar snapshots, rascunho ou segredo de claim."""
+        result = self._file_reviews().status(review_id)
+        app_id = result.get("app_id")
+        if app_id:
+            item = self._app(app_id)
+            self._expire(item)
+            publication = self.inspect(app_id)
+            if result["status"] in {"applied", "cancelled"} and publication["state"] not in {"UNPUBLISHED", "DELETED"}:
+                publication = self.unpublish(app_id)
+            result["publication"] = publication
+            if result["status"] == "editing":
+                if publication["state"] == "EXPIRED":
+                    result["status"] = "expired"
+                elif publication["state"] in {"ERROR", "UNPUBLISHED", "DELETED"}:
+                    result["status"] = "unavailable"
+        return result
+
+    def cancel_file_review(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Cancela uma revisão e revoga a publicação, mediante confirmação MCP."""
+        from .file_review.exception import FileReviewError
+
+        if params.get("confirm") is not True:
+            raise FileReviewError("confirmation_required", "Confirme o cancelamento com confirm=true.")
+        result = self._file_reviews().cancel(params.get("review_id"))
+        if result.get("app_id"):
+            self.unpublish(result["app_id"])
+        return result
+
     def diagnose(self) -> dict[str, Any]:
         """Return readiness data for the setup wizard without exposing secrets."""
         checks: list[dict[str, str]] = []
@@ -464,7 +552,7 @@ class MiniAppsGateway:
             except Exception: return None
             if request.scheme != "https" or username != auth["username"] or not _password_matches(password, auth["password_hash"]): return None
             return AuthenticatedIdentity(True, "basic", username=username)
-        session_id = request.cookies.get("onmyoji_miniapp_session")
+        session_id = request.cookies.get("onmyoji_miniapp_session_" + item["id"]) or request.cookies.get("onmyoji_miniapp_session")
         if not session_id: return None
         with self.lock: row = self.db.execute("SELECT id FROM sessions WHERE id=? AND app_id=? AND expires_at>?", (session_id, item["id"], _now())).fetchone()
         return AuthenticatedIdentity(True, "session", session_id=session_id) if row else None
@@ -473,7 +561,7 @@ class MiniAppsGateway:
         if request.content_length and request.content_length > MAX_BODY_BYTES: raise web.HTTPRequestEntityTooLarge(max_size=MAX_BODY_BYTES, actual_size=request.content_length)
         temporary: Path | None = None
         if request.content_length and request.content_length > 1024 * 1024:
-            uploads = self.data_dir / "uploads"; uploads.mkdir(parents=True, exist_ok=True)
+            uploads = self.root / "tmp" / "mini-apps" / "uploads"; uploads.mkdir(parents=True, exist_ok=True)
             temporary = uploads / (uuid.uuid4().hex + ".body")
             with temporary.open("wb") as output:
                 while chunk := await request.content.readany(): output.write(chunk)
@@ -482,7 +570,10 @@ class MiniAppsGateway:
         app, guard = await self._load(item)
         with self.lock:
             first_active = self.db.execute("SELECT last_activity,created_at FROM apps WHERE id=?", (item["id"],)).fetchone()
-            self.db.execute("UPDATE apps SET last_activity=?,updated_at=?,state='ACTIVE' WHERE id=?", (_now(), _now(), item["id"])); self.db.commit()
+            updated = self.db.execute("UPDATE apps SET last_activity=?,updated_at=?,state='ACTIVE' WHERE id=? AND state IN ('ACTIVE','PUBLISHED_UNCLAIMED')", (_now(), _now(), item["id"])); self.db.commit()
+            if updated.rowcount != 1:
+                if temporary: temporary.unlink(missing_ok=True)
+                raise web.HTTPServiceUnavailable(text="Mini App unavailable")
         if first_active and float(first_active["last_activity"]) <= float(first_active["created_at"]): self._event("app.active", item["id"])
         peer = request.transport.get_extra_info("peername") if request.transport else None
         tail = request.match_info.get("tail", "")
@@ -508,7 +599,11 @@ class MiniAppsGateway:
         if isinstance(response.body, AsyncIterable):
             outgoing = web.StreamResponse(status=response.status, headers=headers); await outgoing.prepare(request)
             async for chunk in response.body: await outgoing.write(chunk)
-            await outgoing.write_eof(); return outgoing
+            await outgoing.write_eof()
+            if response.close_publication: self.unpublish(item["id"])
+            return outgoing
+        if response.close_publication:
+            self.unpublish(item["id"])
         return web.Response(status=response.status, headers=headers, body=response.body.encode("utf-8") if isinstance(response.body, str) else response.body)
 
     async def _dispatch_websocket(self, item: dict[str, Any], request: web.Request, identity: AuthenticatedIdentity) -> web.WebSocketResponse:
@@ -557,7 +652,7 @@ class MiniAppsGateway:
                 if item["policies"]["single_client"] and self.db.execute("SELECT 1 FROM sessions WHERE app_id=? AND expires_at>?", (app_id, _now())).fetchone(): raise web.HTTPForbidden(text="Mini App already claimed")
                 self.db.execute("INSERT INTO sessions VALUES(?,?,?,?)", (session_id, app_id, _now(), expiry)); self.db.execute("UPDATE apps SET state='ACTIVE',updated_at=? WHERE id=?", (_now(), app_id)); self.db.commit()
             self._event("app.claimed", app_id); self._event("session.created", app_id)
-            location = request.path; response = web.HTTPFound(location); response.set_cookie("onmyoji_miniapp_session", session_id, secure=True, httponly=True, samesite="Strict", max_age=max(1, int(expiry - _now()))); raise response
+            location = request.path; response = web.HTTPFound(location); response.set_cookie("onmyoji_miniapp_session_" + app_id, session_id, path=f"/a/{app_id}", secure=True, httponly=True, samesite="Strict", max_age=max(1, int(expiry - _now()))); raise response
         callback = self._callback_allowed(item, request)
         identity = AuthenticatedIdentity(False, "public_callback") if callback else await self._identity(item, request)
         if not identity:
@@ -603,6 +698,9 @@ class MiniAppsGateway:
 
     def rpc(self, method: str, params: dict[str, Any]) -> Any:
         action = method.removeprefix("mini-apps.")
+        if action == "file-review.create": return self.create_file_review(params)
+        if action == "file-review.status": return self.file_review_status(params.get("review_id"))
+        if action == "file-review.cancel": return self.cancel_file_review(params)
         if action == "publication.describe":
             return {"schema_version": 1, "listeners": [{"path_prefix": prefix, "target": f"https://127.0.0.1:{self.http_port}", "ca_file": str(self.data_dir / "tls" / "ca.pem"), "ready": self.http_ready} for prefix in ("a", "oauth")]}
         if action == "publication.update":

@@ -25,6 +25,17 @@ Todos os nomes usam o prefixo `mini_apps.`. Operações que alteram estado exige
 
 Uma publicação informa `root_path`, `entrypoint` e as políticas de autenticação e duração. A raiz deve ser um diretório dentro do workspace; o entrypoint deve ser um arquivo Python dessa raiz que exporte `create_app`. O gateway valida novamente essas referências ao publicar e atender a aplicação.
 
+## Revisão de arquivos
+
+O grupo `file_review` oferece `create`, `status` e `cancel` para abrir e acompanhar
+o modelo reutilizável de revisão de um original e de sua proposta `.proposed.md`.
+Criação e cancelamento exigem `confirm=true`. A criação devolve `claim_url` com
+o segredo existente de Mini Apps; a consulta de estado não retorna esse segredo
+nem os conteúdos revisados. A aplicação do resultado pertence ao usuário na
+interface, sem ferramenta de aprovação pelo agente. Consulte
+[Revisão de arquivos por Mini App](file-review.md) para os argumentos e o ciclo
+de aprovação.
+
 ## Publicações e callbacks
 
 Atualizações nos arquivos publicados são consumidas no próprio workspace. Remover ou despublicar uma Mini App altera seu registro e disponibilidade, sem apagar seu código. URLs de claim e segredos de callback retornados na criação devem ser tratados como credenciais de acesso.

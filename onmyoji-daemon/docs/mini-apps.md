@@ -24,6 +24,18 @@ Alterações no diretório publicado são consumidas diretamente pelo Gateway; n
 há sincronização de arquivos. Para mover uma Mini App, atualize sua publicação
 com a nova raiz e entrypoint válidos dentro do workspace.
 
+## Modelo de revisão de arquivos
+
+O modelo reutilizável `file_review` abre uma revisão de um original e de sua
+proposta `.proposed.md`, com comparação por blocos, rascunho editável e aplicação
+confirmada pelo usuário. Ele mantém o modelo de claim e sessões de Mini Apps.
+Os cookies de sessão são isolados por publicação, permitindo abrir várias
+revisões no mesmo navegador; sessões com o cookie legado continuam aceitas.
+Snapshots e rascunho ficam no workspace,
+e o índice operacional, em `configs/daemon/services/mini-apps/file-reviews/`.
+Consulte [Revisão de arquivos por Mini App](file-review.md) para o fluxo,
+contratos e ferramentas MCP.
+
 ## Publicação externa compartilhada
 
 Mini Apps continua funcionando por HTTPS local quando o Gateway compartilhado

@@ -268,6 +268,8 @@ class Supervisor:
                 if not service.process or service.process.poll() is not None: raise RuntimeError(f"{name} is not running")
                 if method.startswith("mini-apps.oauth."):
                     timeout = 200
+                elif method == "mini-apps.file-review.create":
+                    timeout = 30
                 elif method in {"telegram.outbound.send", "telegram.outbound.send_location", "telegram.reply.send_location"}:
                     timeout = 120
                 else:
