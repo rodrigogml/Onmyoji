@@ -4,7 +4,7 @@
 
 **Início:** 2026-11-09
 
-**Próximo tema de discussão:** autenticação e cadastro das integrações emissoras
+**Próximo tema de discussão:** acompanhamento da resposta no transporte local e cancelamento
 
 > [!IMPORTANT]
 > Este documento registra a discussão em andamento, inclusive hipóteses ainda prematuras. Ele não é uma especificação de implementação nem indica que as propostas preliminares foram aprovadas.
@@ -19,14 +19,14 @@ As seguintes capacidades orientam a discussão, embora seus contratos técnicos 
 
 - O daemon persistente deverá futuramente oferecer um serviço de agendamento, capaz de disparar tarefas em data e hora determinadas ou segundo uma recorrência configurada.
 - O agendador terá contexto e menu próprios no setup do daemon. Futuramente, esse menu deverá permitir listar agendamentos existentes, modelos e definições atuais.
-- Deverá existir, separadamente, um gateway que receba eventos entendidos como solicitações ou notificações para que o agente processe determinada informação. Cada evento deverá informar ao menos a versão do esquema, um identificador UUID versão 7 fornecido pelo emissor, o prompt para o agente, o tipo e o valor do canal de saída e a política de thread.
+- Deverá existir, separadamente do agendador, um ingresso que receba eventos entendidos como solicitações ou notificações para que o agente processe determinada informação no mesmo gateway de execução usado pelo Telegram. O envelope JSON v1 terá os campos obrigatórios `schema_version`, `event_id`, `prompt`, `response_channel` e `thread_policy`.
 - Um acontecimento externo — como novo e-mail, mensagem ou webhook — não será automaticamente um evento do gateway. A origem poderá tratá-lo integralmente sem envolver o agente.
 - Somente quando a origem decidir que o agente deve participar ela emitirá um evento ou uma notificação ao gateway.
-- O gateway poderá receber essas notificações por webhooks, outras interfaces, integrações e agendamentos, sem se tornar um barramento genérico de todos os acontecimentos externos.
-- Qualquer integração cadastrada poderá emitir notificações ao gateway. A fronteira atual é somente o cadastro; autenticação, permissões por integração e o mecanismo técnico de cadastro ainda não foram definidos.
+- O gateway poderá futuramente receber essas notificações por webhooks ou outras interfaces, sem se tornar um barramento genérico de todos os acontecimentos externos; essa exposição externa não integra a fase inicial.
+- Na fase inicial, o ingresso será exclusivamente privado/local, sem autenticação, cadastro ou autorização de emissores. O receptor aceitará qualquer evento que passe pela validação do contrato JSON. Uma publicação externa dependerá de nova decisão específica sobre segurança e autenticação.
 - O gateway receberá a notificação em JSON. Um esquema versionado definirá sua estrutura e o padrão válido, e a versão aplicável deverá estar identificável no próprio evento.
 - O gateway validará o JSON antes de invocar o agente e retornará erro de validação quando a mensagem estiver fora do padrão, inclusive quando os campos obrigatórios do canal estiverem ausentes ou inválidos. Emissores poderão usar o mesmo esquema antecipadamente para verificar as mensagens que produzem.
-- O prompt do evento será texto livre, sem referência obrigatória a template e sem limite máximo funcional definido neste momento.
+- `schema_version` será um número inteiro com valor `1`; `event_id` será o UUIDv7 obrigatório; `prompt` será texto livre obrigatório e não vazio, sem referência obrigatória a template e sem limite máximo funcional definido neste momento.
 - O emissor fornecerá um identificador UUID versão 7 obrigatório na chamada. O daemon reutilizará esse mesmo identificador durante processamento, entrega, diagnóstico e logs, sem criar um segundo ID de execução.
 - Ao reenviar a mesma solicitação, o emissor manterá o mesmo identificador. Tentativas poderão ser diferenciadas por registros operacionais associados a esse ID, sem nova identidade obrigatória.
 - O daemon não manterá cache ou histórico de resultados para deduplicar por UUIDv7. Cada recebimento, inclusive um reenvio com o mesmo ID, será processado novamente e produzirá uma nova resposta.
@@ -41,12 +41,17 @@ As seguintes capacidades orientam a discussão, embora seus contratos técnicos 
 - O canal de notificações operacionais será distinto do canal de resposta do evento e não receberá a resposta funcional normal.
 - O canal operacional será opcional, mas deverá ser configurável pelo sistema de setup existente do Onmyōji, no contexto do gateway dentro do menu de configuração do daemon. Sem configuração, a ocorrência permanecerá no log local, e nem o setup nem a execução dependerão desse canal.
 - Receber um evento no gateway significará solicitar a participação do agente. O gateway notificará ou invocará o agente para processar a informação pelo App Server ou pelo Codex CLI.
-- Todo evento deverá escolher entre reutilizar a thread existente associada ao destino e forçar a criação de uma nova thread.
-- O destino de resposta será representado por dois campos conceituais: tipo do canal e valor do canal. Os nomes técnicos desses campos ainda não foram definidos.
+- `thread_policy` será obrigatório e aceitará `reuse` ou `new`. `reuse` usará a thread vigente associada ao destino. `new` iniciará uma nova thread para o evento e, depois da conclusão dessa troca, substituirá a associação anterior; o próximo `reuse` continuará na nova thread.
+- O destino de resposta será o objeto obrigatório e aninhado `response_channel`, com `type` e `value` obrigatórios. `type` aceitará `telegram` ou `email`; `value` armazenará o destino.
 - Os tipos iniciais considerados serão Telegram e e-mail. Para Telegram, o setup permitirá escolher um canal já registrado e o agendamento ou evento armazenará diretamente o ID escolhido. Para e-mail, o valor armazenado será o endereço que receberá a mensagem com o resultado.
 - O destino de resposta será distinto do canal operacional global usado para incidentes e logs.
 - Um evento sem tipo ou valor válido para o canal de saída será rejeitado na validação do esquema. Se os campos estiverem presentes, mas o destino não existir mais, não for encontrado ou falhar na entrega, o daemon registrará a falha no log e usará o canal operacional de incidentes quando ele estiver configurado.
 - Os tipos iniciais de canal de saída considerados são Telegram e e-mail. Outros adaptadores poderão ser discutidos no futuro.
+- Telegram e eventos do gateway compartilharão um único escalonador e o limite global já usado para turnos do Codex. O escalonador manterá os destinos ativos, pulará temporariamente candidatos cujo destino já esteja em execução e buscará o próximo elegível, sem criar filas individuais por canal nem bloqueio de cabeça de fila.
+- Mensagens do Telegram terão prioridade sobre eventos do gateway que ainda aguardam capacidade, sem interromper execução já iniciada. A ordem de chegada será preservada entre itens comparáveis e elegíveis; tráfego contínuo do Telegram poderá causar starvation dos eventos do gateway.
+- O evento será uma segunda origem do mesmo gateway de execução usado pelo Telegram. As duas origens compartilharão a mesma inbox persistente, o mesmo escalonador, o mesmo App Server, o mesmo limite global e o mesmo ciclo de terminalidade; não haverá executor, App Server, banco de execução ou fila paralelos para eventos.
+- O processo compartilhado deverá permitir habilitar o ingresso de eventos sem exigir que a recepção Telegram esteja ativa. As origens e os adaptadores poderão ser habilitados separadamente, mas o núcleo de execução continuará único.
+- O timeout de turno e a graça de interrupção já usados pelo Telegram também valerão para eventos. Não será criado um timeout próprio do novo ingresso. Continua em aberto como o chamador acompanhará a resposta sem bloquear o transporte RPC local e se poderá solicitar cancelamento.
 - Um MCP futuro poderá permitir que o agente crie ou registre scripts e os associe a agendamentos. Esses scripts poderão executar localmente e, somente quando precisarem da participação do agente, emitir uma notificação ao gateway e receber o respectivo retorno.
 
 > [!CAUTION]
@@ -57,7 +62,8 @@ As seguintes capacidades orientam a discussão, embora seus contratos técnicos 
 O agendador e o gateway de notificações ao agente pertencem ao daemon, mas têm responsabilidades e ciclos de configuração próprios:
 
 - **Agendador:** administra definições temporais e recorrências e dispara ações configuradas. Seu catálogo de ações ainda não foi definido; notificar o gateway será uma possibilidade, não a finalidade exclusiva do serviço.
-- **Gateway:** recebe apenas eventos que solicitam a participação do agente, invoca o agente, acompanha sua resposta e entrega o resultado segundo o canal configurado.
+- **Gateway de execução:** recebe trabalhos das origens Telegram e evento, aplica o escalonamento global, invoca o agente por uma única instância App Server, acompanha a resposta e delega a entrega ao adaptador do canal.
+- **Ingresso de eventos:** valida o envelope privado/local e insere o trabalho na mesma inbox do gateway; não possui executor nem fila próprios.
 - **Processamento na origem:** serviços e scripts poderão detectar e tratar acontecimentos inteiramente sem gateway. Ignorar, arquivar, excluir sob proteção ou executar lógica local não exigirá criar uma notificação ao agente.
 - **Composição:** um agendamento poderá notificar o gateway para solicitar processamento pelo agente, sem tornar as duas capacidades inseparáveis.
 - **Setup:** o agendador terá seu próprio contexto e menu, e o gateway terá outro contexto e menu. Não haverá um submenu combinado denominado “Eventos e agendamentos”.
@@ -101,8 +107,9 @@ origem detecta um acontecimento
             -> inválido: erro de validação ao emissor
             -> válido
                 -> reutilização do ID fornecido pelo emissor
-                -> solicitação normalizada ao agente
-                -> invocação do agente (App Server ou Codex CLI)
+                -> solicitação normalizada na inbox compartilhada
+                -> escalonador global usado também pelo Telegram
+                -> invocação na mesma instância App Server
                 -> entrega ou retorno pelo canal obrigatório
                     -> destino ausente ou inválido no JSON: não chega à execução
                     -> destino inexistente, não encontrado ou com falha: registro em log
@@ -121,7 +128,7 @@ Uma origem poderá detectar um e-mail, mensagem, webhook ou outro fato e tratá-
 - script local que precisa encaminhar informação ao agente;
 - futuras integrações capazes de notificar o gateway.
 
-Qualquer integração cadastrada poderá emitir uma notificação ao gateway. O significado técnico de cadastro, autenticação e permissões por integração ainda não foi definido. O contrato de webhook também permanece em aberto. A presença do agendador nessa lista representa somente uma integração possível, e não torna todo disparo agendado um evento.
+Na fase inicial, qualquer origem com acesso ao ingresso privado/local poderá emitir uma notificação, sem cadastro, autenticação ou autorização de emissor; basta que o JSON passe pelo esquema. Isso não autoriza endpoint externo. Webhook ou outra publicação futura dependerá de nova decisão de segurança e autenticação. A presença do agendador nessa lista representa somente uma integração possível, e não torna todo disparo agendado um evento.
 
 ### 2. Notificação normalizada ao agente
 
@@ -129,16 +136,15 @@ O gateway receberá a notificação em JSON. Um esquema versionado definirá a e
 
 Antes de invocar o agente, o gateway validará a mensagem contra o esquema aplicável. Uma mensagem fora do padrão produzirá erro de validação. Quem cria ou emite o evento também poderá usar o mesmo esquema para validar previamente o JSON produzido.
 
-Sem definir ainda os nomes técnicos dos campos, o contrato possui estes campos mínimos conceituais:
+O envelope v1 possui estes campos obrigatórios:
 
-- versão do esquema;
-- identificador UUID versão 7 do evento, fornecido pelo emissor;
-- prompt do evento para o agente;
-- tipo do canal de saída;
-- valor do canal de saída;
-- política de thread: reutilizar a thread existente associada ao destino ou forçar a criação de uma nova.
+- `schema_version`: número inteiro com valor `1`;
+- `event_id`: UUID versão 7 fornecido pelo emissor;
+- `prompt`: texto livre não vazio para o agente;
+- `response_channel`: objeto aninhado com `type` igual a `telegram` ou `email` e `value` obrigatório;
+- `thread_policy`: literal `reuse` ou `new`.
 
-Os nomes JSON finais não foram definidos. Tipo de evento, payload separado, timestamp, parâmetros adicionais, proveniência e correlações adicionais não foram aprovados como campos obrigatórios e permanecem como dúvidas. Também não foi escolhida a tecnologia do esquema: JSON Schema, OpenAPI, esquema próprio ou outra alternativa continuam em avaliação. Esse envelope descreve uma solicitação de processamento pelo agente, não um acontecimento externo genérico.
+Tipo de evento, payload separado, timestamp, parâmetros adicionais, proveniência e correlações adicionais não foram aprovados como campos da v1 e permanecem como dúvidas para versões futuras. Também não foi escolhida a tecnologia do esquema: JSON Schema, OpenAPI, esquema próprio ou outra alternativa continuam em avaliação. Esse envelope descreve uma solicitação de processamento pelo agente, não um acontecimento externo genérico.
 
 O prompt será texto livre e não precisará referenciar um template. Não haverá, por enquanto, limite funcional máximo definido para seu tamanho. Eventuais limites técnicos de implementação permanecem para discussão futura e não alteram essa decisão funcional.
 
@@ -164,19 +170,25 @@ Ainda não foi definido onde essa decisão residirá em cada integração, como 
 
 ### 4. Invocação do agente e contexto
 
-Ao receber uma notificação válida, o gateway deverá invocar o agente pelo App Server ou pelo Codex CLI. A execução respeitará a política de thread obrigatória no evento:
+Ao receber uma notificação válida, o ingresso a persistirá na mesma inbox do gateway de execução usada pelo Telegram. O gateway deverá invocar o agente pela mesma instância App Server; um adaptador Codex CLI só poderá ser considerado se preservar a mesma autoridade de admissão. A execução respeitará `thread_policy`:
 
-- **reutilizar contexto:** usar a thread associada ao canal de saída;
-- **isolar contexto:** criar uma nova thread para aquela execução.
+- `reuse`: usar a thread vigente associada ao `response_channel`;
+- `new`: iniciar uma nova thread para o evento e, depois da conclusão dessa troca, substituir a associação anterior do mesmo destino.
 
-Essas opções registram a necessidade funcional, mas ainda não definem ciclo de vida, concorrência, retenção, associação de canais a threads ou comportamento em falhas. Um script que resolva o acontecimento sem agente pertence ao tratamento na origem e não precisa emitir evento ao gateway.
+Depois da substituição, eventos posteriores com `reuse` continuarão na nova thread, e a anterior não será reutilizada automaticamente. Ainda não foram definidos exclusão da thread anterior, comportamento se a criação ou o primeiro turno falhar antes de concluir a troca, retenção nem retomada após falha.
+
+Telegram e eventos compartilharão a mesma inbox, um único escalonador e o limite global de execuções simultâneas do Codex já configurado no daemon. O escalonador manterá o conjunto de destinos em execução e examinará os itens pendentes por prioridade e ordem de chegada. Quando um candidato usar destino ativo, ele permanecerá pendente e será pulado temporariamente para permitir a seleção do próximo elegível; voltará a ser considerado após nova oportunidade ou liberação do destino. Não haverá filas separadas por origem/canal nem bloqueio de cabeça de fila.
+
+Telegram terá prioridade sobre eventos do gateway pendentes. A prioridade preservará FIFO entre itens comparáveis e elegíveis e não interromperá execução já iniciada. Tráfego contínuo do Telegram poderá causar starvation dos eventos do gateway; quota, aging ou outra compensação não foram aprovados.
+
+O limite compartilhado representa turnos do Codex. Depois da terminalidade confirmada, o slot global pode ser liberado, enquanto o destino continua ativo até a entrega e o encerramento do trabalho. Se a terminalidade ficar incerta, o slot permanece retido até reconciliação ou perda comprovada do processo. Essas regras já existem no caminho Telegram e devem ser preservadas na extração do núcleo multiorigem.
 
 ### 5. Destino de resposta
 
-O destino de resposta será representado por dois campos conceituais, cujos nomes técnicos ainda não foram definidos:
+O destino de resposta será representado pelo objeto aninhado `response_channel`:
 
-- **tipo do canal:** inicialmente, Telegram ou e-mail;
-- **valor do canal:** o identificador ou endereço usado para entregar a resposta.
+- `type`: literal `telegram` ou `email`;
+- `value`: valor obrigatório usado para entregar a resposta.
 
 Para Telegram, a configuração permitirá escolher entre destinos já registrados, como canal, grupo ou thread. O agendamento ou a notificação ao gateway armazenará diretamente o ID do destino escolhido, e não uma referência indireta ou a posição ocupada na lista de seleção.
 
@@ -211,10 +223,10 @@ Quando o chamador não acompanhar a resposta, o daemon ainda concluirá o proces
 - a saída ou o resultado produzido;
 - o erro ou a falha ocorrida.
 
-O contrato comum entre execução e adaptadores, assim como respostas parciais, timeouts e falhas de entrega, permanece indefinido.
+O timeout de execução não será novo: eventos reutilizarão `turn_timeout_seconds` e `interrupt_grace_seconds` do gateway vigente, inclusive o estado incerto quando a interrupção não confirma terminalidade. Permanecem indefinidos o contrato comum dos adaptadores, respostas parciais, tentativas/falhas de entrega, o mecanismo pelo qual o chamador local acompanha o resultado e a possibilidade de cancelamento pelo chamador.
 
 > [!NOTE]
-> A opção do chamador de não esperar pela resposta não transforma o gateway em assíncrono nem cria um segundo modo de execução. Ainda precisam ser definidos o ciclo de vida dessa execução, a eventual retenção do resultado, timeout e cancelamento.
+> A opção do chamador de não esperar pela resposta não transforma o gateway em assíncrono nem cria um segundo modo de execução. O RPC local atual atende uma chamada por vez e usa timeout curto no Supervisor, portanto não pode aguardar um turno longo sem bloquear o serviço. Ainda precisam ser definidos o acompanhamento da resposta, a eventual retenção do resultado e o cancelamento; não deve ser criado um timeout de evento para contornar essa lacuna.
 
 > [!IMPORTANT]
 > Na premissa atual, a instância e seus dados são acessíveis somente ao próprio dono da informação. Por isso, não há categorias de conteúdo proibidas no log por privacidade e não existe requisito funcional de redaction ou mascaramento. Essa premissa de acesso exclusivo do proprietário fundamenta a permissão de registrar integralmente entrada, saída e falha.
@@ -267,29 +279,24 @@ Esse exemplo não torna o gateway parte obrigatória do agendador: o script pode
 
 ## Propostas preliminares, não decididas
 
-- Usar um único envelope normalizado para as notificações deliberadamente emitidas ao gateway.
 - Separar conceitualmente acontecimento na origem, decisão de envolver o agente, normalização da notificação, invocação e entrega.
-- Resolver a estratégia de thread como parte explícita da invocação do agente.
+- Definir campos adicionais somente em versão futura, se houver necessidade comprovada.
 
-Esses pontos são direção de investigação. Podem mudar quando forem definidos o envelope, as garantias operacionais e as fronteiras de segurança.
+Esses pontos são direção de investigação. Podem mudar quando forem definidas as garantias operacionais e as fronteiras futuras de exposição externa.
 
 ## Pendências prioritárias e outras dúvidas
 
 As próximas lacunas devem ser discutidas prioritariamente, sem decisão antecipada neste rascunho:
 
-1. autenticação e cadastro das integrações emissoras;
-2. timeout e cancelamento da execução;
-3. persistência e retomada após reinício do daemon;
-4. tentativas de entrega do resultado;
-5. ciclo de vida e concorrência das threads;
-6. contrato próprio do agendador, independente do contrato do gateway.
+1. mecanismo de acompanhamento da resposta no transporte local e cancelamento pelo chamador;
+2. persistência e retomada após reinício do daemon;
+3. tentativas de entrega do resultado;
+4. ciclo de vida e falhas das threads;
+5. contrato próprio do agendador, independente do contrato do gateway.
 
 ### Contrato da notificação ao agente
 
-- Quais campos adicionais, se houver, complementarão o conjunto mínimo já decidido?
-- Será necessário um payload separado do prompt?
-- Tipo de evento, timestamp, origem, identidade adicional, parâmetros adicionais ou outras correlações serão incluídos? Se forem, quais serão obrigatórios?
-- Quais dados pertencerão a extensões específicas de cada origem?
+- Se uma versão futura precisar de campos adicionais, quais justificam uma v2?
 - Como sinalizar conteúdo não confiável e impedir que dados externos sejam tratados como instruções privilegiadas?
 - Qual será o contrato técnico para uma origem notificar o gateway por webhook ou outra interface?
 - Qual tecnologia representará o esquema versionado: JSON Schema, OpenAPI, esquema próprio ou outra?
@@ -313,7 +320,9 @@ As próximas lacunas devem ser discutidas prioritariamente, sem decisão antecip
 - Quais estados e garantias de entrega serão necessários?
 - Qual será o ciclo de vida da execução quando o chamador optar por não esperar nem acompanhar a resposta?
 - O resultado será retido quando o chamador não o consumir? Se for, por quanto tempo e para quem ficará disponível?
-- Como tratar timeout, cancelamento, retomada e falhas parciais?
+- Como o chamador poderá acompanhar a resposta sem bloquear o RPC serial e o lock de encaminhamento do Supervisor durante todo o turno?
+- O chamador poderá solicitar cancelamento, ou somente abandonar o acompanhamento sem cancelar o trabalho aceito?
+- Como tratar retomada e falhas parciais, preservando `turn_timeout_seconds` e `interrupt_grace_seconds` já existentes?
 - Qual será o formato do timestamp de recepção, seu timezone e a eventual relação com relógio monotônico?
 - Qual será o formato, o caminho, a periodicidade da limpeza, o mecanismo de rotação e o eventual limite de tamanho dos logs de falha?
 
@@ -324,13 +333,13 @@ As próximas lacunas devem ser discutidas prioritariamente, sem decisão antecip
 - Quais autorizações serão exigidas para criar agendamentos, scripts e critérios de seleção?
 - Que proteção adicional tornará uma exclusão automática na origem deliberada e segura?
 - Quais limites de recursos e isolamento serão aplicados a scripts locais?
-- O que constituirá tecnicamente uma integração cadastrada, sem antecipar autenticação ou permissões por integração?
+- Se houver proposta futura de exposição externa, qual segurança e autenticação serão exigidas antes de publicá-la?
 
 ### Threads e canais
 
 - O que caracteriza a thread associada a cada tipo de canal?
 - Quando uma associação deixa de ser válida ou precisa ser recriada?
-- Como execuções concorrentes no mesmo canal serão coordenadas?
+- Como tratar falha de criação ou do primeiro turno `new` antes da conclusão da troca, sem definir implicitamente exclusão ou rollback?
 
 ### Notificações operacionais
 
@@ -340,17 +349,16 @@ As próximas lacunas devem ser discutidas prioritariamente, sem decisão antecip
 
 ## Próximos passos
 
-1. Definir autenticação e cadastro das integrações emissoras.
-2. Definir timeout e cancelamento da execução.
-3. Definir persistência e retomada após reinício do daemon.
-4. Definir tentativas de entrega do resultado.
-5. Definir ciclo de vida e concorrência das threads.
-6. Definir o contrato próprio do agendador sem pressupor uso obrigatório do gateway.
-7. Decidir se a configuração do canal de notificações operacionais será somente global ou poderá ser sobrescrita por notificação do gateway ou por origem.
-8. Completar o desenho da listagem ordenável de agendamentos e decidir seus detalhes de interação.
-9. Escolher a tecnologia do esquema JSON versionado e detalhar sua evolução, distribuição e erros de validação.
-10. Delimitar responsabilidades entre origem, gateway, invocação do agente e adaptadores de entrega.
-11. Converter propostas em decisões explícitas antes de iniciar um plano de implementação.
+1. Definir o mecanismo de acompanhamento da resposta no transporte local e o cancelamento pelo chamador, sem criar executor ou timeout paralelos.
+2. Definir persistência e retomada após reinício do daemon.
+3. Definir tentativas de entrega do resultado.
+4. Definir falhas e ciclo de vida das threads.
+5. Definir o contrato próprio do agendador sem pressupor uso obrigatório do gateway.
+6. Decidir se a configuração do canal de notificações operacionais será somente global ou poderá ser sobrescrita por notificação do gateway ou por origem.
+7. Completar o desenho da listagem ordenável de agendamentos e decidir seus detalhes de interação.
+8. Escolher a tecnologia do esquema JSON versionado e detalhar sua evolução, distribuição e erros de validação.
+9. Delimitar responsabilidades entre origem, gateway, invocação do agente e adaptadores de entrega.
+10. Converter propostas em decisões explícitas antes de iniciar um plano de implementação.
 
 ## Registro evolutivo
 
@@ -378,6 +386,13 @@ Esta seção acompanha a evolução do rascunho sem transformá-lo em documenta�
 | 2026-11-09 | Decisão de identidade | O identificador do evento será UUID versão 7, conforme a RFC 9562. A escolha é padronizada, descentralizada e ordenável temporalmente, favorecendo índices, listagens cronológicas e investigação de logs sem contador central. |
 | 2026-11-09 | Decisão de idempotência | O UUIDv7 será usado para correlação, rastreamento e logs, não para deduplicação. Cada recebimento será processado novamente e produzirá nova resposta, inclusive quando repetir o mesmo ID; o daemon não manterá nem retornará resultado anterior para esse fim. |
 | 2026-11-09 | Decisão de rastreamento | Cada chamada será registrada com o UUIDv7 fornecido e um timestamp de recepção agregado pelo daemon com precisão de milissegundos. Chamadas com o mesmo ID terão registros separados, sem ID adicional e sem definir a dupla como chave única. |
+| 2026-11-09 | Decisão de contrato | O envelope JSON v1 foi fechado com cinco campos obrigatórios: `schema_version` inteiro constante `1`, `event_id` UUIDv7, `prompt` não vazio, `response_channel` aninhado com `type` (`telegram` ou `email`) e `value`, e `thread_policy` (`reuse` ou `new`). Nenhum outro campo integra a v1. |
+| 2026-11-09 | Decisão de ingresso | A fase inicial será estritamente privada/local, sem endpoint externo e sem autenticação, cadastro ou autorização de emissores. Qualquer evento válido pelo esquema será aceito. Exposição externa dependerá de decisão futura específica sobre segurança e autenticação. |
+| 2026-11-09 | Decisão de thread | `new` cria uma nova thread para o evento e, após a conclusão da troca, substitui a associação vigente do mesmo destino. O próximo `reuse` usa a nova thread; a anterior deixa de ser associação ativa e não é reutilizada automaticamente. Falha antes da conclusão continua sem política decidida. |
+| 2026-11-09 | Decisão de concorrência | Telegram e eventos compartilharão um único escalonador e o limite global do Codex. Destinos ativos serão pulados temporariamente sem bloquear os próximos elegíveis; FIFO será preservado entre comparáveis. Telegram terá prioridade sem preempção, com risco aceito de starvation de eventos. |
+| 2026-11-09 | Correção arquitetural | Evento não terá executor paralelo: será outra origem do mesmo gateway de execução usado pelo Telegram, compartilhando inbox persistente, escalonador, App Server, limite, timeout, interrupção e terminalidade. Diferem apenas contrato de entrada, instruções/capacidades e entrega. |
+| 2026-11-09 | Decisão de lifecycle | O processo compartilhado poderá manter o ingresso de eventos ativo sem ativar a recepção Telegram. Origens e adaptadores têm habilitação própria, mas não instanciam outro núcleo de execução. |
+| 2026-11-09 | Diagnóstico técnico | O caminho Telegram já usa `turn_timeout_seconds` e `interrupt_grace_seconds` e retém o permit quando falta terminalidade; esses valores serão reutilizados. O RPC local atual é serial e tem timeout curto no Supervisor, por isso o acompanhamento de uma resposta longa permanece uma decisão aberta, sem criação de timeout próprio do evento. |
 
 ### Decisões consolidadas
 
@@ -387,7 +402,8 @@ Esta seção acompanha a evolução do rascunho sem transformá-lo em documenta�
 - A relação entre ambos será de composição e reutilização, sem dependência obrigatória nem identidade arquitetural.
 - O agendador poderá notificar o gateway ou executar scripts e outras ações que não o utilizem.
 - O gateway poderá receber notificações de agendamentos, webhooks, interfaces, scripts e integrações.
-- Qualquer integração cadastrada poderá emitir uma notificação ao gateway; cadastro é a fronteira atual, sem definição de autenticação, permissões por integração ou mecanismo técnico.
+- Na fase inicial, qualquer origem com acesso ao ingresso privado/local poderá emitir uma notificação válida, sem autenticação, cadastro ou autorização de emissor.
+- A fase inicial não publicará endpoint externo. Webhook ou outra exposição externa exigirá nova decisão específica de segurança e autenticação.
 - Um acontecimento detectado na origem não será automaticamente um evento do gateway.
 - Somente a decisão de solicitar participação do agente produzirá uma notificação ou um evento para o gateway.
 - O gateway não será um receptor ou barramento genérico de todos os acontecimentos externos.
@@ -409,7 +425,10 @@ Esta seção acompanha a evolução do rascunho sem transformá-lo em documenta�
 - O gateway receberá as notificações em JSON.
 - Um esquema versionado definirá a estrutura e o padrão válido do evento.
 - A versão do esquema deverá estar representada ou ser identificável para permitir evolução do contrato.
-- Os campos mínimos conceituais serão versão do esquema, identificador UUID versão 7 do evento fornecido pelo emissor, prompt para o agente, tipo do canal de saída, valor do canal de saída e política de thread.
+- O envelope v1 terá exatamente os campos obrigatórios `schema_version`, `event_id`, `prompt`, `response_channel` e `thread_policy`.
+- `schema_version` será inteiro constante `1`; `event_id` será UUIDv7; `prompt` será texto livre não vazio.
+- `response_channel` permanecerá aninhado e conterá obrigatoriamente `type` (`telegram` ou `email`) e `value`.
+- `thread_policy` aceitará somente `reuse` ou `new`.
 - O UUIDv7 seguirá a [RFC 9562](https://www.rfc-editor.org/rfc/rfc9562.html).
 - A escolha do UUIDv7 fornece identidade padronizada, descentralizada e ordenável temporalmente, adequada a índices, listagens cronológicas e investigação de logs sem contador central.
 - O daemon reutilizará o identificador fornecido pelo emissor durante processamento, entrega, diagnóstico e logs.
@@ -422,25 +441,28 @@ Esta seção acompanha a evolução do rascunho sem transformá-lo em documenta�
 - O emissor deverá considerar que um reenvio repete o processamento.
 - O prompt será texto livre e não exigirá referência a template.
 - Não haverá, por enquanto, limite funcional máximo definido para o tamanho do prompt; eventuais limites técnicos permanecem para implementação futura.
-- A política de thread deverá escolher entre reutilizar a thread existente associada ao destino e forçar a criação de uma nova.
+- `reuse` usará a associação vigente do destino. `new` criará uma nova thread e, após concluir a troca, substituirá a associação; o próximo `reuse` usará a nova thread e a anterior não será retomada automaticamente.
 - O gateway validará a mensagem contra o esquema antes de invocar o agente.
 - Uma mensagem fora do padrão, inclusive sem tipo ou valor válido de canal, produzirá erro de validação para o emissor e não invocará o agente.
 - Quem cria ou emite a notificação poderá usar o mesmo esquema antecipadamente para verificar o JSON produzido.
 - A tecnologia do esquema ainda não foi definida; JSON Schema, OpenAPI, esquema próprio e outras alternativas permanecem possíveis.
-- Nenhum campo técnico concreto foi definido além dos conceitos já registrados neste rascunho.
+- Campos adicionais não integram a v1; eventual ampliação exigirá evolução do esquema.
 
 #### Execução e entrega pelo gateway
 
 - Receber um evento no gateway significará solicitar que o agente processe a informação.
-- O gateway invocará o agente pelo App Server ou pelo Codex CLI.
+- O evento será outra origem do mesmo gateway de execução usado pelo Telegram, e não um executor paralelo.
+- Telegram e eventos compartilharão a mesma inbox persistente, o mesmo escalonador, a mesma instância App Server, o mesmo limite global e o mesmo ciclo de terminalidade.
+- O ingresso de eventos poderá ser habilitado sem ativar a recepção Telegram; essa independência de adaptadores não cria outro processo executor.
+- O gateway poderá futuramente usar Codex CLI somente se ele permanecer sob a mesma autoridade de admissão e oferecer contrato equivalente.
 - A execução será síncrona e permanecerá aguardando a resposta do App Server ou do Codex CLI.
 - O chamador poderá escolher esperar pela resposta ou não a acompanhar nem consumi-la.
 - A escolha de não esperar não criará um modo assíncrono no gateway.
-- Quando o agente for invocado, será possível reutilizar a thread associada ao canal de saída ou criar uma nova thread isolada.
+- Quando o agente for invocado, será possível reutilizar a thread vigente associada ao canal de saída ou criar uma nova que substitui a associação após a conclusão da troca.
 - Sem acompanhamento do chamador, o daemon ainda concluirá o processamento e tentará entregar o resultado ao canal configurado.
 - O mesmo identificador do evento acompanhará a invocação, a entrega e eventuais tentativas registradas.
 - Recebimentos repetidos com o mesmo UUIDv7 iniciarão novo processamento e produzirão nova resposta.
-- O destino de resposta será representado por dois campos conceituais: tipo do canal e valor do canal.
+- O destino de resposta será o objeto aninhado obrigatório `response_channel`, com `type` e `value`.
 - Os tipos iniciais considerados serão Telegram e e-mail.
 - Para Telegram, a configuração permitirá escolher um destino já registrado, como canal, grupo ou thread, e o agendamento ou a notificação armazenará diretamente o ID escolhido, não uma referência indireta nem sua posição na lista.
 - Para e-mail, o valor armazenado será o endereço ao qual será enviada a mensagem com o resultado.
@@ -448,6 +470,9 @@ Esta seção acompanha a evolução do rascunho sem transformá-lo em documenta�
 - O tipo e o valor do canal de saída serão obrigatórios no evento.
 - Campos de canal ausentes ou inválidos farão o JSON falhar na validação do esquema e ser rejeitado.
 - Se os campos estiverem presentes, mas o destino não existir mais, não for encontrado ou falhar na entrega, a ocorrência será tratada como falha operacional.
+- Um escalonador único selecionará pendentes por prioridade e chegada, pulará destinos ativos e reconsiderará os itens depois, sem filas separadas por origem e sem head-of-line blocking.
+- Telegram terá prioridade sobre eventos pendentes sem preempção. FIFO será preservado entre itens comparáveis e elegíveis; starvation dos eventos sob tráfego contínuo do Telegram é um risco aceito sem quota, aging ou alternância aprovados.
+- Eventos reutilizarão `turn_timeout_seconds` e `interrupt_grace_seconds`; terminalidade incerta continuará retendo o permit até reconciliação ou perda comprovada do App Server.
 
 #### Logs e notificações operacionais do gateway
 
@@ -469,4 +494,4 @@ Esta seção acompanha a evolução do rascunho sem transformá-lo em documenta�
 - Uma CLI isolada, variável de ambiente ou edição manual de arquivo não será tratada como interface principal já decidida para essas configurações.
 - A implementação futura da interação de configuração deverá consultar e obedecer a `docs/setup-interface.md`.
 
-Essas são decisões funcionais e arquiteturais de concepção. O nome definitivo do gateway, os campos adicionais do JSON, eventuais correlações adicionais e a tecnologia do esquema versionado ainda não foram definidos. As pendências prioritárias são autenticação e cadastro dos emissores, timeout/cancelamento, persistência e retomada, tentativas de entrega, ciclo de vida e concorrência das threads e contrato próprio do agendador. Para o agendador, também permanecem abertos o catálogo de ações e os detalhes da listagem já enumerados. Para os logs, permanecem em aberto formato geral, caminho, periodicidade da limpeza, mecanismo de rotação, eventual limite de tamanho, formato do timestamp, timezone e uso de relógio monotônico. Para as notificações operacionais, ainda não foram decididos adaptadores, formato, conteúdo exato, tentativas, tratamento da falha do próprio canal, opção exata no contexto do gateway, tela ou prompt, adaptador padrão nem armazenamento da configuração.
+Essas são decisões funcionais e arquiteturais de concepção. O nome definitivo do gateway e a tecnologia do esquema versionado ainda não foram definidos; o envelope v1, porém, está fechado e não contém campos adicionais. As pendências prioritárias são o mecanismo de acompanhamento da resposta no transporte local, cancelamento pelo chamador, persistência e retomada, tentativas de entrega, falha de `new` antes da troca de associação e contrato próprio do agendador. Autenticação de emissores não integra a fase privada/local; só será discutida se houver proposta futura de exposição externa. Para o agendador, permanecem abertos o catálogo de ações e os detalhes da listagem já enumerados. Para os logs, permanecem em aberto formato geral, caminho, periodicidade da limpeza, mecanismo de rotação, eventual limite de tamanho, formato do timestamp, timezone e uso de relógio monotônico. Para as notificações operacionais, ainda não foram decididos adaptadores, formato, conteúdo exato, tentativas, tratamento da falha do próprio canal, opção exata no contexto do gateway, tela ou prompt, adaptador padrão nem armazenamento da configuração.
