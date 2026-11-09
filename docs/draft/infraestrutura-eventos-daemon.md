@@ -19,6 +19,7 @@ As seguintes capacidades orientam a discussão, embora seus contratos técnicos 
 
 - O daemon persistente deverá futuramente oferecer um agendador recorrente, capaz de disparar tarefas em data e hora determinadas ou segundo uma recorrência configurada.
 - Deverá existir um receptor genérico de eventos. Cada entrada deverá conseguir transportar uma solicitação, um payload ou um prompt, além do canal de resposta e dos parâmetros necessários à execução.
+- A execução do evento será síncrona e permanecerá aguardando a resposta do App Server ou do Codex CLI. O chamador poderá esperar por essa resposta ou optar por não a acompanhar nem consumi-la; essa escolha não criará um modo assíncrono no receptor.
 - Receber um evento não implicará necessariamente chamar o Codex. As regras poderão ignorar o evento, arquivá-lo, excluí-lo sob proteção explícita, executar somente um script ou chamar o Codex.
 - Quando houver chamada ao Codex, deverá ser possível escolher entre reutilizar a thread associada ao canal de saída e criar uma nova thread isolada.
 - Os primeiros canais de saída considerados são Telegram, e-mail e retorno síncrono ao script chamador. A infraestrutura deverá admitir outros adaptadores no futuro.
@@ -92,7 +93,12 @@ O resultado poderá ser entregue por um adaptador de canal ou devolvido diretame
 - retorno síncrono ao script chamador;
 - adaptadores adicionais ainda não identificados.
 
+O receptor manterá uma única semântica de execução: o evento continuará em processamento síncrono enquanto aguarda a resposta do App Server ou do Codex CLI. O chamador poderá permanecer aguardando o resultado ou decidir não acompanhar nem consumir essa resposta.
+
 O contrato comum entre execução e adaptadores, assim como respostas parciais, timeouts e falhas de entrega, permanece indefinido.
+
+> [!NOTE]
+> A opção do chamador de não esperar pela resposta não transforma o receptor em assíncrono nem cria um segundo modo de execução. Ainda precisam ser definidos o ciclo de vida dessa execução, a eventual retenção do resultado, timeout e cancelamento.
 
 ## Exemplo exploratório: triagem de e-mail
 
@@ -145,6 +151,8 @@ Esses pontos são direção de investigação. Podem mudar quando forem definido
 
 - Eventos serão persistidos antes da avaliação? Em quais situações?
 - Quais estados e garantias de entrega serão necessários?
+- Qual será o ciclo de vida da execução quando o chamador optar por não esperar nem acompanhar a resposta?
+- O resultado será retido quando o chamador não o consumir? Se for, por quanto tempo e para quem ficará disponível?
 - Como tratar repetição, idempotência, timeout, cancelamento, retomada e falhas parciais?
 - Como observar e auditar decisões sem registrar segredos ou conteúdo sensível indevido?
 
@@ -160,7 +168,6 @@ Esses pontos são direção de investigação. Podem mudar quando forem definido
 - O que caracteriza a thread associada a cada tipo de canal?
 - Quando uma associação deixa de ser válida ou precisa ser recriada?
 - Como execuções concorrentes no mesmo canal serão coordenadas?
-- Como adaptar respostas síncronas e assíncronas ao mesmo modelo sem esconder diferenças importantes?
 
 ## Próximos passos
 
@@ -177,7 +184,12 @@ Esta seção acompanha a evolução do rascunho sem transformá-lo em documenta�
 | Data | Estado | Registro |
 | --- | --- | --- |
 | 2026-11-09 | Concepção inicial | Registradas as intenções de agendamento, recepção genérica de eventos, regras, execução opcional por script ou Codex, estratégias de thread, canais de saída e integração futura por MCP. Nenhuma arquitetura de implementação foi aprovada. |
+| 2026-11-09 | Decisão funcional | A execução do evento será síncrona e aguardará a resposta do App Server ou do Codex CLI. O chamador poderá esperar ou não acompanhar nem consumir a resposta, sem que isso crie um modo assíncrono no receptor. Ciclo de vida, retenção do resultado, timeout e cancelamento permanecem em aberto. |
 
 ### Decisões consolidadas
 
-Nenhuma decisão arquitetural foi consolidada neste primeiro registro. As capacidades listadas em **Intenções já expressas** delimitam o problema; as demais seções organizam propostas e perguntas para a discussão.
+- A execução do evento será síncrona e permanecerá aguardando a resposta do App Server ou do Codex CLI.
+- O chamador poderá escolher esperar pela resposta ou não a acompanhar nem consumi-la.
+- A escolha de não esperar não criará um modo assíncrono no receptor.
+
+Essa é uma decisão funcional. O ciclo de vida quando o chamador não espera, a retenção do resultado, timeout, cancelamento e os demais detalhes técnicos ainda não foram decididos. As demais seções continuam organizando intenções, propostas e perguntas para a discussão.
