@@ -4,7 +4,7 @@
 
 **Início:** 2026-11-09
 
-**Próximo tema de discussão:** contrato e envelope comum do evento
+**Próximo tema de discussão:** configuração global ou sobrescrevível do canal de notificações operacionais
 
 > [!IMPORTANT]
 > Este documento registra a discussão em andamento, inclusive hipóteses ainda prematuras. Ele não é uma especificação de implementação nem indica que as propostas preliminares foram aprovadas.
@@ -23,6 +23,9 @@ As seguintes capacidades orientam a discussão, embora seus contratos técnicos 
 - Quando o chamador não acompanhar a resposta, o daemon ainda concluirá o processamento e tentará entregar o resultado ao canal configurado.
 - Se essa entrega falhar e não houver um chamador aguardando para receber o erro, o daemon registrará a falha em arquivo de log. Para diagnóstico e resolução futura, o registro poderá conter integralmente a identificação do chamador, os dados de entrada do evento, a saída ou o resultado produzido e o erro ou a falha ocorrida.
 - Os arquivos e registros de log dessa infraestrutura serão retidos por 20 dias e excluídos automaticamente quando ultrapassarem esse prazo. Essa política não autoriza excluir e-mails, eventos de origem nem outros conteúdos.
+- O daemon terá uma configuração padrão para um canal de notificações operacionais e incidentes. Quando houver problema na resposta ou na entrega de um evento, ou quando ocorrer uma falha registrada em log, o daemon poderá enviar a esse canal uma notificação do problema ou do log.
+- O canal de notificações operacionais será distinto do canal de resposta do evento e não receberá a resposta funcional normal.
+- O canal operacional será opcional, mas deverá ser configurável pelo setup do Onmyōji. Sem configuração, a ocorrência permanecerá no log local, e nem o setup nem a execução dependerão desse canal.
 - Receber um evento não implicará necessariamente chamar o Codex. As regras poderão ignorar o evento, arquivá-lo, excluí-lo sob proteção explícita, executar somente um script ou chamar o Codex.
 - Quando houver chamada ao Codex, deverá ser possível escolher entre reutilizar a thread associada ao canal de saída e criar uma nova thread isolada.
 - Os primeiros canais de saída considerados são Telegram, e-mail e retorno síncrono ao script chamador. A infraestrutura deverá admitir outros adaptadores no futuro.
@@ -40,6 +43,7 @@ origem (agendamento, e-mail, script etc.)
     -> ação opcional (script e/ou Codex)
     -> entrega ou retorno
         -> se a entrega falhar e ninguém aguardar o erro: registro em log
+        -> problema ou falha registrada: notificação operacional opcional
 ```
 
 Esta sequência é uma proposta de decomposição conceitual. O caminho de falha sem chamador aguardando já expressa uma decisão funcional, mas ainda não determina componentes, processos, filas, formatos de armazenamento nem garantias de entrega.
@@ -119,6 +123,18 @@ Os arquivos e registros de log dessa infraestrutura terão retenção de 20 dias
 > [!CAUTION]
 > A exclusão automática após 20 dias é uma política restrita ao ciclo de vida desses logs. Ela não autoriza excluir e-mails, eventos de origem nem qualquer outro conteúdo processado ou referenciado pela infraestrutura.
 
+O daemon terá uma configuração padrão para um canal de notificações operacionais e incidentes. Quando um evento tiver problema na resposta ou na entrega, ou produzir a ocorrência de falha registrada em log, o daemon poderá enviar a esse canal uma notificação do problema ou do log.
+
+> [!IMPORTANT]
+> O canal de notificações operacionais é distinto do canal de resposta do evento. Ele não deverá receber a resposta funcional normal produzida pelo evento.
+
+O canal operacional será opcional, mas deverá ser configurável pelo setup do Onmyōji. Se não estiver configurado, a ocorrência continuará registrada no log local; a ausência do canal não impedirá nem condicionará o setup ou a execução de eventos.
+
+> [!NOTE]
+> Esta é uma decisão de concepção, não uma autorização para alterar os scripts de setup agora. A implementação futura dessa interação deverá consultar e obedecer às [convenções da interface de setup](../setup-interface.md).
+
+Ainda não foram decididos os adaptadores aceitos, o formato e o conteúdo exato da notificação, tentativas de envio, o comportamento caso o próprio canal operacional falhe, a tela ou o prompt do setup, um adaptador padrão nem o armazenamento da configuração.
+
 ## Exemplo exploratório: triagem de e-mail
 
 Um serviço integrado ao MCP de e-mail poderia verificar uma caixa periodicamente. Para cada mensagem encontrada, aplicaria filtros por remetente ou por outras condições e então decidiria o destino, o canal de resposta e a ação.
@@ -188,13 +204,19 @@ Esses pontos são direção de investigação. Podem mudar quando forem definido
 - Quando uma associação deixa de ser válida ou precisa ser recriada?
 - Como execuções concorrentes no mesmo canal serão coordenadas?
 
+### Notificações operacionais
+
+- A configuração do canal de notificações operacionais será somente global ou poderá ser sobrescrita por evento ou origem?
+- Como o setup apresentará e armazenará essa configuração opcional, respeitando `docs/setup-interface.md`?
+
 ## Próximos passos
 
-1. Discutir e registrar o contrato/envelope comum do evento.
-2. A partir do envelope, delimitar responsabilidades entre receptor, regras, executor e adaptadores.
-3. Definir o modelo de segurança para scripts, exclusão e conteúdo externo.
-4. Especificar persistência, estados e garantias operacionais somente após esclarecer os fluxos necessários.
-5. Converter propostas em decisões explícitas antes de iniciar um plano de implementação.
+1. Decidir se a configuração do canal de notificações operacionais será somente global ou poderá ser sobrescrita por evento ou origem.
+2. Discutir e registrar o contrato/envelope comum do evento.
+3. A partir do envelope, delimitar responsabilidades entre receptor, regras, executor e adaptadores.
+4. Definir o modelo de segurança para scripts, exclusão e conteúdo externo.
+5. Especificar persistência, estados e garantias operacionais somente após esclarecer os fluxos necessários.
+6. Converter propostas em decisões explícitas antes de iniciar um plano de implementação.
 
 ## Registro evolutivo
 
@@ -206,6 +228,8 @@ Esta seção acompanha a evolução do rascunho sem transformá-lo em documenta�
 | 2026-11-09 | Decisão funcional | A execução do evento será síncrona e aguardará a resposta do App Server ou do Codex CLI. O chamador poderá esperar ou não acompanhar nem consumir a resposta, sem que isso crie um modo assíncrono no receptor. Ciclo de vida, retenção do resultado, timeout e cancelamento permanecem em aberto. |
 | 2026-11-09 | Decisão funcional | Sem um chamador acompanhando a resposta, o daemon ainda concluirá o processamento e tentará entregar o resultado ao canal configurado. Se a entrega falhar e ninguém estiver aguardando para receber o erro, registrará a falha em arquivo de log. Para diagnóstico e resolução futura, o log poderá conter integralmente identificação do chamador, entrada do evento, saída ou resultado e erro ou falha. Não há categorias proibidas por privacidade sob a premissa de acesso exclusivo do proprietário. |
 | 2026-11-09 | Decisão funcional | Os arquivos e registros de log dessa infraestrutura terão retenção de 20 dias e serão excluídos automaticamente ao ultrapassar esse prazo. A política se aplica somente aos logs e não autoriza excluir e-mails, eventos de origem ou outros conteúdos. |
+| 2026-11-09 | Decisão funcional | O daemon terá uma configuração padrão para um canal de notificações operacionais e incidentes. Problemas de resposta ou entrega e falhas registradas em log poderão gerar uma notificação do problema ou do log nesse canal, que será distinto do canal de resposta e não receberá a resposta funcional normal do evento. |
+| 2026-11-09 | Decisão funcional | O canal operacional será opcional, mas configurável pelo setup do Onmyōji. Sem configuração, a ocorrência permanecerá no log local, sem tornar o setup ou a execução dependentes do canal. A interação futura deverá obedecer a `docs/setup-interface.md`; seu desenho e armazenamento ainda não foram definidos. |
 
 ### Decisões consolidadas
 
@@ -218,5 +242,11 @@ Esta seção acompanha a evolução do rascunho sem transformá-lo em documenta�
 - Não haverá categorias de conteúdo proibidas no log por privacidade, sob a premissa de que a instância e os dados são acessíveis somente ao próprio proprietário.
 - Os arquivos e registros de log terão retenção de 20 dias e serão excluídos automaticamente quando ultrapassarem esse prazo.
 - A política de exclusão automática se restringirá ao ciclo de vida dos logs e não autorizará excluir e-mails, eventos de origem ou outros conteúdos.
+- O daemon terá uma configuração padrão para um canal de notificações operacionais e incidentes.
+- Quando houver problema na resposta ou entrega de um evento, ou uma falha registrada em log, o daemon poderá enviar a esse canal uma notificação do problema ou do log.
+- O canal de notificações operacionais será distinto do canal de resposta do evento e não receberá a resposta funcional normal.
+- O canal operacional será opcional, mas deverá ser configurável pelo setup do Onmyōji.
+- Sem o canal configurado, a ocorrência permanecerá no log local, e nem o setup nem a execução dependerão desse canal.
+- A implementação futura da interação de configuração deverá consultar e obedecer a `docs/setup-interface.md`.
 
-Essas são decisões funcionais. O ciclo de vida quando o chamador não espera, a retenção do resultado fora dos logs, timeout, cancelamento e os demais detalhes técnicos ainda não foram decididos. Para o log, permanecem em aberto somente formato, caminho, periodicidade da limpeza, mecanismo de rotação e eventual limite de tamanho. As demais seções continuam organizando intenções, propostas e perguntas para a discussão.
+Essas são decisões funcionais. O ciclo de vida quando o chamador não espera, a retenção do resultado fora dos logs, timeout, cancelamento e os demais detalhes técnicos ainda não foram decididos. Para o log, permanecem em aberto somente formato, caminho, periodicidade da limpeza, mecanismo de rotação e eventual limite de tamanho. Para as notificações operacionais, ainda não foram decididos adaptadores, formato, conteúdo exato, tentativas, tratamento da falha do próprio canal, tela ou prompt do setup, adaptador padrão nem armazenamento da configuração. A próxima dúvida é se a configuração será somente global ou poderá ser sobrescrita por evento ou origem. As demais seções continuam organizando intenções, propostas e perguntas para a discussão.
