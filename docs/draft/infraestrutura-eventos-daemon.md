@@ -4,7 +4,7 @@
 
 **Início:** 2026-11-09
 
-**Próximo tema de discussão:** identidade, correlação e duplicidade das notificações ao gateway
+**Próximo tema de discussão:** janela de deduplicação e política para eventos duplicados
 
 > [!IMPORTANT]
 > Este documento registra a discussão em andamento, inclusive hipóteses ainda prematuras. Ele não é uma especificação de implementação nem indica que as propostas preliminares foram aprovadas.
@@ -19,7 +19,7 @@ As seguintes capacidades orientam a discussão, embora seus contratos técnicos 
 
 - O daemon persistente deverá futuramente oferecer um serviço de agendamento, capaz de disparar tarefas em data e hora determinadas ou segundo uma recorrência configurada.
 - O agendador terá contexto e menu próprios no setup do daemon. Futuramente, esse menu deverá permitir listar agendamentos existentes, modelos e definições atuais.
-- Deverá existir, separadamente, um gateway que receba eventos entendidos como solicitações ou notificações para que o agente processe determinada informação. Cada evento deverá informar ao menos a versão do esquema, o prompt para o agente, o tipo e o valor do canal de saída e a política de thread.
+- Deverá existir, separadamente, um gateway que receba eventos entendidos como solicitações ou notificações para que o agente processe determinada informação. Cada evento deverá informar ao menos a versão do esquema, um identificador UUID versão 7 fornecido pelo emissor, o prompt para o agente, o tipo e o valor do canal de saída e a política de thread.
 - Um acontecimento externo — como novo e-mail, mensagem ou webhook — não será automaticamente um evento do gateway. A origem poderá tratá-lo integralmente sem envolver o agente.
 - Somente quando a origem decidir que o agente deve participar ela emitirá um evento ou uma notificação ao gateway.
 - O gateway poderá receber essas notificações por webhooks, outras interfaces, integrações e agendamentos, sem se tornar um barramento genérico de todos os acontecimentos externos.
@@ -27,6 +27,8 @@ As seguintes capacidades orientam a discussão, embora seus contratos técnicos 
 - O gateway receberá a notificação em JSON. Um esquema versionado definirá sua estrutura e o padrão válido, e a versão aplicável deverá estar identificável no próprio evento.
 - O gateway validará o JSON antes de invocar o agente e retornará erro de validação quando a mensagem estiver fora do padrão, inclusive quando os campos obrigatórios do canal estiverem ausentes ou inválidos. Emissores poderão usar o mesmo esquema antecipadamente para verificar as mensagens que produzem.
 - O prompt do evento será texto livre, sem referência obrigatória a template e sem limite máximo funcional definido neste momento.
+- O emissor fornecerá um identificador UUID versão 7 obrigatório na chamada. O daemon reutilizará esse mesmo identificador durante processamento, entrega, diagnóstico e logs, sem criar um segundo ID de execução.
+- Ao reenviar a mesma solicitação, o emissor manterá o mesmo identificador. Tentativas poderão ser diferenciadas por registros operacionais associados a esse ID, sem nova identidade obrigatória.
 - Um agendamento poderá notificar o gateway ou executar outras ações que não o usem. Da mesma forma, uma notificação ao agente poderá ser emitida por fontes diferentes do agendador.
 - A relação entre agendador e gateway será de composição e reutilização, não de dependência obrigatória nem de identidade arquitetural.
 - A execução do evento será síncrona e permanecerá aguardando a resposta do App Server ou do Codex CLI. O chamador poderá esperar por essa resposta ou optar por não a acompanhar nem consumi-la; essa escolha não criará um modo assíncrono no gateway.
@@ -95,6 +97,7 @@ origem detecta um acontecimento
         -> validação do JSON pelo gateway
             -> inválido: erro de validação ao emissor
             -> válido
+                -> reutilização do ID fornecido pelo emissor
                 -> solicitação normalizada ao agente
                 -> invocação do agente (App Server ou Codex CLI)
                 -> entrega ou retorno pelo canal obrigatório
@@ -126,14 +129,17 @@ Antes de invocar o agente, o gateway validará a mensagem contra o esquema aplic
 Sem definir ainda os nomes técnicos dos campos, o contrato possui estes campos mínimos conceituais:
 
 - versão do esquema;
+- identificador UUID versão 7 do evento, fornecido pelo emissor;
 - prompt do evento para o agente;
 - tipo do canal de saída;
 - valor do canal de saída;
 - política de thread: reutilizar a thread existente associada ao destino ou forçar a criação de uma nova.
 
-Os nomes JSON finais não foram definidos. Tipo de evento, payload separado, ID, timestamp, parâmetros adicionais, proveniência, identidade e correlação não foram aprovados como campos obrigatórios e permanecem como dúvidas. Também não foi escolhida a tecnologia do esquema: JSON Schema, OpenAPI, esquema próprio ou outra alternativa continuam em avaliação. Esse envelope descreve uma solicitação de processamento pelo agente, não um acontecimento externo genérico.
+Os nomes JSON finais não foram definidos. Tipo de evento, payload separado, timestamp, parâmetros adicionais, proveniência e correlações adicionais não foram aprovados como campos obrigatórios e permanecem como dúvidas. Também não foi escolhida a tecnologia do esquema: JSON Schema, OpenAPI, esquema próprio ou outra alternativa continuam em avaliação. Esse envelope descreve uma solicitação de processamento pelo agente, não um acontecimento externo genérico.
 
 O prompt será texto livre e não precisará referenciar um template. Não haverá, por enquanto, limite funcional máximo definido para seu tamanho. Eventuais limites técnicos de implementação permanecem para discussão futura e não alteram essa decisão funcional.
+
+O identificador será um UUID versão 7 conforme a [RFC 9562](https://www.rfc-editor.org/rfc/rfc9562.html), fornecido pelo emissor e reutilizado pelo daemon em todo o processamento, entrega, diagnóstico e logs. A escolha oferece um identificador padronizado, descentralizado e ordenável temporalmente, adequado a índices, listagens cronológicas e investigação de logs sem contador central. O daemon não criará um segundo ID de execução. Em caso de reenvio do mesmo evento lógico, o emissor deverá preservar o UUIDv7 original. Registros operacionais poderão distinguir tentativas associadas ao mesmo ID, sem introduzir nova identidade obrigatória.
 
 ### 3. Decisão na origem
 
@@ -192,6 +198,7 @@ O gateway manterá uma única semântica de execução: o evento continuará em 
 Quando o chamador não acompanhar a resposta, o daemon ainda concluirá o processamento e tentará entregar o resultado ao canal configurado. Se o destino informado não existir, não for encontrado ou falhar na entrega, o daemon registrará a falha operacional em arquivo de log. Quando não houver um chamador aguardando para receber o erro, esse registro preservará o diagnóstico e poderá conter integralmente:
 
 - a identificação do chamador;
+- o identificador único do evento;
 - os dados de entrada do evento;
 - a saída ou o resultado produzido;
 - o erro ou a falha ocorrida.
@@ -262,7 +269,7 @@ Esses pontos são direção de investigação. Podem mudar quando forem definido
 
 As próximas lacunas devem ser discutidas prioritariamente, sem decisão antecipada neste rascunho:
 
-1. identidade, correlação e tratamento de duplicidade das notificações ao gateway;
+1. correlações adicionais, janela de deduplicação e política para eventos duplicados;
 2. autenticação e cadastro das integrações emissoras;
 3. timeout e cancelamento da execução;
 4. persistência e retomada após reinício do daemon;
@@ -274,7 +281,9 @@ As próximas lacunas devem ser discutidas prioritariamente, sem decisão antecip
 
 - Quais campos adicionais, se houver, complementarão o conjunto mínimo já decidido?
 - Será necessário um payload separado do prompt?
-- Tipo de evento, ID, timestamp, origem, identidade, parâmetros adicionais ou correlação serão incluídos? Se forem, quais serão obrigatórios?
+- Tipo de evento, timestamp, origem, identidade adicional, parâmetros adicionais ou outras correlações serão incluídos? Se forem, quais serão obrigatórios?
+- Qual será a janela usada para reconhecer reenvios ou duplicidades?
+- Um evento duplicado será rejeitado, reprocessado ou tratado de outra forma?
 - Quais dados pertencerão a extensões específicas de cada origem?
 - Como sinalizar conteúdo não confiável e impedir que dados externos sejam tratados como instruções privilegiadas?
 - Qual será o contrato técnico para uma origem notificar o gateway por webhook ou outra interface?
@@ -325,7 +334,7 @@ As próximas lacunas devem ser discutidas prioritariamente, sem decisão antecip
 
 ## Próximos passos
 
-1. Definir identidade, correlação e tratamento de duplicidade das notificações ao gateway.
+1. Definir correlações adicionais, janela de deduplicação e política para eventos duplicados.
 2. Definir autenticação e cadastro das integrações emissoras.
 3. Definir timeout e cancelamento da execução.
 4. Definir persistência e retomada após reinício do daemon.
@@ -358,8 +367,10 @@ Esta seção acompanha a evolução do rascunho sem transformá-lo em documenta�
 | 2026-11-09 | Decisão funcional | O destino de resposta será representado por tipo e valor do canal. Os tipos iniciais serão Telegram e e-mail: Telegram armazenará diretamente o ID do canal registrado escolhido, e e-mail armazenará o endereço destinatário. Esse destino funcional é distinto do canal operacional global de incidentes e logs. |
 | 2026-11-09 | Correção de contrato | O canal de saída passou a ser obrigatório no evento. Ausência ou invalidade de tipo ou valor causa rejeição por erro de validação; destino informado que não existe, não é encontrado ou falha na entrega produz falha operacional, log e notificação pelo canal de incidentes quando configurado. |
 | 2026-11-09 | Decisão de contrato | Qualquer integração cadastrada poderá emitir notificações ao gateway. A mensagem será JSON validado contra um esquema versionado identificável; entradas inválidas produzirão erro de validação, e emissores poderão usar o mesmo esquema preventivamente. A tecnologia do esquema ainda não foi escolhida. |
-| 2026-11-09 | Decisão de contrato | Os campos mínimos conceituais do evento serão versão do esquema, prompt para o agente, tipo e valor do canal de saída e política de thread para reutilizar a thread associada ao destino ou forçar uma nova. Nomes JSON finais e outros campos ainda não foram definidos. |
+| 2026-11-09 | Decisão de contrato | Os campos mínimos conceituais do evento serão versão do esquema, identificador UUID versão 7 fornecido pelo emissor, prompt para o agente, tipo e valor do canal de saída e política de thread para reutilizar a thread associada ao destino ou forçar uma nova. Nomes JSON finais e outros campos ainda não foram definidos. |
 | 2026-11-09 | Decisão de contrato | O prompt do evento será texto livre, sem referência obrigatória a template e sem limite máximo funcional definido neste momento. Eventuais limites técnicos permanecem assunto de implementação futura. |
+| 2026-11-09 | Decisão de identidade | O emissor fornecerá o identificador único do evento e o manterá em reenvios da mesma solicitação. O daemon reutilizará esse ID em processamento, entrega, diagnóstico e logs, sem criar outro ID de execução; tentativas poderão ter registros operacionais próprios associados à mesma identidade. |
+| 2026-11-09 | Decisão de identidade | O identificador do evento será UUID versão 7, conforme a RFC 9562. A escolha é padronizada, descentralizada e ordenável temporalmente, favorecendo índices, listagens cronológicas e investigação de logs sem contador central. |
 
 ### Decisões consolidadas
 
@@ -391,7 +402,13 @@ Esta seção acompanha a evolução do rascunho sem transformá-lo em documenta�
 - O gateway receberá as notificações em JSON.
 - Um esquema versionado definirá a estrutura e o padrão válido do evento.
 - A versão do esquema deverá estar representada ou ser identificável para permitir evolução do contrato.
-- Os campos mínimos conceituais serão versão do esquema, prompt para o agente, tipo do canal de saída, valor do canal de saída e política de thread.
+- Os campos mínimos conceituais serão versão do esquema, identificador UUID versão 7 do evento fornecido pelo emissor, prompt para o agente, tipo do canal de saída, valor do canal de saída e política de thread.
+- O UUIDv7 seguirá a [RFC 9562](https://www.rfc-editor.org/rfc/rfc9562.html).
+- A escolha do UUIDv7 fornece identidade padronizada, descentralizada e ordenável temporalmente, adequada a índices, listagens cronológicas e investigação de logs sem contador central.
+- O daemon reutilizará o identificador fornecido pelo emissor durante processamento, entrega, diagnóstico e logs.
+- O daemon não criará um segundo ID de execução.
+- Em reenvios da mesma solicitação, o emissor deverá manter o mesmo identificador.
+- Tentativas poderão ser diferenciadas por registros operacionais associados ao mesmo ID, sem nova identidade obrigatória.
 - O prompt será texto livre e não exigirá referência a template.
 - Não haverá, por enquanto, limite funcional máximo definido para o tamanho do prompt; eventuais limites técnicos permanecem para implementação futura.
 - A política de thread deverá escolher entre reutilizar a thread existente associada ao destino e forçar a criação de uma nova.
@@ -410,6 +427,7 @@ Esta seção acompanha a evolução do rascunho sem transformá-lo em documenta�
 - A escolha de não esperar não criará um modo assíncrono no gateway.
 - Quando o agente for invocado, será possível reutilizar a thread associada ao canal de saída ou criar uma nova thread isolada.
 - Sem acompanhamento do chamador, o daemon ainda concluirá o processamento e tentará entregar o resultado ao canal configurado.
+- O mesmo identificador do evento acompanhará a invocação, a entrega e eventuais tentativas registradas.
 - O destino de resposta será representado por dois campos conceituais: tipo do canal e valor do canal.
 - Os tipos iniciais considerados serão Telegram e e-mail.
 - Para Telegram, a configuração permitirá escolher um destino já registrado, como canal, grupo ou thread, e o agendamento ou a notificação armazenará diretamente o ID escolhido, não uma referência indireta nem sua posição na lista.
@@ -422,7 +440,7 @@ Esta seção acompanha a evolução do rascunho sem transformá-lo em documenta�
 #### Logs e notificações operacionais do gateway
 
 - Se o destino informado não existir, não for encontrado ou falhar na entrega, o daemon registrará a falha operacional em arquivo de log.
-- Para diagnóstico e resolução futura, o log poderá conter integralmente a identificação do chamador, os dados de entrada da notificação, a saída ou o resultado produzido e o erro ou a falha ocorrida.
+- Para diagnóstico e resolução futura, o log poderá conter integralmente a identificação do chamador, o identificador único do evento, os dados de entrada da notificação, a saída ou o resultado produzido e o erro ou a falha ocorrida.
 - Não haverá categorias de conteúdo proibidas no log por privacidade, sob a premissa de que a instância e os dados são acessíveis somente ao próprio proprietário.
 - Os arquivos e registros de log do gateway terão retenção de 20 dias e serão excluídos automaticamente quando ultrapassarem esse prazo.
 - A política de exclusão automática se restringirá ao ciclo de vida dos logs e não autorizará excluir e-mails, mensagens, acontecimentos na origem ou outros conteúdos.
@@ -435,4 +453,4 @@ Esta seção acompanha a evolução do rascunho sem transformá-lo em documenta�
 - Uma CLI isolada, variável de ambiente ou edição manual de arquivo não será tratada como interface principal já decidida para essas configurações.
 - A implementação futura da interação de configuração deverá consultar e obedecer a `docs/setup-interface.md`.
 
-Essas são decisões funcionais e arquiteturais de concepção. O nome definitivo do gateway, os campos adicionais do JSON e a tecnologia do esquema versionado ainda não foram definidos. As pendências prioritárias são identidade/correlação/duplicidade, autenticação e cadastro dos emissores, timeout/cancelamento, persistência e retomada, tentativas de entrega, ciclo de vida e concorrência das threads e contrato próprio do agendador. Para o agendador, também permanecem abertos o catálogo de ações e os detalhes da listagem já enumerados. Para os logs, permanecem em aberto somente formato, caminho, periodicidade da limpeza, mecanismo de rotação e eventual limite de tamanho. Para as notificações operacionais, ainda não foram decididos adaptadores, formato, conteúdo exato, tentativas, tratamento da falha do próprio canal, opção exata no contexto do gateway, tela ou prompt, adaptador padrão nem armazenamento da configuração.
+Essas são decisões funcionais e arquiteturais de concepção. O nome definitivo do gateway, os campos adicionais do JSON e a tecnologia do esquema versionado ainda não foram definidos. Para a identidade do evento, permanecem abertas correlações adicionais, janela de deduplicação e política de rejeição ou reprocessamento de duplicados. As demais pendências prioritárias são autenticação e cadastro dos emissores, timeout/cancelamento, persistência e retomada, tentativas de entrega, ciclo de vida e concorrência das threads e contrato próprio do agendador. Para o agendador, também permanecem abertos o catálogo de ações e os detalhes da listagem já enumerados. Para os logs, permanecem em aberto somente formato, caminho, periodicidade da limpeza, mecanismo de rotação e eventual limite de tamanho. Para as notificações operacionais, ainda não foram decididos adaptadores, formato, conteúdo exato, tentativas, tratamento da falha do próprio canal, opção exata no contexto do gateway, tela ou prompt, adaptador padrão nem armazenamento da configuração.
