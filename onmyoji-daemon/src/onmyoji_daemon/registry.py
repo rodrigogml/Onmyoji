@@ -17,6 +17,11 @@ class ServiceSpec:
     publication_port: int | None = None
     publication_prefixes: tuple[str, ...] = ()
     contain_process_tree: bool = False
+    additional_namespaces: tuple[str, ...] = ()
+
+    @property
+    def namespaces(self) -> tuple[str, ...]:
+        return (self.namespace, *self.additional_namespaces)
 
 
 def runtime_python(data_dir: Path) -> str:
@@ -49,7 +54,7 @@ def cloudflare_tunnel_command(data_dir: Path) -> list[str]:
 
 
 SERVICES: dict[str, ServiceSpec] = {
-    "telegram": ServiceSpec("telegram", "telegram.", telegram_command, "Gateway Telegram da instância"),
+    "telegram": ServiceSpec("telegram", "telegram.", telegram_command, "Gateway de execução da instância", additional_namespaces=("notification.",)),
     "mini-apps": ServiceSpec("mini-apps", "mini-apps.", miniapps_command, "Gateway de Mini Apps da instância", True, 39391, ("a", "oauth")),
     "btg-payments-monitor": ServiceSpec("btg-payments-monitor", "btg-monitor.", btg_monitor_command, "Acompanhamento de pagamentos BTG por consultas"),
     "gateway": ServiceSpec("gateway", "gateway.", gateway_command, "Gateway HTTP compartilhado da instância"),

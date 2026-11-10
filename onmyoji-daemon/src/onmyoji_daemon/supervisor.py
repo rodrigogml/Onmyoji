@@ -15,7 +15,7 @@ import uuid
 from typing import Any
 
 from .registry import SERVICES, ServiceSpec
-from .rpc import RpcError, RpcServer, call
+from .rpc import RpcError, RpcServer, call, disconnected
 from .supervision.component.process_group import ServiceProcessGroup
 from .supervision.publication import PublicationCoordinator
 
@@ -54,7 +54,9 @@ class Supervisor:
         self.state_file = self.root / "services.json"
         self.log_root = self.runtime / "logs"; self.log_root.mkdir(parents=True, exist_ok=True)
         self.host, self.token, self.stop_event = "127.0.0.1", secrets.token_urlsafe(32), threading.Event()
-        self.rpc = RpcServer(self.host, free_port(), self.token, self.handle)
+        from .agent_notification.configuration import NotificationConfiguration
+        limits = NotificationConfiguration(self.onmyoji_root).load()
+        self.rpc = RpcServer(self.host, free_port(), self.token, self.handle, long_methods=("notification.submit",), long_limit=limits["long_limit"], event_max_bytes=limits["max_request_bytes"])
         self.services = {name: ManagedService(spec) for name, spec in SERVICES.items()}
         self.publications = PublicationCoordinator(self.onmyoji_root, self.services, self._call_service, {self.rpc.port})
         self.recovery_delay_seconds = 15.0
@@ -237,8 +239,16 @@ class Supervisor:
             self.publications.invalidate(name, service.generation)
         if service.process and service.process.poll() is None:
             try:
-                self._call_service(name, "shutdown", {}, timeout=2, skip_busy=True)
-                service.process.wait(timeout=5)
+                grace = 5
+                if name == "telegram":
+                    import tomllib
+                    try:
+                        configuration = tomllib.loads((self.root / "services" / "telegram" / "config.toml").read_text(encoding="utf-8"))
+                        grace = float(configuration.get("agent", {}).get("interrupt_grace_seconds", 15)) + 5
+                    except (OSError, ValueError):
+                        grace = 20
+                self._call_service(name, "shutdown", {}, timeout=grace, skip_busy=True)
+                service.process.wait(timeout=grace)
             except Exception:
                 service.process.terminate()
                 try: service.process.wait(timeout=5)
@@ -264,8 +274,12 @@ class Supervisor:
             if method == "disable": self.services[name].enabled = False; self.stop(name); self._save_state(); return self.status(name)
             return self.status(name)
         for name, service in self.services.items():
-            if method.startswith(service.spec.namespace):
+            if method.startswith(service.spec.namespaces):
                 if not service.process or service.process.poll() is not None: raise RuntimeError(f"{name} is not running")
+                if method == "notification.submit":
+                    with service.lifecycle_lock:
+                        address = (self.host, service.port, service.token)
+                    return call(*address, method, params, timeout=None, abandon=disconnected)
                 if method.startswith("mini-apps.oauth."):
                     timeout = 200
                 elif method == "mini-apps.file-review.create":
