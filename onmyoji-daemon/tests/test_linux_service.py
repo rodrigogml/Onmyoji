@@ -86,6 +86,34 @@ def test_systemd_unit_verification_surfaces_parser_failure(tmp_path, monkeypatch
     assert "InvalidSetting" in detail
 
 
+def test_systemd_analyze_targets_the_saved_service_manager_scope(monkeypatch):
+    monkeypatch.setattr(management.shutil, "which", lambda name: "/usr/bin/systemd-analyze" if name == "systemd-analyze" else None)
+
+    assert management._systemd_analyze_command("user", "security", "--no-pager", "turing") == [
+        "/usr/bin/systemd-analyze", "--user", "security", "--no-pager", "turing",
+    ]
+    assert management._systemd_analyze_command("system", "security", "--no-pager", "turing") == [
+        "/usr/bin/systemd-analyze", "security", "--no-pager", "turing",
+    ]
+
+
+def test_service_security_uses_user_manager_for_user_service(tmp_path, monkeypatch):
+    management._write_json(management.service_path(tmp_path), {"name": "turing", "scope": "user", "root": str(tmp_path.resolve())})
+    observed = {}
+    monkeypatch.setattr(management.os, "name", "posix")
+    monkeypatch.setattr(management.shutil, "which", lambda name: "/usr/bin/systemd-analyze" if name == "systemd-analyze" else None)
+
+    def run(command, **_kwargs):
+        observed["command"] = command
+        return subprocess.CompletedProcess(command, 0, "security report", "")
+
+    monkeypatch.setattr(management.subprocess, "run", run)
+    valid, detail = management.service_security(tmp_path)
+
+    assert valid and detail == "security report"
+    assert observed["command"] == ["/usr/bin/systemd-analyze", "--user", "security", "--no-pager", "turing"]
+
+
 @pytest.mark.parametrize("share", [True, False])
 def test_account_provisioning_uses_inherited_acl_or_exclusive_ownership(tmp_path, monkeypatch, share):
     root = tmp_path / "instance"; workspace = tmp_path / "work"; root.mkdir(); workspace.mkdir()
