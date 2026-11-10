@@ -43,10 +43,16 @@ def test_isolated_systemd_unit_exposes_only_registered_trees_and_applies_hardeni
     assert 'Environment="HOME=' in unit and "shikigami-teste" in unit
     assert "ProtectSystem=strict" in unit and "ProtectHome=tmpfs" in unit
     assert "NoNewPrivileges=yes" in unit and "CapabilityBoundingSet=" in unit
-    assert f"BindPaths={management._systemd_quote(root.resolve())}" in unit
-    assert f"BindPaths={management._systemd_quote(workspace.resolve())}" in unit
+    assert f"WorkingDirectory={management._systemd_path(root.resolve())}" in unit
+    assert f"BindPaths={management._systemd_path(root.resolve())}" in unit
+    assert f"BindPaths={management._systemd_path(workspace.resolve())}" in unit
     assert "CPUQuota=200%" in unit and "MemoryMax=1024" in unit
     assert 'ExecStart="/opt/python test/bin/python"' in unit
+
+
+def test_systemd_path_uses_unquoted_c_escapes_for_path_directives():
+    assert management._systemd_path('/opt/Shikigami Teste/"dados"') == r"/opt/Shikigami\x20Teste/\x22dados\x22"
+    assert management._systemd_path("/opt/uso%real") == "/opt/uso%%real"
 
 
 def test_systemd_unit_is_verified_from_repository_tmp_before_installation(tmp_path, monkeypatch):

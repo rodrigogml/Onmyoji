@@ -282,10 +282,25 @@ def _systemd_quote(value: str | Path) -> str:
     return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def _systemd_path(value: str | Path) -> str:
+    """Serializa um path para diretivas que não removem aspas externas."""
+    rendered: list[str] = []
+    for character in str(value):
+        if character == "%":
+            rendered.append("%%")
+        elif character.isascii() and (character.isalnum() or character in "/._-+"):
+            rendered.append(character)
+        elif not character.isascii():
+            rendered.append(character)
+        else:
+            rendered.append(f"\\x{ord(character):02x}")
+    return "".join(rendered)
+
+
 def _systemd_unit(root: Path, executable: str, source: Path, description: str, scope: str, run_as_user: str, run_as_group: str, *, workspace: Path | None = None, home: Path | None = None, isolated: bool = False, limits: ServiceLimits | None = None) -> str:
     """Gera uma unit sem depender do shell e preservando paths com espaços."""
     resolved_root = root.resolve()
-    service = ["[Service]", "Type=simple", f"WorkingDirectory={_systemd_quote(resolved_root)}", f"Environment={_systemd_quote('PYTHONPATH=' + str(source))}", f"Environment={_systemd_quote('CODEX_HOME=' + str(resolved_root))}"]
+    service = ["[Service]", "Type=simple", f"WorkingDirectory={_systemd_path(resolved_root)}", f"Environment={_systemd_quote('PYTHONPATH=' + str(source))}", f"Environment={_systemd_quote('CODEX_HOME=' + str(resolved_root))}"]
     if scope == "system" and run_as_user: service.append(f"User={run_as_user}")
     if scope == "system" and run_as_group: service.append(f"Group={run_as_group}")
     if home: service.append(f"Environment={_systemd_quote('HOME=' + str(home))}")
@@ -296,8 +311,8 @@ def _systemd_unit(root: Path, executable: str, source: Path, description: str, s
             "CapabilityBoundingSet=", "AmbientCapabilities=", "RestrictSUIDSGID=yes", "LockPersonality=yes",
             "ProtectControlGroups=yes", "ProtectKernelModules=yes", "ProtectKernelTunables=yes", "ProtectKernelLogs=yes",
             "ProtectClock=yes", "ProtectHostname=yes",
-            *(f"BindPaths={_systemd_quote(path)}" for path in writable if path),
-            *(f"ReadWritePaths={_systemd_quote(path)}" for path in writable if path),
+            *(f"BindPaths={_systemd_path(path)}" for path in writable if path),
+            *(f"ReadWritePaths={_systemd_path(path)}" for path in writable if path),
         ])
     service.extend((limits or ServiceLimits()).systemd_lines())
     service.extend([f"ExecStart={_systemd_quote(executable)} -m onmyoji_daemon.cli --onmyoji-root {_systemd_quote(resolved_root)} run", "Restart=on-failure", "RestartSec=3"])
