@@ -244,7 +244,7 @@ class NotificationIngress:
             self.notification_log.record("incident", event_id=event_id, state=result)
 
     def _notification_watch(self):
-        last_purge = 0
+        last_purge = float("-inf")
         while not self.stop_event.is_set():
             try:
                 self.notification_log.flush()

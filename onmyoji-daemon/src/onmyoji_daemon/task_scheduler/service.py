@@ -123,7 +123,7 @@ class TaskScheduler:
             self.changed.set()
 
     def _watch(self):
-        last_purge = 0
+        last_purge = float("-inf")
         while not self.stop_event.is_set():
             self.changed.clear()
             try:
