@@ -2,11 +2,21 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
+import sys
 import threading
 
-from .instance import identity
-from .supervisor import Supervisor
+# pythonservice.exe pode carregar este arquivo diretamente a partir do registro
+# do Windows, fora do contexto do pacote. Mantemos a raiz de ``src`` explícita
+# para que os imports absolutos funcionem nos dois modos de carregamento.
+source_root = str(Path(__file__).resolve().parents[1])
+if source_root not in sys.path: sys.path.insert(0, source_root)
+
+from onmyoji_daemon.instance import identity
+from onmyoji_daemon.management import daemon_python
+from onmyoji_daemon.supervisor import Supervisor
+
 
 try:
     import win32service
@@ -15,26 +25,45 @@ except ImportError:
     win32service = win32serviceutil = None
 
 
+def _service_root(name: str) -> Path:
+    """Deriva a raiz da instância a partir do módulo instalado pelo próprio serviço."""
+    return Path(__file__).resolve().parents[3]
+
+
+if win32serviceutil:
+    class OnmyojiManagedService(win32serviceutil.ServiceFramework):
+        """Host importável pelo pythonservice.exe para uma instância Onmyōji."""
+        _svc_name_ = "OnmyojiManagedService"; _svc_display_name_ = "Onmyoji Managed Service"; _svc_description_ = "Onmyōji daemon"
+
+        def __init__(self, values):
+            self._svc_name_ = values[0]; self.root = _service_root(values[0]); super().__init__(values); self.stop_event = threading.Event()
+        def SvcStop(self): self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING); self.stop_event.set()
+        def SvcDoRun(self):
+            os.environ["ONMYOJI_DAEMON_PYTHON"] = str(daemon_python(self.root))
+            supervisor = Supervisor(self.root); supervisor.stop_event = self.stop_event; supervisor.run_forever()
+else:
+    class OnmyojiManagedService: pass
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(add_help=False); parser.add_argument("--service-name", required=True); parser.add_argument("--onmyoji-root", type=Path, required=True); args, remainder = parser.parse_known_args(argv)
     if not win32serviceutil: raise RuntimeError("O modo serviço Windows exige pywin32 instalado no Python do daemon.")
     root, name = args.onmyoji_root.resolve(), args.service_name
 
-    class InstanceService(win32serviceutil.ServiceFramework):
-        _svc_name_ = name; _svc_display_name_ = name; _svc_description_ = f"Shikigami {identity(root)} Daemon"
-        def __init__(self, values): super().__init__(values); self.stop_event = threading.Event()
-        def SvcStop(self): self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING); self.stop_event.set()
-        def SvcDoRun(self):
-            supervisor = Supervisor(root); supervisor.stop_event = self.stop_event; supervisor.run_forever()
-
-    # pywin32 persiste este nome para que PythonService.exe recarregue a classe.
-    InstanceService.__name__ = "OnmyojiManagedService"
-    InstanceService.__qualname__ = "OnmyojiManagedService"
-    globals()["OnmyojiManagedService"] = InstanceService
-    previous, __import__("sys").argv = __import__("sys").argv, [__import__("sys").argv[0], *remainder]
-    try: win32serviceutil.HandleCommandLine(InstanceService)
-    finally: __import__("sys").argv = previous
+    OnmyojiManagedService._svc_name_ = name; OnmyojiManagedService._svc_display_name_ = name; OnmyojiManagedService._svc_description_ = f"Shikigami {identity(root)} Daemon"
+    executable = daemon_python(root)
+    OnmyojiManagedService._exe_name_ = str(executable.parent / "pythonservice.exe")
+    previous, sys.argv = sys.argv, [sys.argv[0], *remainder]
+    try:
+        win32serviceutil.HandleCommandLine(OnmyojiManagedService)
+    finally: sys.argv = previous
     return 0
 
 
-if __name__ == "__main__": raise SystemExit(main())
+if __name__ == "__main__":
+    # pywin32 pode manter threads internas depois de HandleCommandLine no modo
+    # administrativo de install/remove. Este processo é apenas o registrador;
+    # o serviço real é iniciado por pythonservice.exe, que importa este módulo.
+    exit_code = main()
+    sys.stdout.flush(); sys.stderr.flush()
+    os._exit(exit_code)

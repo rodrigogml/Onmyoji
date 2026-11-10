@@ -1,0 +1,14 @@
+schema_version = 1
+
+[defaults]
+api_base = "https://api.cloudflare.com/client/v4"
+timeout_seconds = 30
+max_retries = 2
+
+[profiles.example]
+enabled = true
+description = "Zona DNS principal da organização."
+credential_profile = "example"
+credential_entry_path = "APIs/Cloudflare/example"
+credential_field = "password"
+zone_id = ""

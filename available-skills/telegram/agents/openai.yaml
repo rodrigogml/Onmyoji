@@ -1,4 +1,0 @@
-interface:
-  display_name: "Telegram"
-  short_description: "Mensagens e anexos para canais Telegram cadastrados"
-  default_prompt: "Use a skill telegram para consultar destinos autorizados ou enviar mensagens e arquivos, sem interação duplex."

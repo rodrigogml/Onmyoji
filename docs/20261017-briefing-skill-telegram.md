@@ -1,5 +1,8 @@
 # Briefing — Skill de integração Telegram
 
+> [!IMPORTANT]
+> Registro histórico do briefing original. A implementação atual usa o módulo MCP `telegram`, não uma skill de integração.
+
 **Data:** 2026-10-17  
 **Status:** Briefing funcional consolidado — P1 a P8 resolvidas; arquitetura e implementação ainda não iniciadas.  
 **Repositório responsável:** Onmyoji (upstream).  
@@ -235,7 +238,6 @@ Referências no upstream:
 - [Supervisor](../onmyoji-daemon/src/onmyoji_daemon/supervisor.py)
 - [RPC](../onmyoji-daemon/src/onmyoji_daemon/rpc.py)
 - [Documentação do daemon](daemon.md)
-- [Arquitetura da instância](architecture.md)
 
 O gateway **já oferece**:
 - RPC interno com operação de envio simples; ainda recebe chat_id explícito e não realiza resolução via catálogo.

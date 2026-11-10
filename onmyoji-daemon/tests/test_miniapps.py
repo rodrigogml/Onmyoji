@@ -3,17 +3,19 @@ from __future__ import annotations
 from pathlib import Path
 import asyncio
 import socket
+import pytest
 
 from aiohttp import ClientSession, TCPConnector
 from onmyoji_daemon.miniapps import MiniAppsGateway
-from onmyoji_daemon.miniapps_pki import ensure_material, server_context
+from onmyoji_daemon.gateway.component.tls import ensure_material, server_context
 
 
 def configured_gateway(tmp_path: Path) -> tuple[MiniAppsGateway, Path]:
+    root = tmp_path / "code"; root.mkdir()
     workspace = tmp_path / "workspace"; workspace.mkdir()
-    configs = tmp_path / "configs"; configs.mkdir()
+    configs = root / "configs"; configs.mkdir()
     (configs / "onmyoji-system.toml").write_text("[codex]\nproject_directory = " + repr(str(workspace)) + "\n", encoding="utf-8")
-    return MiniAppsGateway(tmp_path, tmp_path / "state", "token", 39391), workspace
+    return MiniAppsGateway(root, configs / "daemon" / "services" / "mini-apps", "token", 39391), workspace
 
 
 def test_create_claim_publication_in_workspace(tmp_path):
@@ -31,6 +33,21 @@ def test_rejects_root_outside_workspace(tmp_path):
     try: gateway.create({"root_path": str(app), "entrypoint": "app.py"})
     except ValueError as error: assert "workspace" in str(error)
     else: raise AssertionError("root outside workspace was accepted")
+
+
+def test_rejects_gateway_state_outside_configs(tmp_path):
+    with pytest.raises(ValueError, match="configs"):
+        MiniAppsGateway(tmp_path, tmp_path / "workspace-state", "token", 39391)
+
+
+def test_workspace_change_invalidates_existing_publication(tmp_path):
+    gateway, workspace = configured_gateway(tmp_path)
+    app = workspace / "report"; app.mkdir(); (app / "app.py").write_text("", encoding="utf-8")
+    created = gateway.create({"root_path": str(app), "entrypoint": "app.py"})
+    replacement = tmp_path / "replacement"; replacement.mkdir()
+    (gateway.root / "configs" / "onmyoji-system.toml").write_text("[codex]\nproject_directory = " + repr(str(replacement)) + "\n", encoding="utf-8")
+    gateway._restore_publications()
+    assert gateway.inspect(created["id"])["state"] == "ERROR"
 
 
 def test_rejects_entrypoint_with_syntax_error(tmp_path):
@@ -60,9 +77,9 @@ def test_diagnose_distinguishes_local_readiness_from_optional_public_access(tmp_
         gateway.db.close()
 
 
-def test_diagnose_marks_a_provisioned_tunnel_without_cloudflared_as_action(tmp_path):
+def test_diagnose_marks_an_independent_tunnel_without_cloudflared_as_action(tmp_path):
     gateway, _workspace = configured_gateway(tmp_path)
-    gateway.tunnel.configure({"account_id": "account", "zone_id": "zone", "hostname": "apps.example.com", "tunnel_id": "tunnel", "keepass_profile": "local", "token_entry": "APIs/Tunnel", "cloudflared_executable": "missing-cloudflared"})
+    gateway.rpc("mini-apps.publication.update", {"public_origin": "https://apps.example.com", "tunnel": {"configured": True, "provisioned": True, "running": False, "cloudflared_available": False}})
     diagnosis = gateway.diagnose()
     tunnel = next(item for item in diagnosis["checks"] if item["id"] == "tunnel")
     assert tunnel["state"] == "action"
@@ -126,7 +143,6 @@ def test_https_gateway_claims_session_and_forwards_internal_path(tmp_path):
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0)); port = int(probe.getsockname()[1])
     gateway.http_port = port
-    gateway.tunnel.local_url = f"https://localhost:{port}"
     app = workspace / "report"; app.mkdir()
     (app / "app.py").write_text("""
 from onmyoji_daemon.miniapps import HttpResponse

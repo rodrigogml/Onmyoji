@@ -6,20 +6,25 @@ conter o identificador e a raiz da instância que o criou.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import platform
+import re
 import subprocess
 import sys
 import time
 import tomllib
 import uuid
 import shutil
+from collections.abc import Callable
+
 
 from .rpc import call
 from .registry import SERVICES
 from .instance import identity
 from .supervisor import endpoint
+from . import runtime as shared_runtime
 
 
 def daemon_root(root: Path) -> Path: return root.resolve() / "configs" / "daemon"
@@ -27,45 +32,78 @@ def manifest_path(root: Path) -> Path: return daemon_root(root) / "daemon.toml"
 def runtime_path(root: Path) -> Path: return daemon_root(root) / "runtime"
 def process_path(root: Path) -> Path: return runtime_path(root) / "process.json"
 def service_path(root: Path) -> Path: return daemon_root(root) / "service.json"
+def runtime_configuration(root: Path) -> dict[str, str]:
+    """Expõe a configuração central para compatibilidade dos chamadores."""
+    return shared_runtime.configuration(root)
+
+
 def daemon_python(root: Path) -> Path:
-    environment = daemon_root(root) / "venv"
-    return environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    return shared_runtime.python(root)
 
 
 def _runtime_ready(executable: Path) -> bool:
     if not executable.is_file(): return False
-    probe = """from importlib.metadata import version
+    probe = """import sys
+from importlib.metadata import version
 def parsed(name): return tuple(int(part) for part in version(name).split('.')[:2])
+assert sys.version_info >= (3, 11)
 assert (3, 10) <= parsed('aiohttp') < (4, 0)
 assert (42, 0) <= parsed('cryptography') < (47, 0)
 """
-    result = subprocess.run([str(executable), "-c", probe], text=True, capture_output=True, check=False)
-    return result.returncode == 0
-
-
-def ensure_runtime(root: Path) -> tuple[bool, str]:
-    """Cria um Python privado para o daemon e instala suas dependências."""
-    executable = daemon_python(root)
-    if _runtime_ready(executable): return True, "Ambiente Python do daemon está pronto."
-    environment = executable.parent.parent
-    environment.parent.mkdir(parents=True, exist_ok=True)
-    if not executable.is_file():
-        created = subprocess.run([sys.executable, "-m", "venv", str(environment)], text=True, capture_output=True, check=False)
-        if created.returncode != 0: return False, "Não foi possível criar o ambiente Python do daemon: " + (created.stderr or created.stdout).strip()
-    project = Path(__file__).resolve().parents[2]
     try:
-        metadata = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))
-        requirements = list(metadata["project"]["dependencies"])
-        if os.name == "nt": requirements.extend(metadata["project"].get("optional-dependencies", {}).get("windows", []))
-        if not requirements or any(not isinstance(value, str) for value in requirements): raise ValueError
-    except (OSError, KeyError, TypeError, ValueError, tomllib.TOMLDecodeError):
-        return False, "Não foi possível ler as dependências do daemon em pyproject.toml."
-    installed = subprocess.run([str(executable), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", *requirements], text=True, capture_output=True, check=False)
-    if installed.returncode != 0:
-        detail = (installed.stderr or installed.stdout).strip().splitlines()
-        return False, "Não foi possível instalar as dependências do daemon: " + (detail[-1] if detail else "pip falhou")
-    if not _runtime_ready(executable): return False, "O ambiente Python foi criado, mas as dependências do daemon não puderam ser validadas."
-    return True, "Ambiente Python do daemon instalado e validado."
+        result = subprocess.run([str(executable), "-c", probe], text=True, capture_output=True, check=False, timeout=10)
+        return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
+
+
+def runtime_ready(root: Path) -> bool:
+    """Informa se o ambiente privado possui as dependências do daemon."""
+    return _runtime_ready(daemon_python(root))
+
+
+def configuration_revision(root: Path) -> str:
+    """Identifica o conteúdo efetivo da configuração da plataforma."""
+    try: return hashlib.sha256(manifest_path(root).read_bytes()).hexdigest()
+    except OSError: return ""
+
+
+def applied_configuration_revision(root: Path) -> str:
+    """Retorna a revisão registrada pelo supervisor ativo da instância."""
+    info = running_process(root)
+    return str(info.get("configuration_revision") or "") if info else ""
+
+
+def runtime_requirements() -> list[str]:
+    project = Path(__file__).resolve().parents[2]
+    metadata = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))
+    requirements = list(metadata["project"]["dependencies"])
+    if os.name == "nt": requirements.extend(metadata["project"].get("optional-dependencies", {}).get("windows", []))
+    if not requirements or any(not isinstance(value, str) for value in requirements): raise ValueError
+    return requirements
+
+
+def pip_invocation(executable: Path, arguments: list[str]) -> list[str]:
+    """Monta a chamada do pip sem acionar a consulta WMI defeituosa do Windows."""
+    if os.name != "nt": return [str(executable), "-m", "pip", *arguments]
+    # pip importa Rich, que chama platform.system(). No Python 3.12 essa chamada
+    # consulta WMI e pode bloquear. A plataforma já é conhecida neste subprocesso.
+    wrapper = "import platform, runpy; platform.system = lambda: 'Windows'; runpy.run_module('pip', run_name='__main__')"
+    return [str(executable), "-c", wrapper, *arguments]
+
+
+def ensure_runtime(root: Path, show_progress: bool = False, allow_install: bool = True) -> tuple[bool, str]:
+    """Prepara as dependências do daemon no runtime único da instância."""
+    try:
+        executable = daemon_python(root)
+        if _runtime_ready(executable):
+            return True, "Runtime Python do Shikigami está pronto."
+        if not allow_install:
+            return False, "O runtime Python do Shikigami não possui os componentes necessários. Use a manutenção para instalá-los."
+        message = shared_runtime.ensure(root, runtime_requirements(), "from importlib.metadata import version; import sys; assert sys.version_info >= (3, 11); assert (3, 10) <= tuple(map(int, version('aiohttp').split('.')[:2])) < (4, 0); assert (42, 0) <= tuple(map(int, version('cryptography').split('.')[:2])) < (47, 0)", print if show_progress else None)
+        return True, message
+    except (OSError, ValueError, tomllib.TOMLDecodeError, shared_runtime.RuntimeError) as error:
+        return False, str(error)
 
 
 def _write_json(path: Path, value: dict) -> None:
@@ -99,16 +137,35 @@ def is_installed(root: Path) -> bool:
     return manifest_path(root).is_file()
 
 
-def install_instance(root: Path) -> tuple[bool, str]:
+def prepare_instance(root: Path) -> tuple[bool, str]:
     path = manifest_path(root)
     created = not path.exists()
     if created:
         path.parent.mkdir(parents=True, exist_ok=True)
         instance_id = uuid.uuid4().hex
-        path.write_text("\n".join(["schema_version = 1", f"instance_id = {json.dumps(instance_id)}", f"instance_name = {json.dumps(instance_label(root), ensure_ascii=False)}", ""]) , encoding="utf-8", newline="\n")
-    ready, message = ensure_runtime(root)
+        path.write_text("\n".join([
+            "schema_version = 1",
+            f"instance_id = {json.dumps(instance_id)}",
+            f"instance_name = {json.dumps(instance_label(root), ensure_ascii=False)}",
+            "",
+            "[app_server]",
+            "enabled = false",
+            "idle_timeout_seconds = 1800",
+            "",
+            "[instructions]",
+            "enabled = true",
+            'shikigami_file = "instructions.md"',
+            "",
+        ]) , encoding="utf-8", newline="\n")
+    return True, "Manifesto do daemon preparado." if created else "Manifesto do daemon já existe."
+
+
+def install_instance(root: Path, show_progress: bool = False) -> tuple[bool, str]:
+    created, message = prepare_instance(root)
+    if not created: return False, message
+    ready, message = ensure_runtime(root, show_progress=show_progress)
     if not ready: return False, message
-    return True, ("Daemon instalado. " if created else "Daemon já estava instalado. ") + message
+    return True, "Daemon instalado. " + message
 
 
 def remove_instance(root: Path) -> tuple[bool, str]:
@@ -131,8 +188,8 @@ def installed_metadata(root: Path) -> dict:
 def set_enabled(root: Path, service: str, enabled: bool) -> tuple[bool, str]:
     if not is_installed(root): return False, "Instale primeiro o daemon desta instância."
     if service not in SERVICES: return False, "Serviço não registrado."
-    if enabled and service == "mini-apps":
-        ready, message = ensure_runtime(root)
+    if enabled and service in {"mini-apps", "gateway", "cloudflare-tunnel"}:
+        ready, message = ensure_runtime(root, allow_install=False)
         if not ready: return False, message
     path = daemon_root(root) / "services.json"; values = _read_json(path)
     values.setdefault(service, {})["enabled"] = enabled
@@ -173,7 +230,7 @@ def start_background(root: Path) -> tuple[bool, str]:
     if not is_installed(root): return False, "Instale primeiro o daemon desta instância."
     if service_path(root).exists(): return False, "O serviço do sistema operacional está instalado; gerencie-o no submenu Serviço."
     if daemon_reachable(root) or running_process(root): return False, "Já existe um daemon em execução nesta instância."
-    ready, message = ensure_runtime(root)
+    ready, message = ensure_runtime(root, allow_install=False)
     if not ready: return False, message
     source = Path(__file__).resolve().parents[1]
     environment = dict(os.environ)
@@ -216,31 +273,122 @@ def stop_background(root: Path, force: bool = False) -> tuple[bool, str]:
 def service_info(root: Path) -> dict: return _read_json(service_path(root))
 
 
-def install_service(root: Path, name: str, description: str) -> tuple[bool, str]:
+def _systemctl(scope: str, *arguments: str) -> list[str]:
+    return ["systemctl", *( ["--user"] if scope == "user" else []), *arguments]
+
+
+def _systemd_unit(root: Path, executable: str, source: Path, description: str, scope: str, run_as_user: str, run_as_group: str) -> str:
+    """Gera uma unit sem depender do shell e preservando paths com espaços."""
+    service = ["[Service]", "Type=simple", f"WorkingDirectory={root.resolve()}", f"Environment=PYTHONPATH={source}"]
+    if scope == "system" and run_as_user: service.append(f"User={run_as_user}")
+    if scope == "system" and run_as_group: service.append(f"Group={run_as_group}")
+    service.extend([f"ExecStart={executable} -m onmyoji_daemon.cli --onmyoji-root {root.resolve()} run", "Restart=on-failure", "RestartSec=3"])
+    return "\n".join(["[Unit]", f"Description={description}", "Wants=network-online.target", "After=network-online.target", "", *service, "", "[Install]", "WantedBy=default.target" if scope == "user" else "WantedBy=multi-user.target", ""])
+
+
+def prepare_windows_service_host(root: Path) -> tuple[bool, str]:
+    """Posiciona o host pywin32 onde o Python reconhece corretamente o venv."""
+    executable = daemon_python(root); scripts = executable.parent; environment = scripts.parent; site_packages = environment / "Lib" / "site-packages"
+    service_source = next((candidate for candidate in (site_packages / "win32" / "pythonservice.exe", environment / "pythonservice.exe") if candidate.is_file()), None)
+    dlls = list((site_packages / "pywin32_system32").glob("pywintypes*.dll"))
+    try:
+        base_home = next(Path(line.split("=", 1)[1].strip()) for line in (environment / "pyvenv.cfg").read_text(encoding="utf-8").splitlines() if line.lower().startswith("home ="))
+    except (OSError, StopIteration):
+        return False, "Não foi possível identificar o Python-base do ambiente dedicado. Recrie o runtime do daemon."
+    python_dlls = list(base_home.glob("python*.dll"))
+    if not executable.is_file() or service_source is None or not dlls or not python_dlls:
+        return False, "O runtime não possui os arquivos do pywin32 necessários ao Serviço do Windows. Reinstale/valide o runtime do daemon."
+    try:
+        shutil.copy2(service_source, scripts / "pythonservice.exe")
+        for dll in [*dlls, *python_dlls]: shutil.copy2(dll, scripts / dll.name)
+    except OSError as error:
+        return False, f"Não foi possível preparar o host do Serviço do Windows: {error}"
+    return True, "Host do Serviço do Windows preparado no ambiente dedicado."
+
+
+def configure_windows_service_account(root: Path, account: str, password: str = "") -> tuple[bool, str]:
+    """Atualiza a conta de logon sem expor a senha na linha de comando."""
+    if os.name != "nt": return False, "A conta de serviço é configurável por este comando somente no Windows."
+    info = service_info(root)
+    if not info: return False, "Serviço do sistema operacional não está instalado para esta instância."
+    selected = account.strip()
+    if not selected: return False, "Informe a conta do Windows que executará o serviço."
+    local_system = selected.casefold() == "localsystem"
+    if not local_system and not password: return False, "Informe a senha da conta do Windows; ela não será armazenada pelo Onmyōji."
+    try:
+        import win32service
+        manager = win32service.OpenSCManager(None, None, win32service.SC_MANAGER_ALL_ACCESS)
+        service = win32service.OpenService(manager, str(info["name"]), win32service.SERVICE_CHANGE_CONFIG)
+        try:
+            win32service.ChangeServiceConfig(
+                service, win32service.SERVICE_NO_CHANGE, win32service.SERVICE_NO_CHANGE,
+                win32service.SERVICE_NO_CHANGE, None, None, 0, None,
+                None if local_system else selected, None if local_system else password, None,
+            )
+        finally:
+            win32service.CloseServiceHandle(service); win32service.CloseServiceHandle(manager)
+    except Exception as error:
+        return False, f"Não foi possível alterar a conta do Serviço do Windows: {error}"
+    info["run_as_user"] = "LocalSystem" if local_system else selected
+    _write_json(service_path(root), info)
+    return True, f"Conta do serviço atualizada para {info['run_as_user']}. Reinicie o serviço para aplicar a alteração."
+
+
+def install_service(root: Path, name: str, description: str, scope: str = "system", run_as_user: str = "", run_as_group: str = "", use_sudo: bool = False, windows_account: str = "", windows_password: str = "", progress: Callable[[str], None] | None = None) -> tuple[bool, str]:
     if not is_installed(root): return False, "Instale primeiro o daemon desta instância."
     if service_path(root).exists(): return False, "Já existe um serviço instalado para esta instância."
     if running_process(root): return False, "Finalize o processo local antes de instalar o serviço."
-    ready, message = ensure_runtime(root)
+    ready, message = ensure_runtime(root, allow_install=False)
     if not ready: return False, message
     executable = str(daemon_python(root))
     if os.name == "nt":
+        if scope != "system": return False, "O Windows Service é sempre instalado no escopo do sistema operacional."
+        if progress: progress("Preparando o host do Serviço do Windows.")
+        host_ready, host_message = prepare_windows_service_host(root)
+        if not host_ready: return False, host_message
         source = str(Path(__file__).resolve().parents[1]); environment = dict(os.environ)
         environment["PYTHONPATH"] = source + (os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else "")
-        created = subprocess.run([executable, "-m", "onmyoji_daemon.windows_service", "--service-name", name, "--onmyoji-root", str(root.resolve()), "--startup", "auto", "install"], text=True, capture_output=True, env=environment, check=False)
+        if progress: progress("Registrando o serviço no sistema operacional; esta etapa pode levar até 60 segundos.")
+        try:
+            created = subprocess.run([executable, "-m", "onmyoji_daemon.windows_service", "--service-name", name, "--onmyoji-root", str(root.resolve()), "--startup", "auto", "install"], text=True, capture_output=True, env=environment, check=False, timeout=60)
+        except subprocess.TimeoutExpired:
+            return False, "O registro do Serviço do Windows excedeu 60 segundos e foi interrompido. Verifique permissões administrativas e o estado do Gerenciador de Controle de Serviços."
         if created.returncode != 0: return False, (created.stderr or created.stdout).strip()
-        subprocess.run(["sc.exe", "description", name, description], text=True, capture_output=True, check=False)
+        if progress: progress("Validando o registro do serviço no Windows.")
+        if progress: progress("Registrando a configuração local do serviço.")
+        if windows_account and windows_account.casefold() != "localsystem":
+            if progress: progress("Configurando a conta Windows selecionada; a senha não será exibida nem armazenada.")
+            _write_json(service_path(root), {"name": name, "root": str(root.resolve())})
+            configured, detail = configure_windows_service_account(root, windows_account, windows_password)
+            if not configured:
+                subprocess.run([executable, "-m", "onmyoji_daemon.windows_service", "--service-name", name, "--onmyoji-root", str(root.resolve()), "remove"], text=True, capture_output=True, env=environment, check=False)
+                service_path(root).unlink(missing_ok=True)
+                return False, f"A instalação foi desfeita porque a conta do serviço não pôde ser configurada: {detail}"
     else:
         if not shutil.which("systemctl"): return False, "systemd não está disponível neste sistema."
-        unit = Path("/etc/systemd/system") / f"{name}.service"
+        if scope not in {"user", "system"}: return False, "Escopo de serviço inválido."
+        unit = (Path.home() / ".config" / "systemd" / "user" if scope == "user" else Path("/etc/systemd/system")) / f"{name}.service"
         source = Path(__file__).resolve().parents[1]
-        content = "\n".join(["[Unit]", f"Description={description}", "After=network-online.target", "", "[Service]", "Type=simple", f"WorkingDirectory={root.resolve()}", f"Environment=PYTHONPATH={source}", f"ExecStart={executable} -m onmyoji_daemon.cli --onmyoji-root {root.resolve()} run", "Restart=on-failure", "RestartSec=3", "", "[Install]", "WantedBy=multi-user.target", ""])
-        try: unit.write_text(content, encoding="utf-8")
-        except OSError as error: return False, f"Não foi possível gravar {unit}; execute o setup com privilégio administrativo: {error}"
-        reloaded = subprocess.run(["systemctl", "daemon-reload"], text=True, capture_output=True, check=False)
+        content = _systemd_unit(root, executable, source, description, scope, run_as_user, run_as_group)
+        elevated = scope == "system" and getattr(os, "geteuid", lambda: 0)() != 0
+        if elevated and not use_sudo: return False, "A instalação de serviço do sistema exige confirmação de sudo."
+        if elevated and not shutil.which("sudo"): return False, "sudo não está disponível. Execute o setup como root ou use su para obter uma sessão administrativa."
+        try:
+            if elevated:
+                written = subprocess.run(["sudo", "tee", str(unit)], input=content, text=True, capture_output=True, check=False)
+                if written.returncode != 0: return False, (written.stderr or written.stdout).strip() or "sudo não autorizou a gravação da unit."
+            else:
+                unit.parent.mkdir(parents=True, exist_ok=True); unit.write_text(content, encoding="utf-8")
+        except OSError as error:
+            privilege = "sudo" if scope == "system" else "permissão para o diretório do usuário"
+            return False, f"Não foi possível gravar {unit}; execute o setup com {privilege}: {error}"
+        command_prefix = ["sudo"] if elevated else []
+        reloaded = subprocess.run([*command_prefix, *_systemctl(scope, "daemon-reload")], text=True, capture_output=True, check=False)
         if reloaded.returncode != 0: return False, (reloaded.stderr or reloaded.stdout).strip()
-        enabled = subprocess.run(["systemctl", "enable", name], text=True, capture_output=True, check=False)
+        enabled = subprocess.run([*command_prefix, *_systemctl(scope, "enable", name)], text=True, capture_output=True, check=False)
         if enabled.returncode != 0: return False, (enabled.stderr or enabled.stdout).strip()
-    _write_json(service_path(root), {"schema_version": 1, "name": name, "description": description, "root": str(root.resolve()), "platform": platform.system()})
+    configured_user = windows_account or run_as_user or ("LocalSystem" if os.name == "nt" else "")
+    _write_json(service_path(root), {"schema_version": 2, "name": name, "description": description, "root": str(root.resolve()), "platform": platform.system(), "scope": scope, "run_as_user": configured_user, "run_as_group": run_as_group})
     return True, f"Serviço {name} instalado."
 
 
@@ -250,17 +398,38 @@ def service_status(root: Path) -> tuple[bool, str]:
     if os.name == "nt":
         value = subprocess.run(["sc.exe", "query", str(info["name"])], text=True, capture_output=True, check=False)
         return value.returncode == 0, (value.stdout or value.stderr).strip()
-    value = subprocess.run(["systemctl", "status", str(info["name"]), "--no-pager"], text=True, capture_output=True, check=False)
+    value = subprocess.run(_systemctl(str(info.get("scope") or "system"), "status", str(info["name"]), "--no-pager"), text=True, capture_output=True, check=False)
     return value.returncode in {0, 3}, (value.stdout or value.stderr).strip()
 
 
-def service_action(root: Path, action: str) -> tuple[bool, str]:
+def _windows_service_state(status: str) -> str:
+    """Extrai o estado do ``sc.exe`` nas localizações mais comuns do Windows."""
+    matched = re.search(r"(?:STATE|ESTADO)\s*:\s*\d+\s+([A-Z_]+)", status, re.IGNORECASE)
+    return matched.group(1).upper() if matched else ""
+
+
+def _wait_for_windows_service_state(root: Path, expected: str, attempts: int = 10) -> tuple[bool, str]:
+    """Aguarda o estado efetivo do serviço, além do aceite inicial do SCM."""
+    last_status = ""
+    for attempt in range(attempts):
+        _ok, last_status = service_status(root)
+        if _windows_service_state(last_status) == expected:
+            return True, last_status
+        if attempt < attempts - 1: time.sleep(0.5)
+    observed = _windows_service_state(last_status) or "desconhecido"
+    return False, f"O Windows aceitou a solicitação, mas o serviço não chegou ao estado {expected}; estado final: {observed}.\n{last_status}"
+
+
+def service_action(root: Path, action: str, use_sudo: bool = False) -> tuple[bool, str]:
     info = service_info(root)
     if not info: return False, "Serviço do sistema operacional não está instalado para esta instância."
     if os.name != "nt":
         command = {"start": "start", "stop": "stop", "restart": "restart", "force": "kill"}.get(action)
         if not command: return False, "Ação de serviço inválida."
-        value = subprocess.run(["systemctl", command, str(info["name"])], text=True, capture_output=True, check=False)
+        scope = str(info.get("scope") or "system"); elevated = scope == "system" and getattr(os, "geteuid", lambda: 0)() != 0
+        if elevated and not use_sudo: return False, "A operação deste serviço de sistema exige confirmação de sudo."
+        if elevated and not shutil.which("sudo"): return False, "sudo não está disponível. Execute a operação como root ou use su para obter uma sessão administrativa."
+        value = subprocess.run([*( ["sudo"] if elevated else []), *_systemctl(scope, command, str(info["name"]))], text=True, capture_output=True, check=False)
         return value.returncode == 0, ("Serviço atualizado." if value.returncode == 0 else (value.stderr or value.stdout).strip())
     command = {"start": "start", "stop": "stop", "restart": "stop", "force": "stop"}.get(action)
     if not command: return False, "Ação de serviço inválida."
@@ -275,19 +444,30 @@ def service_action(root: Path, action: str) -> tuple[bool, str]:
         subprocess.run(["sc.exe", "stop", name], text=True, capture_output=True, check=False); time.sleep(1)
         command = "start"
     value = subprocess.run(["sc.exe", command, name], text=True, capture_output=True, check=False)
-    return value.returncode == 0, ("Serviço atualizado." if value.returncode == 0 else (value.stderr or value.stdout).strip())
+    if value.returncode != 0: return False, (value.stderr or value.stdout).strip()
+    expected = "RUNNING" if command == "start" else "STOPPED"
+    confirmed, status = _wait_for_windows_service_state(root, expected)
+    if not confirmed: return False, status
+    message = "Serviço em execução." if expected == "RUNNING" else "Serviço parado."
+    return True, f"{message}\n{status}"
 
 
-def remove_service(root: Path) -> tuple[bool, str]:
+def remove_service(root: Path, use_sudo: bool = False) -> tuple[bool, str]:
     info = service_info(root)
     if not info: return True, "Nenhum serviço do sistema operacional foi registrado nesta instância."
     if str(info.get("root")) != str(root.resolve()): return False, "Registro de serviço não pertence a esta instância."
     if os.name != "nt":
-        name = str(info["name"]); subprocess.run(["systemctl", "disable", "--now", name], text=True, capture_output=True, check=False)
-        unit = Path("/etc/systemd/system") / f"{name}.service"
-        try: unit.unlink(missing_ok=True)
+        name = str(info["name"]); scope = str(info.get("scope") or "system"); elevated = scope == "system" and getattr(os, "geteuid", lambda: 0)() != 0
+        if elevated and not use_sudo: return False, "A remoção deste serviço de sistema exige confirmação de sudo."
+        if elevated and not shutil.which("sudo"): return False, "sudo não está disponível. Execute a remoção como root ou use su para obter uma sessão administrativa."
+        prefix = ["sudo"] if elevated else []; subprocess.run([*prefix, *_systemctl(scope, "disable", "--now", name)], text=True, capture_output=True, check=False)
+        unit = (Path.home() / ".config" / "systemd" / "user" if scope == "user" else Path("/etc/systemd/system")) / f"{name}.service"
+        try:
+            if elevated: value = subprocess.run(["sudo", "rm", "-f", str(unit)], text=True, capture_output=True, check=False); value.check_returncode()
+            else: unit.unlink(missing_ok=True)
         except OSError as error: return False, f"Não foi possível remover {unit}: {error}"
-        value = subprocess.run(["systemctl", "daemon-reload"], text=True, capture_output=True, check=False)
+        except subprocess.CalledProcessError as error: return False, f"Não foi possível remover {unit}: {error}"
+        value = subprocess.run([*prefix, *_systemctl(scope, "daemon-reload")], text=True, capture_output=True, check=False)
         if value.returncode != 0: return False, (value.stderr or value.stdout).strip()
         service_path(root).unlink(missing_ok=True); return True, "Serviço systemd removido."
     service_action(root, "stop")

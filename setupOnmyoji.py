@@ -7,9 +7,11 @@ import getpass
 import json
 import os
 import re
+import queue
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import tomllib
 from dataclasses import dataclass
@@ -21,18 +23,75 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parent
-MANAGED_BEGIN = "# BEGIN ONMYOJI MANAGED SKILLS"
-MANAGED_END = "# END ONMYOJI MANAGED SKILLS"
+DAEMON_SOURCE = ROOT / "onmyoji-daemon" / "src"
+if str(DAEMON_SOURCE) not in sys.path:
+    sys.path.insert(0, str(DAEMON_SOURCE))
+from onmyoji_daemon.codex_execution import CodexExecutionError, CodexLaunch
+from onmyoji_daemon.codex_capabilities import CapabilitySet, load_profile_capability
+from onmyoji_daemon.shikigami_agents import ShikigamiAgentMaterializationError, ShikigamiAgentMaterializer
+from onmyoji_daemon.instance import telegram_configuration_path
+from onmyoji_daemon.mcp.configuration import McpConfiguration
+from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialResolver
+from onmyoji_daemon.mcp.eccovox import EccoVoxError, EccoVoxService
+from onmyoji_daemon import runtime as python_runtime
+from onmyoji_daemon.telegram_stickers import MAX_CONTEXT_LENGTH, STATIC_STICKER_TARGET_BYTES, STICKER_ID, convert_static as convert_static_sticker, discover as discover_stickers, discover_static_sources, load as load_sticker_catalog, save as save_sticker_catalog, sticker_folder, suggested_identifier
+from onmyoji_daemon import management as daemon_management
+from onmyoji_daemon.publication_diagnostics import diagnose as diagnose_publication
+from onmyoji_daemon.cloudflare_tunnel.installer import inspect_cloudflared_directory
+from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
+from onmyoji_daemon.mcp.ocr.runtime import DocumentError, install_runtime as install_document_runtime
 SYSTEM_BEGIN = "# BEGIN ONMYOJI MANAGED CODEX SETTINGS"
 SYSTEM_END = "# END ONMYOJI MANAGED CODEX SETTINGS"
-CATALOG_DIRECTORY = "available-skills"
-INSTANCE_SKILLS_DIRECTORY = "shikigami/skills"
-ACTIVE_SKILLS_DIRECTORY = "skills"
-DESKTOP_SKILLS_DIRECTORY = ".agents/skills"
-SKILL_STATE_FILE = "onmyoji-skills.toml"
-REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"]
+INSTANCE_SKILLS_DIRECTORY = "shikigami-skills"
+SHIKIGAMI_SKILLS_STATE = "configs/shikigami/skills.toml"
 SANDBOXES = ["read-only", "workspace-write", "danger-full-access"]
-APPROVALS = ["untrusted", "on-request", "never"]
+APPROVALS = ["on-request", "never"]
+PYTHON_COMPONENTS = (
+    ("aiohttp", "Daemon", "Daemon, Telegram e Mini Apps"),
+    ("cryptography", "Daemon", "Daemon e certificados locais"),
+    ("pywin32", "Windows e Excel", "Serviço do Windows e MCP Excel desktop"),
+    ("boto3", "Daemon", "MCP AWS"),
+    ("paramiko", "Daemon", "MCP SSH"),
+    ("setuptools", "Base MCP", "Host MCP e instalação de componentes"),
+    ("mcp", "Base MCP", "Host de todas as integrações MCP"),
+    ("pykeepass", "Base MCP", "Vault, OAuth e integrações com credenciais"),
+    ("IMAPClient", "Base MCP", "MCP E-mail"),
+    ("jsonschema", "Base MCP", "Validação de dados e schemas MCP"),
+    ("PyMuPDF", "Documentos", "MCP PDF e OCR"),
+    ("pypdf", "Documentos", "MCP PDF"),
+    ("reportlab", "Documentos", "MCP PDF"),
+    ("Pillow", "Documentos", "MCP PDF e OCR"),
+    ("openpyxl", "Documentos", "MCP PDF e OCR"),
+    ("pyHanko", "Documentos", "MCP PDF e PDF/A"),
+    ("ocrmypdf", "OCR básico", "MCP OCR e PDF pesquisável"),
+    ("paddleocr", "OCR avançado", "MCP OCR avançado"),
+    ("paddlepaddle", "OCR avançado", "MCP OCR avançado CPU ou NVIDIA"),
+    ("paddlepaddle-gpu", "OCR avançado", "MCP OCR avançado NVIDIA"),
+)
+TEXT_LOGO = """⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢰⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⡀⣚⡀⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣀⣤⣴⡶⠿⠍⠛⠓⣸⡀⠛⠻⠽⠷⣶⣤⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣀⣴⡾⠛⠉⠰⡆⡠⠤⣴⠋⣹⡉⢳⡤⠄⡀⡆⠉⠙⠻⣶⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⣾⠿⠹⡀⠀⠀⠀⠀⠀⠀⠻⣜⣋⣛⡼⠃⠀⠀⠀⠀⠀⠀⡥⠙⢿⣦⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⡀⠀⢀⣞⠝⠁⠀⠀⠙⢦⠀⢀⣠⡴⠶⠚⢊⣿⣇⠚⠲⠦⣤⡀⠀⣠⠎⠀⠀⠀⠙⣷⣄⠀⢀⡀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⡗⢤⣿⠏⠐⠑⠀⠀⠀⢀⡻⠊⠁⠀⠀⠀⣾⣿⣿⡄⠀⠀⠀⠙⠺⣇⠀⠀⠀⠒⠁⠈⢿⣆⣐⡆⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⣇⡿⢯⠖⠋⡛⢦⡀⣰⠏⠀⠀⣠⡶⡛⣼⡿⠻⢿⣿⣈⡳⣦⠀⠀⠘⢷⡀⣰⠚⣛⠓⣌⠿⣆⡇⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠈⣿⢹⠹⣜⠾⠛⣱⠧⣭⣤⣬⣭⣭⣭⣵⣿⣥⠤⢤⣭⣧⣭⣬⣥⣭⣬⣬⡥⢧⡚⠛⢓⡼⢹⢻⡧⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⣤⢿⣘⣀⣈⠉⠉⠁⣷⠈⠛⢿⣯⣍⢉⣿⠃⠊⠉⢻⣶⣡⣌⢈⣿⣿⠟⠉⢸⡄⠉⠉⢉⣀⣸⣸⢳⡀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⣿⡼⠀⠀⠀⠀⠀⣿⠀⠀⠀⣭⡻⣿⣯⡳⡀⢈⣸⡿⣹⣿⡝⣫⡆⠀⠀⣸⠇⠀⠀⠀⠀⢸⢸⠎⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⣽⣧⠀⢩⠀⠀⠀⠸⣇⠀⠀⠐⣹⣿⠙⠻⣊⣭⡿⠞⠉⢹⣿⡑⠀⠀⢠⡟⠀⠀⠀⢨⠀⢼⣿⡌⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⡧⢿⣆⢸⠀⡀⠀⠀⠘⢧⡀⢰⣿⣿⣴⡾⠟⢯⢞⠿⣷⣤⣿⣧⢀⣰⠟⠀⠀⢀⡀⢸⣄⣿⠃⡇⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠧⠈⢿⣾⠊⠁⠢⣀⡴⠒⠲⢿⠿⢋⠁⠀⠀⢸⠀⠀⠈⢙⠻⣿⠶⢓⠶⣄⠠⠂⠉⣺⣿⠃⠠⠅⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠁⠀⠀⠻⣷⣄⢁⣿⢸⣷⣿⣌⡇⠉⠛⠓⠖⢾⠶⠒⠛⠉⠁⣏⢾⣿⣷⢸⠆⢁⣴⡿⠁⠀⠈⠁⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠻⣿⣍⡓⠶⠖⠋⠄⠀⠀⠀⢀⢸⢀⠀⠀⠀⠀⡌⠲⠶⠖⣫⣴⠿⠋⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠙⠫⣗⣦⣌⣀⠀⠀⠀⢸⢸⢸⠂⠀⠀⢀⣉⣤⣶⠽⠛⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⢀⣤⣶⣦⣤⣄⣀⠀⠀⠀⠀⠀⠀⠀⠈⠙⠓⠺⠯⠥⠄⢸⠠⠬⠭⠿⠒⠋⠉⠀⠀⠀⠀⠀⠀⠀⠀⢀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⣤⣾⣿⠿⠛⠻⠛⠻⣿⣷⡄⡀⢀⣀⠀⠀⠀⣠⡄⠀⣠⣄⠀⢹⠁⢠⣤⠀⣤⣤⠄⠀⢠⣤⠀⠀⡋⠭⣭⣍⡃⠀⢠⣤⡄⠀⢤⣤⠄⠀
+⠀⣾⣿⡿⠃⠀⠀⡀⠀⠀⠘⣿⣿⡄⣸⣿⣷⣄⠀⢸⠀⠀⢸⢿⣆⠀⣠⢿⣷⠀⠈⠻⣧⣠⠎⠀⣴⠃⠀⠀⠀⠙⣿⡆⠠⣿⡇⠀⢸⣿⠀⠀
+⠀⢿⣿⣧⡀⠀⠸⠿⠃⠀⢀⣿⣿⠇⢸⠃⠈⠻⣷⣽⠀⠀⣾⠊⢿⣿⠋⢻⣿⠀⠀⠀⣿⡇⠀⠀⣿⡄⠀⠀⠀⠀⣸⠇⠰⣿⡇⠀⢸⣿⠀⠀
+⠀⠈⠻⢿⣷⣀⣀⠀⠀⣠⣾⣿⠏⠀⠾⠦⠀⠀⠈⢿⠀⠰⠿⠄⠈⠃⠀⠼⠿⠆⠀⠀⣿⠧⠀⠀⠈⠻⠷⠤⠤⠒⠁⠀⢠⣿⠁⠀⠼⠿⠄⠀
+⠀⠀⠀⠀⠉⠉⣉⣥⣾⡿⠟⣁⣀⣀⣀⣀⣀⣀⣀⣀⣀⡀⣀⠀⠀⠀⠀⠀⢀⡀⣀⣈⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⠀⠔⠋⠁⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠨⠙⠛⠋⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠀⠀⠀⠀⠀⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀"""
 
 
 class Ui:
@@ -55,6 +114,21 @@ def prompt(label: str) -> str:
     return input(Ui.text(f"› {label}", Ui.violet, Ui.bold))
 
 
+def publication_test_cancelled() -> bool:
+    """Consulta X sem deixar uma thread de leitura pendente após o teste público."""
+    if not sys.stdin.isatty():
+        return False
+    if os.name == "nt":
+        import msvcrt
+        while msvcrt.kbhit():
+            if msvcrt.getwch().casefold() in {"x", "\x1b"}:
+                return True
+        return False
+    import select
+    ready, _, _ = select.select([sys.stdin], [], [], 0)
+    return bool(ready) and sys.stdin.readline().strip().casefold() in {"x", "\x1b"}
+
+
 def result(ok: bool, message: str) -> None:
     label, color = ("+ OK", Ui.green) if ok else ("! ERRO", Ui.red)
     print("\n    " + Ui.text(label, Ui.bold, color) + "  " + Ui.text(message, color))
@@ -71,19 +145,18 @@ class Skill:
     source: Path
     description: str
     setup_script: Path | None = None
-    catalog_managed: bool = True
 
 
 def discover(root: Path = ROOT) -> list[Skill]:
     skills: list[Skill] = []
-    for directory, catalog_managed in ((root / CATALOG_DIRECTORY, True), (root / INSTANCE_SKILLS_DIRECTORY, False)):
-        for script in sorted(directory.glob("*/setupSkill.py")):
-            result = subprocess.run([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "describe", "--json"], text=True, encoding="utf-8", errors="replace", capture_output=True, env={**os.environ, "PYTHONUTF8": "1"})
-            try:
-                data = json.loads(result.stdout) if result.returncode == 0 else {}
-                skills.append(Skill(data["id"], data["title"], script.parent, data.get("description", ""), script, catalog_managed))
-            except (json.JSONDecodeError, KeyError):
-                continue
+    directory = root / INSTANCE_SKILLS_DIRECTORY
+    for script in sorted(directory.glob("*/setupSkill.py")):
+        result = subprocess.run([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "describe", "--json"], text=True, encoding="utf-8", errors="replace", capture_output=True, env={**os.environ, "PYTHONUTF8": "1"})
+        try:
+            data = json.loads(result.stdout) if result.returncode == 0 else {}
+            skills.append(Skill(data["id"], data["title"], script.parent, data.get("description", ""), script))
+        except (json.JSONDecodeError, KeyError):
+            continue
     instance_directory = root / INSTANCE_SKILLS_DIRECTORY
     for skill_file in sorted(instance_directory.glob("*/SKILL.md")):
         source = skill_file.parent
@@ -91,23 +164,18 @@ def discover(root: Path = ROOT) -> list[Skill]:
             continue
         identifier = source.name
         title = identifier.replace("-", " ").replace("_", " ").title()
-        skills.append(Skill(identifier, title, source, "Skill do Shikigami sem configuração.", None, False))
+        skills.append(Skill(identifier, title, source, "Skill do Shikigami sem configuração."))
     return skills
 
 
 def config_path(root: Path) -> Path: return root / "config.toml"
 def system_path(root: Path) -> Path: return root / "configs" / "onmyoji-system.toml"
-def skill_state_path(root: Path) -> Path: return root / "configs" / SKILL_STATE_FILE
-def active_skills_path(root: Path) -> Path: return root / ACTIVE_SKILLS_DIRECTORY
-
-
-def desktop_skills_path(root: Path, data: dict[str, object]) -> Path:
-    return root / DESKTOP_SKILLS_DIRECTORY
+def skill_state_path(root: Path) -> Path: return root / SHIKIGAMI_SKILLS_STATE
 
 
 def instance_identity(root: Path) -> str:
     try:
-        data = tomllib.loads((root / "shikigami" / "instance.toml").read_text(encoding="utf-8"))
+        data = tomllib.loads(system_path(root).read_text(encoding="utf-8"))
         value = data.get("shikigami", {}).get("identity", "")
         if isinstance(value, str) and value.strip(): return value.strip()
     except (OSError, tomllib.TOMLDecodeError, AttributeError):
@@ -118,28 +186,25 @@ def instance_identity(root: Path) -> str:
     return name.strip() or "Shikigami"
 
 
-def ensure_shikigami_definition(root: Path) -> None:
-    """Cria apenas a definição portável; nunca copia estado ou segredos locais."""
-    directory = root / "shikigami"; identity = instance_identity(root)
-    directory.mkdir(parents=True, exist_ok=True)
-    instance = directory / "instance.toml"
-    if not instance.exists():
-        workspace_name = "Shikigami-" + "".join(part[:1].upper() + part[1:] for part in identity.split()) + "-Work"
-        instance.write_text("schema_version = 1\n\n[shikigami]\nidentity = " + json.dumps(identity, ensure_ascii=False) + "\nworkspace_directory_name = " + json.dumps(workspace_name, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
-    readme = directory / "README.md"
-    if not readme.exists(): readme.write_text(f"# {identity}\n\nDefinição versionada deste Shikigami. Arquivos da base Onmyōji não são personalizados aqui; particularidades da identidade ficam nesta pasta. Segredos e estado de execução permanecem fora do Git, em `../configs/`. O workspace externo é a única área para arquivos de trabalho do agente.\n", encoding="utf-8", newline="\n")
-    agents = directory / "AGENTS.md"
-    if not agents.exists(): agents.write_text(f"# {identity}\n\nLeia este arquivo e `README.md` antes de trabalhar nesta instância. Não altere arquivos da base Onmyōji (`available-skills/`, `onmyoji-daemon/`, `setupOnmyoji.py` e `docs/`) para personalizar {identity}; registre personalizações em `shikigami/` ou proponha melhorias genéricas ao upstream.\n\nNão armazene segredos, tokens, chaves, bancos de conversa, logs, staging ou arquivos de trabalho nesta pasta. O workspace externo é a única área de escrita para a atividade do agente.\n", encoding="utf-8", newline="\n")
-    instructions = directory / "instructions.md"
-    if not instructions.exists():
-        model = root / "onmyoji-daemon" / "configs" / "shikigami.md.model"
-        if model.exists(): shutil.copy2(model, instructions)
+def vault_entry_path(root: Path, layer: str, integration: str, profile: str = "", definition: str = "") -> str:
+    """Monta a referência padrão de uma entrada KeePass da instância.
+
+    A hierarquia de grupos permanece limitada ao Shikigami e à camada. O
+    restante identifica a entrada pelo título, separado por dois-pontos.
+    """
+    title = ":".join(value for value in (integration, profile, definition) if value)
+    return f"{instance_identity(root)}/{layer}/{title}"
 
 
 def default_system() -> dict[str, object]:
     return {
-        "executable": "codex",
-        "model": "gpt-5.6-terra",
+        "shikigami_identity": "",
+        "shikigami_installed": False,
+        "python_mode": "isolated",
+        "python_base_executable": "",
+        "python_executable": "",
+        "executable": "",
+        "model": "gpt-6.1-sol",
         "model_reasoning_effort": "medium",
         "project_directory": "",
         "sandbox_mode": "workspace-write",
@@ -148,12 +213,279 @@ def default_system() -> dict[str, object]:
     }
 
 
+def discover_codex_executables() -> list[str]:
+    """Encontra todas as instalações locais do Codex visíveis pelo PATH atual."""
+    candidates: list[str] = []
+
+    def add(path: str | Path | None) -> None:
+        if not path:
+            return
+        candidate = Path(path).expanduser()
+        if candidate.is_file():
+            resolved = str(candidate.resolve())
+            if resolved.casefold() not in {value.casefold() for value in candidates}:
+                candidates.append(resolved)
+
+    names = ("codex", "codex.exe", "codex.cmd", "codex.bat")
+    for name in names:
+        add(shutil.which(name))
+    for raw_directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not raw_directory:
+            continue
+        directory = Path(raw_directory.strip('"'))
+        for name in names:
+            add(directory / name)
+    return candidates
+
+
+def choose_codex_executable(current: str, flow: bool = False) -> str | None:
+    """Oferece executáveis encontrados e permite informar somente um caminho completo."""
+    found = discover_codex_executables()
+    manual = "Informar caminho completo"
+    if not found:
+        note("Nenhum executável Codex foi encontrado no PATH atual.")
+    chooser = flow_choice if flow else choose
+    selected = chooser("Executável Codex", [*found, manual], current if current in found else "")
+    if selected is None:
+        return None
+    if selected != manual:
+        return selected
+    while True:
+        value = prompt("Caminho completo do executável [X cancela]: ").strip()
+        if value.casefold() in {"x", "\x1b"}:
+            return None
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            result(False, "Informe o caminho completo do executável.")
+            continue
+        if not path.is_file():
+            result(False, f"Executável não encontrado: {path}")
+            continue
+        return str(path.resolve())
+
+
+def model_identifier(model: dict[str, object]) -> str:
+    """Retorna o identificador configurável de uma entrada recebida do App Server."""
+    value = model.get("model", model.get("id", ""))
+    return value.strip() if isinstance(value, str) else ""
+
+
+def reasoning_efforts_for_model(model: dict[str, object]) -> list[str]:
+    """Extrai somente os esforços que o catálogo atual declara como compatíveis."""
+    values = model.get("supportedReasoningEfforts", [])
+    if not isinstance(values, list):
+        return []
+    return [entry["reasoningEffort"] for entry in values if isinstance(entry, dict) and isinstance(entry.get("reasoningEffort"), str)]
+
+
+def preferred_reasoning_effort(model: dict[str, object]) -> str:
+    """Retorna a sugestão do catálogo, quando ela também é uma opção compatível."""
+    effort = model.get("defaultReasoningEffort")
+    values = reasoning_efforts_for_model(model)
+    return effort if isinstance(effort, str) and effort in values else (values[0] if values else "")
+
+
+def catalog_model(catalog: list[dict[str, object]], identifier: str) -> dict[str, object] | None:
+    """Localiza um modelo pelo identificador persistido na configuração."""
+    return next((model for model in catalog if model_identifier(model) == identifier), None)
+
+
+def choose_codex_model(catalog: list[dict[str, object]], current: str, flow: bool = False) -> dict[str, object] | None:
+    """Permite selecionar exclusivamente modelos disponíveis para a conta atual."""
+    options = [model_identifier(model) for model in catalog]
+    selected = (flow_choice if flow else choose)("Modelo", options, current if current in options else "")
+    return catalog_model(catalog, selected) if selected else None
+
+
+def choose_reasoning_effort(model: dict[str, object], current: str, reset_to_model_default: bool = False, flow: bool = False) -> str | None:
+    """Seleciona somente esforços declarados pelo catálogo para o modelo escolhido."""
+    values = reasoning_efforts_for_model(model)
+    selected = preferred_reasoning_effort(model) if reset_to_model_default or current not in values else current
+    return (flow_choice if flow else choose)("Esforço de raciocínio", values, selected) if values else None
+
+
+def diagnostic_detail(completed: subprocess.CompletedProcess[str]) -> str:
+    """Resume a saída de um comando sem expor valores sensíveis em telas de diagnóstico."""
+    detail = (completed.stdout or completed.stderr or "").strip()
+    return re.sub(r"(?i)(token|password|secret|access[_-]?token)\s*[=:]\s*\S+", r"\1=[redacted]", detail)[-500:]
+
+
+def validate_codex_executable(executable: str) -> tuple[bool, str]:
+    """Confirma que o executável configurado inicia e responde à consulta de versão."""
+    if not executable:
+        return False, "Executável do Codex-CLI não configurado."
+    try:
+        completed = subprocess.run([executable, "--version"], text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=20)
+    except OSError as error:
+        return False, f"Não foi possível iniciar o executável: {error}"
+    except subprocess.TimeoutExpired:
+        return False, "A consulta de versão do Codex-CLI excedeu 20 segundos."
+    if completed.returncode != 0:
+        return False, diagnostic_detail(completed) or f"O Codex-CLI terminou com código {completed.returncode}."
+    return True, diagnostic_detail(completed) or "Codex-CLI respondeu à consulta de versão."
+
+
+def codex_setup_directory(root: Path) -> Path:
+    """Retorna a área temporária para comandos auxiliares do Codex-CLI."""
+    directory = root.resolve() / "tmp" / "codex-cli"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def validate_codex_login(root: Path, data: dict[str, object]) -> tuple[bool, str]:
+    """Confirma a autenticação do CODEX_HOME da instância sem revelar credenciais."""
+    executable_ok, executable_detail = validate_codex_executable(str(data["executable"]))
+    if not executable_ok:
+        return False, executable_detail
+    environment = dict(os.environ); environment["CODEX_HOME"] = str(root)
+    try:
+        completed = subprocess.run([str(data["executable"]), "login", "status"], cwd=str(codex_setup_directory(root)), env=environment, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=20)
+    except OSError as error:
+        return False, f"Não foi possível consultar o login do Codex-CLI: {error}"
+    except subprocess.TimeoutExpired:
+        return False, "A consulta de login do Codex-CLI excedeu 20 segundos."
+    if completed.returncode != 0:
+        return False, diagnostic_detail(completed) or "Nenhum login ativo foi encontrado para esta instância."
+    return True, diagnostic_detail(completed) or "Login do Codex-CLI confirmado."
+
+
+def fetch_codex_model_catalog(root: Path, executable: str) -> tuple[list[dict[str, object]] | None, str]:
+    """Consulta o catálogo visível da conta pelo protocolo JSON-RPC do App Server."""
+    environment = dict(os.environ); environment["CODEX_HOME"] = str(root)
+    try:
+        process = subprocess.Popen([executable, "app-server"], cwd=str(codex_setup_directory(root)), env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+    except OSError as error:
+        return None, f"Não foi possível iniciar o App Server do Codex: {error}"
+    assert process.stdin and process.stdout
+    messages: queue.Queue[str] = queue.Queue()
+
+    def read_output() -> None:
+        for line in process.stdout:
+            messages.put(line)
+
+    reader = threading.Thread(target=read_output, daemon=True)
+    reader.start()
+
+    def send(message: dict[str, object]) -> None:
+        process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
+        process.stdin.flush()
+
+    def receive(identifier: int) -> dict[str, object] | None:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            try:
+                line = messages.get(timeout=max(0.1, deadline - time.monotonic()))
+                message = json.loads(line)
+            except (queue.Empty, json.JSONDecodeError):
+                continue
+            if isinstance(message, dict) and message.get("id") == identifier:
+                return message
+        return None
+
+    response: dict[str, object] | None = None
+    try:
+        send({"method": "initialize", "id": 0, "params": {"clientInfo": {"name": "onmyoji_setup", "title": "Onmyōji Setup", "version": "1"}}})
+        if receive(0) is None:
+            return None, "O App Server não confirmou a inicialização em 30 segundos."
+        send({"method": "initialized", "params": {}})
+        send({"method": "model/list", "id": 1, "params": {"limit": 100, "includeHidden": False}})
+        response = receive(1)
+    finally:
+        process.stdin.close()
+        if process.poll() is None:
+            process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+    if not response or not isinstance(response.get("result"), dict):
+        return None, "O App Server não retornou o catálogo de modelos. Atualize o Codex-CLI e tente novamente."
+    data = response["result"].get("data")
+    if not isinstance(data, list):
+        return None, "O App Server retornou um catálogo de modelos inválido."
+    catalog: list[dict[str, object]] = []
+    for entry in data:
+        if not isinstance(entry, dict) or entry.get("hidden") is True:
+            continue
+        model = dict(entry)
+        if model_identifier(model) and reasoning_efforts_for_model(model):
+            catalog.append(model)
+    if not catalog:
+        return None, "A conta não possui modelos configuráveis visíveis no catálogo do Codex."
+    return catalog, f"{len(catalog)} modelo(s) disponível(is) para a conta atual."
+
+
+def codex_model_catalog(root: Path, data: dict[str, object]) -> tuple[list[dict[str, object]] | None, str]:
+    """Retorna o catálogo atual somente depois de validar executável e autenticação."""
+    logged_in, login_detail = validate_codex_login(root, data)
+    if not logged_in:
+        return None, login_detail
+    return fetch_codex_model_catalog(root, str(data["executable"]))
+
+
+def validate_codex_selection(root: Path, data: dict[str, object]) -> tuple[bool, str]:
+    """Garante que modelo e raciocínio ainda pertencem ao catálogo autenticado atual."""
+    catalog, detail = codex_model_catalog(root, data)
+    if catalog is None:
+        return False, detail
+    model = catalog_model(catalog, str(data["model"]).strip())
+    if model is None:
+        return False, f"O modelo configurado ({data['model']}) não está disponível para a conta atual."
+    effort = str(data["model_reasoning_effort"])
+    if effort not in reasoning_efforts_for_model(model):
+        return False, f"O esforço {effort} não é compatível com o modelo {model_identifier(model)} na conta atual."
+    return True, f"Modelo {model_identifier(model)} e esforço {effort} confirmados pelo catálogo atual."
+
+
+def validate_codex_model(root: Path, data: dict[str, object]) -> tuple[bool, str]:
+    """Executa uma solicitação efêmera e somente leitura com o modelo selecionado."""
+    selected, selection_detail = validate_codex_selection(root, data)
+    if not selected:
+        return False, selection_detail
+    executable = str(data["executable"])
+    model = str(data["model"]).strip()
+    effort = str(data["model_reasoning_effort"])
+    environment = dict(os.environ); environment["CODEX_HOME"] = str(root)
+    temporary = codex_setup_directory(root)
+    command = [executable, "exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "--model", model, "--config", f"model_reasoning_effort={json.dumps(effort)}", "Responda exatamente: OK"]
+    try:
+        completed = subprocess.run(command, cwd=str(temporary), env=environment, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=120)
+    except OSError as error:
+        return False, f"Não foi possível iniciar a validação do modelo: {error}"
+    except subprocess.TimeoutExpired:
+        return False, "A validação do modelo excedeu 120 segundos."
+    if completed.returncode != 0:
+        return False, diagnostic_detail(completed) or f"O Codex-CLI recusou o modelo com código {completed.returncode}."
+    return True, f"Modelo {model} respondeu à execução de validação."
+
+
 def load_system(root: Path) -> dict[str, object]:
     path = system_path(root)
     if not path.exists(): return default_system()
     try: raw = tomllib.loads(path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError: return default_system()
     values = default_system()
+    shikigami = raw.get("shikigami", {})
+    if isinstance(shikigami, dict):
+        if isinstance(shikigami.get("identity"), str): values["shikigami_identity"] = shikigami["identity"].strip()
+        if isinstance(shikigami.get("installed"), bool): values["shikigami_installed"] = shikigami["installed"]
+    python = raw.get("python", {})
+    if isinstance(python, dict):
+        if python.get("mode") in {"isolated", "global"}: values["python_mode"] = python["mode"]
+        if isinstance(python.get("base_python"), str): values["python_base_executable"] = python["base_python"]
+        if isinstance(python.get("executable"), str): values["python_executable"] = python["executable"]
+    else:
+        # Migração sem remoção: o próximo salvamento centraliza a escolha antiga.
+        try:
+            legacy = tomllib.loads((root / "configs" / "daemon" / "daemon.toml").read_text(encoding="utf-8")).get("runtime", {})
+        except (OSError, tomllib.TOMLDecodeError):
+            legacy = {}
+        if isinstance(legacy, dict):
+            legacy_mode = str(legacy.get("mode") or "dedicated")
+            if legacy_mode == "global":
+                values["python_mode"] = "global"; values["python_executable"] = str(legacy.get("executable") or "")
+            else:
+                values["python_mode"] = "isolated"; values["python_base_executable"] = str(legacy.get("base_python") or legacy.get("executable") or sys.executable)
     for key, value in raw.get("codex", {}).items():
         if key in values and isinstance(value, str): values[key] = value
         if key == "additional_writable_directories" and isinstance(value, list) and all(isinstance(item, str) for item in value): values[key] = value
@@ -161,7 +493,11 @@ def load_system(root: Path) -> dict[str, object]:
 
 
 def render_system(data: dict[str, object]) -> str:
-    return "\n".join(["schema_version = 1", "", "[codex]", *[f"{key} = {json.dumps(data[key], ensure_ascii=False)}" for key in default_system()]]) + "\n"
+    codex_keys = tuple(key for key in default_system() if not key.startswith(("shikigami_", "python_")))
+    mode = data.get("python_mode", "isolated")
+    base = data.get("python_base_executable", "") if mode == "isolated" else ""
+    executable = data.get("python_executable", "") if mode == "global" else ""
+    return "\n".join(["schema_version = 2", "", "[shikigami]", f"identity = {json.dumps(data['shikigami_identity'], ensure_ascii=False)}", f"installed = {str(bool(data['shikigami_installed'])).lower()}", "", "[python]", f"mode = {json.dumps(mode)}", f"base_python = {json.dumps(base)}", f"executable = {json.dumps(executable)}", "", "[codex]", *[f"{key} = {json.dumps(data[key], ensure_ascii=False)}" for key in codex_keys]]) + "\n"
 
 
 def replace_block(text: str, begin: str, end: str, block: str) -> str:
@@ -179,28 +515,85 @@ def render_codex_system(data: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
-def validate_system(data: dict[str, object], require_ready: bool = False) -> tuple[bool, str]:
-    if not data["model"].strip(): return False, "Informe um modelo do Codex."
-    if data["model_reasoning_effort"] not in REASONING_EFFORTS: return False, "Esforço de raciocínio inválido."
+def workspace_directory(data: dict[str, object]) -> Path | None:
+    """Retorna a pasta de trabalho resolvida, quando ela foi configurada."""
+    project = str(data["project_directory"]).strip()
+    return Path(project).expanduser().resolve() if project else None
+
+
+def resolve_writable_directory(data: dict[str, object], directory: str) -> Path | None:
+    """Resolve uma raiz extra relativa à pasta de trabalho, sem alterar o texto salvo."""
+    path = Path(directory).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    workspace = workspace_directory(data)
+    return (workspace / path).resolve() if workspace else None
+
+
+def writable_directory_relation(root: Path, data: dict[str, object], candidate: Path, directories: list[str]) -> tuple[bool, str]:
+    """Impede raízes que concederiam escrita à instância ou ao workspace por herança."""
+    root = root.resolve()
+    workspace = workspace_directory(data)
+    protected = [("CODEX_HOME", root)]
+    if workspace:
+        protected.append(("pasta de trabalho", workspace))
+    for label, protected_path in protected:
+        if candidate == protected_path or protected_path.is_relative_to(candidate):
+            return False, f"O diretório inclui {label} ou um de seus diretórios anteriores e não pode ser liberado para escrita adicional."
+    for directory in directories:
+        existing = resolve_writable_directory(data, directory)
+        if not existing:
+            continue
+        if candidate == existing:
+            return False, f"Esse diretório já está configurado como {directory}."
+        if candidate.is_relative_to(existing):
+            return False, f"Esse diretório já está coberto pela raiz configurada {directory}."
+        if existing.is_relative_to(candidate):
+            return True, f"A nova raiz também abrange {directory}; ela amplia a área de escrita já configurada."
+    return True, ""
+
+
+def is_broad_writable_directory(directory: Path) -> bool:
+    """Identifica raízes que abrangem o perfil do usuário ou toda uma unidade."""
+    home = Path.home().resolve()
+    return directory == directory.parent or directory == home or home.is_relative_to(directory)
+
+
+def validate_system(data: dict[str, object], require_ready: bool = False, root: Path | None = None) -> tuple[bool, str]:
+    if not isinstance(data.get("shikigami_identity"), str): return False, "Nome do Shikigami inválido."
+    if not isinstance(data.get("shikigami_installed"), bool): return False, "Estado de instalação do Shikigami inválido."
+    if data["shikigami_installed"] and not str(data["shikigami_identity"]).strip(): return False, "Informe o nome do Shikigami antes de concluir a instalação."
+    if not isinstance(data.get("model"), str) or not data["model"].strip(): return False, "Informe um modelo do Codex."
+    if not isinstance(data.get("model_reasoning_effort"), str) or not data["model_reasoning_effort"].strip(): return False, "Informe o esforço de raciocínio do Codex."
     if data["sandbox_mode"] not in SANDBOXES: return False, "Modo de sandbox inválido."
     if data["approval_policy"] not in APPROVALS: return False, "Política de aprovação inválida."
     executable = str(data["executable"])
-    if executable and not (Path(executable).is_file() or shutil.which(executable)): return False, f"Executável Codex não encontrado: {executable}."
+    if not executable: return False, "Configure o executável do Codex-CLI."
+    if not (Path(executable).is_file() or shutil.which(executable)): return False, f"Executável Codex não encontrado: {executable}."
     project = str(data["project_directory"])
     if project and not Path(project).is_dir(): return False, f"Pasta de projeto não encontrada: {project}."
     directories = data["additional_writable_directories"]
     if not isinstance(directories, list) or not all(isinstance(directory, str) for directory in directories): return False, "Lista de diretórios adicionais inválida."
-    normalized = [str(Path(directory).resolve()) for directory in directories]
-    if len(normalized) != len(set(normalized)): return False, "A lista de diretórios adicionais contém caminhos repetidos."
+    normalized: list[str] = []
     for directory in directories:
-        if not Path(directory).is_dir(): return False, f"Diretório adicional não encontrado: {directory}."
+        resolved = resolve_writable_directory(data, directory)
+        if not resolved: return False, f"Defina a pasta do projeto antes de usar um diretório adicional relativo: {directory}."
+        normalized.append(str(resolved))
+        if not resolved.is_dir(): return False, f"Diretório adicional não encontrado: {directory}."
+        if root:
+            allowed, message = writable_directory_relation(root, data, resolved, [value for value in directories if value != directory])
+            if not allowed: return False, message
+    if len(normalized) != len(set(normalized)): return False, "A lista de diretórios adicionais contém caminhos repetidos."
     if require_ready and not project: return False, "Defina a pasta do projeto antes de executar o Codex."
+    if require_ready and root:
+        selected, selection_message = validate_codex_selection(root, data)
+        if not selected: return False, selection_message
     return True, "Configuração do Codex-CLI válida." if project else "Configuração salva; defina a pasta do projeto antes de executar o Codex."
 
 
-def save_system(root: Path, data: dict[str, object]) -> tuple[bool, str]:
-    valid, message = validate_system(data)
-    if not valid: return False, message
+def save_system(root: Path, data: dict[str, object], validate: bool = True) -> tuple[bool, str]:
+    valid, message = validate_system(data, root=root)
+    if validate and not valid: return False, message
     system, codex = system_path(root), config_path(root)
     old_system = system.read_text(encoding="utf-8") if system.exists() else None
     old_codex = codex.read_text(encoding="utf-8") if codex.exists() else None
@@ -215,194 +608,266 @@ def save_system(root: Path, data: dict[str, object]) -> tuple[bool, str]:
         if old_codex is None: codex.unlink(missing_ok=True)
         else: codex.write_text(old_codex, encoding="utf-8", newline="\n")
         return False, f"Falha ao salvar; alteração desfeita: {error}"
-    return True, message
+    return True, message if valid else "Configuração inicial salva."
 
 
-def legacy_enabled_ids(root: Path) -> set[str]:
-    path = config_path(root)
-    if not path.exists(): return set()
-    text = path.read_text(encoding="utf-8")
-    if MANAGED_BEGIN not in text or MANAGED_END not in text: return set()
-    block = text.split(MANAGED_BEGIN, 1)[1].split(MANAGED_END, 1)[0]
-    return {Path(line.split('"', 2)[1]).name for line in block.splitlines() if line.strip().startswith("path =") and '"' in line}
+def ensure_shikigami_configuration(root: Path) -> tuple[dict[str, object] | None, str]:
+    """Inicializa a seção local do Shikigami sem alterar artefatos antigos."""
+    data = load_system(root)
+    path = system_path(root)
+    try: raw = tomllib.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except tomllib.TOMLDecodeError: raw = {}
+    section = raw.get("shikigami", {}) if isinstance(raw, dict) else {}
+    needs_save = not isinstance(section, dict) or not isinstance(section.get("identity"), str) or not isinstance(section.get("installed"), bool) or not isinstance(raw.get("python") if isinstance(raw, dict) else None, dict)
+    if needs_save:
+        ok, message = save_system(root, data, validate=False)
+        if not ok: return None, message
+    return data, "Configuração inicial pronta."
 
 
-def enabled_ids(root: Path) -> set[str]:
+def suggested_project_directory(root: Path) -> Path:
+    """Sugere um workspace irmão da instância, preservando seu nome base."""
+    root = root.resolve()
+    return root.parent / f"{root.name}-Work"
+
+
+def choose_project_directory(root: Path, current: str) -> str | None:
+    """Seleciona um workspace existente ou cria explicitamente a sugestão ausente."""
+    default = Path(current).expanduser() if current else suggested_project_directory(root)
+    value = prompt(f"Pasta do projeto [{default}]: ").strip()
+    if value.casefold() in {"x", "\x1b"}:
+        return None
+    directory = Path(value).expanduser() if value else default
+    if directory.is_dir():
+        return str(directory.resolve())
+    if directory.exists():
+        result(False, f"O caminho existe, mas não é uma pasta: {directory}")
+        return None
+    create = prompt(f"A pasta {directory} não existe. Deseja criá-la? [S/n]: ").strip().casefold() or "s"
+    if create != "s":
+        result(False, "A pasta de trabalho não foi criada; configuração não alterada.")
+        return None
+    try:
+        directory.mkdir()
+    except OSError as error:
+        result(False, f"Não foi possível criar a pasta de trabalho: {error}")
+        return None
+    if not directory.is_dir():
+        result(False, "A pasta de trabalho não foi criada; configuração não alterada.")
+        return None
+    result(True, f"Pasta de trabalho criada: {directory}")
+    return str(directory.resolve())
+
+
+def choose_sandbox(root: Path, workspace: Path, current: str, flow: bool = False) -> str | None:
+    """Explica os limites de cada sandbox antes de permitir sua seleção."""
+    root, workspace = root.resolve(), workspace.resolve()
+    (flow_heading if flow else screen)("Sandbox", "Limites técnicos dos comandos gerados pelo Codex")
+    note("O sistema operacional continua sendo a autoridade final sobre permissões.")
+    print(f"\n  Instância / CODEX_HOME: {root}")
+    print(f"  Workspace de trabalho:  {workspace}\n")
+    print("  read-only")
+    print(f"    Pode inspecionar arquivos, mas não editar nem executar comandos sem aprovação. Use")
+    print(f"    para revisão e planejamento; nem {workspace} nem {root} recebem alterações automáticas.")
+    print("\n  workspace-write  (recomendado)")
+    print(f"    Pode editar {workspace} e os diretórios adicionais explicitamente liberados. Não libera")
+    print(f"    escrita em {root}; caminhos protegidos, rede e ações fora dessas áreas podem exigir aprovação.")
+    print("\n  danger-full-access")
+    print(f"    Remove as restrições locais do sandbox. O agente pode acessar {workspace}, {root} e outros")
+    print("    recursos permitidos ao usuário do sistema, inclusive rede. Use somente em ambiente controlado.\n")
+    for index, value in enumerate(SANDBOXES, 1): item(f"{index}.", value)
+    item("X.", "Voltar")
+    default_index = SANDBOXES.index(current) + 1 if current in SANDBOXES else 1
+    while True:
+        choice = prompt(f"Opção [{default_index}]: ").strip().casefold()
+        if choice in {"x", "\x1b"}: return None
+        if not choice: return SANDBOXES[default_index - 1]
+        if choice.isdigit() and 1 <= int(choice) <= len(SANDBOXES): return SANDBOXES[int(choice) - 1]
+        result(False, "Opção inválida.")
+
+
+def choose_approval_policy(root: Path, workspace: Path, sandbox: str, current: str, flow: bool = False) -> str | None:
+    """Explica quando o Codex interrompe a execução para pedir autorização local."""
+    root, workspace = root.resolve(), workspace.resolve()
+    (flow_heading if flow else screen)("Política de aprovação", "Quando o Codex-CLI deve interromper a execução para pedir confirmação")
+    note("A política não amplia o sandbox; ela apenas define como tratar ações que exigem aprovação.")
+    print(f"\n  Instância / CODEX_HOME: {root}")
+    print(f"  Workspace de trabalho:  {workspace}")
+    print(f"  Sandbox selecionado:    {sandbox}\n")
+    print("  on-request  (recomendado)")
+    print(f"    Permite automaticamente apenas o que o sandbox {sandbox} já permite. Quando uma ação")
+    print(f"    precisar sair desse limite — por exemplo, escrever fora de {workspace}, alterar {root}")
+    print("    ou acessar recursos protegidos — o Codex-CLI pausa e mostra o pedido para decisão local.")
+    print("\n  never")
+    print("    Nunca mostra pedidos de aprovação. Não concede mais acesso: o Codex executa somente")
+    print("    o que o sandbox já permite e ações que precisariam de autorização são recusadas ou bloqueadas.")
+    print("    Use em automações sem operador acompanhando a execução.\n")
+    for index, value in enumerate(APPROVALS, 1): item(f"{index}.", value)
+    item("X.", "Voltar")
+    default_index = APPROVALS.index(current) + 1 if current in APPROVALS else 1
+    while True:
+        choice = prompt(f"Opção [{default_index}]: ").strip().casefold()
+        if choice in {"x", "\x1b"}: return None
+        if not choice: return APPROVALS[default_index - 1]
+        if choice.isdigit() and 1 <= int(choice) <= len(APPROVALS): return APPROVALS[int(choice) - 1]
+        result(False, "Opção inválida.")
+
+
+def configure_initial_codex(root: Path, data: dict[str, object]) -> dict[str, object] | None:
+    """Configura executável, login e seleção dinâmica de modelo antes da instalação."""
+    while True:
+        flow_heading("Instalação inicial", "Codex-CLI")
+        note("Primeiro confirme o executável e o login; depois escolha um modelo da conta autenticada.")
+        executable = choose_codex_executable(str(data["executable"]), flow=True)
+        if executable is None:
+            return None
+        executable_ok, executable_detail = validate_codex_executable(executable)
+        result(executable_ok, executable_detail)
+        if not executable_ok:
+            continue
+        candidate = dict(data); candidate["executable"] = executable
+        logged_in, login_detail = validate_codex_login(root, candidate)
+        result(logged_in, login_detail)
+        if not logged_in:
+            if not configure_codex_login(root, candidate, flow=True):
+                return None
+            logged_in, login_detail = validate_codex_login(root, candidate)
+            result(logged_in, login_detail)
+            if not logged_in:
+                continue
+        catalog, catalog_detail = codex_model_catalog(root, candidate)
+        result(catalog is not None, catalog_detail)
+        if catalog is None:
+            continue
+        model = choose_codex_model(catalog, str(candidate["model"]), flow=True)
+        if model is None:
+            return None
+        candidate["model"] = model_identifier(model)
+        effort = choose_reasoning_effort(model, str(candidate["model_reasoning_effort"]), reset_to_model_default=True, flow=True)
+        if effort is None:
+            result(False, "O catálogo não informou esforços compatíveis para o modelo selecionado.")
+            continue
+        candidate["model_reasoning_effort"] = effort
+        model_ok, model_detail = validate_codex_model(root, candidate)
+        result(model_ok, model_detail)
+        if model_ok:
+            return candidate
+
+
+def initial_installation_wizard(root: Path, data: dict[str, object]) -> dict[str, object] | None:
+    """Coleta a identidade e confirma um Codex-CLI funcional antes de instalar o Shikigami."""
+    while True:
+        flow_heading("Instalação inicial", "Identidade do Shikigami")
+        note("Informe o nome exibido pelo Shikigami. Digite X para cancelar.")
+        suggested = " ".join(str(data.get("shikigami_identity") or "").split())
+        label = f"Nome do Shikigami [{suggested}]: " if suggested else "Nome do Shikigami: "
+        raw = prompt(label).strip()
+        if raw.casefold() in {"x", "\x1b"}: return None
+        identity = " ".join(raw.split()) or suggested
+        if not identity:
+            result(False, "Informe um nome não vazio.")
+            continue
+        candidate = dict(data); candidate["shikigami_identity"] = identity
+        flow_heading("Instalação inicial", "Runtime Python do Shikigami")
+        print("  1. Ambiente isolado — cria /venv na raiz da instância.")
+        print("  2. Python global — instala dependências no interpretador selecionado.")
+        mode = prompt("Opção [1]: ").strip().casefold() or "1"
+        if mode in {"x", "\x1b"}:
+            return None
+        if mode not in {"1", "2"}:
+            result(False, "Escolha 1 ou 2.")
+            continue
+        selected_python = prompt(f"Python [{sys.executable}]: ").strip() or sys.executable
+        if not Path(selected_python).expanduser().is_file():
+            result(False, "Informe um executável Python existente.")
+            continue
+        candidate["python_mode"] = "isolated" if mode == "1" else "global"
+        candidate["python_base_executable"] = str(Path(selected_python).expanduser()) if mode == "1" else ""
+        candidate["python_executable"] = str(Path(selected_python).expanduser()) if mode == "2" else ""
+        candidate = configure_initial_codex(root, candidate)
+        if candidate is None:
+            return None
+        project_directory = choose_project_directory(root, str(candidate["project_directory"]))
+        if project_directory is None:
+            return None
+        candidate["project_directory"] = project_directory
+        sandbox = choose_sandbox(root, Path(project_directory), str(candidate["sandbox_mode"]), flow=True)
+        if sandbox is None:
+            return None
+        candidate["sandbox_mode"] = sandbox
+        approval = choose_approval_policy(root, Path(project_directory), sandbox, str(candidate["approval_policy"]), flow=True)
+        if approval is None:
+            return None
+        candidate["approval_policy"] = approval
+        candidate["shikigami_installed"] = True
+        ok, message = save_system(root, candidate)
+        if ok:
+            return candidate
+        result(False, message)
+
+
+def enabled_ids(root: Path, skills: list[Skill] | None = None) -> set[str]:
+    discovered = skills if skills is not None else discover(root)
     path = skill_state_path(root)
-    if not path.exists(): return legacy_enabled_ids(root)
-    try: data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except tomllib.TOMLDecodeError: return set()
-    values = data.get("skills", {}).get("enabled", [])
-    return set(values) if isinstance(values, list) and all(isinstance(value, str) for value in values) else set()
-
-
-def render_enabled_state(identifiers: set[str]) -> str:
-    return "\n".join(["schema_version = 1", "", "[skills]", f"enabled = {json.dumps(sorted(identifiers), ensure_ascii=False)}"]) + "\n"
-
-
-def remove_legacy_skill_block(root: Path) -> None:
-    path = config_path(root)
-    if not path.exists(): return
-    text = path.read_text(encoding="utf-8")
-    if MANAGED_BEGIN not in text or MANAGED_END not in text: return
-    before, remainder = text.split(MANAGED_BEGIN, 1); _, after = remainder.split(MANAGED_END, 1)
-    path.write_text((before.rstrip() + "\n" + after.lstrip()).rstrip() + "\n", encoding="utf-8", newline="\n")
-    tomllib.loads(path.read_text(encoding="utf-8"))
-
-
-def is_managed_link(path: Path) -> bool:
-    if path.is_symlink(): return True
-    if os.name != "nt" or not path.exists(): return False
-    return bool(getattr(os.lstat(path), "st_file_attributes", 0) & 0x400)
-
-
-def create_skill_link(source: Path, destination: Path) -> None:
+    if not path.exists(): return set()
     try:
-        os.symlink(source, destination, target_is_directory=True)
-        return
-    except OSError as first_error:
-        if os.name != "nt": raise first_error
-    command = ["cmd.exe", "/d", "/c", "mklink", "/J", str(destination), str(source)]
-    created = subprocess.run(command, text=True, capture_output=True, check=False)
-    if created.returncode != 0: raise OSError(created.stderr.strip() or created.stdout.strip() or "Não foi possível criar o junction da skill.")
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return set()
+    states = data.get("skills", {})
+    if not isinstance(states, dict): return set()
+    known = {skill.identifier for skill in discovered}
+    return {identifier for identifier, state in states.items() if identifier in known and isinstance(state, dict) and state.get("enabled") is True}
 
 
-def remove_skill_link(path: Path) -> None:
-    if not is_managed_link(path): raise OSError(f"{path} existe e não é um link gerenciado pelo Onmyōji.")
-    if path.is_symlink(): path.unlink()
-    else: os.rmdir(path)
-
-
-def desktop_skills_enabled(root: Path, data: dict[str, object]) -> bool:
-    destination, source = desktop_skills_path(root, data), active_skills_path(root).resolve()
-    try: return (destination.exists() or destination.is_symlink()) and is_managed_link(destination) and destination.resolve() == source
-    except OSError: return False
-
-
-def set_desktop_skills_enabled(root: Path, data: dict[str, object], enabled: bool) -> tuple[bool, str]:
-    try:
-        destination = desktop_skills_path(root, data)
-        source = active_skills_path(root).resolve()
-        agents = destination.parent
-        exists = destination.exists() or destination.is_symlink()
-        if enabled:
-            if exists:
-                if is_managed_link(destination) and destination.resolve() == source: return True, "Skills do Codex Desktop já estão habilitadas."
-                if is_managed_link(destination): return False, "Não foi possível criar a junction skills porque .agents/skills já aponta para outro destino."
-                if destination.is_dir(): return False, "Não foi possível criar a junction skills porque já existe uma pasta skills em .agents."
-                if destination.is_file(): return False, "Não foi possível criar a junction skills porque já existe um arquivo skills em .agents."
-                return False, "Não foi possível criar a junction skills porque .agents/skills já está ocupado por outro item."
-            source.mkdir(parents=True, exist_ok=True)
-            if agents.exists() and (not agents.is_dir() or is_managed_link(agents)):
-                return False, "Não foi possível criar a pasta .agents porque o caminho já existe e não é uma pasta comum."
-            agents.mkdir(parents=True, exist_ok=True)
-            create_skill_link(source, destination)
-            return True, "Skills do Codex Desktop habilitadas para esta instância do Shikigami."
-        if exists:
-            if not is_managed_link(destination) or destination.resolve() != source:
-                return False, "O destino .agents/skills não aponta para as skills desta instância e não será removido."
-            remove_skill_link(destination)
-        if agents.exists() and agents.is_dir() and not is_managed_link(agents):
-            try: agents.rmdir()
-            except OSError: return True, "Link do Codex Desktop removido; a pasta .agents foi preservada porque contém outros itens."
-        return True, "Skills do Codex Desktop desabilitadas."
-    except (OSError, ValueError) as error:
-        return False, f"Não foi possível atualizar as skills do Codex Desktop: {error}"
-
-
-def is_stale_runtime_cache(path: Path) -> bool:
-    """Reconhece somente os caches .pyc que um git mv pode deixar em skills/."""
-    if not path.is_dir() or is_managed_link(path): return False
-    for item in path.rglob("*"):
-        if item.is_dir(): continue
-        if item.is_file() and item.suffix == ".pyc" and item.parent.name == "__pycache__": continue
-        return False
-    return True
+def render_skill_state(identifiers: set[str], skills: list[Skill]) -> str:
+    """Gera o estado local de publicação das skills próprias do Shikigami."""
+    lines = ["schema_version = 1", ""]
+    for skill in sorted(skills, key=lambda item: item.identifier):
+        lines.extend([f"[skills.{json.dumps(skill.identifier, ensure_ascii=False)}]", f"enabled = {'true' if skill.identifier in identifiers else 'false'}", 'mode = "managed_copy"', f"source = {json.dumps(skill.source.name, ensure_ascii=False)}", ""])
+    return "\n".join(lines)
 
 
 def conflicting_skill_ids(skills: list[Skill]) -> set[str]:
-    """IDs devem ser únicos porque catálogo e Shikigami compartilham skills/<id>."""
+    """IDs devem ser únicos no estado local de publicação."""
     identifiers = [skill.identifier for skill in skills]
     return {identifier for identifier in identifiers if identifiers.count(identifier) > 1}
 
 
-def sync_active_skill_links(root: Path, identifiers: set[str], skills: list[Skill]) -> tuple[bool, str]:
-    catalog = {skill.identifier: skill.source.resolve() for skill in skills if skill.catalog_managed}
-    conflicts = conflicting_skill_ids(skills)
-    enabled_conflicts = identifiers & conflicts
-    if enabled_conflicts:
-        return False, f"IDs de skills em conflito entre catálogo e Shikigami: {', '.join(sorted(enabled_conflicts))}. Renomeie uma delas antes de habilitá-la."
-    unknown = identifiers - set(catalog)
-    if unknown: return False, f"Skills não encontradas no catálogo: {', '.join(sorted(unknown))}."
-    active = active_skills_path(root)
-    try:
-        active.mkdir(parents=True, exist_ok=True)
-        for identifier, source in catalog.items():
-            destination = active / identifier
-            should_exist = identifier in identifiers
-            if should_exist:
-                if destination.exists() or destination.is_symlink():
-                    if destination.resolve() != source:
-                        if is_stale_runtime_cache(destination): shutil.rmtree(destination)
-                        else: return False, f"O destino da skill {identifier} já está ocupado por um item não gerenciado."
-                    if not (destination.exists() or destination.is_symlink()): create_skill_link(source, destination)
-                else: create_skill_link(source, destination)
-            elif destination.exists() or destination.is_symlink():
-                if destination.resolve() == source:
-                    remove_skill_link(destination)
-    except OSError as error:
-        return False, f"Não foi possível sincronizar as skills ativas: {error}"
-    return True, "Links das skills ativas sincronizados."
-
-
-def is_skill_enabled(root: Path, skill: Skill) -> bool:
-    destination = active_skills_path(root) / skill.identifier
-    linked = (destination.exists() or destination.is_symlink()) and destination.resolve() == skill.source.resolve()
-    return skill.identifier in enabled_ids(root) and linked if skill.catalog_managed else linked
-
-
-def set_instance_skill_enabled(root: Path, skill: Skill, enabled: bool) -> tuple[bool, str]:
-    if skill.catalog_managed: return False, "Esta operação é exclusiva de skills próprias do Shikigami."
-    if skill.identifier in conflicting_skill_ids(discover(root)):
-        return False, f"O ID da skill {skill.identifier} conflita com uma skill do catálogo. Renomeie uma delas antes de habilitá-la."
-    destination = active_skills_path(root) / skill.identifier
-    source = skill.source.resolve()
-    try:
-        active_skills_path(root).mkdir(parents=True, exist_ok=True)
-        if enabled:
-            if destination.exists() or destination.is_symlink():
-                if destination.resolve() != source: return False, f"O destino da skill {skill.identifier} já está ocupado por um item não gerenciado."
-            else: create_skill_link(source, destination)
-        elif destination.exists() or destination.is_symlink():
-            if destination.resolve() != source: return False, f"O destino da skill {skill.identifier} não aponta para esta skill do Shikigami."
-            remove_skill_link(destination)
-    except OSError as error:
-        return False, f"Não foi possível atualizar o link da skill: {error}"
-    return True, ("Skill habilitada." if enabled else "Skill desabilitada.")
+def is_skill_enabled(root: Path, skill: Skill, skills: list[Skill] | None = None) -> bool:
+    return skill.identifier in enabled_ids(root, skills)
 
 
 def save_enabled(root: Path, identifiers: set[str], skills: list[Skill]) -> tuple[bool, str]:
+    conflicts = identifiers & conflicting_skill_ids(skills)
+    if conflicts: return False, f"IDs de skills do Shikigami em conflito: {', '.join(sorted(conflicts))}. Renomeie uma delas antes de habilitá-la."
+    known = {skill.identifier for skill in skills}
+    unknown = identifiers - known
+    if unknown: return False, f"Skills não encontradas: {', '.join(sorted(unknown))}."
     path = skill_state_path(root)
-    previous = enabled_ids(root)
     old = path.read_text(encoding="utf-8") if path.exists() else None
-    ok, message = sync_active_skill_links(root, identifiers, skills)
-    if not ok: return False, message
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(render_enabled_state(identifiers), encoding="utf-8", newline="\n")
+        path.write_text(render_skill_state(identifiers, skills), encoding="utf-8", newline="\n")
         tomllib.loads(path.read_text(encoding="utf-8"))
-        remove_legacy_skill_block(root)
     except (OSError, tomllib.TOMLDecodeError) as error:
-        sync_active_skill_links(root, previous, skills)
         if old is None: path.unlink(missing_ok=True)
         else: path.write_text(old, encoding="utf-8", newline="\n")
         return False, f"Não foi possível salvar o estado das skills: {error}"
-    return True, "Configuração atualizada e links das skills sincronizados."
+    return True, "Estado das skills atualizado."
 
 
 def ensure_skill_state(root: Path, skills: list[Skill]) -> tuple[bool, str]:
-    if skill_state_path(root).exists(): return sync_active_skill_links(root, enabled_ids(root), skills)
-    return save_enabled(root, legacy_enabled_ids(root), skills)
+    if skill_state_path(root).exists():
+        try:
+            data = tomllib.loads(skill_state_path(root).read_text(encoding="utf-8"))
+            records = data.get("skills", {})
+            if data.get("schema_version") != 1 or not isinstance(records, dict): raise ValueError("estrutura inválida")
+            for identifier, state in records.items():
+                if not isinstance(identifier, str) or not isinstance(state, dict) or type(state.get("enabled")) is not bool or state.get("mode") != "managed_copy" or not isinstance(state.get("source", identifier), str): raise ValueError("registro inválido")
+        except (OSError, tomllib.TOMLDecodeError, ValueError) as error: return False, f"O estado das skills é inválido: {error}"
+        return True, "Estado das skills válido."
+    return save_enabled(root, set(), skills)
 
 
 def invoke(skill: Skill, root: Path) -> tuple[bool, str]:
@@ -412,13 +877,32 @@ def invoke(skill: Skill, root: Path) -> tuple[bool, str]:
     return True, "Configuração concluída."
 
 
+def terminal_width() -> int:
+    """Retorna a largura visual comum às telas interativas do setup."""
+    return max(56, min(shutil.get_terminal_size((78, 24)).columns, 96))
+
+
+def opening_logo() -> None:
+    """Exibe o logo textual centralizado sem redimensionar suas linhas."""
+    width = terminal_width()
+    for line in TEXT_LOGO.splitlines():
+        print(line.center(width))
+
+
 def screen(title: str, subtitle: str = "") -> None:
-    width = max(56, min(shutil.get_terminal_size((78, 24)).columns, 96))
+    width = terminal_width()
     print("\n" + Ui.text("╭" + "─" * (width - 2) + "╮", Ui.violet))
     heading = f" ONMYŌJI  /  {title.upper()}"
     print("│" + Ui.text(heading.ljust(width - 2), Ui.bold, Ui.violet) + "│")
     if subtitle: print("│ " + Ui.text(subtitle[:width - 4].ljust(width - 4), Ui.slate) + " │")
     print(Ui.text("╰" + "─" * (width - 2) + "╯", Ui.violet))
+
+
+def flow_heading(title: str, subtitle: str = "") -> None:
+    """Identifica um roteiro sem simular uma tela navegável."""
+    print("\n  " + Ui.text(f"ONMYŌJI / {title.upper()}", Ui.bold, Ui.violet))
+    if subtitle:
+        print("  " + Ui.text(subtitle, Ui.slate))
 
 
 def item(key: str, label: str, value: str = "") -> None:
@@ -438,15 +922,178 @@ def skill_item(index: int, skill: Skill, state: str, width: int = 50) -> str:
 
 
 def choose(label: str, values: list[str], current: str) -> str | None:
+    """Abre um submenu navegável de opções enumeradas."""
     screen(label, "Escolha uma opção ou pressione X para voltar")
     for index, value in enumerate(values, 1): item(f"{index}.", value)
     item("X.", "Voltar")
+    default_index = values.index(current) + 1 if current in values else 1
     while True:
-        choice = prompt(f"Opção [{current}]: ").strip().casefold()
+        choice = prompt(f"Opção [{default_index}]: ").strip().casefold()
         if choice in {"x", "\x1b"}: return None
-        if not choice: return current
+        if not choice: return values[default_index - 1]
         if choice.isdigit() and 1 <= int(choice) <= len(values): return values[int(choice) - 1]
         result(False, "Opção inválida.")
+
+
+def flow_choice(label: str, values: list[str], current: str = "", cancel_label: str = "Cancelar") -> str | None:
+    """Coleta uma opção de um roteiro sem abrir um novo menu visual.
+
+    A opção padrão sempre é apresentada pelo número que a seleciona, nunca
+    pelo texto descritivo. ``X`` interrompe somente a etapa atual.
+    """
+    if not values:
+        result(False, "Não há opções disponíveis.")
+        return None
+    print(f"\n  {label}")
+    for index, value in enumerate(values, 1): item(f"{index}.", value)
+    item("X.", cancel_label)
+    default_index = values.index(current) + 1 if current in values else 1
+    while True:
+        choice = prompt(f"Opção [{default_index}]: ").strip().casefold()
+        if choice in {"x", "\x1b"}: return None
+        if not choice: return values[default_index - 1]
+        if choice.isdigit() and 1 <= int(choice) <= len(values): return values[int(choice) - 1]
+        result(False, "Opção inválida.")
+
+
+def choose_eccovox_tts_capability(root: Path, profile: str, key: str, title: str, current: str = "") -> str | None:
+    """Consulta o catálogo do EccoVox e evita gravar identificadores livres."""
+    try:
+        tts = EccoVoxService(root).capabilities(profile)["capabilities"]["tts"]
+        if tts.get("status") not in {"ready", "degraded"}:
+            raise EccoVoxError("runtime_unavailable", "A síntese de voz não está disponível no EccoVox.")
+        values = tts[key]
+        if not isinstance(values, list):
+            raise ValueError
+        options = [(str(value["id"]).strip(), str(value.get("label") or value["id"]).strip()) for value in values if isinstance(value, dict) and isinstance(value.get("id"), str) and value["id"].strip()]
+    except (EccoVoxError, KeyError, TypeError, ValueError) as error:
+        result(False, f"Não foi possível consultar as capacidades do EccoVox: {error}")
+        return None
+    default = "Herdar o perfil MCP EccoVox"
+    labels = [default, *(f"{label} ({identifier})" for identifier, label in options)]
+    selected = next((f"{label} ({identifier})" for identifier, label in options if identifier == current), default)
+    choice = flow_choice(title, labels, selected)
+    if choice is None:
+        return None
+    return "" if choice == default else next(identifier for identifier, label in options if choice == f"{label} ({identifier})")
+
+
+def configure_mcp_password_reference(root: Path, integration: str, default_entry: str, current_profile: str = "", current_entry: str = "") -> tuple[str, str] | None:
+    """Seleciona um perfil MCP e garante uma senha na entrada escolhida."""
+    profiles = McpConfiguration(root).vault_profile_names()
+    if not profiles:
+        result(False, "Nenhum perfil de vault MCP disponível. Configure-o primeiro no menu MCP.")
+        return None
+    selected = current_profile if current_profile in profiles else profiles[0]
+    profile = flow_choice(f"{integration} · Perfil de vault MCP", profiles, selected)
+    if profile is None:
+        return None
+    resolver = KeePassCredentialResolver(root)
+    entry = current_entry or default_entry
+    while True:
+        informed = prompt(f"Entrada KeePass [{entry}]: ").strip()
+        if informed.casefold() in {"x", "\x1b"}:
+            return None
+        entry = informed or entry
+        try:
+            exists = resolver.entry_exists(profile, entry)
+            has_password = exists and resolver.password_exists(profile, entry)
+        except CredentialError as error:
+            result(False, str(error))
+            return None
+        if has_password:
+            action = flow_choice(f"Credencial · {integration}", ["Usar a chave já salva", "Informar nova chave e substituir", "Reinformar entrada KeePass"], "Usar a chave já salva")
+            if action is None: return None
+            if action.startswith("Usar"): return profile, entry
+            if action.startswith("Reinformar"): continue
+        else:
+            verb = "salvar nesta entrada" if exists else "criar esta entrada"
+            action = flow_choice(f"Credencial · {integration}", [f"Informar a chave e {verb}", "Reinformar entrada KeePass"], f"Informar a chave e {verb}")
+            if action is None: return None
+            if action.startswith("Reinformar"): continue
+        secret = getpass.getpass(Ui.text(f"› Chave de autenticação {integration} (não será exibida): ", Ui.violet, Ui.bold)).strip()
+        if not secret:
+            result(False, "A chave de autenticação é obrigatória.")
+            continue
+        try:
+            created = resolver.save_password(profile, entry, secret)
+        except CredentialError as error:
+            result(False, str(error))
+            return None
+        result(True, "Entrada criada no cofre MCP." if created else "Chave atualizada no cofre MCP.")
+        return profile, entry
+
+
+def configure_totp_password(root: Path, profile: str, label: str, default_entry: str, current_entry: str = "") -> str | None:
+    """Garante a senha TOTP indicada no mesmo vault usado pelo gateway."""
+    resolver = KeePassCredentialResolver(root)
+    entry = current_entry or default_entry
+    while True:
+        informed = prompt(f"Entrada KeePass da senha TOTP {label} [{entry}]: ").strip()
+        if informed.casefold() in {"x", "\x1b"}:
+            return None
+        entry = informed or entry
+        try:
+            exists = resolver.entry_exists(profile, entry)
+            has_password = exists and resolver.password_exists(profile, entry)
+        except CredentialError as error:
+            result(False, str(error))
+            return None
+        if has_password:
+            action = flow_choice(f"Senha TOTP {label}", ["Usar a senha já salva", "Informar nova senha e substituir", "Reinformar entrada KeePass"], "Usar a senha já salva")
+            if action is None:
+                return None
+            if action.startswith("Usar"):
+                return entry
+            if action.startswith("Reinformar"):
+                continue
+        else:
+            verb = "salvar nesta entrada" if exists else "criar esta entrada"
+            action = flow_choice(f"Senha TOTP {label}", [f"Informar a senha e {verb}", "Reinformar entrada KeePass"], f"Informar a senha e {verb}")
+            if action is None:
+                return None
+            if action.startswith("Reinformar"):
+                continue
+        secret = getpass.getpass(Ui.text(f"› Senha TOTP {label} (não será exibida): ", Ui.violet, Ui.bold)).strip()
+        if not secret:
+            result(False, "A senha TOTP é obrigatória.")
+            continue
+        try:
+            created = resolver.save_password(profile, entry, secret)
+        except CredentialError as error:
+            result(False, str(error))
+            return None
+        result(True, "Entrada criada no cofre MCP." if created else "Senha atualizada no cofre MCP.")
+        return entry
+
+
+def telegram_token_entry(root: Path) -> str:
+    """Retorna a entrada padrão do token vinculada à identidade da instância."""
+    return vault_entry_path(root, "Serviço", "Telegram", "", "BotToken")
+
+
+def telegram_totp_entry(root: Path, kind: str) -> str:
+    """Retorna a entrada padrão da senha TOTP real ou falsa do Telegram."""
+    return vault_entry_path(root, "Serviço", "Telegram", "TOTP", kind.title())
+
+
+def configured_telegram_token_entry(root: Path, current_entry: str = "") -> str:
+    """Preserva escolha explícita, migrando somente padrões legados conhecidos."""
+    legacy_entries = {
+        "APIs/Telegram:Shikigami",
+        vault_entry_path(root, "Serviço", "Telegram", "default", "Bot"),
+    }
+    return current_entry if current_entry and current_entry not in legacy_entries else telegram_token_entry(root)
+
+
+def configured_telegram_totp_entry(root: Path, kind: str, current_entry: str = "") -> str:
+    """Preserva TOTP personalizado e migra referências geradas pelo padrão legado."""
+    normalized_kind = kind.title()
+    legacy_entries = {
+        f"APIs/TelegramTOTP:{instance_identity(root)}:{normalized_kind}",
+        vault_entry_path(root, "Serviço", "Telegram", "default", f"TOTP:{normalized_kind}"),
+    }
+    return current_entry if current_entry and current_entry not in legacy_entries else telegram_totp_entry(root, kind)
 
 
 def update_system(root: Path, data: dict[str, object], key: str, value: object) -> dict[str, object]:
@@ -460,9 +1107,19 @@ def manage_writable_directories(root: Path, data: dict[str, object]) -> dict[str
     while True:
         directories = list(data["additional_writable_directories"])
         screen("Diretórios adicionais de escrita", "Eles são adicionados ao sandbox além da pasta do projeto")
+        sandbox = str(data["sandbox_mode"])
+        if sandbox == "read-only":
+            note("O sandbox atual é read-only: a lista é preservada, mas não permite escrita até escolher workspace-write.")
+        elif sandbox == "danger-full-access":
+            note("O sandbox atual é danger-full-access: a lista é preservada, mas não restringe nem amplia o acesso atual.")
+        else:
+            note("Cada entrada amplia a escrita do sandbox workspace-write; conceda somente as raízes estritamente necessárias.")
         if directories:
             print("  Permitidos:")
-            for index, directory in enumerate(directories, 1): print(f"    {index}. {directory}")
+            for index, directory in enumerate(directories, 1):
+                resolved = resolve_writable_directory(data, directory)
+                suffix = f"  →  {resolved}" if resolved and not Path(directory).expanduser().is_absolute() else ""
+                print(f"    {index}. {directory}{suffix}")
         else:
             print("  Nenhum diretório adicional configurado.")
         print()
@@ -477,7 +1134,23 @@ def manage_writable_directories(root: Path, data: dict[str, object]) -> dict[str
             if value.casefold() in {"x", "\x1b"}: continue
             if not value: result(False, "Nenhum caminho informado."); continue
             candidate = str(Path(value).expanduser())
-            if candidate in directories: result(False, "Esse diretório já está configurado."); continue
+            resolved = resolve_writable_directory(data, candidate)
+            if not resolved:
+                result(False, "Defina a pasta do projeto antes de usar um diretório adicional relativo."); continue
+            if not resolved.is_dir():
+                result(False, f"Diretório não encontrado: {candidate}."); continue
+            allowed, relation = writable_directory_relation(root, data, resolved, directories)
+            if not allowed:
+                result(False, relation); continue
+            note(f"O Codex poderá escrever em {candidate}{f' (equivale a {resolved})' if not Path(candidate).is_absolute() else ''}.")
+            confirmation = "PERMITIR AMPLA" if is_broad_writable_directory(resolved) else "PERMITIR"
+            if relation:
+                note(relation)
+                confirmation = "AMPLIAR"
+            elif confirmation == "PERMITIR AMPLA":
+                note("Esta é uma raiz abrangente: ela inclui o perfil do usuário ou uma unidade inteira.")
+            if prompt(f"Digite {confirmation} para confirmar: ").strip() != confirmation:
+                result(False, "Operação cancelada."); continue
             data = update_system(root, data, "additional_writable_directories", [*directories, candidate])
         elif choice == "2":
             if not directories: result(False, "Não há diretórios para remover."); continue
@@ -494,97 +1167,512 @@ def manage_writable_directories(root: Path, data: dict[str, object]) -> dict[str
         else: result(False, "Opção inválida.")
 
 
-def launch_codex(root: Path, data: dict[str, object], login: bool = False, device_auth: bool = False) -> None:
-    """Abre o Codex CLI nativo; config.toml e --add-dir são seu contrato público."""
-    ready, message = validate_system(data, require_ready=not login)
-    if not ready: result(False, f"Não iniciado: {message}"); return
-    if not login:
-        synced, sync_message = sync_active_skill_links(root, enabled_ids(root), discover(root))
-        if not synced: result(False, f"Não iniciado: {sync_message}"); return
-    command = [str(data["executable"]), "login", *( ["--device-auth"] if device_auth else [] )] if login else [str(data["executable"])]
-    if not login:
-        for directory in data["additional_writable_directories"]: command.extend(["--add-dir", str(directory)])
+def configure_codex_login(root: Path, data: dict[str, object], device_auth: bool | None = None, flow: bool = False) -> bool:
+    """Abre o fluxo local de login e confirma seu resultado antes de prosseguir."""
+    if device_auth is None:
+        method = (flow_choice if flow else choose)("Login no Codex-CLI", ["Autenticação por dispositivo (recomendado para SSH/headless)", "Navegador local (callback em localhost)"], "Autenticação por dispositivo (recomendado para SSH/headless)")
+        if method is None:
+            return False
+        device_auth = method.startswith("Autenticação por dispositivo")
+    executable_ok, executable_detail = validate_codex_executable(str(data["executable"]))
+    if not executable_ok:
+        result(False, executable_detail)
+        return False
+    command = [str(data["executable"]), "login", *(["--device-auth"] if device_auth else [])]
     environment = dict(os.environ); environment["CODEX_HOME"] = str(root)
-    try: subprocess.run(command, cwd=str(data["project_directory"]) if not login else root, env=environment, check=False)
-    except OSError as error: result(False, f"Não foi possível iniciar o Codex-CLI: {error}")
+    try:
+        completed = subprocess.run(command, cwd=str(codex_setup_directory(root)), env=environment, check=False)
+    except OSError as error:
+        result(False, f"Não foi possível iniciar o login do Codex-CLI: {error}")
+        return False
+    if completed.returncode != 0:
+        result(False, f"O login do Codex-CLI terminou com código {completed.returncode}.")
+        return False
+    logged_in, detail = validate_codex_login(root, data)
+    result(logged_in, detail)
+    return logged_in
+
+
+def launch_codex(root: Path, data: dict[str, object], login: bool = False, device_auth: bool = False) -> None:
+    """Abre o Codex CLI nativo com o perfil de skills da instância."""
+    ready, message = validate_system(data, require_ready=not login, root=root)
+    if not ready: result(False, f"Não iniciado: {message}"); return
+    if login:
+        configure_codex_login(root, data, device_auth)
+        return
+    try:
+        launch = CodexLaunch.from_data(root, data)
+        command, workspace, environment = launch.direct_launch()
+        subprocess.run(command, cwd=str(workspace), env=environment, check=False)
+    except CodexExecutionError as error:
+        result(False, str(error))
+    except OSError as error:
+        result(False, f"Não foi possível iniciar o Codex-CLI: {error}")
 
 
 def launch_onmyoji_interactive(root: Path, data: dict[str, object]) -> None:
     """Modo opcional via App Server, para testar a composição Onmyōji de developer instructions."""
-    ready, message = validate_system(data, require_ready=True)
+    ready, message = validate_system(data, require_ready=True, root=root)
     if not ready: result(False, f"Não iniciado: {message}"); return
-    synced, sync_message = sync_active_skill_links(root, enabled_ids(root), discover(root))
-    if not synced: result(False, f"Não iniciado: {sync_message}"); return
-    environment = dict(os.environ); environment["CODEX_HOME"] = str(root); environment["PYTHONPATH"] = str(root / "onmyoji-daemon" / "src") + os.pathsep + environment.get("PYTHONPATH", "")
-    command = [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "interactive"]
-    try: subprocess.run(command, cwd=str(data["project_directory"]), env=environment, check=False)
-    except OSError as error: result(False, f"Não foi possível iniciar o console Onmyōji: {error}")
+    try:
+        launch = CodexLaunch.from_data(root, data)
+        command, workspace, environment = launch.interactive_launcher()
+        subprocess.run(command, cwd=str(workspace), env=environment, check=False)
+    except CodexExecutionError as error:
+        result(False, str(error))
+    except OSError as error:
+        result(False, f"Não foi possível iniciar o console Onmyōji: {error}")
+
+
+def writable_directories_diagnostics(root: Path, data: dict[str, object]) -> list[dict[str, str]]:
+    """Valida individualmente as raízes extras e informa quando o sandbox não as aplica."""
+    directories = data["additional_writable_directories"]
+    if not isinstance(directories, list) or not all(isinstance(directory, str) for directory in directories):
+        return [{"state": "error", "label": "Diretórios adicionais de escrita", "detail": "Lista de diretórios inválida."}]
+    if not directories:
+        return [{"state": "ok", "label": "Diretórios adicionais de escrita", "detail": "Nenhum diretório adicional configurado."}]
+    sandbox = str(data["sandbox_mode"])
+    diagnostics: list[dict[str, str]] = []
+    for index, directory in enumerate(directories, 1):
+        resolved = resolve_writable_directory(data, directory)
+        label = f"Diretório adicional de escrita {index}"
+        if not resolved:
+            diagnostics.append({"state": "error", "label": label, "detail": f"A pasta de trabalho é necessária para resolver o caminho relativo: {directory}."})
+            continue
+        if not resolved.is_dir():
+            diagnostics.append({"state": "error", "label": label, "detail": f"Diretório não encontrado: {directory}."})
+            continue
+        allowed, relation = writable_directory_relation(root, data, resolved, [value for position, value in enumerate(directories) if position != index - 1])
+        if not allowed:
+            diagnostics.append({"state": "error", "label": label, "detail": relation})
+            continue
+        detail = f"{directory} → {resolved}" if not Path(directory).expanduser().is_absolute() else str(resolved)
+        if relation:
+            detail += f". {relation}"
+        if is_broad_writable_directory(resolved):
+            detail += " Escopo abrangente confirmado na configuração."
+        if sandbox not in SANDBOXES:
+            diagnostics.append({"state": "error", "label": label, "detail": detail + f" Sandbox inválido: {sandbox or '(não configurado)'}."})
+        elif sandbox == "read-only":
+            diagnostics.append({"state": "pending", "label": label, "detail": detail + " O sandbox read-only não aplica escrita."})
+        elif sandbox == "danger-full-access":
+            diagnostics.append({"state": "pending", "label": label, "detail": detail + " O sandbox danger-full-access torna esta raiz redundante."})
+        else:
+            diagnostics.append({"state": "ok", "label": label, "detail": detail})
+    return diagnostics
+
+
+def shikigami_diagnostics(root: Path, progress=None) -> list[dict[str, str]]:
+    """Retorna apenas os diagnósticos básicos explicitamente definidos para a instância."""
+    def checking(label: str) -> None:
+        if progress: progress(label)
+    data = load_system(root); diagnostics: list[dict[str, str]] = []
+    checking("Verificando o ambiente Python do Shikigami...")
+    try:
+        configuration = python_runtime.configuration(root)
+        runtime = python_runtime.python(root)
+        base = python_runtime.base_python(root)
+        executable = runtime if runtime.is_file() else base
+        checked = subprocess.run([str(executable), "-I", "-B", "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"], text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=10, check=False)
+        version = (checked.stdout or "").strip()
+        valid = checked.returncode == 0 and tuple(int(value) for value in version.split(".")[:2]) >= (3, 11)
+        if not valid:
+            raise ValueError("O interpretador selecionado não é um Python 3.11 ou superior funcional.")
+        if configuration["mode"] == "isolated" and not runtime.is_file():
+            diagnostics.append({"state": "pending", "label": "Ambiente Python", "detail": f"Python-base {version} pronto; /venv será criado quando um componente for instalado."})
+        else:
+            diagnostics.append({"state": "ok", "label": "Ambiente Python", "detail": f"{configuration['mode']} · Python {version} · {runtime}"})
+    except (OSError, ValueError, subprocess.TimeoutExpired, python_runtime.RuntimeError) as error:
+        diagnostics.append({"state": "error", "label": "Ambiente Python", "detail": str(error)})
+    identity = str(data["shikigami_identity"])
+    if not identity.strip():
+        diagnostics.append({"state": "pending", "label": "Nome do Shikigami", "detail": "A instalação inicial ainda não definiu um nome."})
+    elif identity != " ".join(identity.split()):
+        diagnostics.append({"state": "error", "label": "Nome do Shikigami", "detail": "O nome contém espaços adicionais e precisa ser normalizado."})
+    else:
+        diagnostics.append({"state": "ok", "label": "Nome do Shikigami", "detail": identity})
+    checking("Verificando o executável do Codex-CLI...")
+    executable_ok, executable_detail = validate_codex_executable(str(data["executable"]))
+    diagnostics.append({"state": "ok" if executable_ok else "error", "label": "Executável do Codex-CLI", "detail": executable_detail})
+    if not executable_ok:
+        for label in ("Login do Codex-CLI", "Catálogo de modelos", "Modelo do Codex-CLI", "Esforço de raciocínio", "Validação do modelo"):
+            diagnostics.append({"state": "pending", "label": label, "detail": "Não verificado porque o executável do Codex-CLI não está disponível."})
+    else:
+        checking("Verificando o login do Codex-CLI...")
+        logged_in, login_detail = validate_codex_login(root, data)
+        diagnostics.append({"state": "ok" if logged_in else "error", "label": "Login do Codex-CLI", "detail": login_detail})
+        if not logged_in:
+            for label in ("Catálogo de modelos", "Modelo do Codex-CLI", "Esforço de raciocínio", "Validação do modelo"):
+                diagnostics.append({"state": "pending", "label": label, "detail": "Não verificado porque não há login ativo no Codex-CLI."})
+        else:
+            checking("Consultando o catálogo de modelos da conta...")
+            catalog, catalog_detail = fetch_codex_model_catalog(root, str(data["executable"]))
+            diagnostics.append({"state": "ok" if catalog else "error", "label": "Catálogo de modelos", "detail": catalog_detail})
+            model = catalog_model(catalog, str(data["model"])) if catalog else None
+            if model is None:
+                detail = "Não verificado porque o catálogo não está disponível." if catalog is None else f"O modelo configurado ({data['model']}) não está disponível para a conta atual."
+                diagnostics.append({"state": "pending" if catalog is None else "error", "label": "Modelo do Codex-CLI", "detail": detail})
+                diagnostics.append({"state": "pending", "label": "Esforço de raciocínio", "detail": "Não verificado porque o modelo configurado não está disponível."})
+                diagnostics.append({"state": "pending", "label": "Validação do modelo", "detail": "Não executada porque a seleção de modelo não foi confirmada."})
+            else:
+                diagnostics.append({"state": "ok", "label": "Modelo do Codex-CLI", "detail": model_identifier(model)})
+                effort = str(data["model_reasoning_effort"])
+                effort_ok = effort in reasoning_efforts_for_model(model)
+                diagnostics.append({"state": "ok" if effort_ok else "error", "label": "Esforço de raciocínio", "detail": effort if effort_ok else f"{effort} não é compatível com {model_identifier(model)}."})
+                if effort_ok:
+                    checking(f"Validando o modelo {model_identifier(model)}; esta etapa pode levar até 120 segundos...")
+                    model_ok, model_detail = validate_codex_model(root, data)
+                    diagnostics.append({"state": "ok" if model_ok else "error", "label": "Validação do modelo", "detail": model_detail})
+                else:
+                    diagnostics.append({"state": "pending", "label": "Validação do modelo", "detail": "Não executada porque o esforço de raciocínio é incompatível."})
+    project_directory = str(data["project_directory"]).strip()
+    if not project_directory:
+        diagnostics.append({"state": "pending", "label": "Pasta de trabalho", "detail": "Nenhuma pasta de trabalho foi configurada."})
+    else:
+        project = Path(project_directory).expanduser()
+        if project.is_dir():
+            diagnostics.append({"state": "ok", "label": "Pasta de trabalho", "detail": str(project.resolve())})
+        elif project.exists():
+            diagnostics.append({"state": "error", "label": "Pasta de trabalho", "detail": f"O caminho existe, mas não é uma pasta: {project}"})
+        else:
+            diagnostics.append({"state": "error", "label": "Pasta de trabalho", "detail": f"Pasta não encontrada: {project}"})
+    sandbox = str(data["sandbox_mode"])
+    diagnostics.append({
+        "state": "ok" if sandbox in SANDBOXES else "error",
+        "label": "Sandbox",
+        "detail": sandbox if sandbox in SANDBOXES else f"Modo inválido: {sandbox or '(não configurado)'}",
+    })
+    approval = str(data["approval_policy"])
+    diagnostics.append({
+        "state": "ok" if approval in APPROVALS else "error",
+        "label": "Política de aprovação",
+        "detail": approval if approval in APPROVALS else f"Política inválida: {approval or '(não configurada)'}",
+    })
+    diagnostics.extend(writable_directories_diagnostics(root, data))
+    return diagnostics
+
+
+def diagnostics_menu(root: Path) -> None:
+    """Exibe os resultados detalhados do diagnóstico básico da instância."""
+    flow_heading("Diagnóstico", "Estado da instalação e do Codex-CLI")
+    diagnostics = shikigami_diagnostics(root, lambda message: print("  → " + message))
+    print()
+    for diagnostic in diagnostics:
+        state = diagnostic["state"]
+        symbol, color = {"ok": ("✓", Ui.green), "pending": ("○", Ui.amber), "error": ("✗", Ui.red)}[state]
+        print("  " + Ui.text(symbol, Ui.bold, color) + "  " + diagnostic["label"] + " — " + Ui.text(diagnostic["detail"], color))
+    prompt("Pressione Enter para voltar: ")
+
+
+def _runtime_versions(root: Path) -> dict[str, str | None]:
+    """Consulta versões no único interpretador selecionado, sem usar o Python do setup."""
+    executable = python_runtime.python(root)
+    names = [component[0] for component in PYTHON_COMPONENTS]
+    program = (
+        "import importlib.metadata as metadata, json; names=" + repr(names) + "; result={}\n"
+        "for name in names:\n"
+        " try: result[name]=metadata.version(name)\n"
+        " except metadata.PackageNotFoundError: result[name]=None\n"
+        "print(json.dumps(result))"
+    )
+    completed = subprocess.run([str(executable), "-I", "-B", "-c", program], text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=15, check=False)
+    if completed.returncode:
+        raise RuntimeError("Não foi possível consultar os componentes do runtime Python selecionado.")
+    values = json.loads(completed.stdout)
+    if not isinstance(values, dict):
+        raise RuntimeError("O runtime Python retornou uma lista de componentes inválida.")
+    return {name: value if isinstance(value, str) else None for name, value in values.items()}
+
+
+def _show_python_components(root: Path) -> None:
+    """Exibe pacotes Python e seus consumidores lógicos sem instalar nada."""
+    flow_heading("Python e bibliotecas", "Componentes instalados e seus consumidores")
+    try:
+        configuration = python_runtime.configuration(root)
+        executable = python_runtime.python(root)
+        print(f"  Runtime: {configuration['mode']} · {executable}")
+        versions = _runtime_versions(root)
+    except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired, python_runtime.RuntimeError, RuntimeError) as error:
+        result(False, str(error))
+        return
+    for package, group, consumers in PYTHON_COMPONENTS:
+        if package == "pywin32" and os.name != "nt":
+            continue
+        version = versions.get(package)
+        item("·", package, f"{version or 'não instalado'} · {group} · {consumers}")
+
+
+def _configure_python_runtime(root: Path, data: dict[str, object]) -> dict[str, object]:
+    """Atualiza a seleção central do runtime, sem instalar componentes."""
+    flow_heading("Python e bibliotecas", "Runtime único do Shikigami")
+    print("  1. Ambiente isolado — cria e usa /venv na raiz da instância.")
+    print("  2. Python global — instala e usa componentes no interpretador escolhido.")
+    default = "1" if data["python_mode"] == "isolated" else "2"
+    mode = prompt(f"Modo [{default}]: ").strip().casefold() or default
+    if mode in {"x", "\x1b"}:
+        return data
+    if mode not in {"1", "2"}:
+        result(False, "Escolha 1 ou 2.")
+        return data
+    default_python = str(data["python_base_executable"] if mode == "1" else data["python_executable"]) or sys.executable
+    executable = prompt(f"Python [{default_python}]: ").strip() or default_python
+    candidate_path = Path(executable).expanduser()
+    if not candidate_path.is_file():
+        result(False, "Informe um executável Python existente.")
+        return data
+    try:
+        checked = subprocess.run([str(candidate_path), "-I", "-B", "-c", "import sys; assert sys.version_info >= (3, 11)"], text=True, capture_output=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        checked = None
+    if checked is None or checked.returncode:
+        result(False, "O executável deve ser um Python funcional na versão 3.11 ou superior.")
+        return data
+    candidate = dict(data)
+    candidate["python_mode"] = "isolated" if mode == "1" else "global"
+    candidate["python_base_executable"] = str(candidate_path) if mode == "1" else ""
+    candidate["python_executable"] = str(candidate_path) if mode == "2" else ""
+    ok, message = save_system(root, candidate)
+    result(ok, message)
+    return candidate if ok else data
+
+
+def python_menu(root: Path) -> None:
+    """Centraliza o runtime único e a manutenção explícita de bibliotecas."""
+    data = load_system(root)
+    while True:
+        configuration = python_runtime.configuration(root)
+        executable = python_runtime.python(root)
+        location = "/venv" if configuration["mode"] == "isolated" else str(executable)
+        screen("Python e bibliotecas", "Runtime compartilhado pelo daemon, MCPs e serviços")
+        item("1.", "Selecionar runtime Python", f"{configuration['mode']} · {location}")
+        item("2.", "Listar componentes instalados", "Versões, grupos e consumidores")
+        print()
+        item("3.", "Instalar ou reparar componentes do daemon", "Daemon, Telegram, Mini Apps, AWS e SSH")
+        item("4.", "Instalar ou reparar componentes MCP", "Host MCP, vault/OAuth, E-mail e schemas")
+        item("5.", "Instalar ou reparar PDF e OCR básico", "PDF, OCRmyPDF e bibliotecas documentais")
+        item("6.", "Preparar OCR avançado", "CPU ou GPU NVIDIA; também prepara modelos")
+        item("7.", "Instalar ou reparar todos os componentes básicos", "Daemon, MCP, PDF e OCR básico")
+        item("8.", "Diagnóstico de runtime", "Interpretador e componentes Python instalados")
+        item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
+        if choice in {"x", "\x1b"}:
+            return
+        if choice == "1":
+            data = _configure_python_runtime(root, data)
+        elif choice in {"2", "8"}:
+            _show_python_components(root)
+        elif choice == "3":
+            try:
+                ok, message = daemon_management.ensure_runtime(root, show_progress=True)
+                result(ok, message)
+            except (OSError, ValueError, python_runtime.RuntimeError) as error:
+                result(False, str(error))
+        elif choice == "4":
+            try:
+                note(ensure_mcp_runtime(root, progress=note))
+                result(True, "Componentes MCP preparados no runtime único.")
+            except McpRuntimeError as error:
+                result(False, str(error))
+        elif choice in {"5", "6"}:
+            if choice == "6":
+                variant = flow_choice("OCR avançado", ["CPU", "GPU NVIDIA"], "CPU")
+                if variant is None:
+                    continue
+                tier, gpu = "advanced", variant == "GPU NVIDIA"
+            else:
+                tier, gpu = "base", False
+            try:
+                install_document_runtime(root, tier=tier, gpu=gpu, progress=note)
+                result(True, "Componentes documentais preparados no runtime único.")
+            except (DocumentError, McpRuntimeError, OSError, ValueError) as error:
+                result(False, str(error))
+        elif choice == "7":
+            try:
+                ok, message = daemon_management.ensure_runtime(root, show_progress=True)
+                if not ok:
+                    result(False, message)
+                    continue
+                note(ensure_mcp_runtime(root, progress=note))
+                install_document_runtime(root, tier="base", progress=note)
+                result(True, "Todos os componentes básicos foram preparados no runtime único.")
+            except (DocumentError, McpRuntimeError, OSError, ValueError, python_runtime.RuntimeError) as error:
+                result(False, str(error))
+        else:
+            result(False, "Opção inválida.")
+
+
+def agent_profiles_menu(root: Path) -> None:
+    """Administra somente fontes locais válidas e habilitações opcionais."""
+    materializer = ShikigamiAgentMaterializer(root)
+    while True:
+        try:
+            profiles = materializer.discover()
+            configured = materializer.configuration()
+            launch = CodexLaunch.from_data(root, load_system(root))
+            capability = load_profile_capability(root, launch.executable, launch.workspace)
+        except CodexExecutionError:
+            capability = {"supported": False, "reason": "codex_configuration_missing"}
+        except (OSError, ShikigamiAgentMaterializationError) as error:
+            result(False, str(error)); return
+        screen("Perfis de agentes do Shikigami", "Fontes TOML opcionais; nenhuma especialização é criada pelo setup")
+        note("Fonte: shikigami-agents/<id>.toml · cópias: workspace/.codex/agents/<id>.toml.")
+        reason = str(capability.get("reason") or "g4_unverified")
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,95}", reason): reason = "g4_unverified"
+        note("Distribuição disponível para os três clientes." if capability.get("supported") is True else "Distribuição indisponível: " + reason + ". O gate G4 precisa ser comprovado antes de habilitar perfis.")
+        identifiers = sorted(profiles)
+        if not identifiers:
+            note("Nenhum perfil específico encontrado; a delegação nativa continua disponível conforme o runtime.")
+        for index, identifier in enumerate(identifiers, 1):
+            enabled = configured.get(identifier, {}).get("enabled") is True
+            item(f"{index}.", identifier, ("Habilitado" if enabled else "Desabilitado") + " · " + profiles[identifier].description)
+        item("X.", "Voltar")
+        selected = prompt("Opção: ").strip().casefold()
+        if selected in {"x", "\x1b"}: return
+        if not selected.isdigit() or not 1 <= int(selected) <= len(identifiers):
+            result(False, "Opção inválida."); continue
+        identifier = identifiers[int(selected) - 1]
+        enable = configured.get(identifier, {}).get("enabled") is not True
+        if enable and capability.get("supported") is not True:
+            result(False, "O perfil não foi habilitado: descoberta e snapshot de runtime ainda não foram comprovados."); continue
+        answer = prompt(f"{'Habilitar' if enable else 'Desabilitar'} o perfil {identifier}? [s/N]: ").strip().casefold()
+        if answer in {"x", "\x1b", "", "n", "não", "nao"}: continue
+        if answer not in {"s", "sim"}:
+            result(False, "Responda S ou N; X cancela."); continue
+        try:
+            materializer.set_enabled(identifier, enable)
+            result(True, "Habilitação local salva. A próxima abertura gerenciada sincronizará as cópias em ponto seguro.")
+        except (OSError, ShikigamiAgentMaterializationError) as error:
+            result(False, str(error))
+
+
+def configure_gateway_execution(root: Path) -> bool:
+    """Configura a intenção local e informa o fallback efetivo das capacidades."""
+    flow_heading("Entradas durante execução", "Fila, direcionamento e acompanhamento do coordenador")
+    try:
+        settings = tomllib.loads(telegram_configuration_path(root).read_text(encoding="utf-8"))
+        if type(settings.get("schema_version")) is not int or settings["schema_version"] not in {1, 2}:
+            raise ValueError("Versão de configuração não suportada.")
+        agent, limits = settings.get("agent", {}), settings.get("limits", {})
+        policy = str(agent.get("busy_input_policy") or "queue")
+        workers = min(16, max(1, int(limits.get("preparation_workers", 4))))
+        grace = min(60, max(1, int(agent.get("interrupt_grace_seconds", 15))))
+        post_turn = agent.get("post_turn_results") is True
+    except FileNotFoundError:
+        policy, workers, grace, post_turn = "queue", 4, 15, False
+    except (OSError, ValueError, TypeError, AttributeError):
+        result(False, "A configuração do Gateway está inválida; corrija-a antes de salvar."); return False
+    capabilities = CapabilitySet.from_instance(root)
+    effective = "steer" if policy == "steer" and capabilities.supports("steering") else "queue"
+    note(f"Política configurada: {policy if policy in {'queue', 'steer'} else 'queue'} · efetiva: {effective}.")
+    if not capabilities.supports("steering"):
+        note("Direcionamento indisponível: " + capabilities.reason("steering") + "; mensagens serão enfileiradas.")
+    if not capabilities.supports("post_turn"):
+        note("Entrega pós-turno indisponível: " + capabilities.reason("post_turn") + "; o principal acompanha filhos dentro do turno.")
+    choices = ["Enfileirar mensagens", "Direcionar o turno ativo quando suportado"]
+    selected = flow_choice("Mensagens recebidas durante trabalho", choices, choices[1] if policy == "steer" else choices[0])
+    if selected is None: return False
+    policy = "steer" if selected == choices[1] else "queue"
+    for field, label, current, minimum, maximum in (("preparation_workers", "Preparações de anexos e voz em paralelo", workers, 1, 16), ("interrupt_grace_seconds", "Graça da interrupção, em segundos", grace, 1, 60)):
+        raw = prompt(f"{label} [{current}] ({minimum} a {maximum}): ").strip()
+        if raw.casefold() in {"x", "\x1b"}: return False
+        try: value = int(raw) if raw else current
+        except ValueError: result(False, "Informe um número inteiro válido."); return False
+        if not minimum <= value <= maximum:
+            result(False, f"Informe um número entre {minimum} e {maximum}."); return False
+        if field == "preparation_workers": workers = value
+        else: grace = value
+    answer = prompt(f"Solicitar entrega pós-turno quando houver capacidade comprovada? [{'S/n' if post_turn else 's/N'}]: ").strip().casefold()
+    if answer in {"x", "\x1b"}: return False
+    if answer not in {"", "s", "sim", "n", "não", "nao"}:
+        result(False, "Responda S ou N; X cancela."); return False
+    requested_post_turn = post_turn if not answer else answer in {"s", "sim"}
+    arguments = [sys.executable, str(root / "onmyoji-daemon" / "setupDaemon.py"), "--onmyoji-root", str(root), "--action", "set-gateway-execution", "--busy-input-policy", policy, "--preparation-workers", str(workers), "--interrupt-grace-seconds", str(grace), "--post-turn-results", str(requested_post_turn).lower()]
+    try:
+        changed = subprocess.run(arguments, cwd=str(root / "onmyoji-daemon"), text=True, encoding="utf-8", errors="replace", capture_output=True)
+    except OSError:
+        result(False, "Não foi possível salvar a configuração local do Gateway."); return False
+    if changed.returncode != 0:
+        result(False, "Não foi possível salvar a configuração local do Gateway."); return False
+    result(True, "Preferências locais salvas; reinicie o Gateway para aplicar.")
+    if policy == "steer" and not capabilities.supports("steering"):
+        note("A intenção de direcionar foi salva; a política efetiva permanece fila enquanto G1 não estiver comprovado.")
+    if requested_post_turn and not capabilities.supports("post_turn"):
+        note("A entrega pós-turno permanece desativada efetivamente até comprovar seus gates de runtime.")
+    return True
 
 
 def codex_menu(root: Path) -> None:
     data = load_system(root)
     while True:
-        ready, message = validate_system(data, require_ready=True)
+        ready, message = validate_system(data, require_ready=True, root=root)
         screen("Codex-CLI", "Configuração da instância do Shikigami")
-        item("1.", "Executável", str(data["executable"]))
-        item("2.", "Modelo", str(data["model"]))
-        item("3.", "Esforço de raciocínio", str(data["model_reasoning_effort"]))
-        item("4.", "Pasta do projeto", str(data["project_directory"] or "(não definida)"))
-        item("5.", "Sandbox", str(data["sandbox_mode"]))
-        item("6.", "Política de aprovação", str(data["approval_policy"]))
-        item("7.", "Diretórios adicionais de escrita", f"{len(data['additional_writable_directories'])} configurado(s)")
-        item("8.", "Executar Codex-CLI", "CLI nativo com modelo, sandbox e diretórios configurados")
-        item("9.", "Console interativo Onmyōji", "App Server com developer instructions compostas")
-        item("10.", "Login no Codex-CLI")
+        item("1.", "Executável", str(data["executable"] or "(não configurado)"))
+        item("2.", "Login no Codex-CLI")
+        item("3.", "Modelo", str(data["model"]))
+        item("4.", "Esforço de raciocínio", str(data["model_reasoning_effort"]))
+        item("5.", "Pasta do projeto", str(data["project_directory"] or "(não definida)"))
+        item("6.", "Sandbox", str(data["sandbox_mode"]))
+        item("7.", "Política de aprovação", str(data["approval_policy"]))
+        item("8.", "Diretórios adicionais de escrita", f"{len(data['additional_writable_directories'])} configurado(s)")
+        item("9.", "Perfis de agentes do Shikigami", "Fontes TOML opcionais e compatibilidade de distribuição")
+        print()
+        item("C.", "Executar Codex-CLI", "CLI nativo com modelo, sandbox e diretórios configurados")
+        item("I.", "Console interativo Onmyōji", "App Server com developer instructions compostas")
         print(f"\n  Estado: {'✓ PRONTO' if ready else '○ ' + message}")
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
         if choice == "1":
-            value = prompt(f"Executável Codex [{data['executable']}]: ").strip()
-            if value: data = update_system(root, data, "executable", value)
+            value = choose_codex_executable(str(data["executable"]))
+            if value:
+                valid, message = validate_codex_executable(value)
+                result(valid, message)
+                if valid: data = update_system(root, data, "executable", value)
         elif choice == "2":
-            value = choose("Modelo", ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "Outro (informar manualmente)"], data["model"])
-            if value == "Outro (informar manualmente)": value = prompt("Modelo: ").strip()
-            if value: data = update_system(root, data, "model", value)
+            configure_codex_login(root, data)
         elif choice == "3":
-            value = choose("Esforço de raciocínio", REASONING_EFFORTS, data["model_reasoning_effort"])
-            if value: data = update_system(root, data, "model_reasoning_effort", value)
+            catalog, catalog_detail = codex_model_catalog(root, data)
+            if catalog is None:
+                result(False, catalog_detail)
+                continue
+            value = choose_codex_model(catalog, str(data["model"]))
+            if value:
+                effort = choose_reasoning_effort(value, str(data["model_reasoning_effort"]), reset_to_model_default=True)
+                if effort is None:
+                    continue
+                candidate = dict(data); candidate["model"], candidate["model_reasoning_effort"] = model_identifier(value), effort
+                valid, message = validate_codex_model(root, candidate)
+                result(valid, message)
+                if valid:
+                    data = update_system(root, data, "model", model_identifier(value))
+                    data = update_system(root, data, "model_reasoning_effort", effort)
         elif choice == "4":
-            value = prompt(f"Pasta do projeto [{data['project_directory']}]: ").strip()
-            if value: data = update_system(root, data, "project_directory", value)
+            catalog, catalog_detail = codex_model_catalog(root, data)
+            model = catalog_model(catalog, str(data["model"])) if catalog else None
+            if model is None:
+                result(False, catalog_detail if catalog is None else "O modelo configurado não está disponível para a conta atual.")
+                continue
+            value = choose_reasoning_effort(model, str(data["model_reasoning_effort"]))
+            if value:
+                candidate = dict(data); candidate["model_reasoning_effort"] = value
+                valid, message = validate_codex_model(root, candidate)
+                result(valid, message)
+                if valid: data = update_system(root, data, "model_reasoning_effort", value)
         elif choice == "5":
-            value = choose("Sandbox", SANDBOXES, data["sandbox_mode"])
-            if value: data = update_system(root, data, "sandbox_mode", value)
+            value = choose_project_directory(root, str(data["project_directory"]))
+            if value: data = update_system(root, data, "project_directory", value)
         elif choice == "6":
-            value = choose("Política de aprovação", APPROVALS, data["approval_policy"])
+            workspace = Path(str(data["project_directory"])).expanduser() if data["project_directory"] else suggested_project_directory(root)
+            value = choose_sandbox(root, workspace, str(data["sandbox_mode"]))
+            if value: data = update_system(root, data, "sandbox_mode", value)
+        elif choice == "7":
+            workspace = Path(str(data["project_directory"])).expanduser() if data["project_directory"] else suggested_project_directory(root)
+            value = choose_approval_policy(root, workspace, str(data["sandbox_mode"]), str(data["approval_policy"]))
             if value: data = update_system(root, data, "approval_policy", value)
-        elif choice == "7": data = manage_writable_directories(root, data)
-        elif choice == "8": launch_codex(root, data)
-        elif choice == "9": launch_onmyoji_interactive(root, data)
-        elif choice == "10":
-            method = choose("Login no Codex-CLI", ["Autenticação por dispositivo (recomendado para SSH/headless)", "Navegador local (callback em localhost)"], "Autenticação por dispositivo (recomendado para SSH/headless)")
-            if method: launch_codex(root, data, login=True, device_auth=method.startswith("Autenticação por dispositivo"))
-        else: result(False, "Opção inválida.")
-
-
-def desktop_skills_menu(root: Path) -> None:
-    while True:
-        data = load_system(root)
-        enabled = desktop_skills_enabled(root, data)
-        destination = desktop_skills_path(root, data)
-        status = "ATIVA" if enabled else "inativa"
-        screen("Codex Desktop", "Skills do projeto")
-        item("1.", "Desabilitar" if enabled else "Habilitar")
-        item("X.", "Voltar")
-        print(f"\n  Instância: {root}")
-        print(f"  Link: {destination}")
-        print(f"  Estado: {status}")
-        choice = prompt("Opção: ").strip().casefold()
-        if choice == "x": return
-        if choice == "1":
-            ok, message = set_desktop_skills_enabled(root, data, not enabled)
-            result(ok, message)
+        elif choice == "8": data = manage_writable_directories(root, data)
+        elif choice == "9": agent_profiles_menu(root)
+        elif choice == "c": launch_codex(root, data)
+        elif choice == "i": launch_onmyoji_interactive(root, data)
         else: result(False, "Opção inválida.")
 
 
@@ -596,38 +1684,117 @@ def daemon_menu(root: Path) -> None:
         return
     environment = dict(os.environ); source = str(project / "src")
     environment["PYTHONPATH"] = source + (os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else "")
+    telegram_token_changed = False
 
-    def command(arguments: list[str], quiet: bool = False, input_value: str | None = None) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(arguments, cwd=str(project), env=environment, text=True, encoding="utf-8", errors="replace", capture_output=quiet, input=input_value)
+    def windows_service_administrator() -> bool:
+        """Confirma privilégio necessário antes de alterar o Service Control Manager."""
+        if os.name != "nt": return True
+        try:
+            import ctypes
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except (AttributeError, OSError):
+            return False
 
-    def lifecycle(action: str, extra: list[str] | None = None) -> bool:
-        completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), action, *(extra or [])], quiet=True)
+    def command(arguments: list[str], quiet: bool = False, input_value: str | None = None, capture_stdout: bool = False) -> subprocess.CompletedProcess[str]:
+        output = {"stdout": subprocess.PIPE} if capture_stdout else {"capture_output": quiet}
+        return subprocess.run(arguments, cwd=str(project), env=environment, text=True, encoding="utf-8", errors="replace", input=input_value, **output)
+
+    def lifecycle(action: str, extra: list[str] | None = None, input_value: str | None = None) -> bool:
+        visible = action in {"install-service", "configure-windows-service-account", "remove-service", "service-start", "service-stop", "service-restart", "service-force-stop"}
+        try:
+            completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), action, *(extra or [])], quiet=not visible, input_value=input_value)
+        except KeyboardInterrupt:
+            result(False, "Operação interrompida pelo usuário."); return False
         result(completed.returncode == 0, (completed.stdout or completed.stderr or "Operação concluída.").strip())
         return completed.returncode == 0
 
-    def validation() -> list[dict[str, str]]:
-        completed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "validation-json"], quiet=True)
+    def install_daemon() -> bool:
+        """Prepara, configura e valida o runtime escolhido pelo usuário."""
+        print()
+        print("  [1/4] Preparando a instância do daemon...")
+        prepared = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "prepare-instance"], quiet=True)
+        result(prepared.returncode == 0, (prepared.stdout or prepared.stderr).strip())
+        if prepared.returncode != 0: return False
+        print("\n  [2/4] Runtime Python do Shikigami")
+        note("O daemon usará a escolha central configurada em Python e bibliotecas.")
+        print("\n  [3/4] Componentes necessários")
+        print("    • aiohttp — comunicação HTTP do daemon e seus gateways.")
+        print("    • cryptography — recursos criptográficos e certificados locais.")
+        if os.name == "nt": print("    • pywin32 — integração opcional com Serviço do Windows.")
+        print("\n  [4/4] Preparando o runtime e os componentes")
+        note("O daemon instala automaticamente os componentes necessários no runtime único; a manutenção manual fica em Python e bibliotecas.")
+        completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "install-runtime"], quiet=False)
+        result(completed.returncode == 0, "Daemon instalado e runtime Python validado." if completed.returncode == 0 else "A instalação do daemon não foi concluída.")
+        return completed.returncode == 0
+
+    def validation(action: str = "validation-json") -> list[dict[str, str]]:
+        completed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", action], quiet=True)
         detail = (completed.stderr or completed.stdout or "").strip()
         detail = re.sub(r"(?i)(token|password|secret|access[_-]?token)\s*[=:]\s*\S+", r"\1=[redacted]", detail)[-500:]
-        if completed.returncode != 0:
-            return [{"state": "error", "label": "Diagnóstico do daemon", "detail": detail or f"O comando de diagnóstico terminou com código {completed.returncode}."}]
         try: values = json.loads(completed.stdout or "[]")
         except (json.JSONDecodeError, TypeError):
-            return [{"state": "error", "label": "Diagnóstico do daemon", "detail": detail or "O daemon retornou um diagnóstico inválido."}]
-        return values if isinstance(values, list) else [{"state": "error", "label": "Diagnóstico do daemon", "detail": "O daemon retornou um diagnóstico em formato inválido."}]
+            return [{"state": "error", "label": "Diagnóstico do daemon", "detail": detail or f"O comando de diagnóstico terminou com código {completed.returncode}."}]
+        if not isinstance(values, list):
+            return [{"state": "error", "label": "Diagnóstico do daemon", "detail": "O daemon retornou um diagnóstico em formato inválido."}]
+        return values
 
-    def show_validation() -> bool:
-        checks = validation(); print()
+    def print_checks(checks: list[dict[str, str]]) -> None:
         for check in checks:
             state = check.get("state", "error"); symbol, color = ({"ok": ("✓", Ui.green), "pending": ("○", Ui.amber), "error": ("✗", Ui.red)}).get(state, ("!", Ui.red))
             print("    " + Ui.text(symbol, Ui.bold, color) + "  " + check.get("label", "Validação") + (Ui.text(" — " + check.get("detail", ""), color) if check.get("detail") else ""))
-        required = {"Daemon da instância", "Estrutura da configuração Telegram", "Perfil KeePass", "Referência do token", "Executável Codex para serviço", "Workspace do Shikigami", "Execução do agente Codex", "Conexão Telegram"}
+            if check.get("action"): print("       Próximo passo: " + check["action"])
+
+    def show_validation() -> bool:
+        checks = validation(); print()
+        print_checks(checks)
+        required = {"Daemon da instância", "Estrutura da configuração Telegram", "Perfil de vault MCP", "Referência do token", "Executável Codex para serviço", "Workspace do Shikigami", "Execução do agente Codex", "Conexão Telegram"}
         return bool(checks) and all(check.get("state") == "ok" for check in checks if check.get("label") in required)
 
+    def show_daemon_diagnosis() -> bool:
+        """Mostra primeiro os pré-requisitos do Shikigami e depois a plataforma."""
+        flow_heading("Diagnóstico do Daemon", "Pré-requisitos do Shikigami e estado da plataforma; serviços não são avaliados aqui")
+        print("\n  Diagnóstico principal do Shikigami")
+        main_checks = shikigami_diagnostics(root, lambda message: print("    → " + message)); print_checks(main_checks)
+        print("\n  Diagnóstico da plataforma do daemon")
+        daemon_checks = validation("daemon-validation-json"); print_checks(daemon_checks)
+        return all(check.get("state") == "ok" for check in [*main_checks, *daemon_checks])
+
+    def show_telegram_diagnosis() -> bool:
+        """Exibe dependências da plataforma antes das verificações do gateway."""
+        flow_heading("Diagnóstico do Telegram", "Plataforma, vault MCP e estado do gateway")
+        print("\n  Diagnóstico principal do Shikigami")
+        main_checks = shikigami_diagnostics(root, lambda message: print("    → " + message)); print_checks(main_checks)
+        print("\n  Diagnóstico da plataforma do daemon")
+        daemon_checks = validation("daemon-validation-json"); print_checks(daemon_checks)
+        print("\n  Diagnóstico específico do Telegram")
+        telegram_checks = validation(); print_checks(telegram_checks)
+        required = {"Perfis de vault MCP", "Perfil de vault MCP", "Referência do token", "Codex App Server", "Execução do agente Codex", "Conexão Telegram"}
+        return all(check.get("state") == "ok" for check in telegram_checks if check.get("label") in required)
+
     def installed() -> bool: return (root / "configs" / "daemon" / "daemon.toml").is_file()
+    def runtime_validated() -> bool:
+        checks = validation("daemon-validation-json")
+        return any(check.get("label") == "Runtime Python do daemon" and check.get("state") == "ok" for check in checks)
     def service_installed() -> bool: return (root / "configs" / "daemon" / "service.json").is_file()
     def daemon_running() -> bool:
         return command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "list-services"], quiet=True).returncode == 0
+
+    def wait_for_daemon_ready() -> bool:
+        """Espera o supervisor responder após uma inicialização ou reinício."""
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if daemon_running(): return True
+            time.sleep(0.2)
+        return False
+
+    def wait_for_telegram_ready() -> bool:
+        """Aguarda o módulo Telegram responder após iniciar ou reiniciar o daemon."""
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            status = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "telegram", "status"], quiet=True)
+            if status.returncode == 0: return True
+            time.sleep(0.3)
+        return False
 
     def miniapps_state() -> dict[str, object]:
         completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "list-services"], quiet=True)
@@ -638,10 +1805,11 @@ def daemon_menu(root: Path) -> None:
         except (json.JSONDecodeError, TypeError, AttributeError):
             return {}
 
-    def offer_restart() -> None:
+    def offer_restart(reason: str = "A alteração") -> None:
         if not daemon_running(): return
+        note(f"{reason} só entra em vigor no gateway após reiniciar o daemon.")
         answer = prompt("O daemon está em execução; reiniciar agora para efetivar a alteração? [S/n]: ").strip().casefold()
-        if answer not in {"", "s", "sim"}: result(False, "Alteração salva; reinicie o daemon depois para aplicá-la."); return
+        if answer not in {"", "s", "sim"}: result(False, f"{reason} foi salva, mas o gateway continua com a configuração anterior até o próximo reinício."); return
         if service_installed(): lifecycle("service-restart")
         elif lifecycle("process-stop"): lifecycle("process-start")
 
@@ -649,6 +1817,80 @@ def daemon_menu(root: Path) -> None:
         status = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "service-status"], quiet=True)
         text = (status.stdout + "\n" + status.stderr).upper()
         return "RUNNING" in text or "ACTIVE: ACTIVE" in text
+
+    def daemon_wizard() -> None:
+        """Configura e valida exclusivamente a plataforma local do daemon."""
+        flow_heading("Wizard do Daemon", "Configuração e validação da plataforma local")
+        note("Cada etapa confirmada é salva imediatamente. Valores já válidos permanecem disponíveis quando o wizard for executado novamente.")
+        main_checks = shikigami_diagnostics(root, lambda message: print("    → " + message))
+        print("\n  1. Pré-requisitos do Shikigami")
+        print_checks(main_checks)
+        if any(check.get("state") != "ok" for check in main_checks):
+            result(False, "Corrija os itens do diagnóstico principal antes de configurar o daemon.")
+            return
+        print("\n  2. Instalação do daemon")
+        if not installed():
+            if not install_daemon(): return
+        elif not runtime_validated():
+            print("    " + Ui.text("○", Ui.bold, Ui.amber) + "  Configuração-base encontrada; o runtime ainda não foi validado.")
+            if not install_daemon(): return
+        else:
+            print("    " + Ui.text("✓", Ui.bold, Ui.green) + "  Runtime Python do daemon — instalado e validado.")
+            if prompt("  Reinstalar ou validar componentes do daemon agora? [s/N]: ").strip().casefold() in {"s", "sim"}:
+                if not install_daemon(): return
+        print("\n  3. Configuração compartilhada do daemon")
+        bootstrapped = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "daemon-bootstrap"], quiet=True)
+        if bootstrapped.returncode != 0:
+            result(False, (bootstrapped.stdout or bootstrapped.stderr).strip() or "Não foi possível preparar a configuração do daemon.")
+            return
+        result(True, "Configuração-base e instruções do daemon validadas e salvas.")
+        try:
+            daemon_settings = tomllib.loads((root / "configs" / "daemon" / "daemon.toml").read_text(encoding="utf-8"))
+            app_server = daemon_settings.get("app_server", {})
+            app_server_enabled = bool(app_server.get("enabled", False))
+            idle_default = max(1, int(app_server.get("idle_timeout_seconds") or 1800) // 60)
+        except (OSError, ValueError, tomllib.TOMLDecodeError, AttributeError):
+            app_server_enabled, idle_default = False, 30
+        while True:
+            default_choice = "s" if app_server_enabled else "n"
+            hint = "S/n" if app_server_enabled else "s/N"
+            enabled = prompt(f"\n  4. Habilitar Codex App Server para o daemon? [{hint}]: ").strip().casefold() or default_choice
+            if enabled in {"", "s", "sim"}:
+                raw_idle = prompt(f"Tempo de inatividade sem turnos, em minutos [{idle_default}]: ").strip() or str(idle_default)
+                try: idle = int(raw_idle)
+                except ValueError: result(False, "Informe um número inteiro de minutos."); continue
+                if idle < 1: result(False, "O tempo mínimo é 1 minuto."); continue
+                changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-app-server", "--enabled", "--idle-timeout", str(idle * 60)], quiet=True)
+                result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
+                if changed.returncode != 0: return
+                break
+            if enabled in {"n", "nao", "não"}:
+                result(False, "O App Server é necessário para concluir o wizard. Nenhuma alteração foi feita nesta etapa.")
+                return
+            result(False, "Responda S ou N.")
+        print("\n  5. Teste controlado do agente Codex")
+        tested = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-agent"], quiet=True)
+        result(tested.returncode == 0, (tested.stdout or tested.stderr).strip())
+        if tested.returncode != 0: return
+        print("\n  6. Início da plataforma")
+        if daemon_running():
+            restart = prompt("O daemon está em execução. Reiniciar agora para aplicar a configuração? [S/n]: ").strip().casefold()
+            if restart not in {"", "s", "sim"}:
+                result(False, "Configuração salva e testada, mas pendente de aplicação. Reinicie o daemon quando desejar concluir o wizard.")
+                return
+            if service_installed():
+                if not lifecycle("service-restart"): return
+            elif lifecycle("process-stop"):
+                if not lifecycle("process-start"): return
+            else: return
+        elif not lifecycle("service-start" if service_installed() else "process-start"):
+            return
+        if not wait_for_daemon_ready():
+            result(False, "O comando de início foi aceito, mas o daemon não respondeu dentro de 10 segundos. Consulte Operação do daemon.")
+            return
+        print("\n  7. Diagnóstico final")
+        if show_daemon_diagnosis(): result(True, "Daemon configurado e em execução.")
+        else: result(False, "A plataforma foi configurada, mas o diagnóstico ainda possui pendências.")
 
     def process_menu() -> None:
         while True:
@@ -671,9 +1913,47 @@ def daemon_menu(root: Path) -> None:
             else: lifecycle(action)
 
     def service_menu() -> None:
+        def windows_service_account() -> tuple[str, str] | None:
+            """Escolhe uma conta compatível com credenciais privadas do Windows."""
+            try:
+                current = subprocess.run(["whoami"], text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=5).stdout.strip()
+            except (OSError, subprocess.TimeoutExpired): current = ""
+            screen("Conta do Serviço Windows", "Define qual perfil do Windows executará o daemon")
+            note("LocalSystem é isolado e não enxerga credenciais guardadas no perfil Windows atual. Para Telegram com KeePass, prefira a conta que configurou o cofre.")
+            item("1.", "Conta Windows atual", current or "não identificada")
+            item("2.", "LocalSystem", "Somente para configurações sem credenciais do perfil do usuário")
+            item("3.", "Outra conta Windows", "Domínio\\usuário ou .\\usuário")
+            item("X.", "Cancelar")
+            while True:
+                selected = prompt("Conta [1]: ").strip().casefold() or "1"
+                if selected in {"x", "\x1b"}: return None
+                if selected == "2": return "LocalSystem", ""
+                account = current if selected == "1" else (prompt("Conta Windows: ").strip() if selected == "3" else "")
+                if not account:
+                    result(False, "Informe uma conta Windows válida."); continue
+                password = getpass.getpass("Senha da conta Windows (não será armazenada): ")
+                if not password:
+                    result(False, "A conta Windows exige senha para executar um serviço."); continue
+                return account, password
+
+        def privileged_service_action(action: str) -> bool:
+            extras: list[str] = []
+            if os.name != "nt":
+                try: scope = json.loads((root / "configs" / "daemon" / "service.json").read_text(encoding="utf-8")).get("scope", "system")
+                except (OSError, ValueError): scope = "system"
+                if scope == "system" and hasattr(os, "geteuid") and os.geteuid() != 0:
+                    note("Esta operação exige sudo. A senha será solicitada pelo sistema, sem ser lida ou armazenada pelo Onmyōji.")
+                    if prompt("Continuar? [s/N]: ").strip().casefold() not in {"s", "sim"}: result(False, "Operação cancelada."); return False
+                    extras.append("--use-sudo")
+            return lifecycle(action, extras)
+
         while True:
             screen("Serviço do sistema operacional", "O daemon será iniciado e controlado pelo sistema operacional")
             if not service_installed():
+                if os.name == "nt":
+                    note("Escolha a conta do Windows que executará o serviço. LocalSystem é isolado e não acessa credenciais do KeePass guardadas no perfil atual.")
+                else:
+                    note("Escolha serviço do usuário para usar o login atual do Codex; serviço do sistema exige privilégios e uma conta Linux explícita.")
                 item("1.", "Instalar serviço")
                 item("X.", "Voltar")
                 choice = prompt("Opção: ").strip().casefold()
@@ -683,80 +1963,390 @@ def daemon_menu(root: Path) -> None:
                 visible = instance_identity(root)
                 name = prompt(f"Nome do serviço [{default_name}]: ").strip() or default_name
                 description = prompt(f"Descrição [{f'Shikigami {visible} Daemon'}]: ").strip() or f"Shikigami {visible} Daemon"
-                lifecycle("install-service", ["--name", name, "--description", description]); continue
+                if os.name == "nt":
+                    if not windows_service_administrator():
+                        result(False, "A instalação do Serviço do Windows exige um terminal executado como Administrador. Feche este setup, abra o PowerShell como Administrador e execute-o novamente."); continue
+                    selected_account = windows_service_account()
+                    if selected_account is None: result(False, "Instalação do serviço cancelada."); continue
+                    account, password = selected_account
+                    if prompt(f"Confirmar a instalação do serviço Windows como {account}? [s/N]: ").strip().casefold() not in {"s", "sim"}: result(False, "Instalação do serviço cancelada."); continue
+                    extras = ["--name", name, "--description", description, "--scope", "system", "--windows-account", account]
+                    if password: extras.append("--password-stdin")
+                    if lifecycle("install-service", extras, password if password else None) and prompt("Iniciar agora e validar o registro? [S/n]: ").strip().casefold() in {"", "s", "sim"}:
+                        lifecycle("service-start"); lifecycle("service-status")
+                    continue
+                print()
+                item("1.", "Serviço do usuário", "systemd --user · recomendado para o login atual do Codex")
+                item("2.", "Serviço do sistema", "systemd · exige sudo e usuário Linux explícito")
+                selected = prompt("Escopo [1]: ").strip() or "1"
+                if selected == "1": lifecycle("install-service", ["--name", name, "--description", description, "--scope", "user"]); continue
+                if selected != "2": result(False, "Escolha 1 ou 2."); continue
+                run_as_user = prompt(f"Usuário Linux do serviço [{getpass.getuser()}]: ").strip() or getpass.getuser()
+                run_as_group = prompt("Grupo Linux do serviço [padrão do usuário]: ").strip()
+                note("O setup solicitará sudo para gravar e habilitar a unit de sistema. A senha não será lida nem armazenada pelo Onmyōji.")
+                if prompt("Continuar com a instalação de sistema? [s/N]: ").strip().casefold() not in {"s", "sim"}: result(False, "Instalação do serviço cancelada."); continue
+                lifecycle("install-service", ["--name", name, "--description", description, "--scope", "system", "--run-as-user", run_as_user, "--run-as-group", run_as_group, "--use-sudo"]); continue
             item("1.", "Status do serviço")
             item("2.", "Parar serviço" if service_running() else "Iniciar serviço")
             item("3.", "Reiniciar serviço")
             item("4.", "Forçar parada do serviço")
             item("5.", "Remover serviço")
+            if os.name == "nt": item("6.", "Configurar conta do serviço", "Necessário para acessar credenciais KeePass do usuário")
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
             if choice == "1": lifecycle("service-status")
-            elif choice == "2": lifecycle("service-stop" if service_running() else "service-start")
-            elif choice == "3": lifecycle("service-restart")
-            elif choice == "4": lifecycle("service-force-stop")
+            elif choice == "2": privileged_service_action("service-stop" if service_running() else "service-start")
+            elif choice == "3": privileged_service_action("service-restart")
+            elif choice == "4": privileged_service_action("service-force-stop")
             elif choice == "5":
                 confirmation = prompt("Digite remover para confirmar: ").strip()
-                if confirmation == "remover": lifecycle("remove-service")
+                if confirmation == "remover": privileged_service_action("remove-service")
                 else: result(False, "Remoção cancelada; a confirmação deve ser exatamente remover.")
+            elif choice == "6" and os.name == "nt":
+                if not windows_service_administrator():
+                    result(False, "Alterar a conta do Serviço do Windows exige um terminal executado como Administrador. Feche este setup, abra o PowerShell como Administrador e execute-o novamente."); continue
+                selected_account = windows_service_account()
+                if selected_account is None: result(False, "Alteração da conta cancelada."); continue
+                account, password = selected_account
+                extras = ["--account", account]
+                if password: extras.append("--password-stdin")
+                lifecycle("configure-windows-service-account", extras, password if password else None)
             else: result(False, "Opção inválida.")
 
-    def telegram_menu() -> None:
+    def operation_menu() -> None:
+        """Separa a execução temporária do gerenciamento persistente pelo SO."""
         while True:
-            telegram_path = root / "configs" / "daemon" / "services" / "telegram" / "telegram.toml"
+            screen("Operação do daemon", "Processo local para uso temporário; serviço do SO para operação persistente")
+            item("1.", "Processo local", "Executar em segundo plano nesta sessão")
+            item("2.", "Serviço do sistema operacional", "Instalar, diagnosticar e gerenciar inicialização persistente")
+            item("X.", "Voltar")
+            choice = prompt("Opção: ").strip().casefold()
+            if choice in {"x", "\x1b"}: return
+            if choice == "1": process_menu()
+            elif choice == "2": service_menu()
+            else: result(False, "Opção inválida.")
+
+    def configure_voice_replies() -> None:
+        """Configura áudio do Telegram diretamente, sem um submenu de opção única."""
+        telegram_path = telegram_configuration_path(root)
+        command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "bootstrap"], quiet=True)
+        try:
+            settings = tomllib.loads(telegram_path.read_text(encoding="utf-8")); voice = settings.get("voice_reply", {})
+            enabled, profile = bool(voice.get("enabled", False)), str(voice.get("eccovox_profile") or "")
+            name, language, auto_off = str(voice.get("voice") or ""), str(voice.get("language") or ""), int(voice.get("auto_off_minutes") or 15)
+        except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
+            enabled, profile, name, language, auto_off = False, "", "", "", 15
+        active = prompt("Habilitar respostas em áudio? [S/n]: ").strip().casefold() not in {"n", "x", "\x1b"}
+        if active:
+            try: profiles = sorted(key for key, value in McpConfiguration(root).eccovox()["profiles"].items() if isinstance(value, dict) and value.get("enabled") is True)
+            except Exception: profiles = []
+            if not profiles:
+                result(False, "Nenhum perfil EccoVox habilitado. Configure-o primeiro em MCP > Integrações MCP > EccoVox."); return
+            profile = flow_choice("Perfil MCP EccoVox", profiles, profile if profile in profiles else profiles[0])
+            if profile is None: return
+            name = choose_eccovox_tts_capability(root, profile, "voices", "Voz das respostas Telegram", name)
+            if name is None: return
+            language = choose_eccovox_tts_capability(root, profile, "languages", "Idioma das respostas Telegram", language)
+            if language is None: return
+        raw = prompt(f"Desligar áudio após minutos sem interação [{auto_off}]: ").strip()
+        try: minutes = int(raw) if raw else auto_off
+        except ValueError: result(False, "Informe minutos inteiros."); return
+        arguments = [sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-voice-reply", "--profile", profile, "--voice", name, "--language", language, "--auto-off-minutes", str(minutes)] + (["--enabled"] if active else [])
+        changed = command(arguments, quiet=True); result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
+        if changed.returncode == 0: offer_restart()
+
+    def configure_default_thoughts() -> None:
+        """Define o comportamento inicial de pensamentos para novas conversas."""
+        telegram_path = telegram_configuration_path(root)
+        command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "bootstrap"], quiet=True)
+        try:
+            telegram = tomllib.loads(telegram_path.read_text(encoding="utf-8")).get("telegram", {})
+            share, delete = bool(telegram.get("default_share_thoughts", True)), bool(telegram.get("default_delete_thoughts", True))
+        except (OSError, tomllib.TOMLDecodeError, TypeError):
+            share, delete = True, True
+        sharing = flow_choice("Pensamentos nas novas conversas", ["Compartilhar durante o turno", "Não compartilhar"], "Compartilhar durante o turno" if share else "Não compartilhar")
+        if sharing is None:
+            return
+        share = sharing.startswith("Compartilhar")
+        if share:
+            retention = flow_choice("Após concluir o turno", ["Excluir pensamentos compartilhados", "Manter pensamentos compartilhados"], "Excluir pensamentos compartilhados" if delete else "Manter pensamentos compartilhados")
+            if retention is None:
+                return
+            delete = retention.startswith("Excluir")
+        else:
+            delete = True
+            note("Os pensamentos não serão enviados ao Telegram; não há conteúdo para manter após o turno.")
+        changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-default-thought-preferences", "--share-thoughts", str(share).lower(), "--delete-thoughts", str(delete).lower()], quiet=True)
+        result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
+        if changed.returncode == 0:
+            note("O padrão será aplicado em novas conversas e ao usar /new; a conversa atual preserva sua escolha própria.")
+            offer_restart()
+
+    def configure_parallel_responses() -> None:
+        """Define o limite global de turnos simultâneos em conversas distintas."""
+        telegram_path = telegram_configuration_path(root)
+        command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "bootstrap"], quiet=True)
+        try:
+            agent = tomllib.loads(telegram_path.read_text(encoding="utf-8")).get("agent", {})
+            current = int(agent.get("max_parallel_conversations", 1))
+            current = min(16, max(1, current))
+        except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
+            current = 1
+        note("O limite distribui processamento entre conversas diferentes. Mensagens da mesma conversa continuam em ordem.")
+        raw = prompt(f"Máximo de conversas processadas em paralelo [{current}] (1 a 16): ").strip()
+        if raw.casefold() in {"x", "\x1b"}:
+            return
+        try:
+            maximum = int(raw) if raw else current
+        except ValueError:
+            result(False, "Informe um número inteiro entre 1 e 16.")
+            return
+        if not 1 <= maximum <= 16:
+            result(False, "Informe um número entre 1 e 16.")
+            return
+        changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-max-parallel-conversations", "--max-parallel-conversations", str(maximum)], quiet=True)
+        result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
+        if changed.returncode == 0:
+            note("O novo limite será usado após reiniciar o gateway Telegram.")
+            offer_restart()
+
+    def convert_stickers_menu() -> None:
+        """Converte fontes estáticas sem alterar os originais nem sobrescrever saídas."""
+        while True:
+            sources = [
+                path for path in discover_static_sources(root)
+                if not (path.suffix.casefold() == ".webp" and path.stem.casefold().endswith("-telegram"))
+            ]
+            screen("Converter figurinhas estáticas", "Cria cópias WebP 512×512; os originais serão preservados")
+            note(f"Pasta: {sticker_folder(root)}")
+            if not sources:
+                result(False, "Nenhuma imagem PNG, JPG, JPEG ou WebP aguardando conversão foi encontrada.")
+                item("X.", "Voltar")
+                if prompt("Opção: ").strip().casefold() in {"x", "\x1b", ""}:
+                    return
+                result(False, "Opção inválida.")
+                continue
+            for index, source in enumerate(sources, 1):
+                item(f"{index}.", source.name, f"{source.stat().st_size / 1024:.1f} KiB")
+            print()
+            item("T.", "Converter todas", f"{len(sources)} imagem(ns)")
+            item("X.", "Voltar")
+            choice = prompt("Opção [1]: ").strip().casefold() or "1"
+            if choice in {"x", "\x1b"}:
+                return
+            if choice == "t":
+                selected = sources
+            elif choice.isdigit() and 1 <= int(choice) <= len(sources):
+                selected = [sources[int(choice) - 1]]
+            else:
+                result(False, "Opção inválida.")
+                continue
+            for source in selected:
+                note(f"Convertendo {source.name}; criando uma cópia WebP 512×512.")
+                try:
+                    converted = convert_static_sticker(source)
+                    detail = f"{converted.output.name} · {converted.output_bytes / 1024:.1f} KiB · qualidade {converted.quality}"
+                    result(True, f"Figurinha convertida: {detail}.")
+                    if not converted.reached_target:
+                        note(f"A saída não atingiu o alvo de {STATIC_STICKER_TARGET_BYTES // 1024} KiB; ainda pode ser cadastrada se estiver dentro do limite de envio do gateway.")
+                except FileExistsError:
+                    note(f"{source.name}: saída já existente; preservada sem alteração.")
+                except (ValueError, RuntimeError) as error:
+                    result(False, f"{source.name}: {error}")
+            note("Use 'Cadastrar arquivos encontrados' para informar o contexto e disponibilizar as saídas ao agente.")
+
+    def configure_stickers() -> None:
+        """Administra os ativos versionáveis de figurinha sem expor caminhos ao agente."""
+        folder = sticker_folder(root)
+        while True:
+            catalog = load_sticker_catalog(root, 20 * 1024 * 1024)
+            registered = {value["file"] for value in catalog.raw_entries.values()}
+            pending = [path for path in discover_stickers(root) if path.name not in registered]
+            sources = discover_static_sources(root)
+            screen("Figurinhas do agente", "Catálogo versionável de mídia permitida para a conversa Telegram ativa")
+            note(f"Pasta: {folder}")
+            item("1.", "Cadastrar arquivos encontrados", f"{len(pending)} sem explicação")
+            item("2.", "Editar explicação de uma figurinha", f"{len(catalog.raw_entries)} cadastrada(s)")
+            item("3.", "Exibir catálogo e pendências", f"{len(catalog.stickers)} disponível(is) ao agente")
+            item("4.", "Converter e otimizar imagens estáticas", f"{len(sources)} PNG, JPG ou WebP encontrada(s)")
+            item("5.", "Abrir pasta de figurinhas", "Explorer no Windows")
+            item("X.", "Voltar")
+            choice = prompt("Opção: ").strip().casefold()
+            if choice in {"x", "\x1b"}:
+                return
+            if choice == "1":
+                if not pending:
+                    result(True, "Todos os arquivos suportados já possuem cadastro.")
+                    continue
+                selected = flow_choice("Arquivo para cadastrar", [path.name for path in pending], pending[0].name)
+                if selected is None:
+                    note("Cadastro cancelado; o catálogo não foi alterado.")
+                    continue
+                path = next(path for path in pending if path.name == selected)
+                identifier = prompt(f"ID técnico para {path.name} [{suggested_identifier(path)}] (não é a explicação): ").strip() or suggested_identifier(path)
+                if identifier.casefold() in {"x", "\x1b"}:
+                    note("Cadastro cancelado; o catálogo não foi alterado.")
+                    continue
+                if not STICKER_ID.fullmatch(identifier) or identifier in catalog.raw_entries:
+                    result(False, "ID inválido ou já utilizado; use de 1 a 64 letras minúsculas, números, _ ou -, começando por letra ou número.")
+                    continue
+                context = prompt(f"Quando usar a figurinha {identifier} [até {MAX_CONTEXT_LENGTH} caracteres]: ").strip()
+                if context.casefold() in {"x", "\x1b"}:
+                    note("Cadastro cancelado; o catálogo não foi alterado.")
+                    continue
+                if not 1 <= len(context) <= MAX_CONTEXT_LENGTH:
+                    result(False, f"A explicação deve ter entre 1 e {MAX_CONTEXT_LENGTH} caracteres; nada foi gravado.")
+                    continue
+                if prompt(f"Cadastrar '{identifier}' com esta explicação? [s/N]: ").strip().casefold() not in {"s", "sim"}:
+                    note("Cadastro não confirmado; o catálogo não foi alterado.")
+                    continue
+                entries = dict(catalog.raw_entries); entries[identifier] = {"file": path.name, "context": context}
+                try:
+                    save_sticker_catalog(root, entries); result(True, "Figurinha cadastrada e catálogo gravado.")
+                except ValueError as error:
+                    result(False, f"Nada foi gravado: {error}")
+            elif choice == "2":
+                names = sorted(catalog.raw_entries)
+                labels = [f"{identifier} · {catalog.raw_entries[identifier]['file']}" for identifier in names]
+                selected = flow_choice("Figurinha para editar", labels, labels[0] if labels else "") if labels else None
+                if selected is None:
+                    result(False, "Nenhuma figurinha cadastrada." if not labels else "Edição cancelada.")
+                    continue
+                identifier = names[labels.index(selected)]
+                current = catalog.raw_entries[identifier]
+                context = prompt(f"Quando usar a figurinha {identifier} [{current['context']}] (até {MAX_CONTEXT_LENGTH} caracteres): ").strip() or current["context"]
+                if context.casefold() in {"x", "\x1b"}:
+                    continue
+                if not 1 <= len(context) <= MAX_CONTEXT_LENGTH:
+                    result(False, f"A explicação deve ter entre 1 e {MAX_CONTEXT_LENGTH} caracteres; nada foi gravado.")
+                    continue
+                entries = dict(catalog.raw_entries); entries[identifier] = {"file": current["file"], "context": context}
+                try:
+                    save_sticker_catalog(root, entries); result(True, "Explicação atualizada e catálogo gravado.")
+                except ValueError as error:
+                    result(False, f"Nada foi gravado: {error}")
+            elif choice == "3":
+                if catalog.stickers:
+                    for sticker in catalog.stickers: print(f"    {sticker.identifier:<20} {sticker.path.name} · {sticker.context}")
+                else:
+                    note("Nenhuma figurinha disponível ao agente.")
+                for issue in catalog.issues: result(False, issue)
+                for path in pending: note(f"{path.name}: sem explicação de uso.")
+                unsupported = [path for path in sources if path.suffix.casefold() != ".webp"]
+                if unsupported:
+                    note("PNG e JPG não podem ser enviados como figurinha; escolha a opção 4 para criar versões WebP.")
+                    for path in unsupported: note(f"{path.name}: precisa de conversão para WebP.")
+            elif choice == "4":
+                convert_stickers_menu()
+            elif choice == "5":
+                folder.mkdir(parents=True, exist_ok=True)
+                try:
+                    if os.name == "nt": os.startfile(str(folder))
+                    else: note(f"Coloque as figurinhas em: {folder}")
+                except OSError as error:
+                    result(False, f"Não foi possível abrir a pasta: {error}")
+            else:
+                result(False, "Opção inválida.")
+
+    def telegram_section_menu(section: str) -> None:
+        while True:
+            telegram_path = telegram_configuration_path(root)
             command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "bootstrap"], quiet=True)
             try:
                 enabled = bool(json.loads((root / "configs" / "daemon" / "services.json").read_text(encoding="utf-8")).get("telegram", {}).get("enabled", False))
             except (OSError, ValueError): enabled = False
             try:
-                telegram_settings = tomllib.loads(telegram_path.read_text(encoding="utf-8")); totp_enabled = bool(telegram_settings.get("totp", {}).get("enabled", False)); app_server_enabled = bool(telegram_settings.get("app_server", {}).get("enabled", False)); app_server_idle = int(telegram_settings.get("app_server", {}).get("idle_timeout_seconds") or 1800); voice_enabled = bool(telegram_settings.get("voice_reply", {}).get("enabled", False)); voice_profile = str(telegram_settings.get("voice_reply", {}).get("eccovox_profile") or ""); voice_auto_off = int(telegram_settings.get("voice_reply", {}).get("auto_off_minutes") or 15); outbound_media = bool(telegram_settings.get("voice_reply", {}).get("agent_outbound_media", False))
-            except (OSError, tomllib.TOMLDecodeError): telegram_settings = {}; totp_enabled, app_server_enabled, app_server_idle, voice_enabled, voice_profile, voice_auto_off, outbound_media = False, False, 1800, False, "", 15, False
+                telegram_settings = tomllib.loads(telegram_path.read_text(encoding="utf-8"))
+                totp_enabled = bool(telegram_settings.get("totp", {}).get("enabled", False))
+                voice_enabled = bool(telegram_settings.get("voice_reply", {}).get("enabled", False))
+                voice_profile = str(telegram_settings.get("voice_reply", {}).get("eccovox_profile") or "")
+                voice_name = str(telegram_settings.get("voice_reply", {}).get("voice") or "")
+                voice_language = str(telegram_settings.get("voice_reply", {}).get("language") or "")
+                voice_auto_off = int(telegram_settings.get("voice_reply", {}).get("auto_off_minutes") or 15)
+                outbound_media = bool(telegram_settings.get("telegram", {}).get("agent_outbound_media", telegram_settings.get("voice_reply", {}).get("agent_outbound_media", False)))
+            except (OSError, tomllib.TOMLDecodeError):
+                telegram_settings = {}; totp_enabled, voice_enabled, voice_profile, voice_name, voice_language, voice_auto_off, outbound_media = False, False, "", "", "", 15, False
+            try:
+                daemon_settings = tomllib.loads((root / "configs" / "daemon" / "daemon.toml").read_text(encoding="utf-8"))
+                daemon_app_server = daemon_settings.get("app_server", {})
+                daemon_instructions = daemon_settings.get("instructions", {})
+                app_server_enabled = bool(daemon_app_server.get("enabled", False))
+                app_server_idle = int(daemon_app_server.get("idle_timeout_seconds") or 1800)
+                instruction_file = str(daemon_instructions.get("shikigami_file") or "instructions.md")
+            except (OSError, tomllib.TOMLDecodeError, AttributeError, TypeError, ValueError):
+                app_server_enabled, app_server_idle, instruction_file = False, 1800, "instructions.md"
             agent_preferences = telegram_settings.get("agent", {}) if "telegram_settings" in locals() and isinstance(telegram_settings.get("agent", {}), dict) else {}
             owner_preferences = bool(agent_preferences.get("owner_execution_preferences", True)); owner_models = ";".join(str(value) for value in agent_preferences.get("owner_allowed_models", []) if isinstance(value, str)); owner_efforts = ";".join(str(value) for value in agent_preferences.get("owner_allowed_reasoning_efforts", []) if isinstance(value, str))
-            instruction_settings = telegram_settings.get("instructions", {}) if isinstance(telegram_settings.get("instructions", {}), dict) else {}
-            instruction_file = str(instruction_settings.get("shikigami_file") or "instructions.md")
-            screen("Gateway Telegram", "Credenciais permanecem exclusivamente no KeePass")
-            item("1.", "Desabilitar Telegram" if enabled else "Habilitar Telegram")
-            item("2.", "Configurar credencial do bot", "Perfil KeePass e referência da entrada")
-            item("3.", "Testar conexão com Telegram")
-            item("4.", "Parear owner", "Exige gateway em execução")
-            item("5.", "Diagnóstico detalhado")
-            item("6.", "Desabilitar TOTP" if totp_enabled else "Configurar e habilitar TOTP")
-            item("7.", "Testar agente Codex", "Execução controlada, sem mensagem ao bot")
-            item("8.", "Atualizar comandos privados", "Regrava e confirma comandos de cada owner")
-            item("9.", "Desabilitar App Server" if app_server_enabled else "Habilitar App Server", "Conversa persistente por Shikigami" if app_server_enabled else "Obrigatório para o Gateway Telegram")
-            item("10.", "Tempo de inatividade do App Server", f"{app_server_idle // 60} min · encerra somente sem turnos ativos")
-            item("11.", "Configurar respostas em áudio", (f"EccoVox: {voice_profile} · auto-off: {voice_auto_off} min" if voice_enabled else "Desabilitadas"))
-            item("12.", "Preferências de execução do owner", "Habilitadas" if owner_preferences else "Desabilitadas")
-            item("13.", "Instruções do Shikigami", instruction_file)
+            title, subtitle = {
+                "gateway": ("Gateway Telegram", "Ativação e teste da conexão com o bot"),
+                "credential": ("Credencial do bot", "KeePass Vault e autenticação protegida"),
+                "app-server": ("Codex App Server", "Conversa persistente e teste controlado do agente"),
+                "owners": ("Owners e comandos", "Pareamento, comandos privados e preferências"),
+                "security": ("Segurança e instruções", "TOTP e instruções particulares do Shikigami"),
+                "media": ("Arquivos e fotos do agente", "Permissão do gateway Telegram para mídia de saída"),
+            }[section]
+            screen(title, subtitle)
+            if section == "gateway":
+                item("1.", "Desabilitar Telegram" if enabled else "Habilitar Telegram")
+                item("2.", "Testar conexão com Telegram")
+            elif section == "credential":
+                item("1.", "Configurar credencial do bot", "Perfil de vault MCP e referência da entrada")
+                item("2.", "Testar conexão com Telegram")
+            elif section == "app-server":
+                item("1.", "Testar agente Codex", "Execução controlada, sem mensagem ao bot")
+                item("2.", "Desabilitar App Server" if app_server_enabled else "Habilitar App Server", "Conversa persistente por Shikigami" if app_server_enabled else "Obrigatório para o Gateway Telegram")
+                item("3.", "Tempo de inatividade do App Server", f"{app_server_idle // 60} min · encerra somente sem turnos ativos")
+            elif section == "owners":
+                item("1.", "Parear owner", "Exige gateway em execução")
+                item("2.", "Atualizar comandos privados", "Regrava e confirma comandos de cada owner")
+                item("3.", "Preferências de execução do owner", "Habilitadas" if owner_preferences else "Desabilitadas")
+            elif section == "security":
+                item("1.", "Desabilitar TOTP" if totp_enabled else "Configurar e habilitar TOTP")
+                item("2.", "Instruções do Shikigami", instruction_file)
+            else:
+                item("1.", "Desabilitar envio pelo agente" if outbound_media else "Habilitar envio pelo agente", "Arquivos, fotos e áudio na conversa Telegram ativa")
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
+            actions = {
+                "gateway": {"1": "1", "2": "3"},
+                "credential": {"1": "2", "2": "3"},
+                "app-server": {"1": "7", "2": "9", "3": "10"},
+                "owners": {"1": "4", "2": "8", "3": "12"},
+                "security": {"1": "6", "2": "13"},
+                "media": {"1": "14"},
+            }[section]
+            if choice not in actions:
+                result(False, "Opção inválida."); continue
+            choice = actions[choice]
             if choice == "1":
                 if enabled:
                     if lifecycle("disable", ["telegram"]):
                         result(True, "Telegram desabilitado; a configuração foi preservada."); offer_restart()
                 else:
-                    if not show_validation(): result(False, "Corrija os itens marcados antes de habilitar o gateway."); continue
+                    if not show_telegram_diagnosis(): result(False, "Corrija os itens marcados antes de habilitar o gateway."); continue
                     if lifecycle("enable", ["telegram"]):
                         result(True, "Telegram habilitado; ele iniciará junto com o daemon."); offer_restart()
             elif choice == "2":
                 listed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "profiles"], quiet=True)
                 try: values = json.loads(listed.stdout)
                 except json.JSONDecodeError: values = []
-                if not values: result(False, "Nenhum perfil KeePass disponível. Configure e habilite primeiro a skill KeePass."); continue
+                if not values: result(False, "Nenhum perfil de vault disponível. Configure-o primeiro em MCP > Perfis de vault."); continue
                 print()
                 for index, profile in enumerate(values, 1): item(f"{index}.", profile)
                 item("X.", "Voltar")
-                selected = prompt("Perfil KeePass: ").strip().casefold()
+                selected = prompt("Perfil de vault MCP: ").strip().casefold()
                 if selected in {"x", "\x1b"}: continue
                 if not selected.isdigit() or not 1 <= int(selected) <= len(values): result(False, "Perfil inválido."); continue
-                instance = "".join(part[:1].upper() + part[1:] for part in instance_identity(root).split()) or "Shikigami"
-                default_entry = f"APIs/Telegram:{instance}"
+                default_entry = telegram_token_entry(root)
                 profile = values[int(selected)-1]
                 while True:
                     entry = prompt(f"Entrada KeePass [{default_entry}]: ").strip() or default_entry
+                    try:
+                        current = tomllib.loads(telegram_path.read_text(encoding="utf-8")).get("telegram", {})
+                        reference_changed = (str(current.get("vault_profile") or ""), str(current.get("token_entry") or "")) != (profile, entry)
+                    except (OSError, tomllib.TOMLDecodeError, AttributeError): reference_changed = True
                     saved = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-credential", "--profile", profile, "--entry", entry], quiet=True)
                     if saved.returncode != 0: result(False, (saved.stdout or saved.stderr).strip()); break
                     checked = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "check-entry", "--profile", profile, "--entry", entry], quiet=True)
@@ -764,20 +2354,29 @@ def daemon_menu(root: Path) -> None:
                     except (json.JSONDecodeError, KeyError): exists, detail = False, "Não foi possível verificar a entrada no KeePass."
                     if exists:
                         result(True, detail)
-                        action = prompt("Utilizar a entrada existente [U], substituir seu token [S] ou corrigir a chave [C]? [U]: ").strip().casefold() or "u"
-                        if action == "u": result(True, "Credencial configurada com a entrada existente."); break
-                        if action == "c": continue
-                        if action != "s": result(False, "Escolha U, S ou C."); continue
+                        action = flow_choice("Credencial do bot", ["Usar a entrada existente", "Substituir o token", "Reinformar a entrada KeePass"], "Usar a entrada existente")
+                        if action is None:
+                            continue
+                        if action.startswith("Usar"):
+                            result(True, "Credencial configurada com a entrada existente.")
+                            if reference_changed: offer_restart("A referência da credencial do bot")
+                            break
+                        if action.startswith("Reinformar"):
+                            continue
                     else:
                         result(False, f"A entrada não foi encontrada ou não pôde ser lida: {detail}")
-                        action = prompt("Corrigir chave [C], criar token no KeePass [N] ou configurar e incluir depois [A]? [A]: ").strip().casefold() or "a"
-                        if action == "c": continue
-                        if action == "a": result(True, "Referência salva; inclua o token no KeePass antes de habilitar o gateway."); break
-                        if action != "n": result(False, "Escolha C, N ou A."); continue
-                    token = getpass.getpass(Ui.text("› Token do bot (não será exibido): ", Ui.violet, Ui.bold))
+                        action = flow_choice("Credencial do bot", ["Criar o token nesta entrada", "Reinformar a entrada KeePass", "Configurar a referência e incluir o token depois"], "Configurar a referência e incluir o token depois")
+                        if action is None or action.startswith("Reinformar"):
+                            continue
+                        if action.startswith("Configurar"):
+                            result(True, "Referência salva; inclua o token no KeePass antes de habilitar o gateway.")
+                            break
+                    token = getpass.getpass(Ui.text("› Token do bot (não será exibido): ", Ui.violet, Ui.bold)).strip()
                     written = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "write-token", "--profile", profile, "--entry", entry], quiet=True, input_value=token)
                     result(written.returncode == 0, (written.stdout or written.stderr).strip())
-                    if written.returncode == 0: break
+                    if written.returncode == 0:
+                        offer_restart("A nova credencial do bot")
+                        break
             elif choice == "3":
                 tested = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-telegram"], quiet=True)
                 result(tested.returncode == 0, (tested.stdout or tested.stderr).strip())
@@ -787,16 +2386,25 @@ def daemon_menu(root: Path) -> None:
                 try: pin = json.loads(request.stdout)["pin"]
                 except (json.JSONDecodeError, KeyError): result(False, "Não foi possível gerar o código de pareamento."); continue
                 result(True, f"Envie /pair {pin} em uma DM para o bot. O código expira em 5 minutos e só pode ser usado uma vez.")
-            elif choice == "5": show_validation()
             elif choice == "6":
                 if totp_enabled:
                     changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-totp"], quiet=True)
                     result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
                     if changed.returncode == 0: offer_restart()
                 else:
-                    instance = "".join(part[:1].upper() + part[1:] for part in instance_identity(root).split()) or "Shikigami"
-                    real = prompt(f"Entrada KeePass da senha TOTP real [APIs/TelegramTOTP:{instance}:Real]: ").strip() or f"APIs/TelegramTOTP:{instance}:Real"
-                    fake = prompt(f"Entrada KeePass da senha TOTP falsa [APIs/TelegramTOTP:{instance}:Fake]: ").strip() or f"APIs/TelegramTOTP:{instance}:Fake"
+                    profile = str(telegram_settings.get("telegram", {}).get("vault_profile") or "")
+                    if not profile:
+                        result(False, "Configure primeiro a credencial do bot e seu perfil de vault MCP.")
+                        continue
+                    totp = telegram_settings.get("totp", {})
+                    real_entry = configured_telegram_totp_entry(root, "real", str(totp.get("real_password_entry") or ""))
+                    real = configure_totp_password(root, profile, "real", telegram_totp_entry(root, "real"), real_entry)
+                    if real is None:
+                        continue
+                    fake_entry = configured_telegram_totp_entry(root, "fake", str(totp.get("fake_password_entry") or ""))
+                    fake = configure_totp_password(root, profile, "falsa", telegram_totp_entry(root, "fake"), fake_entry)
+                    if fake is None:
+                        continue
                     changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-totp", "--enabled", "--real-entry", real, "--fake-entry", fake], quiet=True)
                     result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
                     if changed.returncode == 0: offer_restart()
@@ -821,29 +2429,6 @@ def daemon_menu(root: Path) -> None:
                 except ValueError: result(False, "Informe um número inteiro de minutos."); continue
                 changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-app-server", "--idle-timeout", str(minutes * 60)], quiet=True)
                 result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
-                if changed.returncode == 0: offer_restart()
-            elif choice == "11":
-                active = prompt("Habilitar respostas em áudio? [S/n]: ").strip().casefold() not in {"n", "x", "\x1b"}
-                profile = prompt(f"Perfil EccoVox [{voice_profile or 'eccovox'}]: ").strip() or voice_profile or "eccovox"
-                raw = prompt(f"Desligar áudio após minutos sem interação [{voice_auto_off}]: ").strip()
-                try: minutes = int(raw) if raw else voice_auto_off
-                except ValueError: result(False, "Informe minutos inteiros."); continue
-                media = prompt(f"Permitir que o agente envie arquivos e fotos? [{'S' if outbound_media else 'n'}]: ").strip().casefold() or ("s" if outbound_media else "n")
-                if active or media == "s":
-                    try:
-                        system = load_system(root); project_directory = Path(str(system["project_directory"])).resolve()
-                        if not project_directory.is_dir(): raise ValueError("Configure primeiro a pasta de projeto no menu Codex-CLI.")
-                        staging = project_directory / ".onmyoji" / "telegram" / "staging"
-                    except ValueError as error: result(False, str(error)); continue
-                    print()
-                    note("Para áudios, anexos e respostas com arquivos, o Onmyōji precisa de uma área temporária restrita no workspace.")
-                    note("O setup criará e autorizará somente este diretório, para leitura e escrita do perfil EccoVox e para o sandbox do agente:")
-                    print("      " + Ui.text(str(staging), Ui.cyan))
-                    note("Nada será gravado em CODEX_HOME/configs; nenhum diretório mais amplo será liberado.")
-                    confirm = prompt("Aplicar essa autorização agora? [S/n]: ").strip().casefold()
-                    if confirm not in {"", "s", "sim"}: result(False, "Configuração cancelada; nenhuma permissão foi alterada."); continue
-                arguments = [sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-voice-reply", "--profile", profile, "--auto-off-minutes", str(minutes)] + (["--enabled"] if active else []) + (["--agent-outbound-media"] if media == "s" else [])
-                changed = command(arguments, quiet=True); result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
                 if changed.returncode == 0: offer_restart()
             elif choice == "12":
                 enabled = prompt(f"Permitir que o owner escolha modelo e raciocínio por conversa? [{'S' if owner_preferences else 'n'}]: ").strip().casefold() or ("s" if owner_preferences else "n")
@@ -872,8 +2457,191 @@ def daemon_menu(root: Path) -> None:
                             subprocess.run([editor, str(local_file)], check=False)
                         checked = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "instructions-status"], quiet=True)
                         result(checked.returncode == 0, "Instruções salvas e validadas." if checked.returncode == 0 else (checked.stdout or checked.stderr).strip())
-                        if checked.returncode == 0: note("A alteração cria uma nova conversa Codex na próxima mensagem do Telegram.")
+                        if checked.returncode == 0: note("A alteração será reaplicada ao retomar a mesma thread na próxima mensagem do Telegram.")
                     except (OSError, ValueError) as error: result(False, f"Não foi possível abrir o editor: {error}")
+            elif choice == "14":
+                enabled_media = prompt(f"Habilitar o envio de arquivos, fotos e áudio pelo agente? [{'S' if outbound_media else 'n'}]: ").strip().casefold() or ("s" if outbound_media else "n")
+                arguments = [sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-agent-outbound-media"] + (["--enabled"] if enabled_media == "s" else ["--disabled"])
+                changed = command(arguments, quiet=True); result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
+                if changed.returncode == 0: offer_restart()
+            else: result(False, "Opção inválida.")
+
+    def configure_wizard_telegram_credential() -> bool:
+        """Configura a credencial com os valores existentes, sem desviar ao menu manual."""
+        nonlocal telegram_token_changed
+        path = telegram_configuration_path(root)
+        try:
+            settings = tomllib.loads(path.read_text(encoding="utf-8")); telegram = settings.get("telegram", {})
+            current_profile, current_entry = str(telegram.get("vault_profile") or ""), str(telegram.get("token_entry") or "")
+        except (OSError, tomllib.TOMLDecodeError, AttributeError):
+            current_profile, current_entry = "", ""
+        listed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "profiles"], quiet=True)
+        try: profiles = json.loads(listed.stdout)
+        except json.JSONDecodeError: profiles = []
+        if not profiles: result(False, "Nenhum perfil de vault MCP disponível."); return False
+        default_profile = current_profile if current_profile in profiles else str(profiles[0])
+        print("    Perfis de vault MCP disponíveis: " + ", ".join(str(profile) for profile in profiles))
+        profile = prompt(f"Perfil de vault MCP [{default_profile}]: ").strip() or default_profile
+        if profile not in profiles: result(False, "Perfil de vault MCP inválido."); return False
+        default_entry = configured_telegram_token_entry(root, current_entry)
+        entry = prompt(f"Entrada do vault [{default_entry}]: ").strip() or default_entry
+        saved = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-credential", "--profile", profile, "--entry", entry], quiet=True)
+        if saved.returncode != 0: result(False, (saved.stdout or saved.stderr).strip()); return False
+        checked = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "check-entry", "--profile", profile, "--entry", entry], quiet=True)
+        try: probe = json.loads(checked.stdout); exists, detail = bool(probe["exists"]), str(probe["message"])
+        except (json.JSONDecodeError, KeyError): exists, detail = False, "Não foi possível verificar a entrada no KeePass."
+        def replace_token() -> bool:
+            nonlocal telegram_token_changed
+            token = getpass.getpass(Ui.text("› Token do bot (não será exibido): ", Ui.violet, Ui.bold)).strip()
+            if not token:
+                result(False, "O token do bot é obrigatório.")
+                return False
+            written = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "write-token", "--profile", profile, "--entry", entry], quiet=True, input_value=token)
+            if written.returncode != 0:
+                result(False, (written.stdout or written.stderr).strip())
+                return False
+            result(True, "Token gravado com segurança no cofre MCP.")
+            telegram_token_changed = True
+            return True
+        if not exists:
+            result(False, detail)
+            if prompt("Cadastrar o token do bot nesta entrada agora? [S/n]: ").strip().casefold() not in {"", "s", "sim"}: return False
+            if not replace_token(): return False
+        else:
+            result(True, detail)
+            action = flow_choice("Credencial do bot", ["Usar o token salvo", "Substituir o token"], "Usar o token salvo")
+            if action is None: return False
+            if action.startswith("Substituir") and not replace_token(): return False
+        while True:
+            tested = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-telegram"], quiet=True)
+            result(tested.returncode == 0, (tested.stdout or tested.stderr).strip())
+            if tested.returncode == 0: return True
+            if prompt("Substituir o token do bot e testar novamente? [S/n]: ").strip().casefold() not in {"", "s", "sim"}: return False
+            if not replace_token(): return False
+
+    def telegram_wizard() -> None:
+        """Conduz a configuração mínima do gateway, preservando cada etapa válida."""
+        nonlocal telegram_token_changed
+        telegram_token_changed = False
+        flow_heading("Wizard do Telegram", "Configuração guiada do gateway e do primeiro owner")
+        note("Cada etapa válida é mantida. O pareamento exige uma ação externa no Telegram e pode ser retomado depois.")
+        print("\n  1. Pré-requisitos do Shikigami e daemon")
+        main_checks = shikigami_diagnostics(root, lambda message: print("    → " + message)); print_checks(main_checks)
+        daemon_checks = validation("daemon-validation-json"); print_checks(daemon_checks)
+        if any(check.get("state") == "error" for check in [*main_checks, *daemon_checks]) or not daemon_running():
+            result(False, "Corrija os pré-requisitos e inicie o daemon antes de configurar o Telegram."); return
+
+        print("\n  2. Perfis de vault MCP")
+        keepass_checks = validation("keepass-validation-json"); print_checks(keepass_checks)
+        if any(check.get("state") != "ok" for check in keepass_checks):
+            result(False, "Configure ao menos um perfil de vault MCP antes de continuar."); return
+
+        print("\n  3. Preparar a configuração do Telegram")
+        prepared = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "bootstrap"], quiet=True)
+        if prepared.returncode != 0:
+            result(False, (prepared.stdout or prepared.stderr).strip() or "Não foi possível preparar a configuração do Telegram."); return
+        result(True, "Configuração-base do Telegram preparada.")
+
+        print("\n  4. Credencial e autenticação do bot")
+        if not configure_wizard_telegram_credential(): return
+
+        print("\n  5. Codex App Server")
+        if telegram_token_changed:
+            note("A nova credencial do bot foi salva. Ela será aplicada quando o wizard reiniciar o daemon no passo 7.")
+        try:
+            platform = tomllib.loads((root / "configs" / "daemon" / "daemon.toml").read_text(encoding="utf-8"))
+            current_idle = max(1, int(platform.get("app_server", {}).get("idle_timeout_seconds") or 1800) // 60)
+            app_enabled = bool(platform.get("app_server", {}).get("enabled", False))
+        except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
+            current_idle, app_enabled = 30, False
+        if not app_enabled:
+            raw = prompt(f"Habilitar App Server com {current_idle} minutos de inatividade? [S/n]: ").strip().casefold()
+            if raw not in {"", "s", "sim"}: result(False, "O Telegram exige o Codex App Server habilitado."); return
+            changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-app-server", "--enabled", "--idle-timeout", str(current_idle * 60)], quiet=True)
+            if changed.returncode != 0: result(False, (changed.stdout or changed.stderr).strip()); return
+            result(True, "Codex App Server habilitado.")
+
+        print("\n  6. Teste controlado do agente Codex")
+        agent = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-agent"], quiet=True)
+        if agent.returncode != 0: result(False, (agent.stdout or agent.stderr).strip()); return
+        result(True, (agent.stdout or "Agente Codex validado.").strip())
+
+        print("\n  7. Habilitar o gateway")
+        if not show_telegram_diagnosis(): result(False, "O diagnóstico ainda possui pendências obrigatórias."); return
+        if lifecycle("enable", ["telegram"]):
+            result(True, "Gateway Telegram habilitado.")
+        else: return
+        if daemon_running():
+            answer = prompt("O daemon está em execução; reiniciar agora para efetivar a alteração? [S/n]: ").strip().casefold()
+            if answer not in {"", "s", "sim"}: result(False, "Gateway habilitado, mas pendente de reinício. Execute o wizard novamente após reiniciá-lo."); return
+            restarted = lifecycle("service-restart") if service_installed() else (lifecycle("process-stop") and lifecycle("process-start"))
+            if not restarted: return
+        elif not lifecycle("service-start" if service_installed() else "process-start"):
+            return
+        if not wait_for_daemon_ready() or not wait_for_telegram_ready():
+            result(False, "O daemon iniciou, mas o gateway Telegram não respondeu em até 15 segundos. Consulte o diagnóstico do Telegram."); return
+        result(True, "Gateway Telegram em execução e respondendo.")
+
+        print("\n  8. Parear o primeiro owner")
+        request = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "telegram", "pair-request"], quiet=True)
+        if request.returncode != 0:
+            result(False, "Inicie ou reinicie o daemon com o Telegram habilitado antes de parear um owner."); return
+        try: pin = json.loads(request.stdout)["pin"]
+        except (json.JSONDecodeError, KeyError): result(False, "Não foi possível gerar o código de pareamento."); return
+        note(f"Envie /pair {pin} em uma DM para o bot. O código expira em cinco minutos.")
+        prompt("Depois de enviar o comando, pressione Enter para verificar o pareamento: ")
+        checks = validation()
+        owner = next((check for check in checks if check.get("label") == "Owners pareados"), {})
+        if owner.get("state") != "ok": result(False, "O owner ainda não foi confirmado. Execute o wizard novamente após concluir o /pair."); return
+        result(True, str(owner.get("detail") or "Owner pareado."))
+
+        print("\n  9. Sincronizar comandos privados")
+        synced = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "telegram", "sync-commands"], quiet=True)
+        if synced.returncode != 0: result(False, (synced.stdout or synced.stderr).strip()); return
+        result(True, "Comandos privados sincronizados.")
+
+        print("\n  10. Diagnóstico final")
+        ready = show_telegram_diagnosis()
+        result(ready, "Telegram configurado e pronto." if ready else "O Telegram foi configurado, mas ainda há pendências no diagnóstico.")
+
+    def telegram_menu() -> None:
+        """Central do gateway sem criar arquivos até o usuário iniciar uma configuração."""
+        while True:
+            screen("Gateway Telegram", "Integração, autenticação e owners do Shikigami")
+            item("!.", "Diagnóstico do Telegram", "Plataforma, KeePass Vault e gateway")
+            print()
+            item("W.", "Wizard de configuração do Telegram", "Configura o gateway e o primeiro owner")
+            print()
+            item("1.", "Gateway Telegram", "Ativação e teste da conexão")
+            item("2.", "Credencial do bot", "Perfil de vault MCP e referência do token")
+            item("3.", "Codex App Server", "Conversa persistente e teste do agente")
+            item("4.", "Owners e comandos", "Pareamento e preferências de execução")
+            print()
+            item("5.", "Segurança e instruções", "TOTP e instruções particulares")
+            item("6.", "Respostas em áudio", "Perfil EccoVox e duração da resposta por voz")
+            item("7.", "Arquivos e fotos do agente", "Permissão de mídia enviada pelo gateway Telegram")
+            item("8.", "Padrão de pensamentos", "Comportamento inicial de novas conversas e /new")
+            item("9.", "Figurinhas do agente", "Catálogo e explicações de uso")
+            item("10.", "Paralelismo de respostas", "Máximo de conversas processadas simultaneamente")
+            item("11.", "Entradas durante execução", "Fila, direcionamento e entrega pós-turno condicionada")
+            print()
+            item("X.", "Voltar")
+            choice = prompt("Opção: ").strip().casefold()
+            if choice in {"x", "\x1b"}: return
+            if choice == "!": show_telegram_diagnosis()
+            elif choice == "w": telegram_wizard()
+            elif choice == "1": telegram_section_menu("gateway")
+            elif choice == "2": telegram_section_menu("credential")
+            elif choice == "3": telegram_section_menu("app-server")
+            elif choice == "4": telegram_section_menu("owners")
+            elif choice == "5": telegram_section_menu("security")
+            elif choice == "6": configure_voice_replies()
+            elif choice == "7": telegram_section_menu("media")
+            elif choice == "8": configure_default_thoughts()
+            elif choice == "9": configure_stickers()
+            elif choice == "10": configure_parallel_responses()
+            elif choice == "11":
+                if configure_gateway_execution(root): offer_restart()
             else: result(False, "Opção inválida.")
 
     def miniapps_command(*arguments: str) -> subprocess.CompletedProcess[str]:
@@ -908,7 +2676,7 @@ def daemon_menu(root: Path) -> None:
         if diagnosis is None: return None
         local = "PRONTO" if diagnosis.get("local_ready") else "AÇÃO NECESSÁRIA"
         public = "PRONTO" if diagnosis.get("public_ready") else "OPCIONAL / PENDENTE"
-        screen("Diagnóstico Mini Apps", f"Local: {local} · Público: {public}")
+        flow_heading("Diagnóstico Mini Apps", f"Local: {local} · Público: {public}")
         symbols = {"ok": "✓", "action": "!", "info": "i"}
         for check in diagnosis.get("checks", []):
             if not isinstance(check, dict): continue
@@ -936,56 +2704,457 @@ def daemon_menu(root: Path) -> None:
             if not require_miniapps_running(): continue
             if choice == "2": completed = miniapps_command("tls", "status")
             elif choice == "3":
-                if prompt("Digite confiar para instalar a CA no computador: ").strip() != "confiar": result(False, "Cancelado."); continue
+                if prompt("Instalar a CA no computador? [s/N]: ").strip().casefold() not in {"s", "sim"}: result(False, "Cancelado."); continue
                 completed = miniapps_command("tls", "install-trust", "--confirm")
             else: result(False, "Opção inválida."); continue
             result(completed.returncode == 0, (completed.stdout or completed.stderr).strip())
 
-    def miniapps_public_menu() -> None:
+    def publication_command(*arguments: str, quiet: bool = True, read_result: bool = False) -> subprocess.CompletedProcess[str]:
+        return command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), *arguments], quiet=quiet, capture_stdout=read_result)
+
+    def tunnel_settings() -> dict[str, object]:
+        path = root / "configs" / "daemon" / "services" / "cloudflare-tunnel" / "tunnel.toml"
+        try: return tomllib.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError): return {}
+
+    def show_publication_diagnosis() -> bool:
+        flow_heading("Diagnóstico da publicação externa", "Daemon, KeePass, Gateway HTTPS, cloudflared e conexão do Tunnel")
+        checks = diagnose_publication(root, progress=lambda message: print("    → " + message, flush=True))
+        print()
+        print_checks(checks)
+        required = [check for check in checks if check.get("label") != "Mini Apps (opcional)"]
+        ready = bool(required) and all(check.get("state") == "ok" for check in required)
+        result(ready, "Publicação externa pronta; Gateway e conexão do Tunnel confirmados." if ready else "A publicação externa ainda não está pronta. Siga os próximos passos indicados ou execute W.")
+        return ready
+
+    def test_publication() -> bool:
+        """Confirma acesso ao link público temporário, com prazo e cancelamento local."""
+        flow_heading("Teste de acesso público", "Confirmação pelo navegador, independente de Mini Apps")
+
+        def response(*arguments: str) -> dict[str, object]:
+            completed = publication_command(*arguments)
+            if completed.returncode != 0:
+                raise ValueError("publication_test_unavailable")
+            value = json.loads(completed.stdout or "{}")
+            if not isinstance(value, dict):
+                raise ValueError("invalid_publication_test_response")
+            return value
+
+        test_id, state = "", "waiting"
+        try:
+            gateway = response("gateway", "status")
+            tunnel = response("cloudflare-tunnel", "status")
+            if gateway.get("ready") is not True or not str(gateway.get("public_origin") or "").startswith("https://"):
+                result(False, "O teste exige o Gateway HTTPS pronto e um hostname público configurado. Prepare a publicação na opção 4 e repita em T. Testar acesso público.")
+                return False
+            if any(tunnel.get(key) is not True for key in ("configured", "provisioned", "running", "connected", "ingress_ready")):
+                result(False, "O teste exige o Tunnel provisionado, conectado e com ingress confirmado para o Gateway atual. Consulte o diagnóstico (!) e repita em T. Testar acesso público.")
+                return False
+            started = response("gateway", "publication-test", "start", "--confirm")
+            identifier = started.get("test_id")
+            if not isinstance(identifier, str) or not re.fullmatch(r"[a-f0-9]{32}", identifier):
+                raise ValueError("invalid_publication_test_response")
+            test_id = identifier
+            url, duration = started.get("url"), started.get("expires_in_seconds")
+            if started.get("state") != "waiting" or not isinstance(url, str) or not url.startswith("https://") or any(character.isspace() for character in url) or type(duration) is not int or not 1 <= duration <= 120:
+                raise ValueError("invalid_publication_test_response")
+            note("Abra este link em um navegador. Para conferir o acesso externo, você pode usar o celular fora da rede local:")
+            print(f"\n    {url}\n", flush=True)
+            note(f"Aguardando a abertura do link por até {duration} segundos. X cancela" + ("." if os.name == "nt" else " (pressione Enter após X)."))
+            deadline = time.monotonic() + duration
+            next_poll, next_notice = 0.0, time.monotonic() + 10
+            while True:
+                if publication_test_cancelled():
+                    result(False, "Teste de acesso público cancelado.")
+                    return False
+                now = time.monotonic()
+                if now >= next_poll or now >= deadline:
+                    checked = response("gateway", "publication-test", "status", test_id)
+                    state = str(checked.get("state") or "")
+                    if state == "confirmed":
+                        result(True, "Acesso público confirmado: o Gateway recebeu a abertura do link HTTPS de teste.")
+                        return True
+                    if state in {"expired", "cancelled"}:
+                        result(False, "O link de teste expirou sem confirmação. Repita em T. Testar acesso público." if state == "expired" else "Teste de acesso público cancelado.")
+                        return False
+                    if state != "waiting":
+                        raise ValueError("invalid_publication_test_response")
+                    next_poll = now + 1
+                if now >= deadline:
+                    break
+                if now >= next_notice:
+                    note("Ainda aguardando a abertura do link; X cancela.")
+                    next_notice = now + 10
+                time.sleep(0.2)
+            result(False, "O link de teste expirou sem confirmação. Repita em T. Testar acesso público.")
+            return False
+        except KeyboardInterrupt:
+            result(False, "Teste de acesso público cancelado.")
+            return False
+        except (OSError, ValueError, subprocess.SubprocessError):
+            result(False, "Não foi possível confirmar o teste público. Confira o diagnóstico (!) e se o Gateway e o Daemon estão atualizados; repita em T. Testar acesso público.")
+            return False
+        finally:
+            if test_id and state not in {"confirmed", "expired", "cancelled"}:
+                try:
+                    publication_command("gateway", "publication-test", "cancel", test_id)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+
+    def cloudflared_installed(executable: str) -> bool:
+        selected = shutil.which(executable) or (executable if Path(executable).is_file() else None)
+        if not selected: return False
+        try:
+            checked = subprocess.run([selected, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, check=False)
+        except (OSError, subprocess.SubprocessError): return False
+        return checked.returncode == 0 and "cloudflared" in checked.stdout.lower()
+
+    def start_publication_service(service: str) -> bool:
+        if not daemon_running():
+            result(False, "Inicie o daemon em Processo/Serviço do Daemon antes de executar esta ação.")
+            return False
+        completed = publication_command("start", service)
+        if completed.returncode != 0:
+            result(False, (completed.stderr or completed.stdout or f"Não foi possível iniciar {service}. Reinicie o daemon e consulte !.").strip()); return False
+        try: state = json.loads(completed.stdout or "{}")
+        except ValueError: state = {}
+        if not isinstance(state, dict) or state.get("state") != "running":
+            detail = str(state.get("last_error") or "O serviço não confirmou o estado running.") if isinstance(state, dict) else "Resposta de estado inválida."
+            result(False, f"Falha ao iniciar {service}: {detail} Consulte o diagnóstico (!)."); return False
+        result(True, f"Serviço {service} em execução.")
+        return True
+
+    def install_publication_binary(update: bool = False) -> bool:
+        flow_heading("Verificar ou atualizar cloudflared" if update else "Localizar ou instalar cloudflared", "Detecta instalação existente e consulta a versão oficial antes de decidir")
+        current = tunnel_settings()
+        note("Informe a pasta onde o cloudflared já está instalado ou o destino de uma nova instalação.")
+        note("A verificação não exige conta, domínio ou token. Um executável existente pode ser reutilizado sem download.")
+        configured = str(current.get("cloudflared_executable") or "cloudflared")
+        existing_parent = Path(configured).parent if Path(configured).is_absolute() else None
+        suggested = str(current.get("install_directory") or existing_parent or root / "configs" / "daemon" / "services" / "cloudflare-tunnel" / "bin")
+        destination = prompt(f"Diretório de instalação [{suggested}]: ").strip() or suggested
+        if destination.casefold() in {"x", "\x1b"}: return False
+        if not Path(destination).is_absolute():
+            result(False, "Informe um diretório absoluto acessível ao usuário do daemon.")
+            return False
+        from onmyoji_daemon.cloudflare_tunnel.exception import TunnelError
+        try:
+            inspected = inspect_cloudflared_directory(destination, configured, progress=note)
+        except (TunnelError, OSError) as error:
+            result(False, f"Não foi possível verificar o diretório: {error}"); return False
+        candidates = inspected["candidates"]
+        for error in inspected.get("errors", []):
+            result(False, f"{error['executable']}: {error['message']}")
+        latest = inspected.get("latest_version")
+        if latest:
+            note(f"Versão oficial estável mais recente: {latest}.")
+        else:
+            note("Não foi possível confirmar a versão oficial mais recente: " + str(inspected.get("latest_error") or "consulta indisponível") + ". A reutilização de um binário local validado continua disponível.")
+        if candidates:
+            selected = candidates[0]
+            if len(candidates) > 1:
+                labels = [f"{entry['executable']} · versão {entry['version']}" for entry in candidates]
+                choice = flow_choice("Executável encontrado para validar e utilizar", labels, labels[0])
+                if choice is None: return False
+                selected = candidates[labels.index(choice)]
+            result(True, f"Executável encontrado: {selected['executable']} · versão {selected['version']}.")
+            def version_key(value: str) -> tuple[int, ...]:
+                match = re.fullmatch(r"v?(\d{4})\.(\d+)\.(\d+)", value)
+                return tuple(int(part) for part in match.groups()) if match else ()
+            newer = bool(latest and version_key(str(latest)) > version_key(selected["version"]))
+            if newer:
+                note(f"Há atualização disponível: {selected['version']} → {latest}.")
+            elif latest:
+                note("A versão instalada já é a mais recente ou é posterior à release estável consultada.")
+            install_choice = f"Instalar nova versão {latest}" if newer else "Instalar cópia gerenciada"
+            choice = flow_choice("O que fazer com o cloudflared", ["Usar o executável existente", install_choice], "Usar o executável existente")
+            if choice is None: return False
+            if choice == "Usar o executável existente":
+                if not start_publication_service("cloudflare-tunnel"): return False
+                completed = publication_command("cloudflare-tunnel", "use-cloudflared", "--executable", selected["executable"], "--confirm", "--wait", quiet=False)
+                result(completed.returncode == 0, "Executável existente validado e selecionado. Nenhum arquivo foi baixado ou substituído." if completed.returncode == 0 else "Não foi possível selecionar o executável existente; confira o diagnóstico acima.")
+                return completed.returncode == 0
+        else:
+            note("Nenhum executável cloudflared válido foi encontrado no diretório informado.")
+        base = str(Path(destination).parent) if Path(destination).is_file() else destination
+        note("Uma instalação gerenciada grava a nova versão em uma subpasta versions/ e preserva os executáveis existentes.")
+        arguments = ["cloudflare-tunnel", "update-cloudflared" if update else "install-cloudflared", "--install-directory", base, "--confirm", "--wait"]
+        if latest: arguments.extend(["--version", str(latest)])
+        external = configured not in {"", "cloudflared"} and not current.get("managed_version")
+        if external:
+            note("Ao confirmar, a instância passará a usar a cópia gerenciada; o executável externo será preservado.")
+            arguments.append("--adopt")
+        if prompt("Baixar e instalar a versão oficial neste diretório? [s/N]: ").strip().casefold() not in {"s", "sim"}: return False
+        if not start_publication_service("cloudflare-tunnel"): return False
+        completed = publication_command(*arguments, quiet=False)
+        result(completed.returncode == 0, "cloudflared instalado e validado." if completed.returncode == 0 else "A instalação não foi concluída; consulte o resultado acima.")
+        return completed.returncode == 0
+
+    def configure_publication() -> bool:
+        flow_heading("Configurar Cloudflare e credencial", "Identificadores locais; API Token protegido pelo KeePass")
+        current = tunnel_settings()
+        legacy = root / "configs" / "daemon" / "services" / "mini-apps" / "tunnel.toml"
+        if not current.get("account_id") and legacy.is_file():
+            result(False, "Existe uma configuração legada. Use 8. Migrar configuração legada para preservar o Tunnel e suas URLs.")
+            return False
+        note("1. API Token: autoriza o acesso à Cloudflare e será salvo no campo senha do KeePass.")
+        note("Crie um API Token com Account > Cloudflare Tunnel > Edit e Zone > DNS > Edit, limitado à conta e à zona utilizadas.")
+        note("Onde criar: https://dash.cloudflare.com/profile/api-tokens")
+        credential = configure_mcp_password_reference(root, "Cloudflare Tunnel", vault_entry_path(root, "Serviço", "CloudflareTunnel", definition="APIToken"), str(current.get("credential_profile") or ""), str(current.get("credential_entry_path") or ""))
+        if credential is None: return False
+        note("2. Account ID e Zone ID identificam sua conta e o domínio; não são tokens e ficam em tunnel.toml.")
+        note("No painel Cloudflare, abra o domínio e copie Account ID e Zone ID na seção API da página Overview.")
+        note("Ajuda: https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/")
+        values: dict[str, str] = {}
+        for key, label in (("account_id", "Account ID da conta Cloudflare"), ("zone_id", "Zone ID do domínio Cloudflare")):
+            default = str(current.get(key) or "")
+            while True:
+                value = prompt(label + (f" [{default}]" if default else " [X cancela]") + ": ").strip() or default
+                if value.casefold() in {"x", "\x1b"}: return False
+                if re.fullmatch(r"[0-9a-fA-F]{32}", value):
+                    values[key] = value.lower(); break
+                result(False, f"{label} deve ter 32 caracteres hexadecimais, sem espaços. Copie o ID do painel; a credencial já foi tratada no KeePass.")
+        note("3. Hostname: endereço público completo deste Shikigami, como akuma.seudominio.com, sem https:// nem caminho.")
+        note("O cloudflared conecta este computador à Cloudflare; não é necessário informar o IP público do computador.")
+        from onmyoji_daemon.cloudflare_tunnel.configuration import TunnelDefinition
+        from onmyoji_daemon.cloudflare_tunnel.exception import TunnelError
+        hostname_default = str(current.get("hostname") or "")
         while True:
-            diagnosis = miniapps_diagnosis()
-            if diagnosis is None: return
-            tunnel = diagnosis.get("tunnel", {}) if isinstance(diagnosis.get("tunnel"), dict) else {}
-            screen("Domínio e Cloudflare Tunnel", "Exposição pública opcional; todas as Mini Apps continuam protegidas por autenticação")
-            item("1.", "Entender pré-requisitos e configurar", "Domínio, permissões Cloudflare e referência KeePass")
-            item("2.", "Provisionar Tunnel e DNS", "Cria/altera recursos Cloudflare após confirmação")
-            item("3.", "Consultar/iniciar/reiniciar Tunnel", "Em execução" if tunnel.get("running") else "Parado")
-            item("4.", "Baixar cloudflared oficial", "Somente se o executável não estiver disponível")
+            hostname = prompt("Hostname público" + (f" [{hostname_default}]" if hostname_default else " [X cancela]") + ": ").strip() or hostname_default
+            if hostname.casefold() in {"x", "\x1b"}: return False
+            try:
+                TunnelDefinition(values["account_id"], values["zone_id"], hostname.lower()).validate()
+            except TunnelError as error:
+                result(False, str(error)); continue
+            values["hostname"] = hostname.lower(); break
+        values["credential_profile"], values["credential_entry_path"] = credential
+        note(f"Os identificadores e a referência KeePass serão gravados em {root / 'configs/daemon/services/cloudflare-tunnel/tunnel.toml'}.")
+        note("Esta etapa salva a configuração local; o provisionamento remoto será confirmado separadamente.")
+        if prompt("Salvar a configuração Cloudflare e a referência KeePass? [S/n]: ").strip().casefold() not in {"", "s", "sim"}: return False
+        completed = publication_command("cloudflare-tunnel", "configure", "--values", json.dumps(values))
+        if completed.returncode != 0:
+            result(False, (completed.stderr or completed.stdout or "A configuração não pôde ser salva.").strip()); return False
+        result(True, "Configuração Cloudflare e referência KeePass salvas. O token permanece no cofre.")
+        return True
+
+    def provision_publication() -> bool:
+        current = tunnel_settings()
+        if not all(current.get(key) for key in ("account_id", "zone_id", "hostname", "credential_profile", "credential_entry_path")):
+            result(False, "Configure Cloudflare e a credencial primeiro: opção 1 ou W. A instalação do binário, opção 3, é independente."); return False
+        executable = str(current.get("cloudflared_executable") or "cloudflared")
+        if not cloudflared_installed(executable) and not install_publication_binary(): return False
+        flow_heading("Verificar e preparar a publicação Cloudflare", "Recupera publicações existentes sem depender da instalação anterior")
+        note("O Gateway e o serviço administrativo serão preparados localmente. A consulta remota não altera Tunnel, ingress nem DNS.")
+        if not start_publication_service("gateway") or not start_publication_service("cloudflare-tunnel"): return False
+        note("Aguardando o Supervisor confirmar a origem HTTPS e a CA do Gateway no serviço Tunnel.")
+        deadline, origin = time.monotonic() + 10, {}
+        while time.monotonic() < deadline:
+            checked = publication_command("cloudflare-tunnel", "status")
+            try: origin = json.loads(checked.stdout or "{}") if checked.returncode == 0 else {}
+            except ValueError: origin = {}
+            if isinstance(origin, dict) and origin.get("activated") is True and origin.get("ca_file"): break
+            time.sleep(0.25)
+        else:
+            result(False, "O Supervisor não confirmou a origem HTTPS em 10 segundos. Nenhuma solicitação de provisionamento foi enviada; consulte o diagnóstico (!)."); return False
+        note("Consultando o DNS, a conta e a configuração remota com o API Token do KeePass.")
+        try:
+            inspected = publication_command("cloudflare-tunnel", "inspect-publication", "--wait", quiet=False, read_result=True)
+        except (OSError, subprocess.SubprocessError) as error:
+            result(False, f"Não foi possível executar a consulta Cloudflare: {error}"); return False
+        try: inspection = json.loads(inspected.stdout or "{}")
+        except ValueError: inspection = {}
+        if inspected.returncode != 0:
+            detail = inspection.get("error") if isinstance(inspection, dict) else None
+            stage = inspection.get("progress") if isinstance(inspection, dict) else None
+            code = inspection.get("error_code") if isinstance(inspection, dict) else None
+            result(False, "A consulta Cloudflare falhou. " + (f"Etapa: {stage}. " if stage else "") + (f"Código: {code}. " if code else "") + str(detail or "Confira o diagnóstico acima; nenhuma substituição foi solicitada."))
+            return False
+        preview = inspection.get("result") if isinstance(inspection, dict) and inspection.get("state") == "succeeded" else None
+        if not isinstance(preview, dict) or preview.get("status") not in {"new", "existing"}:
+            result(False, "A consulta não retornou uma prévia válida. Reinicie o serviço Cloudflare Tunnel para carregar o código atualizado e tente novamente."); return False
+        if preview["status"] == "existing":
+            preview_id = preview.get("preview_id")
+            if not isinstance(preview_id, str) or not re.fullmatch(r"[a-f0-9]{32}", preview_id):
+                result(False, "A consulta não retornou um identificador de prévia válido. Execute a consulta novamente."); return False
+            note(f"Publicação existente encontrada: {preview.get('hostname')}")
+            note(f"Tunnel: {preview.get('tunnel_name')} · ID {preview.get('tunnel_id')}")
+            if preview.get("configured_tunnel_id") and preview["configured_tunnel_id"] != preview.get("tunnel_id"):
+                note(f"O ID local {preview['configured_tunnel_id']} difere do DNS. Ao confirmar, o ID local será substituído pelo Tunnel encontrado acima.")
+            note(f"Origem atual: {preview.get('current_origin') or 'sem origem cadastrada'}")
+            note(f"Nova origem: {preview.get('new_origin')}")
+            note(str(preview.get("message") or "O Tunnel e seu DNS serão reutilizados; a origem e a validação TLS desta publicação serão atualizadas."))
+            note("DNS: o CNAME existente será preservado." if preview.get("dns_action") == "reuse" else "DNS: será criado o CNAME ausente para este Tunnel.")
+            note(f"Identificador da prévia e do backup: {preview_id}.")
+            note("Uma cópia da configuração anterior será guardada para restauração. As permissões de escrita são verificadas pela Cloudflare ao aplicar a alteração.")
+            if prompt("Reutilizar este Tunnel e substituir a configuração desta publicação? [s/N]: ").strip().casefold() not in {"s", "sim"}:
+                note("Reutilização cancelada; nenhuma substituição foi solicitada à Cloudflare."); return False
+            arguments = ["cloudflare-tunnel", "adopt-publication", "--preview-id", preview_id, "--confirm", "--wait"]
+        else:
+            note(f"Nenhuma publicação anterior foi encontrada para https://{current['hostname']}. Será criada a publicação para {preview.get('new_origin')}.")
+            if prompt("Provisionar hostname, ingress e DNS na Cloudflare? [s/N]: ").strip().casefold() not in {"s", "sim"}: return False
+            arguments = ["cloudflare-tunnel", "provision", "--confirm", "--wait"]
+        completed = publication_command(*arguments, quiet=False)
+        result(completed.returncode == 0, "Provisionamento concluído; confira a conexão no diagnóstico (!)." if completed.returncode == 0 else "Provisionamento não concluído; confira a etapa, o código de erro e o resultado acima.")
+        return completed.returncode == 0
+
+    def configure_publication_gateway() -> bool:
+        if not start_publication_service("gateway"): return False
+        status = publication_command("gateway", "status")
+        try: current = json.loads(status.stdout or "{}") if status.returncode == 0 else {}
+        except ValueError: current = {}
+        if not isinstance(current, dict) or not isinstance(current.get("http_port"), int):
+            result(False, (status.stderr or status.stdout or "Não foi possível consultar a porta do Gateway. Consulte o diagnóstico (!).").strip()); return False
+        port = current["http_port"]
+        while True:
+            raw = prompt(f"Porta HTTPS local do Gateway [{port}]: ").strip() or str(port)
+            if raw.casefold() in {"x", "\x1b"}: return False
+            try: selected = int(raw)
+            except ValueError: selected = 0
+            if 1 <= selected <= 65535: break
+            result(False, "Informe uma porta numérica entre 1 e 65535.")
+        if selected == port:
+            result(True, f"Gateway HTTPS preparado na porta {port}."); return True
+        note("A alteração reinicia o Gateway; um ingress já provisionado precisará ser atualizado na opção 4.")
+        if prompt("Salvar a porta e reiniciar o Gateway agora? [S/n]: ").strip().casefold() not in {"", "s", "sim"}: return False
+        completed = publication_command("gateway", "configure", "--values", json.dumps({"http_port": selected}), "--confirm")
+        if completed.returncode != 0:
+            result(False, (completed.stderr or completed.stdout or "A porta não pôde ser salva.").strip()); return False
+        return lifecycle("restart", ["gateway"])
+
+    def publication_wizard() -> None:
+        flow_heading("Assistente de publicação externa", "Gateway HTTPS e Tunnel Cloudflare, passo a passo")
+        note("O Gateway encaminha as requisições aos serviços locais; o Tunnel publica o Gateway no hostname Cloudflare.")
+        note("Mini Apps é um consumidor opcional e possui seu próprio wizard. X cancela a etapa atual; etapas já confirmadas permanecem salvas.")
+        print("\n  1. Verificar o daemon da instância")
+        if not daemon_running():
+            if not installed():
+                result(False, "Prepare o daemon em 'Validar runtime do daemon' e execute este wizard novamente."); return
+            if prompt("Iniciar o daemon agora para configurar a publicação? [S/n]: ").strip().casefold() not in {"", "s", "sim"}: return
+            if not lifecycle("service-start" if service_installed() else "process-start") or not wait_for_daemon_ready():
+                result(False, "O daemon não respondeu. Consulte o diagnóstico (!)."); return
+        registered = publication_command("list-services")
+        try: names = {item["name"] for item in json.loads(registered.stdout or "[]") if isinstance(item, dict) and "name" in item}
+        except (ValueError, TypeError): names = set()
+        if not {"gateway", "cloudflare-tunnel"} <= names:
+            result(False, "O daemon em memória ainda não reconhece Gateway e Tunnel. Reinicie-o em Processo/Serviço do Daemon e reabra W."); return
+        result(True, "Daemon respondendo com os serviços Gateway e Tunnel disponíveis.")
+        print("\n  2. Configurar token KeePass, conta Cloudflare e hostname")
+        if not configure_publication(): return
+        print("\n  3. Validar ou instalar o executável cloudflared")
+        executable = str(tunnel_settings().get("cloudflared_executable") or "cloudflared")
+        if cloudflared_installed(executable): result(True, "Executável cloudflared encontrado e validado.")
+        elif not install_publication_binary(): return
+        print("\n  4. Preparar o Gateway HTTPS local")
+        note("O certificado e a origem HTTPS são locais; confirme a porta que será usada pelo Tunnel.")
+        if not configure_publication_gateway(): return
+        print("\n  5. Descobrir, reutilizar ou criar a publicação e iniciar o Tunnel")
+        if not provision_publication(): return
+        print("\n  6. Retomar Gateway e Tunnel após reiniciar o daemon")
+        if prompt("Habilitar os dois serviços para início automático com o daemon? [S/n]: ").strip().casefold() in {"", "s", "sim"}:
+            if not lifecycle("enable", ["gateway"]) or not lifecycle("enable", ["cloudflare-tunnel"]): return
+        print("\n  7. Diagnóstico final")
+        show_publication_diagnosis()
+        print("\n  8. Confirmar o acesso pelo link público")
+        test_publication()
+        note("Para publicar Mini Apps e OAuth, abra Daemon > M. Mini Apps > W. O acesso local pode ser validado separadamente.")
+
+    def publication_listeners() -> None:
+        if not start_publication_service("gateway"): return
+        completed = publication_command("gateway", "listeners", "list")
+        flow_heading("Listeners públicos", "Cada primeiro segmento possui um proprietário exclusivo")
+        result(completed.returncode == 0, (completed.stdout or completed.stderr).strip())
+        if completed.returncode != 0: return
+        selected = flow_choice("Ação sobre um listener", ["Somente consultar", "Habilitar", "Desabilitar", "Remover", "Restaurar"], "Somente consultar")
+        if selected in {None, "Somente consultar"}: return
+        prefix = prompt("Primeiro segmento do path: ").strip()
+        if not prefix or prefix.casefold() == "x": return
+        owner = prompt("Serviço proprietário: ").strip()
+        if not owner or owner.casefold() == "x": return
+        actions = {"Habilitar": "enable", "Desabilitar": "disable", "Remover": "remove", "Restaurar": "restore"}
+        if prompt(f"{selected} o listener {prefix}? [s/N]: ").strip().casefold() not in {"s", "sim"}: return
+        completed = publication_command("gateway", "listeners", actions[selected], prefix, "--owner", owner, "--confirm")
+        result(completed.returncode == 0, (completed.stdout or completed.stderr).strip())
+
+    def publication_migration() -> None:
+        flow_heading("Migrar configuração legada", "Usa o arquivo antigo de Mini Apps e mantém hostname, Tunnel ID e referências KeePass")
+        inspection = publication_command("publication-migrate", "inspect")
+        result(inspection.returncode == 0, (inspection.stdout or inspection.stderr).strip())
+        if inspection.returncode != 0: return
+        action = flow_choice("Operação de migração", ["Somente consultar", "Migrar", "Rollback"], "Somente consultar")
+        if action in {None, "Somente consultar"}: return
+        note("A transição exige uma janela de manutenção. O rollback da infraestrutura exige reinstalar a versão anterior para reativar o controlador legado.")
+        if prompt(f"{'Migrar' if action == 'Migrar' else 'Restaurar infraestrutura anterior'} agora? [s/N]: ").strip().casefold() not in {"s", "sim"}: return
+        completed = publication_command("publication-migrate", "apply" if action == "Migrar" else "rollback", "--confirm", quiet=False)
+        result(completed.returncode == 0, "Operação concluída; confira o estado informado." if completed.returncode == 0 else "Operação interrompida; consulte o diagnóstico e o manifesto de migração.")
+
+    def restore_publication() -> None:
+        flow_heading("Restaurar publicação anterior", "Usa o backup de uma reutilização confirmada neste setup")
+        directory = root / "configs" / "daemon" / "services" / "cloudflare-tunnel" / "publication-recovery"
+        backups = []
+        for path in sorted(directory.glob("*.json"), reverse=True):
+            if not re.fullmatch(r"[a-f0-9]{32}", path.stem): continue
+            try: saved = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError): continue
+            if isinstance(saved, dict) and saved.get("state") in {"applied", "applying", "failed", "rolling_back"}:
+                backups.append((path.stem, str(saved["state"])))
+        if not backups:
+            result(False, "Não há backup de substituição aplicada disponível para restaurar. As prévias apenas consultadas não alteraram a Cloudflare."); return
+        labels = [f"{identifier} · {state}" for identifier, state in backups]
+        selected = flow_choice("Backup da publicação a restaurar", labels, labels[0])
+        if selected is None: return
+        identifier = backups[labels.index(selected)][0]
+        note("A restauração recupera a origem e o TLS anteriores. Um CNAME anterior é preservado; somente um CNAME criado pela substituição pode ser removido.")
+        note("A origem antiga precisa estar em execução para atender requisições. Alterações posteriores ao backup impedem a restauração automática.")
+        if prompt("Restaurar a configuração anterior desta publicação? [s/N]: ").strip().casefold() not in {"s", "sim"}: return
+        if not start_publication_service("cloudflare-tunnel"): return
+        completed = publication_command("cloudflare-tunnel", "rollback-publication", "--preview-id", identifier, "--confirm", "--wait", quiet=False)
+        result(completed.returncode == 0, "Configuração anterior restaurada; confira a disponibilidade da origem antiga." if completed.returncode == 0 else "A restauração não foi concluída. Confira a etapa e o erro acima; o backup foi preservado.")
+
+    def publication_menu() -> None:
+        while True:
+            screen("Publicação externa", "Gateway HTTP e Cloudflare Tunnel independentes de Mini Apps")
+            item("!.", "Diagnóstico da publicação externa", "Pré-requisitos, KeePass, Gateway, binário e conexão")
+            print()
+            item("W.", "Wizard de publicação externa", "Configura e prepara Gateway e Tunnel passo a passo")
+            item("T.", "Testar acesso público", "Link temporário e confirmação pelo navegador")
+            print()
+            item("1.", "Configurar Cloudflare e credencial", "Token no KeePass, Account ID, Zone ID e hostname")
+            item("2.", "Estado e diagnóstico", "Disponível mesmo sem configuração ou serviços iniciados")
+            item("3.", "Instalar ou atualizar cloudflared")
+            item("4.", "Preparar ou recuperar publicação", "Detecta e permite reutilizar Tunnel, ingress e DNS existentes")
+            item("5.", "Administrar serviços", "Iniciar, parar, reiniciar, habilitar ou desabilitar")
+            item("6.", "Listeners públicos")
+            item("7.", "Porta HTTPS do Gateway")
+            item("8.", "Migrar configuração legada", "Quando a instalação conserva o arquivo antigo de Mini Apps")
+            item("9.", "Restaurar publicação anterior", "Backup de uma reutilização confirmada neste setup")
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
-            if choice == "1":
-                screen("Preparar acesso público", "Reúna estes dados antes de criar qualquer recurso na Cloudflare")
-                print("  1. Um domínio já adicionado à Cloudflare.")
-                print("  2. Um token Cloudflare guardado no KeePass, com permissão Account > Cloudflare Tunnel > Edit e Zone > DNS > Edit.")
-                print("  3. Account ID e Zone ID, encontrados no painel Overview da conta e da zona.")
-                print("  4. Um hostname livre dentro da zona, por exemplo apps.seudominio.com.")
-                print("\n  O Onmyōji recebe somente os IDs e a referência do token no KeePass; o token nunca é solicitado nem gravado aqui.")
-                if prompt("Digite configurar quando os dados estiverem prontos, ou X para voltar: ").strip().casefold() != "configurar": result(False, "Configuração pública adiada; o Gateway local continua disponível."); continue
-                print("\n  Account ID identifica sua conta Cloudflare; copie-o do painel da conta.")
-                account_id = prompt("Cloudflare Account ID: ").strip()
-                print("\n  Zone ID identifica a zona DNS do domínio; copie-o do Overview do domínio.")
-                zone_id = prompt("Cloudflare Zone ID: ").strip()
-                print("\n  Hostname é o endereço que será criado no DNS, por exemplo apps.seudominio.com.")
-                hostname = prompt("Hostname público: ").strip()
-                print("\n  Perfil e entrada apenas apontam para o token já salvo no KeePass.")
-                keepass_profile = prompt("Perfil KeePass: ").strip()
-                token_entry = prompt("Entrada KeePass do token de API Cloudflare: ").strip()
-                print("\n  Pressione Enter se cloudflared estiver no PATH; caso contrário, informe o caminho do executável.")
-                executable = prompt("Executável cloudflared [cloudflared]: ").strip() or "cloudflared"
-                values = {"account_id": account_id, "zone_id": zone_id, "hostname": hostname, "keepass_profile": keepass_profile, "token_entry": token_entry, "cloudflared_executable": executable}
-                completed = miniapps_command("tunnel", "configure", "--values", json.dumps(values))
-            elif choice == "2":
-                if prompt("Digite provisionar para criar/atualizar Tunnel, ingress e DNS: ").strip() != "provisionar": result(False, "Cancelado."); continue
-                completed = miniapps_command("tunnel", "provision", "--confirm")
+            if choice in {"!", "2"}: show_publication_diagnosis()
+            elif choice == "w": publication_wizard()
+            elif choice == "t": test_publication()
+            elif choice == "1":
+                if configure_publication(): test_publication()
             elif choice == "3":
-                action = prompt("Digite iniciar, reiniciar ou pressione Enter para consultar: ").strip().casefold()
-                completed = miniapps_command("tunnel", "start" if action == "iniciar" else "restart" if action == "reiniciar" else "status")
+                action = flow_choice("Executável cloudflared", ["Instalar", "Atualizar", "Restaurar versão anterior"], "Instalar")
+                if action == "Restaurar versão anterior":
+                    if prompt("Restaurar a versão anterior preservada do cloudflared? [s/N]: ").strip().casefold() not in {"s", "sim"}: continue
+                    if not start_publication_service("cloudflare-tunnel"): continue
+                    completed = publication_command("cloudflare-tunnel", "rollback-cloudflared", "--confirm", "--wait", quiet=False)
+                    result(completed.returncode == 0, "Versão anterior restaurada." if completed.returncode == 0 else "A versão anterior não pôde ser restaurada.")
+                elif action is not None: install_publication_binary(action == "Atualizar")
             elif choice == "4":
-                if prompt("Digite baixar para obter cloudflared oficial: ").strip() != "baixar": result(False, "Cancelado."); continue
-                completed = miniapps_command("tunnel", "install-cloudflared", "--confirm")
-            else: result(False, "Opção inválida."); continue
-            result(completed.returncode == 0, (completed.stdout or completed.stderr).strip())
+                if provision_publication(): test_publication()
+            elif choice == "5":
+                service = flow_choice("Serviço", ["Gateway HTTP", "Cloudflare Tunnel"], "Gateway HTTP")
+                if service is None: continue
+                action = flow_choice("Ação", ["Iniciar", "Parar", "Reiniciar", "Habilitar", "Desabilitar"], "Iniciar")
+                if action is not None: lifecycle({"Iniciar": "start", "Parar": "stop", "Reiniciar": "restart", "Habilitar": "enable", "Desabilitar": "disable"}[action], ["gateway" if service == "Gateway HTTP" else "cloudflare-tunnel"])
+            elif choice == "6": publication_listeners()
+            elif choice == "7": configure_publication_gateway()
+            elif choice == "8": publication_migration()
+            elif choice == "9": restore_publication()
+            else: result(False, "Opção inválida.")
 
     def miniapps_publications() -> None:
         if not require_miniapps_running(): return
@@ -993,24 +3162,20 @@ def daemon_menu(root: Path) -> None:
         try: apps = json.loads(completed.stdout) if completed.returncode == 0 else None
         except json.JSONDecodeError: apps = None
         if not isinstance(apps, list): result(False, (completed.stdout or completed.stderr).strip()); return
-        screen("Publicações Mini App", "Os arquivos permanecem no workspace; o Gateway mantém somente o registro")
+        flow_heading("Publicações Mini App", "Os arquivos permanecem no workspace; o Gateway mantém somente o registro")
         if not apps:
-            print("  i  Nenhuma Mini App publicada. Crie o código no workspace e publique-o pela skill Mini Apps.")
+            print("  i  Nenhuma Mini App publicada. Crie o código no workspace e publique-o pelo MCP Mini Apps.")
             return
         for app in apps:
             if not isinstance(app, dict): continue
             item(str(app.get("id", ""))[:8] + ".", str(app.get("alias") or "Sem nome"), f"{app.get('state')} · {app.get('health')}")
             print(f"     URL: {app.get('url')}")
-            if app.get("last_error"): print("     Atenção: a publicação registrou um erro; consulte os eventos pela skill Mini Apps.")
+            if app.get("last_error"): print("     Atenção: a publicação registrou um erro; consulte os eventos pelo MCP Mini Apps.")
 
     def miniapps_wizard() -> None:
-        screen("Assistente Mini Apps", "O acesso público é opcional; comece pelo objetivo de uso")
-        item("L.", "Somente neste computador", "Gateway HTTPS local e publicação no workspace")
-        item("P.", "Também em domínio público", "Cloudflare Tunnel, DNS e proteção da Mini App")
-        item("X.", "Voltar")
-        choice = prompt("Objetivo: ").strip().casefold()
-        if choice in {"x", "\x1b"}: return
-        if choice not in {"l", "p"}: result(False, "Escolha L ou P."); return
+        flow_heading("Assistente Mini Apps", "O acesso público é opcional; comece pelo objetivo de uso")
+        choice = flow_choice("Objetivo de uso", ["Somente neste computador", "Também em domínio público"], "Somente neste computador")
+        if choice is None: return
         service = miniapps_state()
         if service.get("state") != "running":
             if prompt("O gateway local precisa estar ativo. Habilitar e iniciar agora? [S/n]: ").strip().casefold() not in {"", "s", "sim"}: result(False, "O assistente precisa do gateway ativo para continuar."); return
@@ -1023,10 +3188,10 @@ def daemon_menu(root: Path) -> None:
             if completed.returncode == 0: result(True, (completed.stdout or completed.stderr).strip())
             else: result(False, "A confiança local não foi confirmada. Isso não bloqueia o uso público; tente novamente em 'Gateway HTTPS e confiança local'. " + (completed.stdout or completed.stderr).strip())
         apps = diagnosis.get("apps", {}) if isinstance(diagnosis.get("apps"), dict) else {}
-        if int(apps.get("total", 0)) == 0: print("\n  Próximo passo local: crie a Mini App dentro do workspace e publique-a pela skill Mini Apps.")
-        if choice == "p":
+        if int(apps.get("total", 0)) == 0: print("\n  Próximo passo local: crie a Mini App dentro do workspace e publique-a pelo MCP Mini Apps.")
+        if choice == "Também em domínio público":
             print("\n  Agora você verá os pré-requisitos do domínio. Se ainda não tiver domínio, token ou IDs Cloudflare, escolha voltar: nenhuma configuração pública é obrigatória neste momento.")
-            miniapps_public_menu()
+            publication_menu()
 
     def miniapps_menu() -> None:
         while True:
@@ -1039,8 +3204,7 @@ def daemon_menu(root: Path) -> None:
             item("3.", "Gateway HTTPS e confiança local")
             item("4.", "Publicações Mini App")
             print()
-            item("5.", "Domínio e Cloudflare Tunnel")
-            item("6.", "Estado do Tunnel")
+            item("5.", "Publicação externa compartilhada", "Gateway HTTP e Cloudflare Tunnel")
             print()
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
@@ -1049,54 +3213,61 @@ def daemon_menu(root: Path) -> None:
             elif choice == "2": show_miniapps_diagnosis()
             elif choice == "3": miniapps_local_menu()
             elif choice == "4": miniapps_publications()
-            elif choice == "5": miniapps_public_menu()
-            elif choice == "6":
-                diagnosis = miniapps_diagnosis()
-                if diagnosis is not None:
-                    result(True, json.dumps(diagnosis.get("tunnel", {}), ensure_ascii=False))
+            elif choice == "5": publication_menu()
             else: result(False, "Opção inválida.")
 
+    def uninstall_instance() -> None:
+        """Confirma a remoção sem abrir um submenu de opção única."""
+        if not installed():
+            result(False, "Instale o daemon pela opção 1 antes de desinstalá-lo.")
+            return
+        confirmation = prompt("ATENÇÃO: isto apagará todas as configurações, credenciais referenciadas, pareamentos, conversas e estado do daemon desta instância. Uma reinstalação exigirá configurar tudo novamente. Digite desinstalar para confirmar: ").strip()
+        if confirmation == "desinstalar": lifecycle("remove-instance")
+        else: result(False, "Desinstalação cancelada; a confirmação deve ser exatamente desinstalar.")
+
     while True:
-        status = "INSTALADO" if installed() else "NÃO INSTALADO"
-        screen("Daemon", f"Supervisor e serviços da instância · {status}")
-        item("1.", "Desinstalar daemon da instância" if installed() else "Instalar daemon da instância", status)
-        if installed():
-            item("2.", "Serviço do sistema operacional", "Instalado" if service_installed() else "Não instalado")
-            if not service_installed(): item("3.", "Gerenciar processo", "Execução local em segundo plano")
-            else: print("\n  " + Ui.text("O processo é gerenciado pelo serviço do sistema operacional.", Ui.slate))
-            item("4.", "Diagnóstico detalhado")
-            item("5.", "Reparar ambiente Python", "Dependências privadas do daemon")
-            print()
-            item("T.", "Gateway Telegram", "Configuração, teste e pareamento")
-            item("M.", "MiniApp", "Gateway HTTPS e Cloudflare Tunnel")
-            print()
+        status = "CONFIGURAÇÃO-BASE PREPARADA" if installed() else "NÃO CONFIGURADO"
+        screen("Daemon", f"Plataforma local e serviços da instância · {status}")
+        item("!.", "Diagnóstico do Daemon", "Começa pelo diagnóstico principal do Shikigami")
+        print()
+        item("W.", "Wizard de configuração do Daemon", "Guia de configuração e validação")
+        print()
+        item("1.", "Preparar e instalar daemon" if not installed() else "Validar runtime do daemon", status)
+        item("2.", "Processo/Serviço do Daemon", "Processo local e serviço do sistema operacional")
+        item("3.", "Desinstalar daemon da instância", "Remove configurações e estado locais")
+        print()
+        item("T.", "Telegram", "Configuração, teste e pareamento")
+        item("M.", "MiniApps", "Aplicações, HTTPS local e OAuth")
+        item("P.", "Publicação externa", "Gateway HTTP e Cloudflare Tunnel compartilhados")
+        print()
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
-        if choice == "1":
-            if not installed(): lifecycle("install-instance")
-            else:
-                confirmation = prompt("ATENÇÃO: isto apagará todas as configurações, credenciais referenciadas, pareamentos, conversas e estado do daemon desta instância. Uma reinstalação exigirá configurar tudo novamente. Digite desinstalar para confirmar: ").strip()
-                if confirmation == "desinstalar": lifecycle("remove-instance")
-                else: result(False, "Desinstalação cancelada; a confirmação deve ser exatamente desinstalar.")
-        elif installed() and choice == "2": service_menu()
-        elif installed() and choice == "3" and not service_installed(): process_menu()
-        elif installed() and choice == "4": show_validation()
-        elif installed() and choice == "5": lifecycle("install-runtime")
-        elif installed() and choice == "t": telegram_menu()
-        elif installed() and choice == "m": miniapps_menu()
+        if choice == "!": show_daemon_diagnosis()
+        elif choice == "w": daemon_wizard()
+        elif choice == "1":
+            install_daemon()
+        elif choice == "2":
+            if not installed(): result(False, "Instale o daemon pela opção 1 antes de operá-lo.")
+            else: operation_menu()
+        elif choice == "3": uninstall_instance()
+        elif choice in {"t", "m", "p"}:
+            if not installed(): result(False, "Instale o daemon pela opção 1 antes de configurar serviços.")
+            elif choice == "t": telegram_menu()
+            elif choice == "m": miniapps_menu()
+            else: publication_menu()
         else: result(False, "Opção inválida.")
 
 
 def skill_menu(skill: Skill, root: Path, skills: list[Skill]) -> None:
     while True:
         conflicted = skill.identifier in conflicting_skill_ids(skills)
-        enabled = is_skill_enabled(root, skill)
+        enabled = is_skill_enabled(root, skill, skills)
         state = "Desabilitar" if enabled else "Habilitar"
-        screen(skill.title, f"Skill de integração · {'CONFLITO' if conflicted else ('ATIVA' if enabled else 'INATIVA')}")
+        screen(skill.title, f"Skill do Shikigami · {'CONFLITO' if conflicted else ('ATIVA' if enabled else 'INATIVA')}")
         if skill.description: print(f"  {skill.description}\n")
         if conflicted:
-            note(f"O ID {skill.identifier} também existe no catálogo ou no Shikigami. Renomeie uma das skills antes de habilitá-la.")
+            note(f"O ID {skill.identifier} está duplicado entre as skills do Shikigami. Renomeie uma delas antes de habilitá-la.")
         else:
             item("1.", state)
             if skill.setup_script is not None: item("2.", "Configurar")
@@ -1106,11 +3277,9 @@ def skill_menu(skill: Skill, root: Path, skills: list[Skill]) -> None:
         if conflicted:
             result(False, "Esta skill possui um ID em conflito e não pode ser alterada.")
         elif choice == "1":
-            if skill.catalog_managed:
-                identifiers = enabled_ids(root)
-                (identifiers.discard if enabled else identifiers.add)(skill.identifier)
-                ok, message = save_enabled(root, identifiers, skills)
-            else: ok, message = set_instance_skill_enabled(root, skill, not enabled)
+            identifiers = enabled_ids(root, skills)
+            (identifiers.discard if enabled else identifiers.add)(skill.identifier)
+            ok, message = save_enabled(root, identifiers, skills)
             result(ok, message if ok else f"{message} A alteração foi desfeita.")
         elif choice == "2" and skill.setup_script is not None:
             ok, message = invoke(skill, root)
@@ -1121,62 +3290,70 @@ def skill_menu(skill: Skill, root: Path, skills: list[Skill]) -> None:
 def menu(skills: list[Skill], root: Path) -> int:
     while True:
         screen("Central de configuração", "Onmyōji · integrações do Shikigami")
-        item("A.", "Codex-CLI", "Modelo, projeto, sandbox e permissões")
-        item("B.", "Codex Desktop", "Habilitar ou desabilitar skills do projeto")
+        item("!.", "Diagnóstico", "Valida nome, executável e modelo do Codex-CLI")
+        print()
+        item("P.", "Python e bibliotecas", "Runtime único e componentes compartilhados")
+        item("C.", "Codex-CLI", "Modelo, projeto, sandbox e permissões")
         item("D.", "Daemon", "Supervisor local e serviços da instância")
-        integration = [skill for skill in skills if skill.catalog_managed]
-        domain = [skill for skill in skills if not skill.catalog_managed]
+        item("M.", "MCP", "Perfis de vault e integrações MCP")
+        conflicts = conflicting_skill_ids(skills)
+        enabled = enabled_ids(root, skills)
         def rendered(index: int, skill: Skill, width: int = 50) -> str:
-            if skill.identifier in conflicting_skill_ids(skills): state = Ui.badge("CONFLITO", "warning")
+            if skill.identifier in conflicts: state = Ui.badge("CONFLITO", "warning")
             else:
-                active = is_skill_enabled(root, skill)
-                state = Ui.badge("ATIVA", "active") if active else Ui.badge("inativa", "inactive")
+                state = Ui.badge("ATIVA", "active") if skill.identifier in enabled else Ui.badge("inativa", "inactive")
             return skill_item(index, skill, state, width)
-        wide = len(domain) > 0 and shutil.get_terminal_size((78, 24)).columns >= 96
-        if wide:
-            print("\n" + "  SKILLS DE INTEGRAÇÃO".ljust(51) + "SKILLS DE DOMÍNIO")
-            rows = max(len(integration), len(domain))
-            for row in range(rows):
-                left = rendered(row + 1, integration[row]) if row < len(integration) else " " * 50
-                right = rendered(len(integration) + row + 1, domain[row]) if row < len(domain) else ""
-                print(left + right)
-        else:
-            print("\n  SKILLS DE INTEGRAÇÃO")
-            for index, skill in enumerate(integration, 1): print(rendered(index, skill))
-            if domain:
-                print("\n  SKILLS DE DOMÍNIO")
-                for index, skill in enumerate(domain, len(integration) + 1): print(rendered(index, skill))
+        if skills:
+            print("\n  SKILLS DO SHIKIGAMI")
+            for index, skill in enumerate(skills, 1): print(rendered(index, skill))
         print()
         item("X.", "Sair")
         choice = prompt("Selecione uma opção: ").strip().casefold()
         if choice == "x": return 0
-        if choice == "a": codex_menu(root); continue
-        if choice == "b": desktop_skills_menu(root); continue
+        if choice == "!": diagnostics_menu(root); continue
+        if choice == "p": python_menu(root); continue
+        if choice == "c": codex_menu(root); continue
         if choice == "d": daemon_menu(root); continue
+        if choice == "m": subprocess.run([sys.executable, str(root / "onmyoji-daemon" / "setupMcp.py")], check=False); continue
         if choice.isdigit() and 1 <= int(choice) <= len(skills): skill_menu(skills[int(choice) - 1], root, skills)
         else: result(False, "Opção inválida.")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(); parser.add_argument("--action", choices=["menu", "list", "enable", "disable", "configure", "status"], default="menu"); parser.add_argument("--skill"); parser.add_argument("--json", action="store_true"); args = parser.parse_args()
-    ensure_shikigami_definition(ROOT)
-    skills = discover(); by_id = {skill.identifier: skill for skill in skills if skill.identifier not in conflicting_skill_ids(skills)}
+    if args.action == "menu": opening_logo()
+    system, message = ensure_shikigami_configuration(ROOT)
+    if system is None:
+        if args.json: print(json.dumps({"ok": False, "error": {"code": "system_configuration_failed", "message": message}}, ensure_ascii=False))
+        else: result(False, message)
+        return 2
+    if not bool(system["shikigami_installed"]):
+        if args.action != "menu":
+            message = "A instalação inicial do Shikigami está pendente; execute o setup sem --action para concluí-la."
+            if args.json: print(json.dumps({"ok": False, "error": {"code": "initial_installation_pending", "message": message}}, ensure_ascii=False))
+            else: print(message)
+            return 2
+        system = initial_installation_wizard(ROOT, system)
+        if system is None: return 0
+    skills = discover(); conflicts = conflicting_skill_ids(skills); by_id = {skill.identifier: skill for skill in skills if skill.identifier not in conflicts}
     initialized, initialization_message = ensure_skill_state(ROOT, skills)
     if not initialized:
         result(False, initialization_message)
         return 2
     if args.action == "menu": return menu(skills, ROOT)
     if args.action == "list":
-        values = [{"id": skill.identifier, "title": skill.title, "enabled": is_skill_enabled(ROOT, skill), "description": skill.description, "conflict": skill.identifier in conflicting_skill_ids(skills)} for skill in skills]
+        enabled = enabled_ids(ROOT, skills)
+        values = [{"id": skill.identifier, "title": skill.title, "enabled": skill.identifier in enabled, "description": skill.description, "conflict": skill.identifier in conflicts} for skill in skills]
         if args.json: print(json.dumps({"ok": True, "skills": values}, ensure_ascii=False))
         else:
-            for skill in skills: print(f"{skill.identifier}\t{'enabled' if is_skill_enabled(ROOT, skill) else 'disabled'}\t{skill.description}")
+            for skill in skills: print(f"{skill.identifier}\t{'enabled' if skill.identifier in enabled else 'disabled'}\t{skill.description}")
         return 0
     if args.action == "status":
-        if args.json: print(json.dumps({"ok": True, "skills": sorted(active) if (active := enabled_ids(ROOT)) else []}, ensure_ascii=False))
-        else: print("\n".join(sorted(enabled_ids(ROOT))))
+        active = enabled_ids(ROOT, skills)
+        if args.json: print(json.dumps({"ok": True, "skills": sorted(active)}, ensure_ascii=False))
+        else: print("\n".join(sorted(active)))
         return 0
-    if args.skill in conflicting_skill_ids(skills): parser.error("--skill identifica skills em conflito entre catálogo e Shikigami; renomeie uma delas")
+    if args.skill in conflicts: parser.error("--skill identifica skills em conflito entre catálogo e Shikigami; renomeie uma delas")
     if args.skill not in by_id: parser.error("--skill deve identificar uma skill descoberta")
     if args.action == "configure":
         if by_id[args.skill].setup_script is None:
@@ -1187,11 +3364,9 @@ def main() -> int:
         if args.json: print(json.dumps({"ok": False, "error": {"code": "interactive_only", "message": "Use as ações não interativas declaradas pela própria skill."}}, ensure_ascii=False)); return 2
         ok, _message = invoke(by_id[args.skill], ROOT); return 0 if ok else 2
     skill = by_id[args.skill]
-    if skill.catalog_managed:
-        active = enabled_ids(ROOT)
-        (active.add if args.action == "enable" else active.discard)(args.skill)
-        ok, message = save_enabled(ROOT, active, skills)
-    else: ok, message = set_instance_skill_enabled(ROOT, skill, args.action == "enable")
+    active = enabled_ids(ROOT, skills)
+    (active.add if args.action == "enable" else active.discard)(args.skill)
+    ok, message = save_enabled(ROOT, active, skills)
     print(json.dumps({"ok": ok, "skill": args.skill, "enabled": args.action == "enable", "message": message}, ensure_ascii=False) if args.json else message)
     return 0 if ok else 2
 

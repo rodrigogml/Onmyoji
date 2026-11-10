@@ -5,35 +5,53 @@
 !/.gitattributes
 !/AGENTS.md
 !/README.md
+!/*.proposed.md
 !/setupOnmyoji.py
+!/bootstrapShikigami.py
 !/pytest.ini
 !/conftest.py
-!/shikigami/
+!/shikigami-template/
+!/shikigami-template/**
+!/shikigami-skills/
+!/shikigami-skills/**
+!/shikigami-agents/
+!/shikigami-agents/*.toml
 !/docs/
 !/docs/**
-!/available-skills/
-!/available-skills/**
+!/etc/
+!/etc/ID Visual/
+!/etc/ID Visual/logo.png
 !/onmyoji-daemon/
 !/onmyoji-daemon/**
 !/tests/
 !/tests/**
 
-# Superfície de skills varrida pelo Codex: contém apenas links locais e skills de sistema.
+# A superfície legada de skills não faz parte da arquitetura atual. Skills gerenciadas
+# são materializadas somente no workspace do Shikigami.
 /skills/
 
 # Configuração local de uma instância do Onmyōji (CODEX_HOME)
 /config.toml
 /*.config.toml
-/configs/
+!/venv/
+/venv/*
+!/venv/.gitkeep
+!/configs/
+/configs/*
+!/configs/.gitkeep
 /*.bak
 /*.bak.*
 
 # Estado, autenticação e caches gerenciados pelo Codex
 /auth.json
 /sessions/
-/state/
+!/state/
+/state/*
+!/state/.gitkeep
 /log/
-/tmp/
+!/tmp/
+/tmp/*
+!/tmp/.gitkeep
 /plugins/
 /cache/
 /thread-writer-locks/

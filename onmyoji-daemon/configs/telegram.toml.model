@@ -1,35 +1,29 @@
-schema_version = 1
+schema_version = 2
 enabled = false
 
 [telegram]
-# Perfil KeePass local que contém o token do bot.
-keepass_profile = "telegram"
+# Perfil do cofre MCP que contém o token do bot.
+vault_profile = ""
 token_entry = "APIs/Telegram:Shikigami"
 poll_timeout_seconds = 30
+agent_outbound_media = false
 
 [agent]
 # O workspace, modelo, sandbox e aprovação vêm de configs/onmyoji-system.toml.
 max_parallel_conversations = 1
 turn_timeout_seconds = 900
+# Steering e entrega pós-turno dependem de gates de runtime comprovados.
+busy_input_policy = "queue"
+interrupt_grace_seconds = 15
+post_turn_results = false
 # Preferências por conversa que owners podem escolher em /config. Listas vazias
 # restringem a escolha ao modelo e esforço padrão definidos pelo administrador.
 owner_execution_preferences = true
 owner_allowed_models = []
 owner_allowed_reasoning_efforts = []
 
-[instructions]
-# Caminho relativo a shikigami/.
-enabled = true
-shikigami_file = "instructions.md"
-
-[app_server]
-# Mantém um Codex App Server exclusivo desta instância para reutilizar a conversa.
-# Deve ser habilitado antes do gateway Telegram; mantém contexto e developer instructions consistentes.
-enabled = false
-# Encerra o processo quando não houver turnos ativos por este período. As threads persistem.
-idle_timeout_seconds = 1800
-
 [limits]
+preparation_workers = 4
 max_attachment_bytes = 20971520
 max_batch_attachment_bytes = 52428800
 max_pending_items = 50
@@ -50,7 +44,6 @@ response_format = "mp3"
 max_text_characters = 3500
 auto_off_minutes = 15
 fallback_to_text = true
-agent_outbound_media = false
 
 [totp]
 enabled = false

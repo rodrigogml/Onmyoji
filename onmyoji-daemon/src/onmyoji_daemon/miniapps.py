@@ -29,9 +29,8 @@ import uuid
 from aiohttp import web
 
 from .rpc import RpcServer
-from .miniapps_pki import ensure_material, install_trust, server_context
-from .miniapps_tunnel import TunnelController, TunnelError
-from .skill_oauth import OAuthError, SkillOAuth
+from .gateway.component.tls import ensure_material, install_trust, server_context
+from .mcp.oauth_broker import BTG_CALLBACK_PATH, BTG_INTEGRATION, EMAIL_CALLBACK_PATH, EMAIL_INTEGRATION, OAUTH_ADAPTERS, McpOAuthBroker, OAuthError
 
 
 STATES = {"CREATED", "PUBLISHED_UNCLAIMED", "ACTIVE", "UNPUBLISHED", "EXPIRED", "ERROR", "DELETED"}
@@ -77,9 +76,16 @@ class HttpRequest:
 
 @dataclass
 class HttpResponse:
+    """Resposta da aplicação; ``close_publication`` revoga seu acesso após concluir.
+
+    A resposta final ainda é entregue ao cliente. A despublicação invalida as
+    sessões e preserva o código e o registro da Mini App no workspace.
+    """
+
     status: int = 200
     headers: list[tuple[str, str]] = field(default_factory=list)
     body: bytes | str | AsyncIterable[bytes] | None = b""
+    close_publication: bool = False
 
     @classmethod
     def json(cls, value: Any, status: int = 200) -> "HttpResponse":
@@ -127,6 +133,9 @@ def _json(value: Any) -> str: return json.dumps(value, ensure_ascii=False, separ
 class MiniAppsGateway:
     def __init__(self, root: Path, data_dir: Path, token: str, http_port: int):
         self.root, self.data_dir, self.token, self.http_port = root.resolve(), data_dir.resolve(), token, http_port
+        state_root = self.root / "configs"
+        try: self.data_dir.relative_to(state_root)
+        except ValueError as error: raise ValueError("Estado do Gateway Mini Apps deve permanecer em configs/") from error
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.data_dir / "registry.sqlite3", check_same_thread=False)
         self.db.row_factory = sqlite3.Row; self.lock = threading.RLock()
@@ -135,8 +144,9 @@ class MiniAppsGateway:
         self.sockets: dict[str, set[web.WebSocketResponse]] = {}
         self.http_loop: asyncio.AbstractEventLoop | None = None; self.http_thread: threading.Thread | None = None
         self.http_runner: web.AppRunner | None = None; self.last_error: str | None = None
-        self.tunnel = TunnelController(self.root, self.data_dir, f"https://localhost:{self.http_port}")
-        self.skill_oauth: SkillOAuth | None = None
+        self.publication: dict[str, Any] = {"public_origin": None, "gateway_ready": False, "public_ready": False, "listeners": [], "tunnel": {"configured": False}}
+        self.http_ready = False
+        self.oauth_broker: McpOAuthBroker | None = None
         self.oauth_callback_hits: dict[str, list[float]] = {}
         self._migrate()
         self._restore_publications()
@@ -170,22 +180,25 @@ class MiniAppsGateway:
         with self.lock:
             rows = self.db.execute("SELECT id,root_path,entrypoint,persistent,state FROM apps WHERE state != 'DELETED'").fetchall()
         for row in rows:
-            entrypoint = Path(str(row["root_path"])) / str(row["entrypoint"])
-            if bool(row["persistent"]) and not entrypoint.is_file():
-                self.mark_error(str(row["id"]), "missing_root", "root_path ou entrypoint não existe após reinício")
-            elif bool(row["persistent"]) and str(row["state"]) == "ERROR":
-                with self.lock:
-                    state = "PUBLISHED_UNCLAIMED" if json.loads(self.db.execute("SELECT auth_json FROM apps WHERE id=?", (row["id"],)).fetchone()[0]).get("type") == "claim" else "ACTIVE"
-                    self.db.execute("UPDATE apps SET state=?,last_error=NULL,updated_at=? WHERE id=?", (state, _now(), row["id"])); self.db.commit()
-                self._event("app.recovered", str(row["id"]))
+            item = {"root_path": str(row["root_path"]), "entrypoint": str(row["entrypoint"])}
+            try: self._registered_paths(item)
+            except ValueError:
+                self.mark_error(str(row["id"]), "invalid_root", "Raiz ou entrypoint da publicação não é mais válido")
+            else:
+                if bool(row["persistent"]) and str(row["state"]) == "ERROR":
+                    with self.lock:
+                        state = "PUBLISHED_UNCLAIMED" if json.loads(self.db.execute("SELECT auth_json FROM apps WHERE id=?", (row["id"],)).fetchone()[0]).get("type") == "claim" else "ACTIVE"
+                        self.db.execute("UPDATE apps SET state=?,last_error=NULL,updated_at=? WHERE id=?", (state, _now(), row["id"])); self.db.commit()
+                    self._event("app.recovered", str(row["id"]))
 
     def _workspace(self) -> Path:
         import tomllib
         path = self.root / "configs" / "onmyoji-system.toml"
         try: value = tomllib.loads(path.read_text(encoding="utf-8")); raw = value["codex"]["project_directory"]
         except (OSError, ValueError, KeyError, TypeError) as error: raise ValueError("workspace do Shikigami não está configurado") from error
-        workspace = Path(str(raw)).resolve()
-        if not workspace.is_dir(): raise ValueError("workspace configurado não existe")
+        if not isinstance(raw, str) or not raw.strip() or not Path(raw).is_absolute(): raise ValueError("workspace configurado é inválido")
+        workspace = Path(raw).resolve()
+        if not workspace.is_dir() or workspace.is_relative_to(self.root): raise ValueError("workspace configurado não existe ou pertence ao Onmyōji")
         return workspace
 
     def _event(self, event: str, app_id: str | None = None, error_code: str | None = None, details: str | None = None) -> None:
@@ -200,22 +213,41 @@ class MiniAppsGateway:
     def _public(self, item: dict[str, Any]) -> dict[str, Any]:
         result = {key: item[key] for key in ("id", "alias", "root_path", "entrypoint", "python_executable", "state", "persistent", "created_at", "updated_at", "last_error")}
         local_url = f"https://localhost:{self.http_port}/a/{item['id']}/"
-        tunnel = self.tunnel.status(); hostname = tunnel.get("hostname") if tunnel.get("provisioned") else None
-        public_url = f"https://{hostname}/a/{item['id']}/" if hostname else None
-        entrypoint_ok = (Path(item["root_path"]) / item["entrypoint"]).is_file()
+        publication = self.publication_status("a")
+        public_url = str(publication["public_origin"]).rstrip("/") + f"/a/{item['id']}/" if publication.get("public_origin") else None
+        try: self._registered_paths(item); entrypoint_ok = True
+        except ValueError: entrypoint_ok = False
         health = "ok" if entrypoint_ok and item["state"] not in {"ERROR", "EXPIRED"} else "degraded"
-        result.update({"auth_type": item["auth"].get("type"), "timeouts": item["policies"], "health": health, "url": public_url or local_url, "local_url": local_url, "public_url": public_url})
+        result.update({"auth_type": item["auth"].get("type"), "timeouts": item["policies"], "health": health, "url": public_url or local_url, "local_url": local_url, "public_url": public_url, "public_available": publication["available"]})
         return result
 
-    def _validate(self, root_path: str, entrypoint: str) -> tuple[Path, Path]:
-        workspace = self._workspace(); app_root = Path(root_path).resolve()
+    def publication_status(self, prefix: str) -> dict[str, Any]:
+        """Retorna a origem configurada e a disponibilidade confirmada pelo Daemon.
+
+        O snapshot não consulta serviços durante uma operação OAuth, evitando
+        chamadas RPC aninhadas. Uma URL configurada permanece consultável
+        quando o transporte externo está indisponível.
+        """
+        with self.lock:
+            snapshot = dict(self.publication)
+            listeners = list(snapshot.get("listeners") or [])
+        listener = next((item for item in listeners if item.get("path_prefix") == prefix), {})
+        snapshot["available"] = bool(snapshot.get("public_ready") and listener.get("enabled") and not listener.get("removed") and listener.get("ready"))
+        return snapshot
+
+    def _registered_paths(self, item: dict[str, Any]) -> tuple[Path, Path]:
+        workspace = self._workspace(); app_root = Path(str(item["root_path"])).resolve()
         try: app_root.relative_to(workspace)
         except ValueError as error: raise ValueError("root_path deve pertencer ao workspace configurado") from error
         if not app_root.is_dir(): raise ValueError("root_path não existe")
-        target = (app_root / entrypoint).resolve()
+        target = (app_root / str(item["entrypoint"])).resolve()
         try: target.relative_to(app_root)
         except ValueError as error: raise ValueError("entrypoint deve pertencer ao root_path") from error
         if not target.is_file() or target.suffix != ".py": raise ValueError("entrypoint Python não existe")
+        return app_root, target
+
+    def _validate(self, root_path: str, entrypoint: str) -> tuple[Path, Path]:
+        app_root, target = self._registered_paths({"root_path": root_path, "entrypoint": entrypoint})
         try: compile(target.read_text(encoding="utf-8"), str(target), "exec")
         except (OSError, UnicodeDecodeError, SyntaxError) as error: raise ValueError("entrypoint Python não pode ser carregado") from error
         return app_root, target
@@ -251,6 +283,87 @@ class MiniAppsGateway:
     def list(self) -> list[dict[str, Any]]:
         with self.lock: ids = [str(row[0]) for row in self.db.execute("SELECT id FROM apps WHERE state != 'DELETED' ORDER BY created_at DESC")]
         return [self._public(self._app(app_id)) for app_id in ids]
+
+    def _file_reviews(self):
+        from .file_review.service import FileReviewService
+
+        return FileReviewService(self.root, self._workspace(), self.data_dir / "file-reviews")
+
+    def create_file_review(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Publica o modelo confiável de revisão usando o claim existente.
+
+        Exige ``confirm=true`` e dois arquivos referenciados explicitamente.
+        Falhas de validação conservam os códigos do serviço de revisão; a
+        ausência de confirmação produz ``confirmation_required``.
+        """
+        from .file_review.exception import FileReviewError
+
+        if params.get("confirm") is not True:
+            raise FileReviewError("confirmation_required", "Confirme a criação com confirm=true.")
+        policies = {}
+        for key in ("claim_timeout", "lifetime", "idle_timeout"):
+            if key in params:
+                value = params[key]
+                if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                    raise FileReviewError("invalid_timeout", "Os prazos da revisão devem ser inteiros positivos.")
+                policies[key] = value
+        service = self._file_reviews()
+        review = service.create(params.get("original_path"), params.get("proposed_path"))
+        review_id = review["review_id"]
+        app_root = self._workspace() / "file-reviews" / review_id
+        origins = [f"https://localhost:{self.http_port}", f"https://127.0.0.1:{self.http_port}"]
+        public_origin = self.publication_status("a").get("public_origin")
+        if public_origin:
+            origins.append(str(public_origin).rstrip("/"))
+        wrapper = (
+            '"""Entrada do modelo de revisão do Onmyōji; dados permanecem locais."""\n'
+            "from pathlib import Path\n"
+            "from onmyoji_daemon.file_review.app import FileReviewApp\n\n"
+            "def create_app():\n"
+            f"    return FileReviewApp(Path({str(self.root)!r}), Path({str(self._workspace())!r}), "
+            f"Path({str(self.data_dir / 'file-reviews')!r}), {review_id!r}, {origins!r})\n"
+        )
+        publication = None
+        try:
+            (app_root / "app.py").write_text(wrapper, encoding="utf-8", newline="\n")
+            publication = self.create({"root_path": str(app_root), "entrypoint": "app.py", "alias": "Revisão de " + review["filename"], "auth": {"type": "claim"}, "single_client": True, **policies})
+            service.bind_publication(review_id, publication["id"])
+        except Exception:
+            if publication:
+                self.unpublish(publication["id"])
+            service.cancel(review_id)
+            raise
+        self._event("file_review.created", publication["id"])
+        return {**service.status(review_id), "publication": publication, "claim_url": publication["claim_url"]}
+
+    def file_review_status(self, review_id: str) -> dict[str, Any]:
+        """Consulta a revisão sem retornar snapshots, rascunho ou segredo de claim."""
+        result = self._file_reviews().status(review_id)
+        app_id = result.get("app_id")
+        if app_id:
+            item = self._app(app_id)
+            self._expire(item)
+            publication = self.inspect(app_id)
+            if result["status"] in {"applied", "cancelled"} and publication["state"] not in {"UNPUBLISHED", "DELETED"}:
+                publication = self.unpublish(app_id)
+            result["publication"] = publication
+            if result["status"] == "editing":
+                if publication["state"] == "EXPIRED":
+                    result["status"] = "expired"
+                elif publication["state"] in {"ERROR", "UNPUBLISHED", "DELETED"}:
+                    result["status"] = "unavailable"
+        return result
+
+    def cancel_file_review(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Cancela uma revisão e revoga a publicação, mediante confirmação MCP."""
+        from .file_review.exception import FileReviewError
+
+        if params.get("confirm") is not True:
+            raise FileReviewError("confirmation_required", "Confirme o cancelamento com confirm=true.")
+        result = self._file_reviews().cancel(params.get("review_id"))
+        if result.get("app_id"):
+            self.unpublish(result["app_id"])
+        return result
 
     def diagnose(self) -> dict[str, Any]:
         """Return readiness data for the setup wizard without exposing secrets."""
@@ -294,23 +407,25 @@ class MiniAppsGateway:
             "state": "ok" if apps and not unhealthy else "info",
             "label": "Mini Apps publicadas",
             "detail": f"{len(apps)} publicada(s); {len(unhealthy)} com atenção." if apps else "Nenhuma Mini App foi publicada ainda.",
-            "action": "Crie a Mini App no workspace e publique-a pela skill Mini Apps." if not apps else "Use 'Publicações Mini App' para consultar URLs e estado.",
+            "action": "Crie a Mini App no workspace e publique-a pelo MCP Mini Apps." if not apps else "Use 'Publicações Mini App' para consultar URLs e estado.",
         })
-        tunnel = self.tunnel.status()
-        if not tunnel["configured"]:
+        publication = self.publication_status("a")
+        tunnel = dict(publication.get("tunnel") or {})
+        if not tunnel.get("configured"):
             tunnel_state, tunnel_detail, tunnel_action = "info", "Não configurado; exposição pública é opcional.", "Configure um domínio somente se precisar de acesso externo."
-        elif not tunnel["provisioned"]:
+        elif not tunnel.get("provisioned"):
             tunnel_state, tunnel_detail, tunnel_action = "action", "Configurado, mas o Tunnel e o DNS ainda não foram provisionados.", "Revise os dados e provisione o Tunnel com confirmação."
-        elif not tunnel["cloudflared_available"]:
+        elif not tunnel.get("cloudflared_available"):
             tunnel_state, tunnel_detail, tunnel_action = "action", "Tunnel provisionado, mas cloudflared não foi encontrado.", "Instale cloudflared oficial ou informe o caminho do executável."
-        elif not tunnel["running"]:
-            reason = str(tunnel.get("last_error") or "")
-            tunnel_state, tunnel_detail, tunnel_action = "action", "Tunnel provisionado, porém parado" + (f": {reason}" if reason else "."), "Corrija o motivo informado e inicie ou reinicie o Tunnel."
+        elif not tunnel.get("running"):
+            tunnel_state, tunnel_detail, tunnel_action = "action", "Tunnel provisionado, porém parado.", "Consulte Publicação externa para diagnosticar e iniciar o Tunnel."
+        elif not publication.get("available"):
+            tunnel_state, tunnel_detail, tunnel_action = "action", "Transporte iniciado, mas a publicação externa ainda não está disponível.", "Confira Gateway, listener e conexão Cloudflare no menu Publicação externa."
         else:
             tunnel_state, tunnel_detail, tunnel_action = "ok", f"Em execução para {tunnel['hostname']}.", ""
         checks.append({"id": "tunnel", "state": tunnel_state, "label": "Domínio e Cloudflare Tunnel", "detail": tunnel_detail, "action": tunnel_action})
         local_ready = gateway_ready and workspace_ready and tls_ready
-        public_ready = local_ready and tunnel["provisioned"] and tunnel["cloudflared_available"] and tunnel["running"]
+        public_ready = local_ready and publication["available"]
         return {
             "local_ready": local_ready,
             "public_ready": public_ready,
@@ -318,6 +433,7 @@ class MiniAppsGateway:
             "checks": checks,
             "apps": {"total": len(apps), "unhealthy": len(unhealthy), "items": app_summaries},
             "tunnel": tunnel,
+            "publication": {key: publication.get(key) for key in ("public_origin", "gateway_ready", "available", "checked_at")},
         }
 
     def inspect(self, app_id: str) -> dict[str, Any]: return self._public(self._app(app_id))
@@ -376,6 +492,7 @@ class MiniAppsGateway:
     def publish(self, app_id: str) -> dict[str, Any]:
         item = self._app(app_id)
         if item["state"] == "DELETED": raise ValueError("publication deleted")
+        self._registered_paths(item)
         item["state"] = "PUBLISHED_UNCLAIMED" if item["auth"]["type"] == "claim" else "ACTIVE"; item["last_error"] = None; self._store(item); self._event("app.published", app_id); return self.inspect(app_id)
 
     def unpublish(self, app_id: str) -> dict[str, Any]:
@@ -389,7 +506,7 @@ class MiniAppsGateway:
         self._schedule_release(app_id); self._event("app.deleted", app_id); return self.inspect(app_id)
 
     def reload(self, app_id: str) -> dict[str, Any]:
-        self._app(app_id); self._schedule_release(app_id, "app.reloaded"); return self.inspect(app_id)
+        item = self._app(app_id); self._registered_paths(item); self._schedule_release(app_id, "app.reloaded"); return self.inspect(app_id)
 
     async def _release(self, app_id: str) -> None:
         item = self.instances.pop(app_id, None)
@@ -411,12 +528,12 @@ class MiniAppsGateway:
         candidates.extend((venv_root / "lib").glob("python*/site-packages") if (venv_root / "lib").is_dir() else [])
         for candidate in candidates:
             if candidate.is_dir(): site.addsitedir(str(candidate))
-        entrypoint = Path(item["root_path"]) / item["entrypoint"]
+        root, entrypoint = self._registered_paths(item)
         module_name = f"_onmyoji_miniapp_{item['id']}_{uuid.uuid4().hex}"
         spec = importlib.util.spec_from_file_location(module_name, entrypoint)
         if not spec or not spec.loader: raise RuntimeError("não foi possível carregar entrypoint")
         module = importlib.util.module_from_spec(spec); sys.modules[module_name] = module
-        root_path = str(Path(item["root_path"]).resolve())
+        root_path = str(root)
         if root_path not in sys.path: sys.path.insert(0, root_path)
         spec.loader.exec_module(module)
         factory = getattr(module, "create_app", None)
@@ -435,7 +552,7 @@ class MiniAppsGateway:
             except Exception: return None
             if request.scheme != "https" or username != auth["username"] or not _password_matches(password, auth["password_hash"]): return None
             return AuthenticatedIdentity(True, "basic", username=username)
-        session_id = request.cookies.get("onmyoji_miniapp_session")
+        session_id = request.cookies.get("onmyoji_miniapp_session_" + item["id"]) or request.cookies.get("onmyoji_miniapp_session")
         if not session_id: return None
         with self.lock: row = self.db.execute("SELECT id FROM sessions WHERE id=? AND app_id=? AND expires_at>?", (session_id, item["id"], _now())).fetchone()
         return AuthenticatedIdentity(True, "session", session_id=session_id) if row else None
@@ -444,7 +561,7 @@ class MiniAppsGateway:
         if request.content_length and request.content_length > MAX_BODY_BYTES: raise web.HTTPRequestEntityTooLarge(max_size=MAX_BODY_BYTES, actual_size=request.content_length)
         temporary: Path | None = None
         if request.content_length and request.content_length > 1024 * 1024:
-            uploads = self.data_dir / "uploads"; uploads.mkdir(parents=True, exist_ok=True)
+            uploads = self.root / "tmp" / "mini-apps" / "uploads"; uploads.mkdir(parents=True, exist_ok=True)
             temporary = uploads / (uuid.uuid4().hex + ".body")
             with temporary.open("wb") as output:
                 while chunk := await request.content.readany(): output.write(chunk)
@@ -453,7 +570,10 @@ class MiniAppsGateway:
         app, guard = await self._load(item)
         with self.lock:
             first_active = self.db.execute("SELECT last_activity,created_at FROM apps WHERE id=?", (item["id"],)).fetchone()
-            self.db.execute("UPDATE apps SET last_activity=?,updated_at=?,state='ACTIVE' WHERE id=?", (_now(), _now(), item["id"])); self.db.commit()
+            updated = self.db.execute("UPDATE apps SET last_activity=?,updated_at=?,state='ACTIVE' WHERE id=? AND state IN ('ACTIVE','PUBLISHED_UNCLAIMED')", (_now(), _now(), item["id"])); self.db.commit()
+            if updated.rowcount != 1:
+                if temporary: temporary.unlink(missing_ok=True)
+                raise web.HTTPServiceUnavailable(text="Mini App unavailable")
         if first_active and float(first_active["last_activity"]) <= float(first_active["created_at"]): self._event("app.active", item["id"])
         peer = request.transport.get_extra_info("peername") if request.transport else None
         tail = request.match_info.get("tail", "")
@@ -479,7 +599,11 @@ class MiniAppsGateway:
         if isinstance(response.body, AsyncIterable):
             outgoing = web.StreamResponse(status=response.status, headers=headers); await outgoing.prepare(request)
             async for chunk in response.body: await outgoing.write(chunk)
-            await outgoing.write_eof(); return outgoing
+            await outgoing.write_eof()
+            if response.close_publication: self.unpublish(item["id"])
+            return outgoing
+        if response.close_publication:
+            self.unpublish(item["id"])
         return web.Response(status=response.status, headers=headers, body=response.body.encode("utf-8") if isinstance(response.body, str) else response.body)
 
     async def _dispatch_websocket(self, item: dict[str, Any], request: web.Request, identity: AuthenticatedIdentity) -> web.WebSocketResponse:
@@ -514,6 +638,10 @@ class MiniAppsGateway:
         self._expire(item)
         item = self._app(app_id, include_deleted=False)
         if item["state"] in {"ERROR", "EXPIRED", "UNPUBLISHED"}: raise web.HTTPServiceUnavailable(text="Mini App unavailable")
+        try: self._registered_paths(item)
+        except ValueError:
+            self.mark_error(app_id, "invalid_root", "Raiz ou entrypoint da publicação não é mais válido")
+            raise web.HTTPServiceUnavailable(text="Mini App unavailable")
         if item["auth"]["type"] == "claim" and request.query.get("claim"):
             claim = str(request.query["claim"])
             if _now() > item["created_at"] + item["policies"]["claim_timeout"]:
@@ -524,7 +652,7 @@ class MiniAppsGateway:
                 if item["policies"]["single_client"] and self.db.execute("SELECT 1 FROM sessions WHERE app_id=? AND expires_at>?", (app_id, _now())).fetchone(): raise web.HTTPForbidden(text="Mini App already claimed")
                 self.db.execute("INSERT INTO sessions VALUES(?,?,?,?)", (session_id, app_id, _now(), expiry)); self.db.execute("UPDATE apps SET state='ACTIVE',updated_at=? WHERE id=?", (_now(), app_id)); self.db.commit()
             self._event("app.claimed", app_id); self._event("session.created", app_id)
-            location = request.path; response = web.HTTPFound(location); response.set_cookie("onmyoji_miniapp_session", session_id, secure=True, httponly=True, samesite="Strict", max_age=max(1, int(expiry - _now()))); raise response
+            location = request.path; response = web.HTTPFound(location); response.set_cookie("onmyoji_miniapp_session_" + app_id, session_id, path=f"/a/{app_id}", secure=True, httponly=True, samesite="Strict", max_age=max(1, int(expiry - _now()))); raise response
         callback = self._callback_allowed(item, request)
         identity = AuthenticatedIdentity(False, "public_callback") if callback else await self._identity(item, request)
         if not identity:
@@ -570,19 +698,27 @@ class MiniAppsGateway:
 
     def rpc(self, method: str, params: dict[str, Any]) -> Any:
         action = method.removeprefix("mini-apps.")
+        if action == "file-review.create": return self.create_file_review(params)
+        if action == "file-review.status": return self.file_review_status(params.get("review_id"))
+        if action == "file-review.cancel": return self.cancel_file_review(params)
+        if action == "publication.describe":
+            return {"schema_version": 1, "listeners": [{"path_prefix": prefix, "target": f"https://127.0.0.1:{self.http_port}", "ca_file": str(self.data_dir / "tls" / "ca.pem"), "ready": self.http_ready} for prefix in ("a", "oauth")]}
+        if action == "publication.update":
+            with self.lock:
+                self.publication = {key: params.get(key) for key in ("public_origin", "gateway_ready", "public_ready", "listeners", "tunnel", "checked_at", "confirmed_at", "error_code", "last_error")}
+            return {"updated": True}
         if action.startswith("oauth."):
+            integration = params.get("integration", BTG_INTEGRATION)
+            if integration not in OAUTH_ADAPTERS: raise ValueError("Integração OAuth inválida")
             if action == "oauth.callback-url":
-                skill = str(params.get("skill", "")).strip()
-                if not skill or "/" in skill:
-                    raise ValueError("skill inválida")
-                return {"skill": skill, "callbackUrl": self._oauth_origin().rstrip("/") + "/oauth/skills/" + skill + "/callback"}
+                return {"integration": integration, "callbackUrl": self._oauth_origin().rstrip("/") + OAUTH_ADAPTERS[integration][2]}
             broker = self._oauth_broker()
-            if action == "oauth.info": return broker.info(str(params["skill"]), str(params["profile"]))
-            if action == "oauth.active": return broker.active(str(params["skill"]), str(params["profile"]))
-            if action == "oauth.cancel-active": return broker.cancel_active(str(params["skill"]), str(params["profile"]), params.get("confirm") is True)
-            if action == "oauth.start": return broker.start(str(params["skill"]), str(params["profile"]), params.get("confirm") is True)
-            if action == "oauth.status": return broker.status(str(params["session_id"]), params.get("skill"), params.get("profile"))
-            if action == "oauth.cancel": return broker.cancel(str(params["session_id"]), params.get("confirm") is True, params.get("skill"), params.get("profile"))
+            if action == "oauth.info": return broker.info(integration, str(params["profile"]))
+            if action == "oauth.active": return broker.active(integration, str(params["profile"]))
+            if action == "oauth.cancel-active": return broker.cancel_active(integration, str(params["profile"]), params.get("confirm") is True)
+            if action == "oauth.start": return broker.start(integration, str(params["profile"]), params.get("confirm") is True)
+            if action == "oauth.status": return broker.status(str(params["session_id"]), integration, params.get("profile"))
+            if action == "oauth.cancel": return broker.cancel(str(params["session_id"]), params.get("confirm") is True, integration, params.get("profile"))
             raise ValueError("unknown OAuth method")
         if action == "status": return {"state": "running", "http_port": self.http_port, "apps": len(self.list()), "last_error": self.last_error}
         if action == "diagnose": return self.diagnose()
@@ -595,17 +731,6 @@ class MiniAppsGateway:
         if action == "unpublish": return self.unpublish(str(params["id"]))
         if action == "reload": return self.reload(str(params["id"]))
         if action == "delete": return self.delete(str(params["id"]))
-        if action == "tunnel.status": return self.tunnel.status()
-        if action == "tunnel.configure": return self.tunnel.configure(params)
-        if action == "tunnel.provision":
-            result = self.tunnel.provision(bool(params.get("confirm", False))); self._event("tunnel.recovered" if result.get("provisioned") else "tunnel.failed"); return result
-        if action == "tunnel.start":
-            result = self.tunnel.start(); self._event("tunnel.started" if result.get("running") else "tunnel.failed"); return result
-        if action == "tunnel.install-cloudflared": return self.tunnel.install_cloudflared(bool(params.get("confirm", False)))
-        if action == "tunnel.stop":
-            result = self.tunnel.stop(); self._event("tunnel.stopped"); return result
-        if action == "tunnel.restart":
-            self.tunnel.stop(); result = self.tunnel.start(); self._event("tunnel.recovered" if result.get("running") else "tunnel.failed"); return result
         if action == "tls.status":
             ca, cert, _key = ensure_material(self.data_dir / "tls")
             return {"ready": True, "ca_certificate": str(ca), "gateway_certificate": str(cert)}
@@ -637,32 +762,17 @@ class MiniAppsGateway:
     async def admin_status(self, request: web.Request) -> web.StreamResponse:
         self._admin(request); return web.json_response(self.rpc("mini-apps.status", {}))
 
-    async def admin_tunnel(self, request: web.Request) -> web.StreamResponse:
-        self._admin(request)
-        try:
-            if request.method == "GET": return web.json_response(self.tunnel.status())
-            action = request.match_info.get("action")
-            values = await request.json() if request.can_read_body else {}
-            if action == "configure": return web.json_response(self.tunnel.configure(values))
-            if action == "provision": return web.json_response(self.tunnel.provision(bool(values.get("confirm", False))))
-            if action == "start": return web.json_response(self.tunnel.start())
-            if action == "stop": return web.json_response(self.tunnel.stop())
-            if action == "restart": self.tunnel.stop(); return web.json_response(self.tunnel.start())
-            if action == "install-cloudflared": return web.json_response(self.tunnel.install_cloudflared(bool(values.get("confirm", False))))
-        except TunnelError as error: raise web.HTTPBadRequest(text=str(error))
-        raise web.HTTPMethodNotAllowed(request.method, [])
-
     def _oauth_origin(self) -> str:
-        tunnel = self.tunnel.status()
-        if not self.http_runner or not tunnel.get("provisioned") or not tunnel.get("running"):
+        publication = self.publication_status("oauth")
+        if not self.http_ready or not publication.get("available") or not publication.get("public_origin"):
             raise OAuthError("Inicie o Gateway e o Tunnel provisionado para OAuth remoto")
-        return "https://" + str(tunnel["hostname"])
+        return str(publication["public_origin"]).rstrip("/")
 
-    def _oauth_broker(self) -> SkillOAuth:
+    def _oauth_broker(self) -> McpOAuthBroker:
         with self.lock:
-            if self.skill_oauth is None:
-                self.skill_oauth = SkillOAuth(self.root, self._workspace(), self._oauth_origin)
-            return self.skill_oauth
+            if self.oauth_broker is None:
+                self.oauth_broker = McpOAuthBroker(self.root, self._oauth_origin)
+            return self.oauth_broker
 
     @staticmethod
     def _oauth_page(message: str, status: int = 200) -> web.Response:
@@ -670,7 +780,7 @@ class MiniAppsGateway:
         body = '<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Autorização da integração</title><main><h1>Autorização da integração</h1><p>' + html.escape(message) + '</p></main></html>'
         return web.Response(text=body, content_type="text/html", status=status, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'", "X-Content-Type-Options": "nosniff"})
 
-    async def skill_oauth_callback(self, request: web.Request) -> web.StreamResponse:
+    async def mcp_oauth_callback(self, request: web.Request) -> web.StreamResponse:
         peer, stamp = request.remote or "unknown", time.time()
         hits = [value for value in self.oauth_callback_hits.get(peer, []) if value > stamp - 60]
         if len(hits) >= 30:
@@ -679,12 +789,13 @@ class MiniAppsGateway:
         try:
             broker = self._oauth_broker()
             query = {key: request.query.getall(key) for key in request.query.keys()}
-            identifier = await asyncio.to_thread(broker.callback, request.match_info["skill"], query)
+            integration = EMAIL_INTEGRATION if request.path == EMAIL_CALLBACK_PATH else BTG_INTEGRATION
+            identifier = await asyncio.to_thread(broker.callback, integration, query)
         except (ValueError, OSError, sqlite3.Error):
             return self._oauth_page("Retorno inválido, expirado ou já utilizado. Consulte o agente no chat.", 400)
         raise web.HTTPSeeOther("/oauth/result/" + identifier, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
 
-    async def skill_oauth_result(self, request: web.Request) -> web.Response:
+    async def mcp_oauth_result(self, request: web.Request) -> web.Response:
         try:
             message = self._oauth_broker().result(request.match_info["session_id"])
         except (ValueError, OSError, sqlite3.Error):
@@ -711,27 +822,46 @@ class MiniAppsGateway:
         app.router.add_route("*", "/internal/v1/apps/{app_id}", self.admin_request)
         app.router.add_route("POST", "/internal/v1/apps/{app_id}/{action:publish|unpublish|reload}", self.admin_request)
         app.router.add_route("GET", "/internal/v1/status", self.admin_status)
-        app.router.add_route("GET", "/internal/v1/tunnel", self.admin_tunnel)
-        app.router.add_route("POST", "/internal/v1/tunnel/{action:configure|provision|start|stop|restart|install-cloudflared}", self.admin_tunnel)
-        app.router.add_route("GET", "/oauth/skills/{skill}/callback", self.skill_oauth_callback)
-        app.router.add_route("GET", "/oauth/result/{session_id}", self.skill_oauth_result)
+        app.router.add_route("GET", BTG_CALLBACK_PATH, self.mcp_oauth_callback)
+        app.router.add_route("GET", EMAIL_CALLBACK_PATH, self.mcp_oauth_callback)
+        app.router.add_route("GET", "/oauth/result/{session_id}", self.mcp_oauth_result)
         app.router.add_route("*", "/a/{app_id}/{tail:.*}", self.public_request)
         app.router.add_route("*", "/a/{app_id}", self.public_request)
         tls_dir = self.data_dir / "tls"; ensure_material(tls_dir)
-        self.http_runner = web.AppRunner(app, access_log=None); await self.http_runner.setup(); site = web.TCPSite(self.http_runner, "127.0.0.1", self.http_port, ssl_context=server_context(tls_dir)); await site.start()
+        self.http_runner = web.AppRunner(app, access_log=None)
+        await self.http_runner.setup()
+        try:
+            site = web.TCPSite(self.http_runner, "127.0.0.1", self.http_port, ssl_context=server_context(tls_dir))
+            await site.start()
+            self.http_ready = True
+        except BaseException:
+            await self.http_runner.cleanup()
+            self.http_runner = None
+            raise
 
     def start_http(self) -> None:
         ready = threading.Event()
+        errors: list[BaseException] = []
         def worker() -> None:
             self.http_loop = asyncio.new_event_loop(); asyncio.set_event_loop(self.http_loop)
-            try: self.http_loop.run_until_complete(self._http_main())
-            finally: ready.set()
-            self.http_loop.run_forever()
-        self.http_thread = threading.Thread(target=worker, name="onmyoji-miniapps-http", daemon=True); self.http_thread.start(); ready.wait(5)
-        if not self.http_runner: raise RuntimeError("Mini Apps HTTP não iniciou")
+            try:
+                self.http_loop.run_until_complete(self._http_main())
+            except BaseException as error:
+                errors.append(error)
+                self.http_loop.close()
+                return
+            finally:
+                ready.set()
+            try: self.http_loop.run_forever()
+            finally: self.http_loop.close()
+        self.http_thread = threading.Thread(target=worker, name="onmyoji-miniapps-http", daemon=True)
+        self.http_thread.start()
+        if not ready.wait(10) or errors or not self.http_ready:
+            raise RuntimeError("Mini Apps HTTP não iniciou") from (errors[0] if errors else None)
 
     def stop_http(self) -> None:
-        if self.http_loop:
+        self.http_ready = False
+        if self.http_loop and not self.http_loop.is_closed():
             if self.http_runner: asyncio.run_coroutine_threadsafe(self.http_runner.cleanup(), self.http_loop).result(5)
             self.http_loop.call_soon_threadsafe(self.http_loop.stop)
         if self.http_thread: self.http_thread.join(5)
@@ -740,9 +870,6 @@ class MiniAppsGateway:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(); parser.add_argument("--data-dir", type=Path, required=True); parser.add_argument("--onmyoji-root", type=Path, required=True); parser.add_argument("--host", default="127.0.0.1"); parser.add_argument("--port", type=int, required=True); parser.add_argument("--token", required=True); parser.add_argument("--http-port", type=int, default=39391); args = parser.parse_args(argv)
     gateway = MiniAppsGateway(args.onmyoji_root, args.data_dir, args.token, args.http_port); gateway.start_http()
-    if gateway.tunnel.status().get("provisioned"):
-        try: gateway.tunnel.start(); gateway._event("tunnel.started")
-        except Exception as error: gateway._event("tunnel.failed", error_code="startup", details=str(error))
     stopped = threading.Event()
     def handler(method: str, params: dict[str, Any]) -> Any:
         if method == "ping": return {"service": "mini-apps", "state": "running"}
@@ -750,8 +877,11 @@ def main(argv: list[str] | None = None) -> int:
         return gateway.rpc(method, params)
     try: RpcServer(args.host, args.port, args.token, handler).serve_forever(stopped)
     finally:
-        gateway.tunnel.stop(); gateway._event("tunnel.stopped"); gateway.stop_http()
+        gateway.stop_http()
     return 0
 
 
-if __name__ == "__main__": raise SystemExit(main())
+if __name__ == "__main__":
+    # As aplicações importam o contrato pelo nome público mesmo sob ``-m``.
+    sys.modules["onmyoji_daemon.miniapps"] = sys.modules[__name__]
+    raise SystemExit(main())
