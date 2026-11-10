@@ -129,3 +129,14 @@ class BootstrapShikigamiTests(unittest.TestCase):
             with patch.object(MODULE.subprocess, "run", return_value=completed) as run:
                 self.assertEqual(MODULE.run_instance_setup(instance), 0)
         run.assert_called_once_with([sys.executable, str(instance / "setupOnmyoji.py")], cwd=str(instance), check=False)
+
+    def test_setup_import_does_not_require_aiohttp_before_runtime_installation(self) -> None:
+        program = "import runpy,sys;sys.modules['aiohttp']=None;runpy.run_path(sys.argv[1],run_name='setup_import_test')"
+        completed = subprocess.run(
+            [sys.executable, "-I", "-B", "-c", program, str(SCRIPT.parent / "setupOnmyoji.py")],
+            cwd=str(SCRIPT.parent),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
