@@ -21,7 +21,7 @@ class MercadoToolRegistry:
         names = [profile["name"] for profile in profiles]
         union = {module for profile in profiles for module in profile["modules"]}
         tools = [self._definition("mercado.list_profiles", {"type": "object", "properties": {}, "additionalProperties": False}, profiles)]
-        providers = {module.split(".", 1)[0] for module in union}
+        providers = {provider for profile in profiles for provider in ("mercadolivre", "mercadopago") if provider in profile}
         for provider in sorted(providers):
             for operation in AUTH_OPERATIONS:
                 tools.append(self._definition(f"{provider}.{operation}", auth_schema(operation), profiles))
