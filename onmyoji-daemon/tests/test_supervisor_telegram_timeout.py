@@ -23,7 +23,7 @@ from onmyoji_daemon.supervisor import Supervisor
 def test_handle_forwards_rpc_with_operation_timeout(tmp_path, monkeypatch, method, service_name, expected_timeout):
     """O prazo chega ao transporte real de ``_call_service``, sem alterar payload ou resultado."""
     monkeypatch.setattr(supervisor_module, "free_port", lambda: 39900)
-    monkeypatch.setattr(supervisor_module, "RpcServer", lambda *_args: SimpleNamespace(port=39900))
+    monkeypatch.setattr(supervisor_module, "RpcServer", lambda *_args, **_kwargs: SimpleNamespace(port=39900))
     supervisor = Supervisor(tmp_path)
     service = supervisor.services[service_name]
     service.process = SimpleNamespace(poll=lambda: None)

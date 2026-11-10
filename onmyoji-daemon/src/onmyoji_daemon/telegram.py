@@ -976,14 +976,18 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
         return any(fragment in detail for fragment in ("thread not found", "unknown thread", "no such thread", "thread does not exist", "invalid thread id"))
 
     def _app_thread(self, chat_id: int, client: CodexAppServer, turn_context: dict[str, Any] | None = None) -> str:
-        if (turn_context or {}).get("notification"):
-            return self._notification_thread(str(chat_id), client, turn_context["notification"])
+        notification = (turn_context or {}).get("notification")
+        if notification and notification["response_channel"]["type"] == "email":
+            return self._notification_thread(str(chat_id), client, notification)
         state = self._channel_state(chat_id); bundle = self.instructions.compose(identity=self.identity, telegram=True, reply_mode=str(state["reply_mode"]), outbound_media=self.settings.agent_outbound_media, telegram_context=TelegramTurnContext.from_value(turn_context))
         tool_contract = f"{bundle.baseline_hash}:telegram-tools-v4:{self.settings.busy_input_policy}:{int(self.capabilities.supports('steering'))}:{int(self.capabilities.supports('subagents'))}"
+        self._execution_local.thread_contract = tool_contract
         generation = self._generation(chat_id)
         with self.database_lock:
             row = self.database.execute("SELECT codex_thread_id, instruction_baseline_hash FROM conversations WHERE chat_id=? AND generation=?", (str(chat_id), generation)).fetchone()
         thread_id = str(row[0]) if row and row[0] else ""
+        if notification and notification["thread_policy"] == "new":
+            thread_id = ""
         revised = bool(thread_id and str(row[1] or "") != tool_contract)
         params = {"cwd": str(self.settings.project), "approvalPolicy": self.settings.approval, "sandbox": self.settings.sandbox, "developerInstructions": bundle.text + self._channel_capability_instructions()}
         model, _effort = self._execution_preferences(chat_id)
@@ -1004,7 +1008,8 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
                     raise
                 with self.database_lock:
                     if generation != self._generation(chat_id): raise DeliverySuppressed("Conversa reiniciada durante a verificação da thread.")
-                    self.database.execute("UPDATE conversations SET codex_thread_id=NULL, instruction_baseline_hash=NULL, updated_at=? WHERE chat_id=? AND generation=?", (time.time(), str(chat_id), generation)); self.database.commit()
+                    if not notification:
+                        self.database.execute("UPDATE conversations SET codex_thread_id=NULL, instruction_baseline_hash=NULL, updated_at=? WHERE chat_id=? AND generation=?", (time.time(), str(chat_id), generation)); self.database.commit()
                 self._diagnostic("thread.reset", conversation=str(chat_id), reason="resume_missing")
         tools = [{"type": "namespace", "name": "telegram_gateway", "description": "Interface restrita à DM Telegram ativa.", "tools": [{"type": "function", "name": "get_channel_state", "description": "Consulta o modo de resposta da conversa ativa.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "set_reply_mode", "description": "Define a resposta final como texto ou áudio nesta conversa.", "inputSchema": {"type": "object", "properties": {"mode": {"type": "string", "enum": ["text", "audio"]}}, "required": ["mode"], "additionalProperties": False}}, {"type": "function", "name": "get_outbox", "description": "Reserva o diretório exclusivo deste turno para mídia recém-criada.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "send_file", "description": "Envia arquivo do outbox por file_name ou arquivo existente em raiz autorizada por file_path. Caminho direto exige owner autorizado.", "inputSchema": {"type": "object", "properties": {"file_name": {"type": "string"}, "file_path": {"type": "string"}, "kind": {"type": "string", "enum": ["photo", "document", "audio"]}, "caption": {"type": "string"}}, "required": ["kind"], "additionalProperties": False}}, {"type": "function", "name": "list_stickers", "description": "Lista IDs e contextos das figurinhas pré-cadastradas para a conversa ativa.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "send_sticker", "description": "Envia uma figurinha pré-cadastrada pelo seu ID, sem legenda.", "inputSchema": {"type": "object", "properties": {"sticker_id": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["sticker_id"], "additionalProperties": False}}, {"type": "function", "name": "list_attachments", "description": "Lista os metadados dos anexos retidos na conversa atual.", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False}}, {"type": "function", "name": "materialize_attachment", "description": "Copia um anexo retido para o staging seguro do turno atual.", "inputSchema": {"type": "object", "properties": {"attachment_id": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["attachment_id"], "additionalProperties": False}}]}]
         tools[0]["tools"].extend([{"type": "function", "name": "send_message", "description": "Envia mensagem adicional somente à DM Telegram ativa; pode expirar automaticamente.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "minLength": 1, "maxLength": 4000}, "ttl_seconds": {"type": "integer", "minimum": 0, "maximum": 86400}, "protect_content": {"type": "boolean"}}, "required": ["text"], "additionalProperties": False}}, {"type": "function", "name": "ask_menu", "description": "Exibe opções ao owner da DM ativa e aguarda a seleção com prazo limitado.", "inputSchema": {"type": "object", "properties": {"question": {"type": "string", "minLength": 1, "maxLength": 4000}, "options": {"type": "array", "minItems": 2, "maxItems": 20, "items": {"type": "object", "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 64}, "label": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["id", "label"], "additionalProperties": False}}, "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": 300}, "protect_content": {"type": "boolean"}}, "required": ["question", "options"], "additionalProperties": False}}])
@@ -1022,7 +1027,8 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
         if not thread_id: raise CodexProtocolError("Codex App Server não retornou uma thread")
         with self.database_lock:
             if generation != self._generation(chat_id): raise DeliverySuppressed("Conversa reiniciada durante a criação da thread.")
-            self.database.execute("UPDATE conversations SET codex_thread_id=?, instruction_baseline_hash=?, updated_at=? WHERE chat_id=? AND generation=?", (thread_id, tool_contract, time.time(), str(chat_id), generation)); self.database.commit()
+            if not notification:
+                self.database.execute("UPDATE conversations SET codex_thread_id=?, instruction_baseline_hash=?, updated_at=? WHERE chat_id=? AND generation=?", (thread_id, tool_contract, time.time(), str(chat_id), generation)); self.database.commit()
         return thread_id
 
     def _app_sandbox_policy(self) -> dict[str, Any]:

@@ -24,7 +24,7 @@ def dispatch(gateway) -> None:
                 active = dict(gateway._slots)
             for destination, slot in active.items():
                 item = gateway.store.next_input(destination, gateway._generation(destination))
-                if item and item.get("origin", "telegram") == "telegram" and not slot.inbox.get("notification") and slot.active and gateway._can_steer(slot, item):
+                if item and item.get("origin", "telegram") == "telegram" and slot.active and getattr(slot.active, "channel_type", "telegram") == "telegram" and gateway._can_steer(slot, item):
                     gateway._steer_input(slot, item)
             admitted = False
             slot = None

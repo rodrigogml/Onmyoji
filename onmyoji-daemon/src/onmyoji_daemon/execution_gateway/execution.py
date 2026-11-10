@@ -364,7 +364,7 @@ class ExecutionGateway:
         try:
             attachments, context = self._load_input(slot.conversation_id, slot.inbox)
             if slot.inbox.get("notification"):
-                self._notification_destination(context["notification"])
+                self._notification_destination(context["notification"], context.get("notification_smtp_account"))
             if slot.generation != self._generation(slot.conversation_id):
                 self.store.fail_input(slot.inbox["id"], "generation_reset")
                 self.store.terminal(slot.identifier, "cancelled")
@@ -676,27 +676,31 @@ class ExecutionGateway:
         client = self._app_client()
         notification = (turn_context or {}).get("notification")
         thread = self._app_thread(chat_id, client, turn_context)
-        address, topic = (0, {}) if notification else self._telegram_address(conversation)
+        email = notification and notification["response_channel"]["type"] == "email"
+        address, topic = (0, {}) if email else self._telegram_address(conversation)
         context = TelegramTurnContext.from_value(turn_context)
         active = AppServerTurn(address, thread, threading.Event(), reply_mode=self._channel_state(chat_id)["reply_mode"], telegram_topic_values=topic, conversation_id=conversation, source_trust=context.source_trust, generation=generation, process_epoch=str(getattr(client, "process_epoch", "legacy")))
         active.origin = "event" if notification else "telegram"
-        if notification:
+        active.channel_type = "email" if email else "telegram"
+        if email:
             active.reply_mode = "text"
         active.execution_preferences = self._execution_preferences(chat_id)
         if slot:
             active.execution_id, active.inbox_id = slot.identifier, slot.inbox["id"]
             slot.active = active
             self.store.bind(active.execution_id, active.process_epoch, thread)
+            with self.database_lock, self.database:
+                self.database.execute("UPDATE execution_turns SET resource_revision=? WHERE execution_id=?", (getattr(self._execution_local, "thread_contract", None) if not email else None, active.execution_id))
         self._execution_local.active = active
         with self.app_server_lock:
             self.app_turns[thread] = active
         try:
             system_result = (turn_context or {}).get("system_result")
-            external, external_ids = ("", []) if system_result or notification else self._pending_external(conversation)
+            external, external_ids = ("", []) if system_result or email else self._pending_external(conversation)
             inputs = []
             if not system_result:
                 turn_attachments = [*(attachments or []), *self._external_attachment_rows(conversation, external_ids)]
-                inputs = [{"type": "text", "text": text}] if notification else self._serialize_input(active, text, turn_attachments, turn_context, structured_content) if structured_content else self._serialize_input(active, text, turn_attachments, turn_context)
+                inputs = [{"type": "text", "text": text}] if email else self._serialize_input(active, text, turn_attachments, turn_context, structured_content) if structured_content else self._serialize_input(active, text, turn_attachments, turn_context)
             if external:
                 inputs[0]["text"] = external + "\n\n" + inputs[0]["text"]
             model, effort = active.execution_preferences
@@ -878,7 +882,7 @@ class ExecutionGateway:
             active.final_items[identifier] = text
             active.final_item_id, active.final_text = identifier, text
             return
-        if getattr(active, "origin", "telegram") == "event":
+        if getattr(active, "channel_type", "telegram") == "email":
             return
         if item_type == "agentMessage" and item.get("phase") == "partial_answer":
             if self.api:
@@ -925,7 +929,7 @@ class ExecutionGateway:
     def _tool_active(self, params: dict[str, Any]) -> Any:
         context = getattr(self._tool_local, "event", None)
         active = self._correlate(params, context)
-        if not active or getattr(active, "origin", "telegram") == "event" or active.suppressed or active.cancel_requested or active.completed.is_set() or active.generation != self._generation(active.conversation_id):
+        if not active or getattr(active, "channel_type", "telegram") == "email" or active.suppressed or active.cancel_requested or active.completed.is_set() or active.generation != self._generation(active.conversation_id):
             raise RuntimeError("Ferramenta sem turno ativo ou pertencente a contexto encerrado.")
         return active
 
@@ -999,7 +1003,8 @@ class ExecutionGateway:
     def _turn_serial(self, chat_id: Any, text: str, attachments: list[dict[str, Any]], turn_context: dict[str, Any] | None = None, structured_content: dict[str, Any] | None = None) -> None:
         conversation = str(chat_id)
         notification = (turn_context or {}).get("notification")
-        address, topic = (0, {}) if notification else self._telegram_address(conversation)
+        email = notification and notification["response_channel"]["type"] == "email"
+        address, topic = (0, {}) if email else self._telegram_address(conversation)
         slot = getattr(self._execution_local, "slot", None)
         if slot and getattr(slot, "budget_reserved", False):
             slot.budget_reserved = False
@@ -1017,7 +1022,7 @@ class ExecutionGateway:
         def renew() -> None:
             while not typing_stop.is_set():
                 try:
-                    if self.api and not notification:
+                    if self.api and not email:
                         self.api.typing(address, **topic)
                 except Exception:
                     pass

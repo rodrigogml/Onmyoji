@@ -6,6 +6,29 @@ Especificação aprovada em 2026-11-10. A disponibilidade operacional depende da
 
 Ingresso exclusivamente local pelo Supervisor, namespace `notification.`, no mesmo processo, inbox, banco, App Server e limite de turnos do Telegram. `notification.submit` é síncrono e concorrente; desconectar não cancela. Não existe consulta de resultado por UUID nem cancelamento pelo emissor. O token interno do Supervisor permanece obrigatório; não há cadastro/autenticação adicional de emissores.
 
+O ingresso do evento acontece antes da seleção do canal e da thread. Quando o retorno é Telegram, a entrada usa exatamente o fluxo de instruções, ferramentas, preferências, associação de thread e entrega daquele chat/tópico. A origem serve para prioridade e auditoria; não cria outro contexto de thread. `reuse` pode continuar uma thread iniciada por mensagem Telegram e mensagens posteriores podem continuar a thread iniciada pelo evento. O contexto efetivo é escolhido pelo canal de retorno, não pela origem. Retorno e-mail usa as instruções da instância, sem ferramentas de conversa Telegram. Esclarecimento funcional do proprietário registrado em 2026-11-10.
+
+```mermaid
+flowchart TD
+    T[Mensagem Telegram] --> DT[Destino Telegram: chat e tópico]
+    E[Evento externo local] --> V[Validar contrato]
+    V --> C{Canal de retorno}
+    C -->|Telegram| DT
+    C -->|E-mail| DE[Destino e-mail]
+    DT --> Q[Inbox e escalonador únicos]
+    DE --> Q
+    Q --> CT{Canal do destino}
+    CT -->|Telegram| TG[Fluxo Telegram: instruções, ferramentas e preferências]
+    CT -->|E-mail| EM[Instruções da instância e entrega SMTP]
+    TG --> P{Política de thread}
+    EM --> P
+    P -->|reuse| R[Retomar associação do destino ou criar se ausente]
+    P -->|new| N[Criar candidata e publicar vínculo após sucesso]
+    R --> A[Mesmo Codex App Server e orçamento global]
+    N --> A
+    A --> O[Entrega pelo canal escolhido]
+```
+
 Envelope JSON v1 fechado: `schema_version=1`, UUIDv7 em `event_id`, `prompt` não vazio, `response_channel={type,value}` com tipo `telegram` ou `email` e `thread_policy` igual a `new` ou `reuse`. Schema distribuído no pacote Python. Cada recebimento do mesmo UUID executa novamente. Limite inicial de requisição completa de 1 MiB e 32 acompanhamentos longos concorrentes, configuráveis. Saturação rejeita antes de aceitar. Perda de conexão não autoriza reenvio automático.
 
 Telegram tem prioridade sem preempção. Destinos ocupados são pulados, sem bloqueio de toda a fila. A capacidade de turno é liberada na terminalidade; destino fica reservado até entrega/limpeza. Incerteza conserva a proteção até reconciliação.

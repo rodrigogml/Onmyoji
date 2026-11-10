@@ -39,7 +39,7 @@ def test_notification_reuses_gateway_and_reprocesses_same_uuid(lab):
         result = second.result(3)
         assert result["event_id"] == value["event_id"] and result["execution"] == "completed"
     assert len(lab.gateway.database.execute("SELECT * FROM notification_receipts").fetchall()) == 2
-    assert all(params.get("dynamicTools") == [] for name, params in lab.client.calls if name == "thread/start")
+    assert all(params["dynamicTools"][0]["name"] == "telegram_gateway" for name, params in lab.client.calls if name == "thread/start")
     assert lab.gateway.database.execute("SELECT codex_thread_id FROM conversations WHERE chat_id='9'").fetchone() == (second_thread,)
 
 
@@ -54,9 +54,10 @@ def test_failed_new_keeps_old_association_and_delivery_failure_keeps_new(lab):
         lab.client.complete(thread, "failed")
         assert failed.result(3)["execution"] == "failed"
         assert lab.gateway.database.execute("SELECT codex_thread_id FROM conversations WHERE chat_id='9'").fetchone() == ("old",)
+        from onmyoji_daemon.telegram_delivery import DeliveryUncertain
         def unavailable(*args):
-            return "uncertain"
-        lab.gateway._notification_send = unavailable
+            raise DeliveryUncertain("delivery failed")
+        lab.gateway._deliver_terminal = unavailable
         success = pool.submit(lab.gateway.handle, "notification.submit", event())
         thread = lab.client.wait_calls("turn/start", 2)[1]["threadId"]
         lab.client.item(thread, "Resposta")
@@ -114,3 +115,36 @@ def test_log_recovery_is_idempotent_and_retention_is_confined(lab):
     old.write_text("{}", encoding="utf-8"); unrelated.write_text("{}", encoding="utf-8")
     log.purge()
     assert not old.exists() and unrelated.exists()
+
+
+@pytest.mark.parametrize("policy", ["reuse", "new"])
+def test_telegram_and_events_share_channel_thread_tools_and_input_pipeline(lab, policy):
+    enable(lab)
+    submit(lab, "Mensagem Telegram inicial")
+    first = lab.client.wait_calls("turn/start")[0]["threadId"]
+    lab.client.item(first, "Resposta inicial"); lab.client.complete(first)
+    lab.api.wait_text("Resposta inicial")
+    with ThreadPoolExecutor() as pool:
+        future = pool.submit(lab.gateway.handle, "notification.submit", event(policy))
+        params = lab.client.wait_calls("turn/start", 2)[1]
+        thread = params["threadId"]
+        assert (thread == first) == (policy == "reuse")
+        assert lab.gateway.database.execute("SELECT codex_thread_id FROM conversations WHERE chat_id='9'").fetchone() == (first,)
+        envelope = json.loads(params["input"][0]["text"])
+        assert envelope["telegram_turn"]["content"] == "Evento de laboratório"
+        active = lab.gateway._slots["9"].active
+        assert active.channel_type == "telegram" and active.chat_id == 9
+        lab.gateway._tool_local.event = {"process_epoch": lab.client.process_epoch}
+        try:
+            assert lab.gateway._tool_active({"threadId": thread, "turnId": active.turn_id}) is active
+        finally:
+            lab.gateway._tool_local.event = None
+        lab.client.item(thread, "Resposta ao evento"); lab.client.complete(thread)
+        assert future.result(3)["delivery"] == "confirmed"
+    submit(lab, "Mensagem Telegram posterior")
+    last = lab.client.wait_calls("turn/start", 3)[2]
+    assert last["threadId"] == thread
+    lab.client.complete(thread)
+    catalogs = lab.client.wait_calls("thread/start")
+    assert all(params["serviceName"] == "onmyoji_telegram" for params in catalogs)
+    assert all(params["dynamicTools"][0]["name"] == "telegram_gateway" for params in catalogs)

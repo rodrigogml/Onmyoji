@@ -46,7 +46,10 @@ class NotificationIngress:
         generation = self._generation(destination)
         received = timestamp()
         receipt = {"event_id": event["event_id"], "received_at": received, "envelope": event}
-        identifier = self.store.enqueue(destination, generation, event["prompt"], [], {"notification": event}, origin="event", receipt=receipt, limit=self.settings.max_pending_items)
+        context = {"notification": event, "notification_smtp_account": configuration["smtp_account"], "source_trust": "AUTHORIZED_USER", "has_text": True}
+        if channel["type"] == "telegram":
+            context["conversation_kind"] = self._conversation_kind(destination)
+        identifier = self.store.enqueue(destination, generation, event["prompt"], [], context, origin="event", receipt=receipt, limit=self.settings.max_pending_items)
         try:
             self.notification_log.flush()
         except OSError:
@@ -67,7 +70,7 @@ class NotificationIngress:
         with self.database_lock:
             row = self.database.execute("SELECT codex_thread_id FROM conversations WHERE chat_id=?", (conversation,)).fetchone()
         previous = row[0] if row else None
-        params = {"cwd": str(self.settings.project), "approvalPolicy": self.settings.approval, "sandbox": self.settings.sandbox, "developerInstructions": CodexLaunch.from_system(self.settings.root).developer_instructions(), "dynamicTools": []}
+        params = {"cwd": str(self.settings.project), "approvalPolicy": self.settings.approval, "sandbox": self.settings.sandbox, "developerInstructions": CodexLaunch.from_system(self.settings.root).developer_instructions()}
         if self.settings.model:
             params["model"] = self.settings.model
         if previous and event["thread_policy"] == "reuse":
@@ -77,13 +80,13 @@ class NotificationIngress:
             except CodexProtocolError as error:
                 if not self._thread_is_missing(error):
                     raise
-        response = client.request("thread/start", {**params, "serviceName": "onmyoji_notification"})
+        response = client.request("thread/start", {**params, "dynamicTools": [], "serviceName": "onmyoji_notification"})
         thread = response.get("thread", response)
         if not isinstance(thread, dict) or not isinstance(thread.get("id"), str) or not thread["id"]:
             raise CodexProtocolError("Criação de thread sem identificador.", kind="not_sent")
         return thread["id"]
 
-    def _notification_destination(self, event):
+    def _notification_destination(self, event, smtp_account=None):
         channel = event["response_channel"]
         if channel["type"] == "telegram":
             if not self.api or not self._channel_registered(channel["value"]):
@@ -92,7 +95,7 @@ class NotificationIngress:
         else:
             if re.fullmatch(r"[^\s<>@]+@[^\s<>@]+", channel["value"]) is None:
                 raise RpcError("Endereço de e-mail inválido.", "destination_unavailable")
-            account = self.notification_configuration.load()["smtp_account"]
+            account = self.notification_configuration.load()["smtp_account"] if smtp_account is None else smtp_account
             if not account:
                 raise RpcError("Selecione a conta SMTP padrão.", "smtp_unconfigured")
             from ..mcp.email.service import EmailService
@@ -100,7 +103,7 @@ class NotificationIngress:
             if not configured.get("smtp"):
                 raise RpcError("Conta sem SMTP.", "smtp_unconfigured")
 
-    def _notification_send(self, channel, text, key, event_id):
+    def _notification_send(self, channel, text, key, event_id, smtp_account=None):
         if channel["type"] == "telegram":
             if not self.api or not self._channel_registered(channel["value"]):
                 return "failed"
@@ -113,24 +116,50 @@ class NotificationIngress:
             except Exception as error:
                 return "failed" if getattr(error, "kind", "") == "not_sent" else "uncertain"
         from ..mcp.email.service import EmailService
-        account = self.notification_configuration.load()["smtp_account"]
+        account = self.notification_configuration.load()["smtp_account"] if smtp_account is None else smtp_account
         if not account:
             return "failed"
         try:
             result = EmailService(self.settings.root).invoke(account, "send_message", {"confirm": True, "request_id": key, "to": [channel["value"]], "subject": "Onmyōji · evento " + event_id, "text": text})
             return {"accepted": "confirmed", "rejected": "failed"}.get(result.get("status"), "uncertain")
-        except Exception:
-            return "failed"
+        except Exception as error:
+            # Falha em persistir o recibo pode acontecer após aceite SMTP.
+            return "failed" if getattr(error, "code", "") in {"account_unavailable", "operation_unavailable", "sender_not_allowed", "invalid_argument", "recipient_required"} else "uncertain"
 
     def _notification_deliver(self, execution, event, text):
         with self._notification_delivery_lock:
             with self.database_lock, self.database:
-                row = self.database.execute("SELECT inbox_id,delivery_state FROM notification_receipts WHERE inbox_id=(SELECT id FROM inbox_items WHERE execution_id=? LIMIT 1)", (execution,)).fetchone()
+                row = self.database.execute("SELECT n.inbox_id,n.delivery_state,i.turn_context FROM notification_receipts n JOIN inbox_items i ON i.id=n.inbox_id WHERE i.execution_id=? LIMIT 1", (execution,)).fetchone()
                 if not row or row[1] != "not_attempted":
                     return
                 self.database.execute("UPDATE notification_receipts SET delivery_state='sending' WHERE inbox_id=?", (row[0],))
                 self.database.execute("UPDATE execution_turns SET delivery_state='sending' WHERE execution_id=?", (execution,))
-            state = self._notification_send(event["response_channel"], text, "notification:" + row[0], event["event_id"])
+            account = json.loads(row[2]).get("notification_smtp_account")
+            if event["response_channel"]["type"] == "telegram":
+                from ..telegram import AppServerTurn
+                from ..telegram_delivery import DeliverySuppressed, DeliveryUncertain
+                with self.app_server_lock:
+                    slot = next((slot for slot in self._slots.values() if slot.identifier == execution), None)
+                    active = slot.active if slot else None
+                if active is None:
+                    with self.database_lock:
+                        saved = self.database.execute("SELECT conversation_id,generation,thread_id,turn_id,reply_mode,final_item_id,user_cancelled FROM execution_turns WHERE execution_id=?", (execution,)).fetchone()
+                    address, topic = self._telegram_address(saved[0])
+                    active = AppServerTurn(address, saved[2] or "", threading.Event(), turn_id=saved[3], conversation_id=saved[0], generation=saved[1], execution_id=execution, reply_mode=saved[4] or "text", final_item_id=saved[5] or "final", telegram_topic_values=topic, user_cancelled=bool(saved[6]))
+                    active.completed.set()
+                try:
+                    self._settle_visible(active)
+                    self._deliver_terminal(active, text, active.reply_mode)
+                    self._finish_resources(active)
+                    state = "confirmed"
+                except DeliverySuppressed:
+                    state = "failed"
+                except DeliveryUncertain:
+                    state = "uncertain"
+                except Exception:
+                    state = "uncertain"
+            else:
+                state = self._notification_send(event["response_channel"], text, "notification:" + row[0], event["event_id"], account)
             with self.database_lock, self.database:
                 self.database.execute("UPDATE notification_receipts SET delivery_state=? WHERE inbox_id=?", (state, row[0]))
                 self.database.execute("UPDATE execution_turns SET delivery_state=? WHERE execution_id=?", ("done" if state == "confirmed" else state, execution))
@@ -139,15 +168,15 @@ class NotificationIngress:
     def _notification_sync(self):
         # Uma única rotina faz entrega/registro de finais recuperados, sem executar agente.
         with self.database_lock:
-            rows = self.database.execute("SELECT n.inbox_id,n.event_id,n.envelope,n.execution_state,n.delivery_state,i.state,i.execution_id,e.state,e.result,e.terminal_text,e.thread_id FROM notification_receipts n JOIN inbox_items i ON i.id=n.inbox_id LEFT JOIN execution_turns e ON e.execution_id=i.execution_id WHERE n.execution_state IS NULL OR n.execution_state='uncertain'").fetchall()
-        for inbox, event_id, raw, _state, delivery, input_state, execution, execution_state, result, text, thread in rows:
+            rows = self.database.execute("SELECT n.inbox_id,n.event_id,n.envelope,n.execution_state,n.delivery_state,i.state,i.execution_id,e.state,e.result,e.terminal_text,e.thread_id,e.resource_revision FROM notification_receipts n JOIN inbox_items i ON i.id=n.inbox_id LEFT JOIN execution_turns e ON e.execution_id=i.execution_id WHERE n.execution_state IS NULL OR n.execution_state='uncertain'").fetchall()
+        for inbox, event_id, raw, _state, delivery, input_state, execution, execution_state, result, text, thread, revision in rows:
             if execution_state not in {"terminal", "uncertain"} and input_state not in {"failed", "cancelled", "uncertain", "uncertain_legacy"}:
                 continue
             event = json.loads(raw)
             state = "uncertain" if execution_state == "uncertain" or input_state in {"uncertain", "uncertain_legacy"} else "completed" if result == "completed" else "not_started" if result in {None, "not_started", "not_sent"} else "failed"
             if execution_state == "terminal" and result == "completed" and thread:
                 with self.database_lock, self.database:
-                    self.database.execute("UPDATE conversations SET codex_thread_id=?,instruction_baseline_hash=NULL WHERE chat_id=(SELECT chat_id FROM inbox_items WHERE id=?)", (thread, inbox))
+                    self.database.execute("UPDATE conversations SET codex_thread_id=?,instruction_baseline_hash=? WHERE chat_id=(SELECT chat_id FROM inbox_items WHERE id=?) AND generation=(SELECT generation FROM inbox_items WHERE id=?)", (thread, revision, inbox, inbox))
             if text and execution_state == "terminal" and delivery == "not_attempted":
                 self._notification_deliver(execution, event, text)
             with self.database_lock, self.database:
