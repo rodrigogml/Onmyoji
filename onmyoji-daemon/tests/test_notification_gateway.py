@@ -148,3 +148,20 @@ def test_telegram_and_events_share_channel_thread_tools_and_input_pipeline(lab, 
     catalogs = lab.client.wait_calls("thread/start")
     assert all(params["serviceName"] == "onmyoji_telegram" for params in catalogs)
     assert all(params["dynamicTools"][0]["name"] == "telegram_gateway" for params in catalogs)
+
+
+def test_event_honors_channel_audio_preference(lab):
+    from dataclasses import replace
+    enable(lab)
+    lab.gateway.settings = replace(lab.gateway.settings, voice_enabled=True)
+    lab.gateway._set_reply_mode("9", "audio")
+    def synthesize(text, path):
+        path.write_bytes(b"fixture audio")
+    lab.gateway._tts = synthesize
+    with ThreadPoolExecutor() as pool:
+        future = pool.submit(lab.gateway.handle, "notification.submit", event())
+        thread = lab.client.wait_calls("turn/start")[0]["threadId"]
+        assert lab.gateway._slots["9"].active.reply_mode == "audio"
+        lab.client.item(thread, "Resposta em áudio"); lab.client.complete(thread)
+        assert future.result(3)["delivery"] == "confirmed"
+    assert len(lab.api.files) == 1 and lab.api.files[0]["method"] == "sendVoice"

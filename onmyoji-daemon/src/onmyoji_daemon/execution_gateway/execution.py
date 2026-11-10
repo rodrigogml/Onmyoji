@@ -850,6 +850,9 @@ class ExecutionGateway:
             if active.inbox_id:
                 delete = active.delete_on_finish if active.delete_on_finish is not None else self._conversation_settings(active.conversation_id)["delete_thoughts"]
                 self.store.save_terminal_output(active.execution_id, active.status, self._terminal_answer(active), active.final_item_id, active.reply_mode, delete)
+                if active.status == "completed" and active.sticker_only_sent and getattr(active, "origin", "telegram") == "event":
+                    with self.database_lock, self.database:
+                        self.database.execute("UPDATE notification_receipts SET delivery_state='confirmed' WHERE inbox_id=?", (active.inbox_id,))
             self._invalidate_menus(active)
             if active.suppressed:
                 active.terminal_announced = True
