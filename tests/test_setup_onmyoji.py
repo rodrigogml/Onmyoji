@@ -681,6 +681,15 @@ class SystemSetupTests(unittest.TestCase):
             subprocess.run(["git", "add", "base.txt"], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "Base"], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "remote", "add", "origin", "https://github.com/rodrigogml/Onmyoji.git"], cwd=root, check=True, capture_output=True)
+            for key, values in {
+                "branch.main.remote": ["upstream", "legacy"],
+                "branch.main.merge": ["refs/heads/upstream", "refs/heads/legacy"],
+                "branch.main.pushRemote": ["upstream", "legacy"],
+                "pull.rebase": ["true", "merges"],
+                "pull.ff": ["only", "false"],
+            }.items():
+                for value in values:
+                    subprocess.run(["git", "config", "--local", "--add", key, value], cwd=root, check=True, capture_output=True)
 
             with patch.object(MODULE, "prompt", side_effect=["", "", str(own)]):
                 configured, detail = MODULE.configure_git_repository(root)
@@ -689,7 +698,11 @@ class SystemSetupTests(unittest.TestCase):
             upstream = subprocess.run(["git", "remote", "get-url", "upstream"], cwd=root, text=True, capture_output=True, check=True).stdout.strip()
             self.assertEqual(MODULE._git_location(upstream), MODULE._git_location("https://github.com/rodrigogml/Onmyoji.git"))
             self.assertEqual(subprocess.run(["git", "remote", "get-url", "origin"], cwd=root, text=True, capture_output=True, check=True).stdout.strip(), str(own))
-            self.assertEqual(subprocess.run(["git", "config", "--get", "branch.main.remote"], cwd=root, text=True, capture_output=True, check=True).stdout.strip(), "origin")
+            self.assertEqual(subprocess.run(["git", "config", "--local", "--get-all", "branch.main.remote"], cwd=root, text=True, capture_output=True, check=True).stdout.splitlines(), ["origin"])
+            self.assertEqual(subprocess.run(["git", "config", "--local", "--get-all", "branch.main.merge"], cwd=root, text=True, capture_output=True, check=True).stdout.splitlines(), ["refs/heads/main"])
+            self.assertEqual(subprocess.run(["git", "config", "--local", "--get-all", "branch.main.pushRemote"], cwd=root, text=True, capture_output=True, check=True).stdout.splitlines(), ["origin"])
+            self.assertEqual(subprocess.run(["git", "config", "--local", "--get-all", "pull.rebase"], cwd=root, text=True, capture_output=True, check=True).stdout.splitlines(), ["false"])
+            self.assertEqual(subprocess.run(["git", "config", "--local", "--get-all", "pull.ff"], cwd=root, text=True, capture_output=True, check=True).stdout.splitlines(), ["true"])
             self.assertEqual(subprocess.run(["git", "config", "--get", "remote.pushDefault"], cwd=root, text=True, capture_output=True, check=True).stdout.strip(), "origin")
             attributes = (root / ".git" / "info" / "attributes").read_text(encoding="utf-8")
             self.assertIn("instructions.md merge=shikigami-local", attributes)

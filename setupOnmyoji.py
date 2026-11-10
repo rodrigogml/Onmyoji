@@ -975,6 +975,14 @@ def _configure_git_merge_rules(root: Path) -> None:
         raise GitSetupError(str(error)) from error
 
 
+def _git_set_local(root: Path, key: str, value: str) -> None:
+    """Normaliza uma chave local do Git para exatamente um valor."""
+    removed = _git(root, ["config", "--local", "--unset-all", key], allow_failure=True)
+    if removed.returncode not in {0, 5}:
+        raise GitSetupError(_git_detail(removed) or f"Não foi possível normalizar {key}.")
+    _git(root, ["config", "--local", "--add", key, value])
+
+
 def configure_git_repository(root: Path) -> tuple[bool, str]:
     """Organiza origin/upstream, tracking e regras locais de merge."""
     if not (root / ".git").is_dir():
@@ -1012,13 +1020,14 @@ def configure_git_repository(root: Path) -> tuple[bool, str]:
                 origin = _valid_git_url(prompt("URL do origin próprio [X = cancelar]: "))
                 _git(root, ["remote", "add", "origin", origin])
         _configure_git_merge_rules(root)
-        _git(root, ["config", "--local", "pull.rebase", "false"])
-        _git(root, ["config", "--local", "fetch.prune", "true"])
+        _git_set_local(root, "pull.rebase", "false")
+        _git_set_local(root, "pull.ff", "true")
+        _git_set_local(root, "fetch.prune", "true")
         if origin:
-            _git(root, ["config", "--local", "remote.pushDefault", "origin"])
-            _git(root, ["config", "--local", f"branch.{branch}.remote", "origin"])
-            _git(root, ["config", "--local", f"branch.{branch}.merge", f"refs/heads/{branch}"])
-            _git(root, ["config", "--local", f"branch.{branch}.pushRemote", "origin"])
+            _git_set_local(root, "remote.pushDefault", "origin")
+            _git_set_local(root, f"branch.{branch}.remote", "origin")
+            _git_set_local(root, f"branch.{branch}.merge", f"refs/heads/{branch}")
+            _git_set_local(root, f"branch.{branch}.pushRemote", "origin")
             return True, f"Git preparado: {branch} recebe e publica em origin/{branch}; atualizações da base vêm explicitamente de upstream/main."
         return True, "Upstream e regras de merge configurados. O origin próprio permanece pendente."
     except GitSetupError as error:
