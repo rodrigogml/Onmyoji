@@ -14,7 +14,7 @@ def test_inspection_waits_with_progress_and_does_not_request_remote_writes(monke
     monkeypatch.setattr(cli, "endpoint", lambda _root: ("127.0.0.1", 1234, "rpc-private"))
     monkeypatch.setattr(cli.time, "sleep", lambda _seconds: None)
     calls = []
-    preview = {"status": "existing", "hostname": "akuma.example.com", "tunnel_id": "existing-tunnel", "preview_id": "a" * 32}
+    preview = {"status": "existing", "hostname": "tsuki.example.com", "tunnel_id": "existing-tunnel", "preview_id": "a" * 32}
     def rpc(_host, _port, _token, method, params, **_kwargs):
         calls.append((method, params))
         if method == "cloudflare-tunnel.operations.status":

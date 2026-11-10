@@ -82,7 +82,7 @@ def test_old_daemon_is_explained_without_starting_services(tmp_path, monkeypatch
 
 @pytest.mark.parametrize("available", [True, False])
 def test_credential_presence_is_checked_without_obtaining_secret(tmp_path, monkeypatch, available):
-    write_tunnel(tmp_path, 'credential_profile = "main"\ncredential_entry_path = "Akuma/Serviço/Cloudflare:API"\n')
+    write_tunnel(tmp_path, 'credential_profile = "main"\ncredential_entry_path = "Tsuki/Serviço/Cloudflare:API"\n')
     calls = []
 
     class Resolver:
@@ -93,7 +93,7 @@ def test_credential_presence_is_checked_without_obtaining_secret(tmp_path, monke
     monkeypatch.setattr(diagnostics, "KeePassCredentialResolver", Resolver)
     check = by_label(diagnostics.diagnose(tmp_path))["Credencial Cloudflare no KeePass"]
 
-    assert calls == [("main", "Akuma/Serviço/Cloudflare:API")]
+    assert calls == [("main", "Tsuki/Serviço/Cloudflare:API")]
     assert check["state"] == ("ok" if available else "error")
 
 
@@ -124,7 +124,7 @@ def test_binary_probe_timeout_does_not_abort_diagnostic(tmp_path, monkeypatch):
 
 
 def test_reachable_services_report_connection_and_optional_miniapps_independently(tmp_path, monkeypatch):
-    write_tunnel(tmp_path, 'account_id = "account"\nzone_id = "zone"\nhostname = "akuma.example.com"\n')
+    write_tunnel(tmp_path, 'account_id = "account"\nzone_id = "zone"\nhostname = "tsuki.example.com"\n')
     replies = {
         "list-services": [{"name": name, "state": "running"} for name in ("gateway", "cloudflare-tunnel", "mini-apps")],
         "gateway.status": {"ready": True, "http_url": "https://localhost:39390"},

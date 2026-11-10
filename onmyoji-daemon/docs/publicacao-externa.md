@@ -52,7 +52,7 @@ as referências do perfil e da entrada. Depois são solicitados:
   hexadecimais; não é o API Token.
 - **Zone ID:** identificador do domínio administrado pela Cloudflare, também
   com 32 caracteres hexadecimais.
-- **Hostname:** endereço público completo, como `akuma.exemplo.com`, sem esquema,
+- **Hostname:** endereço público completo, como `tsuki.exemplo.com`, sem esquema,
   porta ou caminho. O túnel não exige informar o IP público do computador.
 
 Os identificadores e o hostname são dados de configuração local em

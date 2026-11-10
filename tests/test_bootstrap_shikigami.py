@@ -27,7 +27,7 @@ class BootstrapShikigamiTests(unittest.TestCase):
         self.assertEqual(output.getvalue().splitlines(), [line.center(56) for line in MODULE.TEXT_LOGO.splitlines()])
 
     def test_identifier_normalizes_name_and_rejects_reserved_windows_name(self) -> None:
-        self.assertEqual(MODULE.identifier_for("  Akuma Ágil  "), "akuma-agil")
+        self.assertEqual(MODULE.identifier_for("  Tsuki Ágil  "), "tsuki-agil")
         with self.assertRaises(MODULE.BootstrapError):
             MODULE.identifier_for("CON")
 
@@ -35,8 +35,8 @@ class BootstrapShikigamiTests(unittest.TestCase):
         self.assertEqual(MODULE.directory_component_for("  Lavelinha  AI  "), "Lavelinha-AI")
 
     def test_directory_name_is_limited_to_a_child_of_the_base_directory(self) -> None:
-        self.assertEqual(MODULE.directory_name_for("Shikigami-Akuma", "Nome da pasta"), "Shikigami-Akuma")
-        for value in ("C:\\opt\\Akuma", "../Akuma", "Akuma/Work"):
+        self.assertEqual(MODULE.directory_name_for("Shikigami-Tsuki", "Nome da pasta"), "Shikigami-Tsuki")
+        for value in ("C:\\opt\\Tsuki", "../Tsuki", "Tsuki/Work"):
             with self.subTest(value=value), self.assertRaises(MODULE.BootstrapError):
                 MODULE.directory_name_for(value, "Nome da pasta")
 
@@ -45,8 +45,8 @@ class BootstrapShikigamiTests(unittest.TestCase):
             root = Path(temporary); template = root / "template"; destination = root / "instance"
             template.mkdir(); (template / "README.md").write_text("# {{SHIKIGAMI_NAME}}", encoding="utf-8")
             (template / ".gitignore").write_text("cache", encoding="utf-8")
-            MODULE.copy_template(template, destination, {"{{SHIKIGAMI_NAME}}": "Akuma"})
-            self.assertEqual((destination / "README.md").read_text(encoding="utf-8"), "# Akuma")
+            MODULE.copy_template(template, destination, {"{{SHIKIGAMI_NAME}}": "Tsuki"})
+            self.assertEqual((destination / "README.md").read_text(encoding="utf-8"), "# Tsuki")
             self.assertEqual((destination / ".gitignore").read_text(encoding="utf-8"), "cache")
 
     def test_initial_configuration_preserves_the_shikigami_name_for_setup(self) -> None:
@@ -105,7 +105,7 @@ class BootstrapShikigamiTests(unittest.TestCase):
         self.assertIn("pertence ao Onmyōji", completed.stderr)
 
     def test_interactive_cancellation_does_not_create_instance(self) -> None:
-        answers = iter(["Akuma", "", "", "", "", "", "n"])
+        answers = iter(["Tsuki", "", "", "", "", "", "n"])
         output: list[str] = []
         with patch.object(MODULE, "create_instance") as create:
             result = MODULE.interactive(lambda _prompt: next(answers), output.append)
@@ -114,13 +114,13 @@ class BootstrapShikigamiTests(unittest.TestCase):
         self.assertIn("Instalação cancelada.", output[-1])
 
     def test_interactive_starts_the_setup_after_creating_the_instance(self) -> None:
-        answers = iter(["Akuma", "", "", "", "", "", "s"])
+        answers = iter(["Tsuki", "", "", "", "", "", "s"])
         with patch.object(MODULE, "create_instance") as create, patch.object(MODULE, "clear_screen") as clear, patch.object(MODULE, "run_instance_setup", return_value=0) as setup:
             result = MODULE.interactive(lambda _prompt: next(answers), lambda _message: None)
         self.assertEqual(result, 0)
         create.assert_called_once()
         clear.assert_called_once()
-        setup.assert_called_once_with(Path.cwd() / "Shikigami-Akuma")
+        setup.assert_called_once_with(Path.cwd() / "Shikigami-Tsuki")
 
     def test_run_instance_setup_uses_the_bootstrap_python_and_instance_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

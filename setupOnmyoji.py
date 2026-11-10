@@ -2914,7 +2914,7 @@ def daemon_menu(root: Path) -> None:
                 if re.fullmatch(r"[0-9a-fA-F]{32}", value):
                     values[key] = value.lower(); break
                 result(False, f"{label} deve ter 32 caracteres hexadecimais, sem espaços. Copie o ID do painel; a credencial já foi tratada no KeePass.")
-        note("3. Hostname: endereço público completo deste Shikigami, como akuma.seudominio.com, sem https:// nem caminho.")
+        note("3. Hostname: endereço público completo deste Shikigami, como tsuki.seudominio.com, sem https:// nem caminho.")
         note("O cloudflared conecta este computador à Cloudflare; não é necessário informar o IP público do computador.")
         from onmyoji_daemon.cloudflare_tunnel.configuration import TunnelDefinition
         from onmyoji_daemon.cloudflare_tunnel.exception import TunnelError

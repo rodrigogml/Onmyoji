@@ -56,21 +56,21 @@ class McpSetupTests(unittest.TestCase):
         data = {"profiles": {}}
         config.eccovox.return_value = data
 
-        with patch.object(MODULE, "prompt", side_effect=["1", "x"]), patch.object(MODULE, "ask", side_effect=["akuma", "Voz do Akuma", "http://127.0.0.1:8870", "C:/Work", "C:/Work", "C:/Work/.onmyoji/eccovox/output"]), patch.object(MODULE.EccoVoxService, "capabilities_at", return_value={}), patch.object(MODULE, "choose_eccovox_capability", side_effect=["pm_alex", "pt-BR"]), patch.object(MODULE, "eccovox_media_roots", return_value=["C:/Work"]), patch.object(MODULE, "eccovox_default_output_directory", return_value="C:/Work/.onmyoji/eccovox/output"):
+        with patch.object(MODULE, "prompt", side_effect=["1", "x"]), patch.object(MODULE, "ask", side_effect=["tsuki", "Voz do Tsuki", "http://127.0.0.1:8870", "C:/Work", "C:/Work", "C:/Work/.onmyoji/eccovox/output"]), patch.object(MODULE.EccoVoxService, "capabilities_at", return_value={}), patch.object(MODULE, "choose_eccovox_capability", side_effect=["pm_alex", "pt-BR"]), patch.object(MODULE, "eccovox_media_roots", return_value=["C:/Work"]), patch.object(MODULE, "eccovox_default_output_directory", return_value="C:/Work/.onmyoji/eccovox/output"):
             MODULE.eccovox_menu(config)
 
-        self.assertEqual(data["profiles"]["akuma"]["readable_roots"], ["C:/Work"])
-        self.assertEqual(data["profiles"]["akuma"]["writable_roots"], ["C:/Work"])
+        self.assertEqual(data["profiles"]["tsuki"]["readable_roots"], ["C:/Work"])
+        self.assertEqual(data["profiles"]["tsuki"]["writable_roots"], ["C:/Work"])
         config.save_eccovox.assert_called_once_with(data)
 
     def test_eccovox_writable_roots_fall_back_to_the_single_workspace_root(self) -> None:
         config = MagicMock()
-        profile = {"enabled": True, "description": "Voz do Akuma", "base_url": "http://127.0.0.1:8870", "voice": "pm_alex", "language": "pt-BR", "default_output_directory": "C:/Work/.onmyoji/eccovox/output", "readable_roots": ["C:/Work"], "writable_roots": []}
-        data = {"profiles": {"akuma": profile}}
+        profile = {"enabled": True, "description": "Voz do Tsuki", "base_url": "http://127.0.0.1:8870", "voice": "pm_alex", "language": "pt-BR", "default_output_directory": "C:/Work/.onmyoji/eccovox/output", "readable_roots": ["C:/Work"], "writable_roots": []}
+        data = {"profiles": {"tsuki": profile}}
         config.eccovox.return_value = data
 
         with patch.object(MODULE, "prompt", side_effect=["7", "x"]), patch.object(MODULE, "ask", return_value="C:/Work") as ask, patch.object(MODULE, "eccovox_media_roots", return_value=["C:/Work"]):
-            MODULE.manage_eccovox_profile(config, "akuma")
+            MODULE.manage_eccovox_profile(config, "tsuki")
 
         ask.assert_called_once_with("Raízes separadas por ;", "C:/Work", True)
         self.assertEqual(profile["writable_roots"], ["C:/Work"])

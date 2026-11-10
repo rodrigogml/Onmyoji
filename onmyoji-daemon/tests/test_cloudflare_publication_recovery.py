@@ -61,7 +61,7 @@ def recovery(tmp_path):
     ca.write_text("new private CA certificate", encoding="utf-8")
     config = TunnelConfiguration(tmp_path, credentials=resolver)
     config.configure({"account_id": "account", "zone_id": "zone", "hostname": "gateway.example.com",
-                      "credential_profile": "vault", "credential_entry_path": "Akuma/Serviço/CloudflareTunnel:APIToken",
+                      "credential_profile": "vault", "credential_entry_path": "Tsuki/Serviço/CloudflareTunnel:APIToken",
                       "gateway_url": "https://localhost:39390", "ca_file": str(ca)})
     remote = RemoteCloudflare()
     return PublicationRecovery(config, remote), config, remote

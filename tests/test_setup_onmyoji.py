@@ -258,13 +258,13 @@ class SystemSetupTests(unittest.TestCase):
             (project / "setupDaemon.py").write_text("", encoding="utf-8")
             manifest = root / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True); manifest.write_text("", encoding="utf-8")
             events = []
-            answers = iter(["p", "1", "this-is-a-token-not-an-id", "A" * 32, "", "b" * 32, "https://akuma.example.com", "Akuma.Example.Com", "", "x", "x"])
+            answers = iter(["p", "1", "this-is-a-token-not-an-id", "A" * 32, "", "b" * 32, "https://tsuki.example.com", "Tsuki.Example.Com", "", "x", "x"])
             def ask(label):
                 events.append(label)
                 return next(answers)
             def choose_credential(*_args):
                 events.append("credential")
-                return "principal", "Akuma/Serviço/CloudflareTunnel:APIToken"
+                return "principal", "Tsuki/Serviço/CloudflareTunnel:APIToken"
             completed = subprocess.CompletedProcess([], 0, stdout='{"configured": true}', stderr="")
             with patch.object(MODULE, "prompt", side_effect=ask) as prompts, patch.object(MODULE, "screen") as screens, patch.object(MODULE, "configure_mcp_password_reference", side_effect=choose_credential), patch.object(MODULE.subprocess, "run", return_value=completed) as run:
                 MODULE.daemon_menu(root)
@@ -276,7 +276,7 @@ class SystemSetupTests(unittest.TestCase):
         configure = [call.args[0] for call in run.call_args_list if "configure" in call.args[0]]
         self.assertEqual(len(configure), 1)
         values = json.loads(configure[0][configure[0].index("--values") + 1])
-        self.assertEqual(values, {"account_id": "a" * 32, "zone_id": "b" * 32, "hostname": "akuma.example.com", "credential_profile": "principal", "credential_entry_path": "Akuma/Serviço/CloudflareTunnel:APIToken"})
+        self.assertEqual(values, {"account_id": "a" * 32, "zone_id": "b" * 32, "hostname": "tsuki.example.com", "credential_profile": "principal", "credential_entry_path": "Tsuki/Serviço/CloudflareTunnel:APIToken"})
         self.assertTrue(all(call.args[0] in {"Daemon", "Publicação externa"} for call in screens.call_args_list))
 
     def test_publication_installer_does_not_install_when_wrapper_reports_failed(self) -> None:
@@ -303,7 +303,7 @@ class SystemSetupTests(unittest.TestCase):
             (project / "setupDaemon.py").write_text("", encoding="utf-8")
             manifest = root / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True); manifest.write_text("", encoding="utf-8")
             tunnel = manifest.parent / "services" / "cloudflare-tunnel" / "tunnel.toml"; tunnel.parent.mkdir(parents=True)
-            tunnel.write_text('schema_version = 1\naccount_id = "' + "a" * 32 + '"\nzone_id = "' + "b" * 32 + '"\nhostname = "akuma.example.com"\ncredential_profile = "principal"\ncredential_entry_path = "Akuma/Serviço/CloudflareTunnel:APIToken"\n', encoding="utf-8")
+            tunnel.write_text('schema_version = 1\naccount_id = "' + "a" * 32 + '"\nzone_id = "' + "b" * 32 + '"\nhostname = "tsuki.example.com"\ncredential_profile = "principal"\ncredential_entry_path = "Tsuki/Serviço/CloudflareTunnel:APIToken"\n', encoding="utf-8")
             answers = iter(["p", "4", "x", "x"])
             def execute(arguments, **_kwargs):
                 if arguments[-1] == "--version":
@@ -327,7 +327,7 @@ class SystemSetupTests(unittest.TestCase):
             manifest = root / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True); manifest.write_text("", encoding="utf-8")
             answers = iter(["p", "1", "x", "x", "x"])
             completed = subprocess.CompletedProcess([], 0, stdout="{}", stderr="")
-            with patch.object(MODULE, "prompt", side_effect=lambda _label: next(answers)), patch.object(MODULE, "screen"), patch.object(MODULE, "configure_mcp_password_reference", return_value=("principal", "Akuma/Serviço/CloudflareTunnel:APIToken")), patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+            with patch.object(MODULE, "prompt", side_effect=lambda _label: next(answers)), patch.object(MODULE, "screen"), patch.object(MODULE, "configure_mcp_password_reference", return_value=("principal", "Tsuki/Serviço/CloudflareTunnel:APIToken")), patch.object(MODULE.subprocess, "run", return_value=completed) as run:
                 MODULE.daemon_menu(root)
         self.assertFalse(any("configure" in call.args[0] or "provision" in call.args[0] for call in run.call_args_list))
 
@@ -337,8 +337,8 @@ class SystemSetupTests(unittest.TestCase):
             (project / "setupDaemon.py").write_text("", encoding="utf-8")
             manifest = root / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True); manifest.write_text("", encoding="utf-8")
             tunnel = manifest.parent / "services" / "cloudflare-tunnel" / "tunnel.toml"; tunnel.parent.mkdir(parents=True)
-            tunnel.write_text('schema_version = 1\naccount_id = "' + "a" * 32 + '"\nzone_id = "' + "b" * 32 + '"\nhostname = "akuma.example.com"\ncredential_profile = "principal"\ncredential_entry_path = "Akuma/Serviço/CloudflareTunnel:APIToken"\n', encoding="utf-8")
-            preview = {"status": "existing", "hostname": "akuma.example.com", "tunnel_id": "known-tunnel", "tunnel_name": "onmyoji-mini-apps", "current_origin": "https://localhost:39391", "new_origin": "https://localhost:39390", "preview_id": "a" * 32, "message": "Publicação existente localizada na Cloudflare."}
+            tunnel.write_text('schema_version = 1\naccount_id = "' + "a" * 32 + '"\nzone_id = "' + "b" * 32 + '"\nhostname = "tsuki.example.com"\ncredential_profile = "principal"\ncredential_entry_path = "Tsuki/Serviço/CloudflareTunnel:APIToken"\n', encoding="utf-8")
+            preview = {"status": "existing", "hostname": "tsuki.example.com", "tunnel_id": "known-tunnel", "tunnel_name": "onmyoji-mini-apps", "current_origin": "https://localhost:39391", "new_origin": "https://localhost:39390", "preview_id": "a" * 32, "message": "Publicação existente localizada na Cloudflare."}
             answers = iter(["p", "4", "s", "x", "x"])
             events = []
             def ask(label):
@@ -381,13 +381,13 @@ class SystemSetupTests(unittest.TestCase):
                 (project / "setupDaemon.py").write_text("", encoding="utf-8")
                 manifest = root / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True); manifest.write_text("", encoding="utf-8")
                 tunnel = manifest.parent / "services" / "cloudflare-tunnel" / "tunnel.toml"; tunnel.parent.mkdir(parents=True)
-                tunnel.write_text('schema_version = 1\naccount_id = "' + "a" * 32 + '"\nzone_id = "' + "b" * 32 + '"\nhostname = "akuma.example.com"\ncredential_profile = "principal"\ncredential_entry_path = "Akuma/Serviço/CloudflareTunnel:APIToken"\n', encoding="utf-8")
+                tunnel.write_text('schema_version = 1\naccount_id = "' + "a" * 32 + '"\nzone_id = "' + "b" * 32 + '"\nhostname = "tsuki.example.com"\ncredential_profile = "principal"\ncredential_entry_path = "Tsuki/Serviço/CloudflareTunnel:APIToken"\n', encoding="utf-8")
                 answers = iter(["p", "4", answer, "x", "x"])
                 def execute(arguments, **_kwargs):
                     if arguments[-1] == "--version":
                         return subprocess.CompletedProcess(arguments, 0, stdout="cloudflared version 2026.11.0", stderr="")
                     if "inspect-publication" in arguments:
-                        response = {"state": "succeeded", "result": {"status": "existing", "hostname": "akuma.example.com", "tunnel_id": "known-tunnel", "tunnel_name": "old-tunnel", "current_origin": "https://localhost:39391", "new_origin": "https://localhost:39390", "preview_id": "a" * 32}}
+                        response = {"state": "succeeded", "result": {"status": "existing", "hostname": "tsuki.example.com", "tunnel_id": "known-tunnel", "tunnel_name": "old-tunnel", "current_origin": "https://localhost:39391", "new_origin": "https://localhost:39390", "preview_id": "a" * 32}}
                     elif arguments[-2:] == ["cloudflare-tunnel", "status"]:
                         response = {"activated": True, "ca_file": str(root / "gateway-ca.pem")}
                     else:
@@ -405,7 +405,7 @@ class SystemSetupTests(unittest.TestCase):
             (project / "setupDaemon.py").write_text("", encoding="utf-8")
             manifest = root / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True); manifest.write_text("", encoding="utf-8")
             tunnel = manifest.parent / "services" / "cloudflare-tunnel" / "tunnel.toml"; tunnel.parent.mkdir(parents=True)
-            tunnel.write_text('schema_version = 1\naccount_id = "' + "a" * 32 + '"\nzone_id = "' + "b" * 32 + '"\nhostname = "akuma.example.com"\ncredential_profile = "principal"\ncredential_entry_path = "Akuma/Serviço/CloudflareTunnel:APIToken"\n', encoding="utf-8")
+            tunnel.write_text('schema_version = 1\naccount_id = "' + "a" * 32 + '"\nzone_id = "' + "b" * 32 + '"\nhostname = "tsuki.example.com"\ncredential_profile = "principal"\ncredential_entry_path = "Tsuki/Serviço/CloudflareTunnel:APIToken"\n', encoding="utf-8")
             answers = iter(["p", "4", "x", "x"])
             def execute(arguments, **_kwargs):
                 if arguments[-1] == "--version":
@@ -510,18 +510,18 @@ class SystemSetupTests(unittest.TestCase):
             root = Path(temporary); project = root / "onmyoji-daemon"; project.mkdir()
             (project / "setupDaemon.py").write_text("", encoding="utf-8")
             manifest = root / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True); manifest.write_text("", encoding="utf-8")
-            answers = iter(["p", "w", "a" * 32, "b" * 32, "akuma.example.com", "", "", "s", "", "x", "x"])
+            answers = iter(["p", "w", "a" * 32, "b" * 32, "tsuki.example.com", "", "", "s", "", "x", "x"])
             def execute(arguments, **_kwargs):
                 if arguments[-1] == "list-services":
                     response = [{"name": "gateway"}, {"name": "cloudflare-tunnel"}]
                 elif arguments[-2:] == ["gateway", "status"]:
-                    response = {"http_port": 39390, "ready": True, "public_origin": "https://akuma.example.com"}
+                    response = {"http_port": 39390, "ready": True, "public_origin": "https://tsuki.example.com"}
                 elif arguments[-2:] == ["cloudflare-tunnel", "status"]:
                     response = {"activated": True, "ca_file": str(root / "gateway-ca.pem"), "gateway_url": "https://localhost:39390", "configured": True, "provisioned": True, "running": True, "connected": True, "ingress_ready": True}
                 elif "publication-test" in arguments:
-                    response = {"test_id": "a" * 32, "url": "https://akuma.example.com/internal/publication-test/test", "expires_in_seconds": 120, "state": "waiting"} if "start" in arguments else {"state": "confirmed"}
+                    response = {"test_id": "a" * 32, "url": "https://tsuki.example.com/internal/publication-test/test", "expires_in_seconds": 120, "state": "waiting"} if "start" in arguments else {"state": "confirmed"}
                 elif "inspect-publication" in arguments:
-                    response = {"state": "succeeded", "result": {"status": "new", "hostname": "akuma.example.com", "new_origin": "https://localhost:39390", "message": "Nenhuma publicação existente encontrada."}}
+                    response = {"state": "succeeded", "result": {"status": "new", "hostname": "tsuki.example.com", "new_origin": "https://localhost:39390", "message": "Nenhuma publicação existente encontrada."}}
                 elif "configure" in arguments:
                     values = json.loads(arguments[arguments.index("--values") + 1])
                     tunnel = manifest.parent / "services" / "cloudflare-tunnel" / "tunnel.toml"; tunnel.parent.mkdir(parents=True)
@@ -532,7 +532,7 @@ class SystemSetupTests(unittest.TestCase):
                 else:
                     response = {"state": "running"}
                 return subprocess.CompletedProcess(arguments, 0, stdout=json.dumps(response), stderr="")
-            with patch.object(MODULE, "prompt", side_effect=lambda _label: next(answers)) as prompts, patch.object(MODULE, "screen") as screens, patch.object(MODULE, "configure_mcp_password_reference", return_value=("principal", "Akuma/Serviço/CloudflareTunnel:APIToken")), patch.object(MODULE.shutil, "which", return_value="cloudflared"), patch.object(MODULE.subprocess, "run", side_effect=execute) as run, patch.object(MODULE, "diagnose_publication", return_value=[{"state": "ok", "label": "Conexão", "detail": "Pronta"}]) as diagnose:
+            with patch.object(MODULE, "prompt", side_effect=lambda _label: next(answers)) as prompts, patch.object(MODULE, "screen") as screens, patch.object(MODULE, "configure_mcp_password_reference", return_value=("principal", "Tsuki/Serviço/CloudflareTunnel:APIToken")), patch.object(MODULE.shutil, "which", return_value="cloudflared"), patch.object(MODULE.subprocess, "run", side_effect=execute) as run, patch.object(MODULE, "diagnose_publication", return_value=[{"state": "ok", "label": "Conexão", "detail": "Pronta"}]) as diagnose:
                 MODULE.daemon_menu(root)
         commands = [call.args[0] for call in run.call_args_list]
         self.assertTrue(any(command[-2:] == ["start", "gateway"] for command in commands))
@@ -557,7 +557,7 @@ class SystemSetupTests(unittest.TestCase):
             (project / "setupDaemon.py").write_text("", encoding="utf-8")
             manifest = root / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True); manifest.write_text("", encoding="utf-8")
             tunnel = manifest.parent / "services" / "cloudflare-tunnel" / "tunnel.toml"; tunnel.parent.mkdir(parents=True)
-            tunnel.write_text('schema_version = 1\naccount_id = "' + "a" * 32 + '"\nzone_id = "' + "b" * 32 + '"\nhostname = "akuma.example.com"\ncredential_profile = "principal"\ncredential_entry_path = "Akuma/Serviço/CloudflareTunnel:APIToken"\n', encoding="utf-8")
+            tunnel.write_text('schema_version = 1\naccount_id = "' + "a" * 32 + '"\nzone_id = "' + "b" * 32 + '"\nhostname = "tsuki.example.com"\ncredential_profile = "principal"\ncredential_entry_path = "Tsuki/Serviço/CloudflareTunnel:APIToken"\n', encoding="utf-8")
             answers = iter(["p", "w", "", "", "", "", "", "", "x", "x"])
             def execute(arguments, **_kwargs):
                 if arguments[-1] == "list-services":
@@ -567,13 +567,13 @@ class SystemSetupTests(unittest.TestCase):
                 elif arguments[-2:] == ["cloudflare-tunnel", "status"]:
                     response = {"activated": True, "ca_file": str(root / "gateway-ca.pem"), "gateway_url": "https://localhost:39390"}
                 elif "inspect-publication" in arguments:
-                    response = {"state": "succeeded", "result": {"status": "new", "hostname": "akuma.example.com", "new_origin": "https://localhost:39390", "message": "Nenhuma publicação existente encontrada."}}
+                    response = {"state": "succeeded", "result": {"status": "new", "hostname": "tsuki.example.com", "new_origin": "https://localhost:39390", "message": "Nenhuma publicação existente encontrada."}}
                 elif arguments[-1] == "--version":
                     return subprocess.CompletedProcess(arguments, 0, stdout="cloudflared version 2026.11.0", stderr="")
                 else:
                     response = {"state": "running"}
                 return subprocess.CompletedProcess(arguments, 0, stdout=json.dumps(response), stderr="")
-            with patch.object(MODULE, "prompt", side_effect=lambda _label: next(answers)), patch.object(MODULE, "screen"), patch.object(MODULE, "configure_mcp_password_reference", return_value=("principal", "Akuma/Serviço/CloudflareTunnel:APIToken")), patch.object(MODULE.shutil, "which", return_value="cloudflared"), patch.object(MODULE.subprocess, "run", side_effect=execute) as run, patch.object(MODULE, "diagnose_publication") as diagnose:
+            with patch.object(MODULE, "prompt", side_effect=lambda _label: next(answers)), patch.object(MODULE, "screen"), patch.object(MODULE, "configure_mcp_password_reference", return_value=("principal", "Tsuki/Serviço/CloudflareTunnel:APIToken")), patch.object(MODULE.shutil, "which", return_value="cloudflared"), patch.object(MODULE.subprocess, "run", side_effect=execute) as run, patch.object(MODULE, "diagnose_publication") as diagnose:
                 MODULE.daemon_menu(root)
         commands = [call.args[0] for call in run.call_args_list]
         self.assertTrue(any("configure" in command for command in commands))
@@ -585,13 +585,13 @@ class SystemSetupTests(unittest.TestCase):
             root = Path(temporary); project = root / "onmyoji-daemon"; project.mkdir()
             (project / "setupDaemon.py").write_text("", encoding="utf-8")
             manifest = root / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True); manifest.write_text("", encoding="utf-8")
-            answers = iter(["p", "w", "a" * 32, "b" * 32, "akuma.example.com", "", "x", "x"])
+            answers = iter(["p", "w", "a" * 32, "b" * 32, "tsuki.example.com", "", "x", "x"])
             def execute(arguments, **_kwargs):
                 if "configure" in arguments:
                     return subprocess.CompletedProcess(arguments, 2, stdout="", stderr="Erro: referência KeePass indisponível.")
                 return subprocess.CompletedProcess(arguments, 0, stdout='[{"name":"gateway"},{"name":"cloudflare-tunnel"}]', stderr="")
             output = io.StringIO()
-            with patch.object(MODULE, "prompt", side_effect=lambda _label: next(answers)), patch.object(MODULE, "screen"), patch.object(MODULE, "configure_mcp_password_reference", return_value=("principal", "Akuma/Serviço/CloudflareTunnel:APIToken")), patch.object(MODULE.subprocess, "run", side_effect=execute) as run, patch.object(MODULE.sys, "stdout", output), patch.object(MODULE, "diagnose_publication") as diagnose:
+            with patch.object(MODULE, "prompt", side_effect=lambda _label: next(answers)), patch.object(MODULE, "screen"), patch.object(MODULE, "configure_mcp_password_reference", return_value=("principal", "Tsuki/Serviço/CloudflareTunnel:APIToken")), patch.object(MODULE.subprocess, "run", side_effect=execute) as run, patch.object(MODULE.sys, "stdout", output), patch.object(MODULE, "diagnose_publication") as diagnose:
                 MODULE.daemon_menu(root)
         commands = [call.args[0] for call in run.call_args_list]
         self.assertFalse(any("provision" in command or "install-cloudflared" in command or "start" in command for command in commands))
