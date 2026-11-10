@@ -9,6 +9,7 @@ import tempfile
 import tomllib
 from typing import Any
 
+from ..config_publication import publish_file
 from .credentials import mcp_credentials_path
 from .reconciliation import McpReconciliation
 from .todoist import todoist_config_path
@@ -588,9 +589,8 @@ class McpConfiguration:
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as target:
                 target.write(content)
-            os.chmod(temporary, 0o660)
             tomllib.loads(Path(temporary).read_text(encoding="utf-8"))
-            os.replace(temporary, path)
+            publish_file(Path(temporary), path, mode=0o660)
         except Exception:
             Path(temporary).unlink(missing_ok=True)
             raise

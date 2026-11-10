@@ -178,6 +178,8 @@ class FileReviewService:
                 output.write(content)
                 output.flush()
                 os.fsync(output.fileno())
+            if mode is None and target.is_relative_to(self.root / "configs"):
+                mode = 0o660
             if mode is not None:
                 os.chmod(temporary, mode)
             os.replace(temporary, target)

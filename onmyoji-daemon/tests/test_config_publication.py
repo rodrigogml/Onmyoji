@@ -1,6 +1,7 @@
 """Substituição de configuração preserva bytes e limita retries de erros Windows."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -41,6 +42,17 @@ def test_success_without_lock_needs_one_attempt_and_no_wait(tmp_path, monkeypatc
     monkeypatch.setattr(config_publication.time, "sleep", lambda _delay: pytest.fail("sucesso não deve aguardar"))
     config_publication.publish_file(source, destination)
     assert destination.read_bytes() == b'{"fixture":true}' and not source.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Modos POSIX são validados no Linux.")
+def test_private_publication_applies_owner_and_group_mode_before_replace(tmp_path):
+    source, destination = tmp_path / "candidate.json", tmp_path / "config.json"
+    source.write_bytes(b'{}')
+    source.chmod(0o600)
+
+    config_publication.publish_file(source, destination, mode=0o660)
+
+    assert destination.stat().st_mode & 0o777 == 0o660
 
 
 def test_fifth_windows_failure_propagates_same_error_and_preserves_both_files(tmp_path, monkeypatch):

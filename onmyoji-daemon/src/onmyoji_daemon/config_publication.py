@@ -5,13 +5,16 @@ from pathlib import Path
 import time
 
 
-def publish_file(source: Path, destination: Path) -> None:
+def publish_file(source: Path, destination: Path, *, mode: int | None = None) -> None:
     """Substitui o destino; só repete bloqueios Windows de acesso/compartilhamento.
 
     No máximo cinco tentativas aguardam 10, 20, 30 e 40 ms. A última falha
-    original é propagada; outros erros não são repetidos. A publicação usa
-    somente a substituição do filesystem, sem copiar ou truncar o destino.
+    original é propagada; outros erros não são repetidos. Quando informado,
+    ``mode`` é aplicado ao arquivo de staging antes da substituição para que a
+    publicação preserve a política de acesso do destino.
     """
+    if mode is not None and source.is_file():
+        source.chmod(mode)
     failures = 0
     while True:
         try:

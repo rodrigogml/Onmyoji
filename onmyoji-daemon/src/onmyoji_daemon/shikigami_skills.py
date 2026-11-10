@@ -117,7 +117,7 @@ class ShikigamiSkillMaterializer:
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as output:
                 output.write(content)
-            publish_file(Path(temporary), self.runtime_state_path)
+            publish_file(Path(temporary), self.runtime_state_path, mode=0o660)
         except Exception:
             Path(temporary).unlink(missing_ok=True)
             raise

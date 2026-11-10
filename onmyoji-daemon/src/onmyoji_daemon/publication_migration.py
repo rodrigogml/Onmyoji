@@ -22,6 +22,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import parse_qsl, urlsplit
 
+from .config_publication import publish_file
 from .rpc import call
 from .supervisor import endpoint
 
@@ -152,7 +153,7 @@ class PublicationMigration:
             temporary = Path(output.name)
             json.dump(data, output, ensure_ascii=False, indent=2)
             output.flush(); os.fsync(output.fileno())
-        try: os.replace(temporary, self.manifest)
+        try: publish_file(temporary, self.manifest, mode=0o660)
         finally: temporary.unlink(missing_ok=True)
         self.progress("Migração: " + state)
 
