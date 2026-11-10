@@ -33,3 +33,6 @@
 # Configuração pertencente à instância
 !/configs/
 !/configs/**
+
+# Segredos locais de desbloqueio nunca são versionáveis
+/configs/mcp/secrets/

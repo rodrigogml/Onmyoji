@@ -329,6 +329,22 @@ class KeePassCredentialResolver:
             if not password:
                 raise CredentialError("auth_unavailable", "O provedor do sistema operacional não retornou uma senha.")
             return password
+        if mode == "protected_file" and platform == "linux":
+            configured_path = Path(_require_string(configured.get("path"), "invalid_config", "Arquivo protegido da credencial Linux não configurado."))
+            allowed_root = (self.root / "configs" / "mcp" / "secrets").resolve()
+            try:
+                path = configured_path.resolve(strict=True)
+                path.relative_to(allowed_root)
+                if path.stat().st_mode & 0o077:
+                    raise CredentialError("auth_unavailable", "O arquivo da senha mestra possui permissões excessivas.")
+                password = path.read_text(encoding="utf-8")
+            except CredentialError:
+                raise
+            except (OSError, ValueError) as error:
+                raise CredentialError("auth_unavailable", "Não foi possível ler o arquivo protegido da senha mestra.") from error
+            if not password:
+                raise CredentialError("auth_unavailable", "O arquivo protegido da senha mestra está vazio.")
+            return password
         raise CredentialError("auth_unavailable", "Autenticação configurada indisponível nesta plataforma.")
 
     @staticmethod

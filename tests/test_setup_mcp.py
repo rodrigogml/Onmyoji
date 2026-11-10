@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import os
 import subprocess
 import sys
 import tempfile
@@ -99,6 +100,16 @@ class McpSetupTests(unittest.TestCase):
         ask.assert_called_once_with("Destino no Windows Credential Manager", "Lavelinha/MCP/KeePass/default", True)
         self.assertEqual(auth["windows"]["target"], "Lavelinha/MCP/KeePass/default")
         self.assertEqual(auth["linux"]["command"], ["secret-tool", "lookup", "service", "shikigami-mcp", "shikigami", "Lavelinha", "profile", "default"])
+
+    def test_headless_linux_uses_a_protected_local_secret(self) -> None:
+        root = Path("/opt/Shikigami-Lavelinha")
+        with patch.object(MODULE, "instance_identity", return_value="Lavelinha"), patch.object(MODULE, "os", wraps=os) as operating_system, patch.object(MODULE.shutil, "which", return_value="/usr/bin/secret-tool"):
+            operating_system.name = "posix"
+            operating_system.environ = {}
+            auth = MODULE.profile_auth("default", root)
+
+        self.assertEqual(auth["linux"]["mode"], "protected_file")
+        self.assertTrue(auth["linux"]["path"].startswith(str(root / "configs" / "mcp" / "secrets")))
 
     def test_new_vault_password_is_reused_without_a_third_prompt(self) -> None:
         auth = {"windows": {"target": "Lavelinha/MCP/KeePass/default"}}
