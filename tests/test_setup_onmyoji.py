@@ -642,7 +642,7 @@ class SystemSetupTests(unittest.TestCase):
         self.assertEqual(MODULE.preferred_reasoning_effort(model), "high")
 
     def test_wizard_normalizes_name_and_creates_shikigami_resources(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary, patch("builtins.input", side_effect=["  Exemplo   da   Silva ", "1", ""]), patch.object(MODULE, "configure_initial_codex", side_effect=lambda _root, data: data | {"executable": sys.executable}), patch.object(MODULE, "choose_project_directory", side_effect=lambda root, _current: str(root)), patch.object(MODULE, "choose_sandbox", return_value="workspace-write"), patch.object(MODULE, "choose_approval_policy", return_value="on-request"):
+        with tempfile.TemporaryDirectory() as temporary, patch("builtins.input", side_effect=["  Exemplo   da   Silva ", "1", ""]), patch.object(MODULE, "validate_setup_python", return_value=(True, "ok", False)), patch.object(MODULE, "configure_initial_codex", side_effect=lambda _root, data: data | {"executable": sys.executable}), patch.object(MODULE, "choose_project_directory", side_effect=lambda root, _current: str(root)), patch.object(MODULE, "choose_sandbox", return_value="workspace-write"), patch.object(MODULE, "choose_approval_policy", return_value="on-request"):
             root = Path(temporary)
             data, _message = MODULE.ensure_shikigami_configuration(root)
             installed = MODULE.initial_installation_wizard(root, data)
@@ -657,7 +657,7 @@ class SystemSetupTests(unittest.TestCase):
             self.assertFalse((root / "shikigami").exists())
 
     def test_wizard_accepts_the_identity_previously_recorded_by_bootstrap(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary, patch("builtins.input", return_value=""), patch.object(MODULE, "configure_initial_codex", side_effect=lambda _root, data: data | {"executable": sys.executable}), patch.object(MODULE, "choose_project_directory", side_effect=lambda root, _current: str(root)), patch.object(MODULE, "choose_sandbox", return_value="workspace-write"), patch.object(MODULE, "choose_approval_policy", return_value="on-request"):
+        with tempfile.TemporaryDirectory() as temporary, patch("builtins.input", return_value=""), patch.object(MODULE, "validate_setup_python", return_value=(True, "ok", False)), patch.object(MODULE, "configure_initial_codex", side_effect=lambda _root, data: data | {"executable": sys.executable}), patch.object(MODULE, "choose_project_directory", side_effect=lambda root, _current: str(root)), patch.object(MODULE, "choose_sandbox", return_value="workspace-write"), patch.object(MODULE, "choose_approval_policy", return_value="on-request"):
             root = Path(temporary)
             data = MODULE.default_system() | {"shikigami_identity": "Lavelinha"}
             installed = MODULE.initial_installation_wizard(root, data)
@@ -690,12 +690,57 @@ class SystemSetupTests(unittest.TestCase):
                 saved["validated"] = True
                 MODULE.save_execution_profile(root, saved)
                 return True
-            with patch.object(MODULE, "configure_installer_git_access", return_value=(True, "ok")), patch.object(MODULE, "provision_account", return_value=(True, "ok", Path("/home/shikigami-tsuki"))) as provision, patch.object(MODULE, "launch_dedicated_setup", side_effect=launch):
+            with patch.object(MODULE, "configure_installer_git_access", return_value=(True, "ok")), patch.object(MODULE, "provision_account", return_value=(True, "ok", Path("/home/shikigami-tsuki"))) as provision, patch.object(MODULE, "prepare_dedicated_prerequisites") as prerequisites, patch.object(MODULE, "launch_dedicated_setup", side_effect=launch):
                 self.assertTrue(MODULE.prepare_dedicated_environment(root, "Tsuki", workspace, "shikigami-tsuki", "instalador", True))
             provision.assert_called_once()
+            prerequisites.assert_called_once()
             self.assertEqual(observed["account"], "shikigami-tsuki")
             self.assertEqual(observed["workspace"], str(workspace.resolve()))
             self.assertFalse(observed["validated"])
+
+    def test_codex_cli_install_uses_the_current_identity_local_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "instance"; home = Path(temporary) / "home"; root.mkdir(); home.mkdir()
+            npm = Path(temporary) / "npm"; npm.write_text("", encoding="utf-8")
+            completed = subprocess.CompletedProcess([str(npm)], 0, "", "")
+            with patch.object(MODULE.Path, "home", return_value=home), patch.object(MODULE.shutil, "which", return_value=str(npm)), patch.object(MODULE, "prompt", return_value=""), patch.object(MODULE, "linux_current_user", return_value="shikigami-tsuki"), patch.object(MODULE, "validate_codex_executable", return_value=(True, "ok")), patch.object(MODULE.subprocess, "run", return_value=completed) as executed:
+                executable = MODULE.install_codex_cli(root)
+            self.assertEqual(executable, str((home / ".local" / "bin" / "codex").absolute()))
+            command = executed.call_args.args[0]
+            self.assertEqual(command[:4], [str(npm), "install", "--global", "--prefix"])
+            self.assertEqual(command[-1], "@openai/codex@latest")
+
+    def test_codex_executable_choice_offers_assisted_installation_on_linux(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE.os, "name", "posix"), patch.object(MODULE, "discover_codex_executables", return_value=[]), patch.object(MODULE, "flow_choice", return_value="Instalar ou atualizar o Codex CLI nesta conta"), patch.object(MODULE, "install_codex_cli", return_value="/home/shikigami/.local/bin/codex") as install:
+            selected = MODULE.choose_codex_executable("", flow=True, root=Path(temporary))
+        self.assertEqual(selected, "/home/shikigami/.local/bin/codex")
+        install.assert_called_once()
+
+    def test_linux_package_install_requires_confirmation_and_uses_sudo(self) -> None:
+        tools = {"apt-get": "/usr/bin/apt-get", "sudo": "/usr/bin/sudo"}
+        completed = subprocess.CompletedProcess([], 0, "", "")
+        with patch.object(MODULE, "linux_tool", side_effect=lambda name: tools.get(name)), patch.object(MODULE.os, "geteuid", return_value=1000, create=True), patch.object(MODULE, "prompt", return_value=""), patch.object(MODULE.subprocess, "run", return_value=completed) as executed:
+            installed = MODULE.install_linux_packages("Node.js/npm", {"apt-get": ["nodejs", "npm"]})
+        self.assertTrue(installed)
+        self.assertEqual(executed.call_args_list[0].args[0], ["/usr/bin/sudo", "--", "/usr/bin/apt-get", "update"])
+        self.assertEqual(executed.call_args_list[1].args[0], ["/usr/bin/sudo", "--", "/usr/bin/apt-get", "install", "-y", "nodejs", "npm"])
+
+    def test_dedicated_prerequisites_prepare_npm_before_entering_the_service_account(self) -> None:
+        profile = {"account": "shikigami-tsuki", "home": "/home/shikigami-tsuki"}
+        versions = [(False, "codex ausente"), (False, "npm ausente"), (True, "10.0.0")]
+        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "dedicated_command_version", side_effect=versions), patch.object(MODULE, "dedicated_command_check", return_value=(True, "Python 3.13")), patch.object(MODULE, "install_linux_packages", return_value=True) as install:
+            MODULE.prepare_dedicated_prerequisites(Path(temporary), profile)
+        install.assert_called_once()
+        self.assertIn("Node.js/npm", install.call_args.args[0])
+
+    def test_python_setup_validation_distinguishes_a_missing_venv_module(self) -> None:
+        version = subprocess.CompletedProcess(["python"], 0, "3.13.1\n", "")
+        venv = subprocess.CompletedProcess(["python"], 1, "", "No module named venv")
+        with patch.object(MODULE.subprocess, "run", side_effect=[version, venv]):
+            valid, detail, missing_venv = MODULE.validate_setup_python(Path("/usr/bin/python3.13"), True)
+        self.assertFalse(valid)
+        self.assertTrue(missing_venv)
+        self.assertIn("venv", detail)
 
     def test_telegram_token_entry_uses_the_configured_shikigami_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

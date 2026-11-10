@@ -36,7 +36,7 @@ from onmyoji_daemon.mcp.eccovox import EccoVoxError, EccoVoxService
 from onmyoji_daemon import runtime as python_runtime
 from onmyoji_daemon.telegram_stickers import MAX_CONTEXT_LENGTH, STATIC_STICKER_TARGET_BYTES, STICKER_ID, convert_static as convert_static_sticker, discover as discover_stickers, discover_static_sources, load as load_sticker_catalog, save as save_sticker_catalog, sticker_folder, suggested_identifier
 from onmyoji_daemon import management as daemon_management
-from onmyoji_daemon.linux_service import DEDICATED_SETUP_ENVIRONMENT, ServiceLimits, account_command, account_name as linux_account_name, limits_json, limits_summary, load_execution_profile, provision_account, recommended_limits, save_execution_profile, validate_account
+from onmyoji_daemon.linux_service import DEDICATED_SETUP_ENVIRONMENT, ServiceLimits, account_command, account_name as linux_account_name, limits_json, limits_summary, linux_tool, load_execution_profile, provision_account, recommended_limits, save_execution_profile, validate_account
 from onmyoji_daemon.publication_diagnostics import diagnose as diagnose_publication
 from onmyoji_daemon.cloudflare_tunnel.installer import inspect_cloudflared_directory
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
@@ -239,16 +239,59 @@ def discover_codex_executables() -> list[str]:
     return candidates
 
 
-def choose_codex_executable(current: str, flow: bool = False) -> str | None:
-    """Oferece executáveis encontrados e permite informar somente um caminho completo."""
+def install_codex_cli(root: Path) -> str | None:
+    """Instala o pacote oficial no prefixo local da identidade em execução."""
+    npm = shutil.which("npm")
+    if not npm and os.name != "nt" and not dedicated_child_profile(root):
+        installed = install_linux_packages("Node.js/npm para instalar o Codex CLI", {
+            "apt-get": ["nodejs", "npm"], "dnf": ["nodejs", "npm"], "yum": ["nodejs", "npm"],
+            "zypper": ["nodejs", "npm"], "pacman": ["nodejs", "npm"],
+        })
+        if installed:
+            npm = shutil.which("npm") or linux_tool("npm")
+    if not npm:
+        result(False, "O npm não está disponível nesta identidade. Volte e aceite a preparação de Node.js/npm ou informe um Codex já instalado.")
+        return None
+    home, prefix = Path.home().resolve(), Path.home().resolve() / ".local"
+    flow_heading("Instalação assistida", "Codex CLI para a identidade em execução")
+    note("Será instalado @openai/codex@latest pelo npm, conforme a documentação oficial da OpenAI.")
+    print(f"  Conta:   {linux_current_user() if os.name != 'nt' else getpass.getuser()}")
+    print(f"  Destino: {prefix}")
+    print(f"  Binário: {prefix / 'bin' / 'codex'}")
+    if prompt("Instalar ou atualizar o Codex CLI nesse destino? [S/n]: ").strip().casefold() in {"n", "nao", "não", "x", "\x1b"}:
+        result(False, "Instalação do Codex CLI cancelada.")
+        return None
+    try:
+        prefix.mkdir(parents=True, exist_ok=True)
+        environment = dict(os.environ); environment.update({"HOME": str(home), "npm_config_prefix": str(prefix), "PATH": str(prefix / "bin") + os.pathsep + os.environ.get("PATH", dedicated_path(home))})
+        completed = subprocess.run([npm, "install", "--global", "--prefix", str(prefix), "@openai/codex@latest"], cwd=str(codex_setup_directory(root)), env=environment, check=False)
+    except OSError as error:
+        result(False, f"Não foi possível executar o npm: {error}")
+        return None
+    executable = prefix / "bin" / "codex"
+    if completed.returncode != 0:
+        result(False, f"O npm terminou com código {completed.returncode}; o Codex CLI não foi certificado.")
+        return None
+    valid, detail = validate_codex_executable(str(executable))
+    result(valid, detail)
+    return str(executable.absolute()) if valid else None
+
+
+def choose_codex_executable(current: str, flow: bool = False, root: Path | None = None) -> str | None:
+    """Oferece executáveis encontrados, instalação assistida e caminho completo."""
     found = discover_codex_executables()
+    install = "Instalar ou atualizar o Codex CLI nesta conta"
     manual = "Informar caminho completo"
     if not found:
         note("Nenhum executável Codex foi encontrado no PATH atual.")
     chooser = flow_choice if flow else choose
-    selected = chooser("Executável Codex", [*found, manual], current if current in found else "")
+    options = [*found, *([install] if root is not None and os.name != "nt" else []), manual]
+    default = current if current in found else (install if install in options else manual)
+    selected = chooser("Executável Codex", options, default)
     if selected is None:
         return None
+    if selected == install and root is not None:
+        return install_codex_cli(root)
     if selected != manual:
         return selected
     while True:
@@ -719,7 +762,7 @@ def configure_initial_codex(root: Path, data: dict[str, object]) -> dict[str, ob
     while True:
         flow_heading("Instalação inicial", "Codex-CLI")
         note("Primeiro confirme o executável e o login; depois escolha um modelo da conta autenticada.")
-        executable = choose_codex_executable(str(data["executable"]), flow=True)
+        executable = choose_codex_executable(str(data["executable"]), flow=True, root=root)
         if executable is None:
             return None
         executable_ok, executable_detail = validate_codex_executable(executable)
@@ -761,6 +804,85 @@ def linux_current_user() -> str:
         return completed.stdout.strip() or getpass.getuser()
     except (OSError, subprocess.TimeoutExpired):
         return getpass.getuser()
+
+
+def install_linux_packages(purpose: str, packages: dict[str, list[str]]) -> bool:
+    """Oferece uma correção explícita para pré-requisitos do sistema operacional."""
+    managers = (
+        ("apt-get", ["update"], ["install", "-y"]),
+        ("dnf", [], ["install", "-y"]),
+        ("yum", [], ["install", "-y"]),
+        ("zypper", [], ["--non-interactive", "install"]),
+        ("pacman", [], ["--sync", "--refresh", "--needed", "--noconfirm"]),
+    )
+    selected = next(((name, linux_tool(name), refresh, install) for name, refresh, install in managers if linux_tool(name) and packages.get(name)), None)
+    if selected is None:
+        result(False, f"Não há um gerenciador de pacotes compatível para preparar {purpose} automaticamente.")
+        return False
+    name, executable, refresh_arguments, install_arguments = selected
+    requested = packages[name]
+    flow_heading("Preparação de pré-requisitos", purpose)
+    note(f"Gerenciador detectado: {name}. Pacotes propostos: {', '.join(requested)}.")
+    note("O setup mostrará a saída do gerenciador e só continuará se a instalação terminar sem erro.")
+    if prompt("Autorizar a instalação desses pacotes com privilégios administrativos? [S/n]: ").strip().casefold() in {"n", "nao", "não", "x", "\x1b"}:
+        result(False, "Instalação de pré-requisitos não autorizada.")
+        return False
+    elevated = getattr(os, "geteuid", lambda: 0)() != 0
+    sudo = linux_tool("sudo") if elevated else None
+    if elevated and not sudo:
+        result(False, "sudo não está disponível para instalar os pré-requisitos.")
+        return False
+    commands = []
+    if refresh_arguments: commands.append([str(executable), *refresh_arguments])
+    commands.append([str(executable), *install_arguments, *requested])
+    prefix = [str(sudo), "--"] if elevated else []
+    for command in commands:
+        try: completed = subprocess.run([*prefix, *command], check=False)
+        except OSError as error: result(False, f"Não foi possível executar {name}: {error}"); return False
+        if completed.returncode != 0:
+            result(False, f"{name} terminou com código {completed.returncode}.")
+            return False
+    result(True, f"Pré-requisitos de {purpose} instalados.")
+    return True
+
+
+def dedicated_command_check(root: Path, profile: dict[str, object], arguments: list[str]) -> tuple[bool, str]:
+    """Executa uma verificação com HOME e PATH da conta dedicada."""
+    account, home = str(profile["account"]), Path(str(profile["home"]))
+    environment = {"CODEX_HOME": str(root.resolve()), "PATH": dedicated_path(home)}
+    try:
+        delegated = account_command(account, home, ["/usr/bin/env", *arguments], environment)
+        completed = subprocess.run(delegated, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=30, check=False)
+    except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
+        return False, str(error)
+    return completed.returncode == 0, diagnostic_detail(completed)
+
+
+def dedicated_command_version(root: Path, profile: dict[str, object], command: str) -> tuple[bool, str]:
+    return dedicated_command_check(root, profile, [command, "--version"])
+
+
+def prepare_dedicated_prerequisites(root: Path, profile: dict[str, object]) -> None:
+    """Prepara dependências instaláveis antes de entregar o roteiro à conta sem sudo."""
+    codex_ready, _detail = dedicated_command_version(root, profile, "codex")
+    npm_ready, _detail = dedicated_command_version(root, profile, "npm")
+    if not codex_ready and not npm_ready:
+        installed = install_linux_packages("Node.js/npm para instalar o Codex CLI na conta dedicada", {
+            "apt-get": ["nodejs", "npm"], "dnf": ["nodejs", "npm"], "yum": ["nodejs", "npm"],
+            "zypper": ["nodejs", "npm"], "pacman": ["nodejs", "npm"],
+        })
+        if installed:
+            npm_ready, detail = dedicated_command_version(root, profile, "npm")
+            result(npm_ready, detail or "npm acessível à conta dedicada.")
+    python_ready, _detail = dedicated_command_check(root, profile, ["python3", "-I", "-B", "-c", "import sys, venv; assert sys.version_info >= (3, 11)"])
+    if not python_ready:
+        installed = install_linux_packages("Python 3 para executar o setup e criar o runtime", {
+            "apt-get": ["python3", "python3-venv"], "dnf": ["python3"], "yum": ["python3"],
+            "zypper": ["python3"], "pacman": ["python"],
+        })
+        if installed:
+            python_ready, detail = dedicated_command_check(root, profile, ["python3", "-I", "-B", "-c", "import sys, venv; assert sys.version_info >= (3, 11)"])
+            result(python_ready, detail or "Python 3.11+ com venv acessível à conta dedicada.")
 
 
 def dedicated_path(home: Path) -> str:
@@ -901,12 +1023,40 @@ def prepare_dedicated_environment(root: Path, identity: str, workspace: Path, ac
         configured, detail = configure_installer_git_access(root); result(configured, detail)
         if not configured: return False
     prepared, detail, _home = provision_account(account, installer, root, workspace, True, lambda message: print("  → " + message), share_with_installer=installer_access)
+    if not prepared and detail.startswith("Ferramentas Linux ausentes:"):
+        repaired = install_linux_packages("conta Linux isolada e permissões herdáveis", {
+            "apt-get": ["passwd", "acl"], "dnf": ["shadow-utils", "acl"], "yum": ["shadow-utils", "acl"],
+            "zypper": ["shadow", "acl"], "pacman": ["shadow", "acl"],
+        })
+        if repaired:
+            prepared, detail, _home = provision_account(account, installer, root, workspace, True, lambda message: print("  → " + message), share_with_installer=installer_access)
     result(prepared, detail)
     if not prepared: return False
+    prepare_dedicated_prerequisites(root, profile)
     return launch_dedicated_setup(root, profile)
 
 
-def configure_python_runtime(data: dict[str, object]) -> dict[str, object] | None:
+def validate_setup_python(executable: Path, isolated: bool) -> tuple[bool, str, bool]:
+    """Valida versão e, quando necessário, a capacidade de criar ambientes venv."""
+    try:
+        version = subprocess.run([str(executable), "-I", "-B", "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}'); assert sys.version_info >= (3, 11)"], text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=15, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return False, f"Não foi possível validar o Python: {error}", False
+    if version.returncode != 0:
+        return False, diagnostic_detail(version) or "O interpretador precisa ser Python 3.11 ou superior.", False
+    label = (version.stdout or "").strip()
+    if not isolated:
+        return True, f"Python {label} validado.", False
+    try:
+        venv = subprocess.run([str(executable), "-I", "-B", "-c", "import venv; assert hasattr(venv, 'EnvBuilder')"], text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=15, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return False, f"Não foi possível validar o módulo venv: {error}", True
+    if venv.returncode != 0:
+        return False, diagnostic_detail(venv) or f"Python {label} não possui o módulo venv funcional.", True
+    return True, f"Python {label} e módulo venv validados.", False
+
+
+def configure_python_runtime(root: Path, data: dict[str, object]) -> dict[str, object] | None:
     while True:
         flow_heading("Instalação inicial", "Runtime Python do Shikigami")
         print("  1. Ambiente isolado — cria /venv na raiz da instância.")
@@ -919,12 +1069,26 @@ def configure_python_runtime(data: dict[str, object]) -> dict[str, object] | Non
             continue
         configured = str(data.get("python_base_executable") if mode == "1" else data.get("python_executable") or "")
         selected_python = prompt(f"Python [{configured or sys.executable}]: ").strip() or configured or sys.executable
-        if not Path(selected_python).expanduser().is_file():
+        selected_path = Path(selected_python).expanduser()
+        if not selected_path.is_file():
             result(False, "Informe um executável Python existente.")
             continue
+        valid, detail, missing_venv = validate_setup_python(selected_path, mode == "1")
+        result(valid, detail)
+        if not valid:
+            if missing_venv and os.name != "nt" and not dedicated_child_profile(root):
+                executable_name = selected_path.name
+                apt_package = f"{executable_name}-venv" if re.fullmatch(r"python3\.\d+", executable_name) else "python3-venv"
+                if install_linux_packages("módulo venv do Python selecionado", {
+                    "apt-get": [apt_package], "dnf": ["python3"], "yum": ["python3"],
+                    "zypper": ["python3"], "pacman": ["python"],
+                }):
+                    valid, detail, _missing = validate_setup_python(selected_path, True); result(valid, detail)
+            if not valid:
+                continue
         candidate = dict(data); candidate["python_mode"] = "isolated" if mode == "1" else "global"
-        candidate["python_base_executable"] = str(Path(selected_python).expanduser()) if mode == "1" else ""
-        candidate["python_executable"] = str(Path(selected_python).expanduser()) if mode == "2" else ""
+        candidate["python_base_executable"] = str(selected_path) if mode == "1" else ""
+        candidate["python_executable"] = str(selected_path) if mode == "2" else ""
         return candidate
 
 
@@ -964,7 +1128,7 @@ def initial_installation_wizard(root: Path, data: dict[str, object]) -> dict[str
                     installed = load_system(root)
                     return installed if bool(installed.get("shikigami_installed")) else None
                 save_execution_profile(root, {"mode": "current", "identity": identity, "account": installer, "home": str(Path.home()), "workspace": project_directory, "installer_user": installer, "installer_access": True, "validated": True})
-        candidate = configure_python_runtime(candidate)
+        candidate = configure_python_runtime(root, candidate)
         if candidate is None: return None
         candidate = configure_initial_codex(root, candidate)
         if candidate is None:
@@ -995,7 +1159,7 @@ def dedicated_migration_wizard(root: Path, data: dict[str, object]) -> dict[str,
     if not profile:
         result(False, "A migração não está sendo executada pela conta Linux registrada."); return None
     candidate = dict(data); candidate["project_directory"] = str(profile["workspace"])
-    candidate = configure_python_runtime(candidate)
+    candidate = configure_python_runtime(root, candidate)
     if candidate is None: return None
     candidate = configure_initial_codex(root, candidate)
     if candidate is None: return None
@@ -1826,7 +1990,7 @@ def codex_menu(root: Path) -> None:
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
         if choice == "1":
-            value = choose_codex_executable(str(data["executable"]))
+            value = choose_codex_executable(str(data["executable"]), root=root)
             if value:
                 valid, message = validate_codex_executable(value)
                 result(valid, message)
