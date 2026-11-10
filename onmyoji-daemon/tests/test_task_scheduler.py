@@ -183,15 +183,36 @@ def test_containment_failure_cannot_release_the_user_command(tmp_path, monkeypat
     assert not marker.exists()
 
 
-def test_timeout_terminates_grandchild_process_as_well(tmp_path):
+@pytest.mark.parametrize("interruption", ["timeout", "stop"])
+def test_interruption_terminates_grandchild_process_as_well(tmp_path, interruption):
+    from concurrent.futures import ThreadPoolExecutor
     import os
+    import socket
     root, workspace = tmp_path / "instance", tmp_path / "workspace"
     root.mkdir(); workspace.mkdir()
-    code = "import subprocess,sys,time; child=subprocess.Popen([sys.executable,'-B','-c','import time; time.sleep(60)']); print(child.pid,flush=True); time.sleep(60)"
-    occurrence = {"id": "grandchild", "snapshot": {"action": {"type": "process", "executable": sys.executable, "arguments": ["-B", "-c", code], "cwd": str(workspace), "timeout_seconds": 2}}}
-    state, result, reason = process_action(root, workspace, occurrence, threading.Event())
-    assert state == "failed" and reason == "process_timeout"
+    stop = threading.Event()
+    with socket.socket() as ready, ThreadPoolExecutor() as pool:
+        ready.bind(("127.0.0.1", 0)); ready.listen(); ready.settimeout(20)
+        port = ready.getsockname()[1]
+        code = ("import socket,subprocess,sys,time; "
+                "child=subprocess.Popen([sys.executable,'-B','-c','import time; time.sleep(60)']); "
+                "print(child.pid,flush=True); "
+                f"ready=socket.create_connection(('127.0.0.1',{port})); "
+                "ready.sendall((str(child.pid)+'\\n').encode()); ready.close(); time.sleep(60)")
+        occurrence = {"id": "grandchild", "snapshot": {"action": {"type": "process", "executable": sys.executable, "arguments": ["-B", "-c", code], "cwd": str(workspace), "timeout_seconds": 30}}}
+        future = pool.submit(process_action, root, workspace, occurrence, stop)
+        try:
+            with ready.accept()[0] as child_ready:
+                with child_ready.makefile("rb") as signal:
+                    child_pid = int(signal.readline())
+            if interruption == "stop":
+                stop.set()
+            state, result, reason = future.result(45)
+        finally:
+            stop.set()
+    assert state == "failed" and reason == ("process_timeout" if interruption == "timeout" else "service_stopping")
     pid = int(Path(result["stdout"]["path"]).read_text().strip())
+    assert pid == child_pid
     if os.name == "nt":
         import _winapi
         try:
