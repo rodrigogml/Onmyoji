@@ -41,7 +41,11 @@ def validate_event(value: object) -> dict:
     errors = sorted(VALIDATOR.iter_errors(value), key=lambda error: tuple(str(part) for part in error.absolute_path))
     if errors:
         error = errors[0]
-        path = "/" + "/".join(str(part) for part in error.absolute_path)
+        parts = list(error.absolute_path)
+        if error.validator == "required":
+            parts.append(next(field for field in error.validator_value if field not in error.instance))
+        path = "/" + "/".join(str(part) for part in parts)
         # jsonschema.message pode incluir valores do prompt: não o expor.
-        raise RpcError("Evento inválido.", "invalid_event", {"path": path, "rule": error.validator})
+        messages = {"required": "Campo obrigatório ausente.", "type": "Tipo de campo inválido.", "additionalProperties": "Campos adicionais não são permitidos.", "const": "Versão não suportada.", "enum": "Valor de campo não suportado.", "pattern": "Informe texto não vazio.", "format": "UUIDv7 inválido."}
+        raise RpcError(messages[error.validator], "invalid_event", {"path": path, "rule": error.validator})
     return deepcopy(value)

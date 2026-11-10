@@ -19,10 +19,25 @@ def test_notification_cli_timeout_does_not_suggest_retry(monkeypatch, capsys):
     import io
     import sys
     monkeypatch.setattr(cli, "endpoint", lambda _root: ("127.0.0.1", 1234, "token"))
-    monkeypatch.setattr(sys, "stdin", io.StringIO('{}'))
+    import json
+    from onmyoji_daemon.agent_notification.contract import uuid7
+    value = {"schema_version": 1, "event_id": uuid7(), "prompt": "fixture", "response_channel": {"type": "telegram", "value": "fixture"}, "thread_policy": "reuse"}
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(value)))
     monkeypatch.setattr(cli, "call", lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError()))
     assert cli.main(["--onmyoji-root", ".", "notification", "submit", "--file", "-", "--wait-timeout", "1"]) == 2
     assert "Não reenvie automaticamente" in capsys.readouterr().err
+
+
+def test_notification_cli_validates_before_submitting(monkeypatch, capsys):
+    import io
+    import sys
+    monkeypatch.setattr(cli, "endpoint", lambda _root: ("127.0.0.1", 1234, "token"))
+    monkeypatch.setattr(sys, "stdin", io.StringIO('{"schema_version": 1}'))
+    def unexpected_call(*args, **kwargs):
+        raise AssertionError("invalid envelope must not be submitted")
+    monkeypatch.setattr(cli, "call", unexpected_call)
+    assert cli.main(["--onmyoji-root", ".", "notification", "submit", "--file", "-"]) == 2
+    assert "Campo obrigatório ausente" in capsys.readouterr().err
 
 
 def test_cli_reports_remote_failure_without_traceback(monkeypatch, capsys):

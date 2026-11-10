@@ -55,7 +55,11 @@ def request(args):
         timeout = args.wait_timeout if action == "submit" else 5
         if timeout is not None and timeout <= 0:
             raise RpcError("Prazo de acompanhamento deve ser positivo.", "invalid_argument")
-        return "notification." + action, read_json(args.file) if action in {"submit", "configure"} else {}, timeout
+        params = read_json(args.file) if action in {"submit", "configure"} else {}
+        if action == "submit":
+            from ..agent_notification.contract import validate_event
+            params = validate_event(params)
+        return "notification." + action, params, timeout
     action = args.task_action
     params = {}
     if hasattr(args, "id") and args.id:

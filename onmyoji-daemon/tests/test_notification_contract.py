@@ -62,8 +62,18 @@ def test_invalid_values_do_not_echo_payload(field, value):
 def test_missing_fields(field):
     request = event()
     del request[field]
-    with pytest.raises(RpcError):
+    with pytest.raises(RpcError) as caught:
         validate_event(request)
+    assert caught.value.details["path"] == "/" + field
+
+
+def test_missing_nested_field_identifies_its_full_path():
+    request = event()
+    del request["response_channel"]["value"]
+    with pytest.raises(RpcError) as caught:
+        validate_event(request)
+    assert caught.value.details["path"] == "/response_channel/value"
+    assert str(caught.value) == "Campo obrigatório ausente."
 
 
 @pytest.mark.parametrize("value", [None, 1, "", "ffffffff-ffff-7fff-0fff-ffffffffffff"])
