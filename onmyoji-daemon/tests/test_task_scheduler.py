@@ -370,3 +370,19 @@ def test_all_displayed_columns_sort_with_nulls_last_and_stable_ids(repository, f
     page_one, page_two = store.list(limit=20), store.list(offset=20, limit=20)
     assert len(page_one["items"]) == 20 and len(page_two["items"]) == 5
     assert len({row["id"] for row in [*page_one["items"], *page_two["items"]]}) == 25
+
+
+def test_history_expiration_preserves_all_nonterminal_work_and_definitions(repository):
+    store, now = repository
+    for _ in range(3):
+        store.create(definition())
+    now[0] += timedelta(minutes=1)
+    store.materialize()
+    completed, uncertain = store.claim(), store.claim()
+    store.finish(completed["id"], "completed")
+    assert store.begin(uncertain["id"])
+    store.finish(uncertain["id"], "uncertain")
+    now[0] += timedelta(days=91)
+    store.purge()
+    assert store.summary() == {"pending": 1, "uncertain": 1}
+    assert store.list()["total"] == 3

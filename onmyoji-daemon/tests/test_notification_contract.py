@@ -29,6 +29,24 @@ def test_version_does_not_accept_json_float():
         validate_event(value)
 
 
+@pytest.mark.parametrize("value", [None, [], "fixture", {}, {"schema_version": 1}])
+def test_non_envelope_roots_and_incomplete_objects(value):
+    with pytest.raises(RpcError) as caught:
+        validate_event(value)
+    assert caught.value.code == "invalid_event"
+
+
+def test_channel_object_is_closed_and_uuid_is_canonical():
+    value = event()
+    value["response_channel"]["extra"] = "fixture"
+    with pytest.raises(RpcError):
+        validate_event(value)
+    del value["response_channel"]["extra"]
+    value["event_id"] = value["event_id"].replace("-", "")
+    with pytest.raises(RpcError):
+        validate_event(value)
+
+
 @pytest.mark.parametrize("field,value", [("schema_version", True), ("schema_version", 2), ("event_id", "invalid"), ("event_id", "00000000-0000-4000-8000-000000000000"), ("prompt", "  \n"), ("prompt", 3), ("thread_policy", "invalid"), ("response_channel", {"type": "web", "value": "x"}), ("response_channel", {"type": "email", "value": " "}), ("extra", True)])
 def test_invalid_values_do_not_echo_payload(field, value):
     request = event()

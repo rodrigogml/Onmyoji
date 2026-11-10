@@ -79,9 +79,14 @@ def test_incident_failure_does_not_recurse(lab):
     enable(lab)
     lab.gateway.notification_configuration.configure({"incident": {"type": "telegram", "value": "9"}})
     attempts = []
-    lab.gateway._notification_send = lambda *args: attempts.append(args) or "failed"
+    attempted = threading.Event()
+    def fail(*args):
+        attempts.append(args); attempted.set()
+        return "failed"
+    lab.gateway._notification_send = fail
     result = lab.gateway.handle("notification.submit", event(destination="unknown"))
     assert result["execution"] == "not_started"
+    assert attempted.wait(3)
     lab.gateway._notification_sync(); lab.gateway._notification_sync()
     assert len(attempts) == 1
 
@@ -179,3 +184,100 @@ def test_log_retention_refuses_redirected_directory(lab):
     with pytest.raises(OSError):
         log.purge()
     assert retained.read_text(encoding="utf-8") == "{}"
+
+
+def test_invalid_transport_frames_are_logged_without_payload_or_agent(lab):
+    enable(lab, watch=False)
+    stopped = threading.Event()
+    server = RpcServer("127.0.0.1", 0, "fixture", lab.gateway.handle, long_methods=("notification.submit",), on_rejection=lab.gateway._notification_transport_rejected)
+    receiver = threading.Thread(target=server.serve_forever, args=(stopped,), daemon=True); receiver.start()
+    try:
+        for raw in (b'{"token":"private-fixture", broken}\n', b'\xff\n'):
+            with socket.create_connection(("127.0.0.1", server.port), timeout=3) as client:
+                client.sendall(raw)
+                response = json.loads(client.makefile("rb").readline())
+                assert response["error_code"] == "invalid_json"
+        lab.gateway.notification_log.flush()
+        logged = "".join(path.read_text(encoding="utf-8") for path in lab.gateway.notification_log.directory.glob("*.jsonl"))
+        assert "transport_rejected" in logged and "private-fixture" not in logged
+        assert lab.gateway.database.execute("SELECT COUNT(*) FROM execution_turns").fetchone() == (0,)
+    finally:
+        stopped.set(); server.close(); receiver.join(2)
+
+
+def test_scheduler_notification_traverses_supervisor_and_shared_gateway(lab):
+    from datetime import timedelta
+    from types import SimpleNamespace
+    from onmyoji_daemon.supervisor import Supervisor
+    from onmyoji_daemon.task_scheduler.service import TaskScheduler
+    from onmyoji_daemon.task_scheduler.calendar import instant, iso
+    enable(lab)
+    gateway = lab.gateway
+    supervisor = Supervisor(gateway.settings.root)
+    service_server = RpcServer("127.0.0.1", 0, "child-fixture", gateway.handle, long_methods=("notification.submit",))
+    managed = supervisor.services["telegram"]
+    managed.process = SimpleNamespace(poll=lambda: None, pid=1)
+    managed.port, managed.token = service_server.port, "child-fixture"
+    supervisor._endpoint()
+    supervisor_thread = threading.Thread(target=supervisor.rpc.serve_forever, args=(supervisor.stop_event,), daemon=True)
+    service_thread = threading.Thread(target=service_server.serve_forever, args=(gateway.stop_event,), daemon=True)
+    supervisor_thread.start(); service_thread.start()
+    now = instant("2026-11-10T12:00:00Z")
+    scheduler = TaskScheduler(gateway.settings.root, gateway.settings.root / "configs" / "daemon" / "services" / "task-scheduler", workspace=gateway.settings.project, clock=lambda: now)
+    try:
+        envelope = event("reuse"); del envelope["event_id"]
+        definition = {"schema_version": 1, "name": "RPC integrado", "enabled": True, "rule": {"type": "once", "at": iso(now - timedelta(seconds=1))}, "action": {"type": "notification", "event": envelope}}
+        created = scheduler.handle("task.create", {"definition": definition})
+        scheduler.changed.clear(); scheduler.tick()
+        thread = lab.client.wait_calls("turn/start")[0]["threadId"]
+        assert call("127.0.0.1", supervisor.rpc.port, supervisor.token, "notification.status")["enabled"]
+        lab.client.item(thread, "Resposta do fluxo completo"); lab.client.complete(thread)
+        assert scheduler.changed.wait(3)
+        history = scheduler.handle("task.history", {"id": created["id"]})["items"]
+        assert len(history) == 1 and history[0]["state"] == "completed"
+        assert history[0]["event_id"] == history[0]["result"]["event_id"]
+        assert history[0]["result"]["delivery"] == "confirmed"
+        assert len(lab.client.wait_calls("turn/start")) == 1
+    finally:
+        scheduler.close(); supervisor.stop_event.set(); supervisor.rpc.close()
+        gateway.stop_event.set(); service_server.close()
+        supervisor_thread.join(2); service_thread.join(2)
+
+
+def test_terminal_receipt_and_journal_commit_atomically(lab, monkeypatch):
+    enable(lab, watch=False)
+    gateway = lab.gateway
+    value = event()
+    receipt = {"event_id": value["event_id"], "received_at": "2026-11-10T12:00:00.000Z", "envelope": value}
+    identifier = gateway.store.enqueue("9", gateway._generation("9"), "fixture", [], {"notification": value}, origin="event", receipt=receipt)
+    execution = gateway.store.reserve("9", 0, identifier, 30)
+    gateway.store.save_terminal_output(execution, "failed", None, "final", "text", False)
+    original = gateway.notification_log.record
+    def fail(stage, **values):
+        if stage == "terminal":
+            raise OSError("fixture journal unavailable")
+        return original(stage, **values)
+    monkeypatch.setattr(gateway.notification_log, "record", fail)
+    with pytest.raises(OSError):
+        gateway._notification_sync()
+    assert gateway.database.execute("SELECT execution_state FROM notification_receipts WHERE inbox_id=?", (identifier,)).fetchone() == (None,)
+    monkeypatch.setattr(gateway.notification_log, "record", original)
+    gateway._notification_sync()
+    assert gateway.database.execute("SELECT execution_state FROM notification_receipts WHERE inbox_id=?", (identifier,)).fetchone() == ("failed",)
+    records = [json.loads(row[0])["stage"] for row in gateway.database.execute("SELECT payload FROM notification_log_journal")]
+    assert records.count("terminal") == 1
+
+
+def test_pending_incident_recovers_after_terminal_receipt_was_already_saved(lab):
+    enable(lab, watch=False)
+    gateway = lab.gateway
+    gateway.notification_configuration.configure({"incident": {"type": "telegram", "value": "9"}})
+    value = event()
+    receipt = {"event_id": value["event_id"], "received_at": "2026-11-10T12:00:00.000Z", "envelope": value}
+    identifier = gateway.store.enqueue("9", gateway._generation("9"), "fixture", [], {"notification": value}, origin="event", receipt=receipt)
+    with gateway.database:
+        gateway.database.execute("UPDATE notification_receipts SET execution_state='failed',reason='fixture' WHERE inbox_id=?", (identifier,))
+    attempts = []
+    gateway._notification_send = lambda *args: attempts.append(args) or "confirmed"
+    gateway._notification_sync(); gateway._notification_sync()
+    assert len(attempts) == 1

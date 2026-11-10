@@ -23,6 +23,9 @@ class NotificationIngress:
 
     def _notification_handle(self, method, params):
         configuration = self.notification_configuration.load()
+        if method == "notification.transport-rejected":
+            self._notification_transport_rejected(params.get("code"))
+            return {"recorded": True}
         if method == "notification.configure":
             result = self.notification_configuration.configure(params)
             self._wake_worker("")
@@ -85,6 +88,11 @@ class NotificationIngress:
         if not isinstance(thread, dict) or not isinstance(thread.get("id"), str) or not thread["id"]:
             raise CodexProtocolError("Criação de thread sem identificador.", kind="not_sent")
         return thread["id"]
+
+    def _notification_transport_rejected(self, code):
+        if code not in {"invalid_json", "request_too_large", "invalid_request", "unauthorized", "capacity_exceeded"}:
+            raise RpcError("Motivo de rejeição inválido.", "invalid_argument")
+        self.notification_log.record("transport_rejected", code=code)
 
     def _notification_destination(self, event, smtp_account=None):
         channel = event["response_channel"]
@@ -163,7 +171,7 @@ class NotificationIngress:
             with self.database_lock, self.database:
                 self.database.execute("UPDATE notification_receipts SET delivery_state=? WHERE inbox_id=?", (state, row[0]))
                 self.database.execute("UPDATE execution_turns SET delivery_state=? WHERE execution_id=?", ("done" if state == "confirmed" else state, execution))
-            self.notification_log.record("delivery", event_id=event["event_id"], state=state)
+                self.notification_log.record("delivery", transaction=self.database, event_id=event["event_id"], state=state)
 
     def _notification_sync(self):
         # Acompanhamentos RPC só observam. Um único sincronizador publica
@@ -195,9 +203,14 @@ class NotificationIngress:
                     continue
                 reason = None if state == "completed" and current == "confirmed" else result or input_state
                 changed = self.database.execute("UPDATE notification_receipts SET execution_state=?,reason=? WHERE inbox_id=? AND (execution_state IS NULL OR execution_state!=?)", (state, reason, inbox, state)).rowcount
+                if changed:
+                    self.notification_log.record("terminal", transaction=self.database, event_id=event_id, execution=state, delivery=current, output=text, reason=reason)
             if changed:
-                self.notification_log.record("terminal", event_id=event_id, execution=state, delivery=current, output=text, reason=reason)
                 self._notification_incident(inbox, event_id, state, current, reason)
+        with self.database_lock:
+            pending_incidents = self.database.execute("SELECT inbox_id,event_id,execution_state,delivery_state,reason FROM notification_receipts WHERE execution_state IS NOT NULL AND incident_state='pending'").fetchall()
+        for values in pending_incidents:
+            self._notification_incident(*values)
 
     def _notification_incident(self, inbox, event_id, state, delivery, reason):
         with self.database_lock, self.database:

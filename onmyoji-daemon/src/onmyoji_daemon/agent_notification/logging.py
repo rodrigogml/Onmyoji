@@ -15,10 +15,16 @@ class NotificationLog:
         self.store, self.directory = store, directory
         self.lock = threading.Lock()
 
-    def record(self, stage, **values):
+    def record(self, stage, *, transaction=None, **values):
         at = timestamp()
+        arguments = (at, json.dumps({"stage": stage, **values}, ensure_ascii=False))
+        if transaction is self.store.db:
+            transaction.execute("INSERT INTO notification_log_journal(at,payload) VALUES (?,?)", arguments)
+            return
+        if transaction is not None:
+            raise ValueError("O journal deve usar a transação do gateway.")
         with self.store.lock, self.store.db:
-            self.store.db.execute("INSERT INTO notification_log_journal(at,payload) VALUES (?,?)", (at, json.dumps({"stage": stage, **values}, ensure_ascii=False)))
+            self.store.db.execute("INSERT INTO notification_log_journal(at,payload) VALUES (?,?)", arguments)
 
     def _validate_directory(self):
         if self.directory.is_symlink() or getattr(self.directory, "is_junction", lambda: False)() or self.directory.resolve().parent != self.directory.parent.resolve():

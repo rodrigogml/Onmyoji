@@ -56,7 +56,7 @@ class Supervisor:
         self.host, self.token, self.stop_event = "127.0.0.1", secrets.token_urlsafe(32), threading.Event()
         from .agent_notification.configuration import NotificationConfiguration
         limits = NotificationConfiguration(self.onmyoji_root).load()
-        self.rpc = RpcServer(self.host, free_port(), self.token, self.handle, long_methods=("notification.submit",), long_limit=limits["long_limit"], event_max_bytes=limits["max_request_bytes"])
+        self.rpc = RpcServer(self.host, free_port(), self.token, self.handle, long_methods=("notification.submit",), long_limit=limits["long_limit"], event_max_bytes=limits["max_request_bytes"], on_rejection=self._notification_transport_rejected)
         self.services = {name: ManagedService(spec) for name, spec in SERVICES.items()}
         self.publications = PublicationCoordinator(self.onmyoji_root, self.services, self._call_service, {self.rpc.port})
         self.recovery_delay_seconds = 15.0
@@ -264,7 +264,7 @@ class Supervisor:
     def handle(self, method: str, params: dict[str, Any]) -> Any:
         if method == "ping": return {"service": "onmyoji-daemon", "state": "running"}
         if method == "list-services": return [self.status(name) for name in self.services]
-        if method.startswith("gateway.publication.") or method in {"task.activate", "cloudflare-tunnel.activate", "mini-apps.publication.update"}:
+        if method.startswith("gateway.publication.") or method in {"notification.transport-rejected", "task.activate", "cloudflare-tunnel.activate", "mini-apps.publication.update"}:
             raise RpcError("Operação interna reservada ao Supervisor.", "internal_operation")
         if method in {"start", "stop", "restart", "enable", "disable", "status"}:
             name = str(params.get("service") or "telegram")
@@ -293,6 +293,14 @@ class Supervisor:
                 return self._call_service(name, method, params, timeout=timeout)
         if method == "shutdown": self.stop_event.set(); return {"state": "stopping"}
         raise ValueError("unknown method")
+
+    def _notification_transport_rejected(self, code):
+        service = self.services.get("telegram")
+        if service and service.process and service.process.poll() is None:
+            try:
+                self._call_service("telegram", "notification.transport-rejected", {"code": code}, timeout=1, skip_busy=True)
+            except (OSError, RpcError):
+                pass
 
     def run_forever(self) -> None:
         self._acquire_lock(); self._endpoint(); self._save_state()

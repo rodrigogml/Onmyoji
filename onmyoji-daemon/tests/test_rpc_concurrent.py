@@ -8,6 +8,11 @@ import pytest
 from onmyoji_daemon.rpc import RpcServer, RpcError, call, disconnected
 
 
+def test_private_rpc_cannot_bind_a_public_interface():
+    with pytest.raises(ValueError, match="loopback"):
+        RpcServer("0.0.0.0", 0, "fixture", lambda *args: None)
+
+
 def test_long_rpc_preserves_control_and_rejects_saturation():
     started, release, stop = threading.Event(), threading.Event(), threading.Event()
     def handle(method, params):

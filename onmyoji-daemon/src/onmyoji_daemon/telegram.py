@@ -1812,7 +1812,7 @@ def main(argv: list[str] | None = None) -> int:
     gateway = Gateway(Settings.load(args.onmyoji_root.resolve(), args.data_dir))
     gateway.start()
     configuration = gateway.notification_configuration.load()
-    server = RpcServer(args.host, args.port, args.token, gateway.handle, long_methods=("notification.submit",), long_limit=configuration["long_limit"], event_max_bytes=configuration["max_request_bytes"])
+    server = RpcServer(args.host, args.port, args.token, gateway.handle, long_methods=("notification.submit",), long_limit=configuration["long_limit"], event_max_bytes=configuration["max_request_bytes"], on_rejection=gateway._notification_transport_rejected)
     try:
         server.serve_forever(gateway.stop_event)
     finally:

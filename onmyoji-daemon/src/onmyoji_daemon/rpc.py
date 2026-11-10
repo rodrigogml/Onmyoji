@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from ipaddress import ip_address
 import socket
 import select
 import threading
@@ -37,11 +38,14 @@ class RpcError(RuntimeError):
 
 
 class RpcServer:
-    def __init__(self, host: str, port: int, token: str, handler: Callable[[str, dict[str, Any]], Any], *, long_methods: tuple[str, ...] = (), long_limit: int = 32, event_max_bytes: int = MAX_REQUEST_BYTES):
+    def __init__(self, host: str, port: int, token: str, handler: Callable[[str, dict[str, Any]], Any], *, long_methods: tuple[str, ...] = (), long_limit: int = 32, event_max_bytes: int = MAX_REQUEST_BYTES, on_rejection: Callable[[str], None] | None = None):
+        if not ip_address(socket.gethostbyname(host)).is_loopback:
+            raise ValueError("O transporte RPC do daemon aceita somente loopback.")
         self.host, self.token, self.handler = host, token, handler
         self.long_methods = long_methods
         self.long_limit = threading.BoundedSemaphore(long_limit)
         self.event_max_bytes = event_max_bytes
+        self.on_rejection = on_rejection
         self.control_lock = threading.Lock()
         self.readers = threading.BoundedSemaphore(long_limit + 32)
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -90,6 +94,14 @@ class RpcServer:
             except Exception as error:
                 response = {"ok": False, "error": "Requisição RPC inválida." if isinstance(error, (UnicodeError, json.JSONDecodeError)) else str(error)}
                 code, details = getattr(error, "code", None), getattr(error, "details", None)
+                if isinstance(error, (UnicodeError, json.JSONDecodeError)):
+                    code = "invalid_json"
+                if self.on_rejection and code in {"invalid_json", "request_too_large", "invalid_request", "unauthorized", "capacity_exceeded"}:
+                    try:
+                        self.on_rejection(code)
+                    except Exception:
+                        # O registro não pode transformar rejeição em aceite.
+                        pass
                 if code: response["error_code"] = code
                 if isinstance(details, dict): response["error_details"] = details
             finally:
