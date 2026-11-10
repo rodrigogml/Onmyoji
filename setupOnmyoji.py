@@ -2235,7 +2235,8 @@ def daemon_menu(root: Path) -> None:
             completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), action, *(extra or [])], quiet=not visible, input_value=input_value, administrative=visible)
         except KeyboardInterrupt:
             result(False, "Operação interrompida pelo usuário."); return False
-        result(completed.returncode == 0, (completed.stdout or completed.stderr or "Operação concluída.").strip())
+        detail = (completed.stdout or completed.stderr or ("Operação concluída." if completed.returncode == 0 else f"O comando terminou com código {completed.returncode}; consulte a saída exibida acima.")).strip()
+        result(completed.returncode == 0, detail)
         return completed.returncode == 0
 
     def install_daemon() -> bool:

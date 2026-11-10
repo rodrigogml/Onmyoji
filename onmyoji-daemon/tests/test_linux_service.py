@@ -49,6 +49,37 @@ def test_isolated_systemd_unit_exposes_only_registered_trees_and_applies_hardeni
     assert 'ExecStart="/opt/python test/bin/python"' in unit
 
 
+def test_systemd_unit_is_verified_from_repository_tmp_before_installation(tmp_path, monkeypatch):
+    observed = {}
+    monkeypatch.setattr(management.shutil, "which", lambda name: "/usr/bin/systemd-analyze" if name == "systemd-analyze" else None)
+
+    def run(command, **kwargs):
+        observed["command"] = command
+        observed["content"] = Path(command[-1]).read_text(encoding="utf-8")
+        observed["environment"] = kwargs["env"]
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(management.subprocess, "run", run)
+    valid, detail = management._verify_systemd_unit(tmp_path, "shikigami-test", "[Service]\nExecStart=/bin/true\n", "system")
+
+    assert valid, detail
+    assert observed["command"][:2] == ["/usr/bin/systemd-analyze", "verify"]
+    assert Path(observed["command"][-1]).parent == tmp_path / "tmp" / "systemd-validation"
+    assert observed["content"].startswith("[Service]")
+    assert observed["environment"]["LC_ALL"] == "C"
+    assert not Path(observed["command"][-1]).exists()
+
+
+def test_systemd_unit_verification_surfaces_parser_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(management.shutil, "which", lambda name: "/usr/bin/systemd-analyze" if name == "systemd-analyze" else None)
+    monkeypatch.setattr(management.subprocess, "run", lambda command, **kwargs: subprocess.CompletedProcess(command, 1, "", "Unknown key name 'InvalidSetting'"))
+
+    valid, detail = management._verify_systemd_unit(tmp_path, "shikigami-test", "[Service]\nInvalidSetting=yes\n", "system")
+
+    assert not valid
+    assert "InvalidSetting" in detail
+
+
 @pytest.mark.parametrize("share", [True, False])
 def test_account_provisioning_uses_inherited_acl_or_exclusive_ownership(tmp_path, monkeypatch, share):
     root = tmp_path / "instance"; workspace = tmp_path / "work"; root.mkdir(); workspace.mkdir()

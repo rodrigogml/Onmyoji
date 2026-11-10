@@ -304,6 +304,43 @@ def _systemd_unit(root: Path, executable: str, source: Path, description: str, s
     return "\n".join(["[Unit]", f"Description={description}", "Wants=network-online.target", "After=network-online.target", "", *service, "", "[Install]", "WantedBy=default.target" if scope == "user" else "WantedBy=multi-user.target", ""])
 
 
+def _systemd_verify_command(scope: str, unit: Path) -> list[str]:
+    analyzer = shutil.which("systemd-analyze")
+    return [str(analyzer), *(["--user"] if scope == "user" else []), "verify", str(unit)] if analyzer else []
+
+
+def _verify_systemd_unit(root: Path, name: str, content: str, scope: str) -> tuple[bool, str]:
+    """Valida a unit em tmp/ antes de tocar a configuração do sistema."""
+    command_available = shutil.which("systemd-analyze")
+    if not command_available:
+        return False, "systemd-analyze não está disponível para validar a unit antes da instalação."
+    directory = root.resolve() / "tmp" / "systemd-validation"
+    candidate = directory / f"{name}.service"
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        candidate.write_text(content, encoding="utf-8", newline="\n")
+        environment = dict(os.environ); environment["LC_ALL"] = "C"
+        checked = subprocess.run(_systemd_verify_command(scope, candidate), text=True, encoding="utf-8", errors="replace", capture_output=True, env=environment, check=False)
+    except OSError as error:
+        return False, f"Não foi possível validar a unit systemd: {error}"
+    finally:
+        candidate.unlink(missing_ok=True)
+        try: directory.rmdir()
+        except OSError: pass
+    detail = (checked.stderr or checked.stdout).strip()
+    return checked.returncode == 0, detail or ("Unit systemd validada." if checked.returncode == 0 else "systemd-analyze rejeitou a unit sem fornecer detalhes.")
+
+
+def _rollback_systemd_unit(unit: Path, scope: str, name: str, prefix: list[str]) -> None:
+    """Remove somente a unit recém-criada e atualiza o catálogo após uma falha."""
+    subprocess.run([*prefix, *_systemctl(scope, "disable", name)], text=True, capture_output=True, check=False)
+    if prefix:
+        subprocess.run([*prefix, "rm", "-f", str(unit)], text=True, capture_output=True, check=False)
+    else:
+        unit.unlink(missing_ok=True)
+    subprocess.run([*prefix, *_systemctl(scope, "daemon-reload")], text=True, capture_output=True, check=False)
+
+
 def prepare_windows_service_host(root: Path) -> tuple[bool, str]:
     """Posiciona o host pywin32 onde o Python reconhece corretamente o venv."""
     executable = daemon_python(root); scripts = executable.parent; environment = scripts.parent; site_packages = environment / "Lib" / "site-packages"
@@ -353,6 +390,8 @@ def configure_windows_service_account(root: Path, account: str, password: str = 
 
 
 def install_service(root: Path, name: str, description: str, scope: str = "system", run_as_user: str = "", run_as_group: str = "", use_sudo: bool = False, windows_account: str = "", windows_password: str = "", progress: Callable[[str], None] | None = None, *, isolate_linux: bool = False, installer_user: str = "", installer_access: bool = True, workspace: str = "", resource_limits: dict[str, object] | None = None) -> tuple[bool, str]:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}", name): return False, "O nome do serviço contém caracteres inválidos. Use letras, números, ponto, _, @ ou -."
+    if not description.strip() or any(character in description for character in "\r\n"): return False, "A descrição do serviço deve ocupar uma única linha não vazia."
     if not is_installed(root): return False, "Instale primeiro o daemon desta instância."
     if service_path(root).exists(): return False, "Já existe um serviço instalado para esta instância."
     if running_process(root): return False, "Finalize o processo local antes de instalar o serviço."
@@ -404,9 +443,12 @@ def install_service(root: Path, name: str, description: str, scope: str = "syste
         unit = (Path.home() / ".config" / "systemd" / "user" if scope == "user" else Path("/etc/systemd/system")) / f"{name}.service"
         source = Path(__file__).resolve().parents[1]
         content = _systemd_unit(root, executable, source, description, scope, run_as_user, run_as_group, workspace=workspace_path, home=service_home, isolated=isolate_linux, limits=limits)
+        verified, verification_detail = _verify_systemd_unit(root, name, content, scope)
+        if not verified: return False, "A unit systemd foi rejeitada antes da instalação:\n" + verification_detail
         elevated = scope == "system" and getattr(os, "geteuid", lambda: 0)() != 0
         if elevated and not use_sudo: return False, "A instalação de serviço do sistema exige confirmação de sudo."
         if elevated and not shutil.which("sudo"): return False, "sudo não está disponível. Execute o setup como root ou use su para obter uma sessão administrativa."
+        if unit.exists(): return False, f"A unit {unit} já existe e não será sobrescrita sem remoção explícita."
         try:
             if elevated:
                 written = subprocess.run(["sudo", "tee", str(unit)], input=content, text=True, capture_output=True, check=False)
@@ -418,9 +460,19 @@ def install_service(root: Path, name: str, description: str, scope: str = "syste
             return False, f"Não foi possível gravar {unit}; execute o setup com {privilege}: {error}"
         command_prefix = ["sudo"] if elevated else []
         reloaded = subprocess.run([*command_prefix, *_systemctl(scope, "daemon-reload")], text=True, capture_output=True, check=False)
-        if reloaded.returncode != 0: return False, (reloaded.stderr or reloaded.stdout).strip()
+        if reloaded.returncode != 0:
+            _rollback_systemd_unit(unit, scope, name, command_prefix)
+            return False, (reloaded.stderr or reloaded.stdout).strip()
+        loaded = subprocess.run([*command_prefix, *_systemctl(scope, "show", name, "--property=LoadState", "--value")], text=True, capture_output=True, check=False)
+        if loaded.returncode != 0 or loaded.stdout.strip() != "loaded":
+            verification = subprocess.run(_systemd_verify_command(scope, unit), text=True, encoding="utf-8", errors="replace", capture_output=True, env={**os.environ, "LC_ALL": "C"}, check=False)
+            detail = (verification.stderr or verification.stdout or loaded.stderr or loaded.stdout).strip() or "O systemd não carregou a unit recém-instalada."
+            _rollback_systemd_unit(unit, scope, name, command_prefix)
+            return False, detail
         enabled = subprocess.run([*command_prefix, *_systemctl(scope, "enable", name)], text=True, capture_output=True, check=False)
-        if enabled.returncode != 0: return False, (enabled.stderr or enabled.stdout).strip()
+        if enabled.returncode != 0:
+            _rollback_systemd_unit(unit, scope, name, command_prefix)
+            return False, (enabled.stderr or enabled.stdout).strip()
     configured_user = windows_account or run_as_user or ("LocalSystem" if os.name == "nt" else "")
     service_state = {"schema_version": 3, "name": name, "description": description, "root": str(root.resolve()), "platform": platform.system(), "scope": scope, "run_as_user": configured_user, "run_as_group": run_as_group, "isolated": isolate_linux, "installer_user": installer_user if isolate_linux else "", "installer_access": installer_access if isolate_linux else False, "workspace": workspace if isolate_linux else "", "home": str(service_home) if service_home else "", "resource_limits": limits.mapping() if os.name != "nt" else {}}
     if os.name != "nt" and isolate_linux and not installer_access and getattr(os, "geteuid", lambda: 0)() != 0:
@@ -488,8 +540,19 @@ def service_status(root: Path) -> tuple[bool, str]:
     if os.name == "nt":
         value = subprocess.run(["sc.exe", "query", str(info["name"])], text=True, capture_output=True, check=False)
         return value.returncode == 0, (value.stdout or value.stderr).strip()
-    value = subprocess.run(_systemctl(str(info.get("scope") or "system"), "status", str(info["name"]), "--no-pager"), text=True, capture_output=True, check=False)
-    return value.returncode in {0, 3}, (value.stdout or value.stderr).strip()
+    scope, name = str(info.get("scope") or "system"), str(info["name"])
+    value = subprocess.run(_systemctl(scope, "status", name, "--no-pager"), text=True, capture_output=True, check=False)
+    detail = (value.stdout or value.stderr).strip()
+    bad_setting = "bad-setting" in detail.casefold()
+    if bad_setting:
+        unit = (Path.home() / ".config" / "systemd" / "user" if scope == "user" else Path("/etc/systemd/system")) / f"{name}.service"
+        command = _systemd_verify_command(scope, unit)
+        if command:
+            environment = dict(os.environ); environment["LC_ALL"] = "C"
+            verified = subprocess.run(command, text=True, encoding="utf-8", errors="replace", capture_output=True, env=environment, check=False)
+            verification = (verified.stderr or verified.stdout).strip()
+            if verification: detail += "\n\nDiagnóstico da unit:\n" + verification
+    return value.returncode in {0, 3} and not bad_setting, detail
 
 
 def _windows_service_state(status: str) -> str:
