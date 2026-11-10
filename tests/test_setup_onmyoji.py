@@ -680,6 +680,22 @@ class SystemSetupTests(unittest.TestCase):
         self.assertEqual(diagnostics, expected)
         self.assertIn("--dedicated-checks", delegated.call_args.args[2])
 
+    def test_mcp_menu_uses_the_instance_runtime_python(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); executable = root / "venv" / "bin" / "python"; executable.parent.mkdir(parents=True); executable.touch()
+            completed = subprocess.CompletedProcess([], 0)
+            with patch.object(MODULE, "mcp_runtime_ready", return_value=True), patch.object(MODULE, "mcp_runtime_python", return_value=executable), patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+                self.assertTrue(MODULE.launch_mcp_menu(root))
+        run.assert_called_once_with([str(executable), "-B", str(root / "onmyoji-daemon" / "setupMcp.py")], check=False)
+
+    def test_mcp_menu_offers_to_repair_an_incomplete_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); executable = root / "venv" / "bin" / "python"; executable.parent.mkdir(parents=True); executable.touch()
+            completed = subprocess.CompletedProcess([], 0)
+            with patch.object(MODULE, "mcp_runtime_ready", return_value=False), patch.object(MODULE, "prompt", return_value=""), patch.object(MODULE, "ensure_mcp_runtime", return_value="Runtime MCP preparado.") as ensure, patch.object(MODULE, "mcp_runtime_python", return_value=executable), patch.object(MODULE.subprocess, "run", return_value=completed):
+                self.assertTrue(MODULE.launch_mcp_menu(root))
+        ensure.assert_called_once_with(root, progress=MODULE.note)
+
     def test_dedicated_preparation_persists_identity_before_provision_and_handoff(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "instance"; workspace = Path(temporary) / "work"; root.mkdir(); workspace.mkdir()

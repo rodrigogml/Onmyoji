@@ -39,7 +39,7 @@ from onmyoji_daemon import management as daemon_management
 from onmyoji_daemon.linux_service import DEDICATED_SETUP_ENVIRONMENT, ServiceLimits, account_command, account_name as linux_account_name, limits_json, limits_summary, linux_tool, load_execution_profile, provision_account, recommended_limits, save_execution_profile, validate_account
 from onmyoji_daemon.publication_diagnostics import diagnose as diagnose_publication
 from onmyoji_daemon.cloudflare_tunnel.installer import inspect_cloudflared_directory
-from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
+from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime, mcp_runtime_python, mcp_runtime_ready
 from onmyoji_daemon.mcp.ocr.runtime import DocumentError, install_runtime as install_document_runtime
 SYSTEM_BEGIN = "# BEGIN ONMYOJI MANAGED CODEX SETTINGS"
 SYSTEM_END = "# END ONMYOJI MANAGED CODEX SETTINGS"
@@ -985,6 +985,38 @@ def run_dedicated_menu(root: Path, destination: str) -> bool:
     try: completed = subprocess.run(command, check=False)
     except OSError as error: result(False, f"Não foi possível abrir o menu sob {account}: {error}"); return True
     if completed.returncode: result(False, f"O menu dedicado terminou com código {completed.returncode}.")
+    return True
+
+
+def launch_mcp_menu(root: Path) -> bool:
+    """Prepara o runtime único e abre o setup MCP com seu próprio Python."""
+    if not mcp_runtime_ready(root):
+        flow_heading("Preparação do MCP", "Componentes necessários no runtime Python da instância")
+        note("O runtime MCP está ausente ou incompleto; ele precisa ser preparado antes de abrir as integrações.")
+        if prompt("Instalar ou reparar os componentes MCP agora? [S/n]: ").strip().casefold() not in {"", "s", "sim"}:
+            result(False, "A abertura do MCP foi cancelada sem alterar o runtime.")
+            return False
+        try:
+            note(ensure_mcp_runtime(root, progress=note))
+        except McpRuntimeError as error:
+            result(False, f"Não foi possível preparar o runtime MCP: {error}")
+            return False
+    try:
+        executable = mcp_runtime_python(root)
+    except (OSError, python_runtime.RuntimeError) as error:
+        result(False, f"Não foi possível localizar o Python do runtime MCP: {error}")
+        return False
+    if not executable.is_file():
+        result(False, f"O Python do runtime MCP não foi encontrado em {executable}.")
+        return False
+    try:
+        completed = subprocess.run([str(executable), "-B", str(root / "onmyoji-daemon" / "setupMcp.py")], check=False)
+    except OSError as error:
+        result(False, f"Não foi possível abrir o setup MCP: {error}")
+        return False
+    if completed.returncode:
+        result(False, f"O setup MCP terminou com código {completed.returncode}.")
+        return False
     return True
 
 
@@ -3946,7 +3978,7 @@ def menu(skills: list[Skill], root: Path) -> int:
             continue
         if choice == "d": daemon_menu(root); continue
         if choice == "m":
-            if not run_dedicated_menu(root, "mcp"): subprocess.run([sys.executable, str(root / "onmyoji-daemon" / "setupMcp.py")], check=False)
+            if not run_dedicated_menu(root, "mcp"): launch_mcp_menu(root)
             continue
         if choice.isdigit() and 1 <= int(choice) <= len(skills): skill_menu(skills[int(choice) - 1], root, skills)
         else: result(False, "Opção inválida.")
@@ -3983,7 +4015,7 @@ def main() -> int:
         if args.dedicated_menu == "diagnostics": diagnostics_menu(ROOT)
         elif args.dedicated_menu == "python": python_menu(ROOT)
         elif args.dedicated_menu == "codex": codex_menu(ROOT)
-        else: subprocess.run([sys.executable, str(ROOT / "onmyoji-daemon" / "setupMcp.py")], check=False)
+        else: launch_mcp_menu(ROOT)
         return 0
     skills = discover(); conflicts = conflicting_skill_ids(skills); by_id = {skill.identifier: skill for skill in skills if skill.identifier not in conflicts}
     initialized, initialization_message = ensure_skill_state(ROOT, skills)
