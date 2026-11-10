@@ -106,12 +106,14 @@ class TaskScheduler:
     def _execute(self, occurrence):
         try:
             if self.stop_event.is_set():
-                self.repository.finish(occurrence["id"], "failed", reason="service_stopping_before_action")
                 return
+            before_dispatch = lambda: self.repository.begin(occurrence["id"])
             if occurrence["snapshot"]["action"]["type"] == "notification":
-                state, result, reason = notification_action(self.root, occurrence)
+                state, result, reason = notification_action(self.root, occurrence, before_dispatch=before_dispatch)
             else:
-                state, result, reason = process_action(self.root, self.workspace, occurrence, self.stop_event)
+                state, result, reason = process_action(self.root, self.workspace, occurrence, self.stop_event, before_dispatch=before_dispatch)
+            if reason == "service_stopping_before_action":
+                return  # Reserva comprovadamente não enviada retoma no próximo startup.
             self.repository.finish(occurrence["id"], state, result, reason)
         except Exception:
             self.repository.finish(occurrence["id"], "uncertain", reason="action_interrupted")

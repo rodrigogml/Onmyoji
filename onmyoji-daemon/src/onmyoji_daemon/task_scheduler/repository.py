@@ -21,21 +21,29 @@ class TaskRepository:
         self.workspace = workspace.resolve()
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.lock = threading.RLock()
+        self._reserved_here = set()
         path.parent.mkdir(parents=True, exist_ok=True)
         self.lease = GatewayStore.open_lease(path.with_suffix(".lock"))
         try:
             self.db = sqlite3.connect(path, check_same_thread=False)
             self.db.row_factory = sqlite3.Row
             version = self.db.execute("PRAGMA user_version").fetchone()[0]
-            if version > 1:
+            if version > 2:
                 raise RpcError("Banco do agendador é mais novo que este runtime.", "schema_newer")
+            if version == 1:
+                backup = path.with_name("scheduler-before-dispatch-v1.sqlite3")
+                if not backup.exists():
+                    with sqlite3.connect(backup) as target:
+                        self.db.backup(target)
             with self.db:
                 self.db.execute("CREATE TABLE IF NOT EXISTS definitions(id TEXT PRIMARY KEY,revision INTEGER NOT NULL,document TEXT NOT NULL,enabled INTEGER NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,next_run_at TEXT,deleted_at TEXT)")
                 self.db.execute("CREATE TABLE IF NOT EXISTS occurrences(id TEXT PRIMARY KEY,definition_id TEXT NOT NULL,revision INTEGER NOT NULL,snapshot TEXT NOT NULL,scheduled_at TEXT NOT NULL,window_start TEXT NOT NULL,coalesced_until TEXT NOT NULL,event_id TEXT,state TEXT NOT NULL,started_at TEXT,completed_at TEXT,result TEXT,reason TEXT,resolution TEXT,UNIQUE(definition_id,revision,scheduled_at))")
                 self.db.execute("CREATE INDEX IF NOT EXISTS occurrence_dispatch ON occurrences(state,scheduled_at)")
-                self.db.execute("CREATE UNIQUE INDEX IF NOT EXISTS occurrence_one_active ON occurrences(definition_id) WHERE state IN ('running','uncertain')")
+                if version == 1:
+                    self.db.execute("DROP INDEX IF EXISTS occurrence_one_active")
+                self.db.execute("CREATE UNIQUE INDEX IF NOT EXISTS occurrence_one_active ON occurrences(definition_id) WHERE state IN ('reserved','running','uncertain')")
                 self.db.execute("CREATE UNIQUE INDEX IF NOT EXISTS occurrence_one_pending ON occurrences(definition_id) WHERE state='pending'")
-                self.db.execute("PRAGMA user_version=1")
+                self.db.execute("PRAGMA user_version=2")
                 self.db.execute("UPDATE occurrences SET state='uncertain',reason='service_restarted' WHERE state='running'")
         except Exception:
             self.lease.close()
@@ -91,7 +99,7 @@ class TaskRepository:
             raise RpcError("Revisão divergente; consulte a definição novamente.", "revision_conflict")
 
     def _discard_pending(self, identifier, reason):
-        self.db.execute("UPDATE occurrences SET state='discarded',reason=?,completed_at=? WHERE definition_id=? AND state='pending'", (reason, iso(self.clock()), identifier))
+        self.db.execute("UPDATE occurrences SET state='discarded',reason=?,completed_at=? WHERE definition_id=? AND state IN ('pending','reserved')", (reason, iso(self.clock()), identifier))
 
     def set_enabled(self, identifier, revision, enabled):
         with self.lock, self.db:
@@ -109,7 +117,7 @@ class TaskRepository:
     def delete(self, identifier, revision):
         with self.lock, self.db:
             self._check_revision(self._row(identifier), revision)
-            if self.db.execute("SELECT 1 FROM occurrences WHERE definition_id=? AND state IN ('running','uncertain')", (identifier,)).fetchone():
+            if self.db.execute("SELECT 1 FROM occurrences WHERE definition_id=? AND state IN ('reserved','running','uncertain')", (identifier,)).fetchone():
                 raise RpcError("Resolva execução ativa ou incerta antes de excluir.", "definition_busy")
             self._discard_pending(identifier, "definition_deleted")
             self.db.execute("UPDATE definitions SET enabled=0,next_run_at=NULL,deleted_at=?,revision=revision+1 WHERE id=?", (iso(self.clock()), identifier))
@@ -121,7 +129,7 @@ class TaskRepository:
         with self.lock:
             values = [self._view(row) for row in self.db.execute("SELECT * FROM definitions WHERE deleted_at IS NULL ORDER BY id")]
             for value in values:
-                state = self.db.execute("SELECT state FROM occurrences WHERE definition_id=? AND state IN ('running','uncertain') LIMIT 1", (value["id"],)).fetchone()
+                state = self.db.execute("SELECT state FROM occurrences WHERE definition_id=? AND state IN ('reserved','running','uncertain') LIMIT 1", (value["id"],)).fetchone()
                 if state:
                     value["state"] = state[0]
         def key(value):
@@ -157,17 +165,26 @@ class TaskRepository:
 
     def claim(self):
         with self.lock, self.db:
-            row = self.db.execute("SELECT o.* FROM occurrences o JOIN definitions d ON d.id=o.definition_id WHERE o.state='pending' AND d.enabled=1 AND d.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM occurrences a WHERE a.definition_id=o.definition_id AND a.state IN ('running','uncertain')) ORDER BY o.scheduled_at,o.id LIMIT 1").fetchone()
+            owned = tuple(self._reserved_here)
+            exclusion = " AND o.id NOT IN (" + ",".join("?" for _ in owned) + ")" if owned else ""
+            row = self.db.execute("SELECT o.* FROM occurrences o JOIN definitions d ON d.id=o.definition_id WHERE o.state IN ('pending','reserved') AND d.enabled=1 AND d.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM occurrences a WHERE a.definition_id=o.definition_id AND a.id!=o.id AND a.state IN ('reserved','running','uncertain'))" + exclusion + " ORDER BY o.scheduled_at,o.id LIMIT 1", owned).fetchone()
             if not row:
                 return None
-            self.db.execute("UPDATE occurrences SET state='running',started_at=? WHERE id=? AND state='pending'", (iso(self.clock()), row["id"]))
-            return {**dict(row), "snapshot": json.loads(row["snapshot"])}
+            self.db.execute("UPDATE occurrences SET state='reserved',started_at=NULL WHERE id=? AND state IN ('pending','reserved')", (row["id"],))
+            self._reserved_here.add(row["id"])
+            return {**dict(row), "state": "reserved", "snapshot": json.loads(row["snapshot"])}
+
+    def begin(self, identifier):
+        """Grava a fronteira antes de permitir o primeiro efeito externo."""
+        with self.lock, self.db:
+            return bool(self.db.execute("UPDATE occurrences SET state='running',started_at=? WHERE id=? AND state='reserved' AND EXISTS (SELECT 1 FROM definitions d WHERE d.id=occurrences.definition_id AND d.enabled=1 AND d.deleted_at IS NULL)", (iso(self.clock()), identifier)).rowcount)
 
     def finish(self, identifier, state, result=None, reason=None):
         if state not in {"completed", "failed", "uncertain"}:
             raise ValueError("invalid terminal state")
         with self.lock, self.db:
-            self.db.execute("UPDATE occurrences SET state=?,result=?,reason=?,completed_at=? WHERE id=? AND state='running'", (state, json.dumps(result, ensure_ascii=False), reason, iso(self.clock()), identifier))
+            self.db.execute("UPDATE occurrences SET state=?,result=?,reason=?,completed_at=? WHERE id=? AND state IN ('reserved','running')", (state, json.dumps(result, ensure_ascii=False), reason, iso(self.clock()), identifier))
+            self._reserved_here.discard(identifier)
 
     def resolve(self, identifier, note, confirm):
         if confirm is not True or not isinstance(note, str) or not note.strip():

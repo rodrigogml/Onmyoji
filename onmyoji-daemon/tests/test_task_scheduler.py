@@ -148,6 +148,63 @@ def test_process_requires_explicit_shell_interpreter(repository):
     assert caught.value.code == "invalid_action"
 
 
+def test_process_output_is_capped_while_both_streams_are_drained(tmp_path):
+    from onmyoji_daemon.task_scheduler.actions import MAX_OUTPUT_BYTES
+    root, workspace = tmp_path / "instance", tmp_path / "workspace"
+    root.mkdir(); workspace.mkdir()
+    count = MAX_OUTPUT_BYTES + 65536
+    code = f"import sys; sys.stdout.buffer.write(b'x'*{count}); sys.stderr.buffer.write(b'y'*{count})"
+    occurrence = {"id": "output", "snapshot": {"action": {"type": "process", "executable": sys.executable, "arguments": ["-B", "-c", code], "cwd": str(workspace), "timeout_seconds": 10}}}
+    state, result, reason = process_action(root, workspace, occurrence, threading.Event())
+    assert state == "completed" and reason is None
+    for name in ("stdout", "stderr"):
+        assert result[name]["bytes"] == count and result[name]["truncated"]
+        assert Path(result[name]["path"]).stat().st_size == MAX_OUTPUT_BYTES
+
+
+def test_containment_failure_cannot_release_the_user_command(tmp_path, monkeypatch):
+    from onmyoji_daemon.task_scheduler import actions
+    root, workspace = tmp_path / "instance", tmp_path / "workspace"
+    root.mkdir(); workspace.mkdir()
+    marker = workspace / "must-not-exist.txt"
+    code = "from pathlib import Path; Path('must-not-exist.txt').write_text('executed')"
+    occurrence = {"id": "containment", "snapshot": {"action": {"type": "process", "executable": sys.executable, "arguments": ["-B", "-c", code], "cwd": str(workspace), "timeout_seconds": 5}}}
+    def refuse(process):
+        raise OSError("fixture containment failure")
+    monkeypatch.setattr(actions, "ServiceProcessGroup", refuse)
+    state, result, reason = process_action(root, workspace, occurrence, threading.Event())
+    assert state == "failed" and reason == "process_preparation_failed"
+    assert not marker.exists()
+
+
+def test_timeout_terminates_grandchild_process_as_well(tmp_path):
+    import os
+    root, workspace = tmp_path / "instance", tmp_path / "workspace"
+    root.mkdir(); workspace.mkdir()
+    code = "import subprocess,sys,time; child=subprocess.Popen([sys.executable,'-B','-c','import time; time.sleep(60)']); print(child.pid,flush=True); time.sleep(60)"
+    occurrence = {"id": "grandchild", "snapshot": {"action": {"type": "process", "executable": sys.executable, "arguments": ["-B", "-c", code], "cwd": str(workspace), "timeout_seconds": 2}}}
+    state, result, reason = process_action(root, workspace, occurrence, threading.Event())
+    assert state == "failed" and reason == "process_timeout"
+    pid = int(Path(result["stdout"]["path"]).read_text().strip())
+    if os.name == "nt":
+        import _winapi
+        try:
+            handle = _winapi.OpenProcess(0x100000, False, pid)
+        except OSError:
+            return
+        try:
+            assert _winapi.WaitForSingleObject(handle, 0) == 0
+        finally:
+            _winapi.CloseHandle(handle)
+    else:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        # Zombies não executam; podem aguardar reap pelo PID 1 do laboratório.
+        assert Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()[0] == "Z"
+
+
 def test_service_rpc_listing_preview_and_defaults(tmp_path):
     root, workspace = tmp_path / "instance", tmp_path / "workspace"
     root.mkdir(); workspace.mkdir()
@@ -173,7 +230,8 @@ def test_global_four_slots_and_per_definition_overlap(tmp_path, monkeypatch):
     entered = threading.Condition()
     release = threading.Event()
     calls = []
-    def action(root, occurrence):
+    def action(root, occurrence, *, before_dispatch=None):
+        assert before_dispatch()
         with entered:
             calls.append(occurrence["definition_id"]); entered.notify_all()
         assert release.wait(5)
@@ -223,3 +281,92 @@ def test_supervised_scheduler_starts_only_after_containment(tmp_path):
         assert history["items"][0]["state"] == "completed", history
     finally:
         supervisor.stop("task-scheduler"); supervisor.rpc.close()
+
+
+def test_restart_resumes_reserved_but_never_replays_started_action(tmp_path):
+    workspace = tmp_path / "workspace"; workspace.mkdir()
+    path = tmp_path / "state" / "scheduler.sqlite3"
+    now = [instant("2026-11-10T00:00:00Z")]
+    store = TaskRepository(path, workspace, lambda: now[0])
+    first = store.create(definition())
+    second = store.create(definition())
+    now[0] += timedelta(minutes=1)
+    store.materialize()
+    reserved, started = store.claim(), store.claim()
+    assert store.claim() is None
+    assert store.begin(started["id"])
+    store.close()
+    reopened = TaskRepository(path, workspace, lambda: now[0])
+    try:
+        assert reopened.summary() == {"reserved": 1, "uncertain": 1}
+        resumed = reopened.claim()
+        assert resumed["id"] == reserved["id"] and resumed["event_id"] == reserved["event_id"]
+        assert reopened.claim() is None
+        assert reopened.begin(resumed["id"])
+        reopened.finish(resumed["id"], "completed")
+        assert reopened.claim() is None
+    finally:
+        reopened.close()
+
+
+def test_disable_withdraws_a_reservation_before_its_external_boundary(repository):
+    store, now = repository
+    created = store.create(definition())
+    now[0] += timedelta(minutes=1)
+    store.materialize(); reserved = store.claim()
+    store.set_enabled(created["id"], 1, False)
+    assert not store.begin(reserved["id"])
+    assert store.history()["items"][0]["state"] == "discarded"
+
+
+def test_schema_one_is_backed_up_and_newer_runtime_schema_is_rejected(tmp_path):
+    import sqlite3
+    workspace = tmp_path / "workspace"; workspace.mkdir()
+    path = tmp_path / "state" / "scheduler.sqlite3"
+    store = TaskRepository(path, workspace)
+    created = store.create(definition(enabled=False))
+    with store.db:
+        store.db.execute("PRAGMA user_version=1")
+    store.close()
+    migrated = TaskRepository(path, workspace)
+    try:
+        assert migrated.db.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert migrated.get(created["id"])["name"] == "Laboratório"
+        with sqlite3.connect(path.with_name("scheduler-before-dispatch-v1.sqlite3")) as backup:
+            assert backup.execute("PRAGMA user_version").fetchone()[0] == 1
+        with migrated.db:
+            migrated.db.execute("PRAGMA user_version=999")
+    finally:
+        migrated.close()
+    with pytest.raises(RpcError) as caught:
+        TaskRepository(path, workspace)
+    assert caught.value.code == "schema_newer"
+
+
+@pytest.mark.parametrize("field", ["name", "state", "next_run_at", "created_at", "action", "channel", "destination", "thread_policy"])
+@pytest.mark.parametrize("descending", [False, True])
+def test_all_displayed_columns_sort_with_nulls_last_and_stable_ids(repository, field, descending):
+    store, now = repository
+    for index in range(25):
+        value = definition(enabled=index % 3 != 0)
+        value["name"] = "Nome " + str(index % 5)
+        if index % 4 == 0:
+            value["action"] = {"type": "process", "executable": sys.executable, "cwd": str(store.workspace)}
+        else:
+            value["action"]["event"]["thread_policy"] = "new" if index % 2 else "reuse"
+            value["action"]["event"]["response_channel"]["value"] = str(index)
+        store.create(value)
+        now[0] += timedelta(seconds=1)
+    listed = store.list(sort=field, descending=descending, limit=100)["items"]
+    key = "action_type" if field == "action" else field
+    present = [row[key] for row in listed if row[key] is not None]
+    assert present == sorted(present, reverse=descending)
+    if any(row[key] is None for row in listed):
+        first_null = next(index for index, row in enumerate(listed) if row[key] is None)
+        assert all(row[key] is None for row in listed[first_null:])
+    for value in set(present):
+        ids = [row["id"] for row in listed if row[key] == value]
+        assert ids == sorted(ids)
+    page_one, page_two = store.list(limit=20), store.list(offset=20, limit=20)
+    assert len(page_one["items"]) == 20 and len(page_two["items"]) == 5
+    assert len({row["id"] for row in [*page_one["items"], *page_two["items"]]}) == 25

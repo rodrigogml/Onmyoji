@@ -1,6 +1,7 @@
 """Adaptadores de ação com fronteiras externas sem retry automático."""
 from __future__ import annotations
 
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
@@ -17,12 +18,14 @@ from ..supervisor import endpoint
 MAX_OUTPUT_BYTES = 10 * 1024 * 1024
 
 
-def notification_action(root, occurrence):
+def notification_action(root, occurrence, *, before_dispatch=None):
     event = {**occurrence["snapshot"]["action"]["event"], "event_id": occurrence["event_id"]}
     try:
         address = endpoint(root)
     except (OSError, ValueError, KeyError):
         return "failed", None, "daemon_unavailable"
+    if before_dispatch and not before_dispatch():
+        return "failed", None, "definition_withdrawn"
     try:
         result = call(*address, "notification.submit", event, timeout=None)
     except RpcError as error:
@@ -34,7 +37,15 @@ def notification_action(root, occurrence):
     return state, result, result.get("reason")
 
 
-def process_action(root: Path, workspace: Path, occurrence: dict, stop: threading.Event):
+def process_action(root: Path, workspace: Path, occurrence: dict, stop: threading.Event, *, before_dispatch=None):
+    boundary = {"dispatched": False}
+    try:
+        return _process_action(root, workspace, occurrence, stop, boundary, before_dispatch)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return ("uncertain" if boundary["dispatched"] else "failed"), None, "process_interrupted" if boundary["dispatched"] else "process_preparation_failed"
+
+
+def _process_action(root: Path, workspace: Path, occurrence: dict, stop: threading.Event, boundary: dict, before_dispatch):
     action = occurrence["snapshot"]["action"]
     cwd = Path(action["cwd"]).resolve(strict=True)
     if not cwd.is_relative_to(workspace.resolve()) or not cwd.is_dir() or not Path(action["executable"]).is_file():
@@ -45,7 +56,7 @@ def process_action(root: Path, workspace: Path, occurrence: dict, stop: threadin
     output.mkdir(parents=True, exist_ok=False)
     temporary_root = root / "tmp"
     temporary_root.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="scheduled-process-", dir=temporary_root) as temporary:
+    with tempfile.TemporaryDirectory(prefix="scheduled-process-", dir=temporary_root) as temporary, ExitStack() as opened_files:
         environment = dict(os.environ)
         for key in list(environment):
             if key.upper().startswith("ONMYOJI_") and any(part in key.upper() for part in ("TOKEN", "SECRET", "PASSWORD")):
@@ -59,24 +70,35 @@ def process_action(root: Path, workspace: Path, occurrence: dict, stop: threadin
         group_closed = False
         readers = []
         metadata = {}
+        capture_errors = []
         try:
             group = ServiceProcessGroup(process)
-            def drain(source, name):
+            outputs = {name: opened_files.enter_context((output / (name + ".txt")).open("xb")) for name in ("stdout", "stderr")}
+            def drain(source, name, target):
                 retained, total = 0, 0
                 path = output / (name + ".txt")
-                with source, path.open("xb") as target:
-                    while True:
-                        data = source.read(65536)
-                        if not data:
-                            break
-                        total += len(data)
-                        chunk = data[:max(0, MAX_OUTPUT_BYTES - retained)]
-                        target.write(chunk)
-                        retained += len(chunk)
+                try:
+                    with source:
+                        while True:
+                            data = source.read(65536)
+                            if not data:
+                                break
+                            total += len(data)
+                            chunk = data[:max(0, MAX_OUTPUT_BYTES - retained)]
+                            target.write(chunk)
+                            retained += len(chunk)
+                    target.flush()
+                except OSError:
+                    capture_errors.append(name)
                 metadata[name] = {"path": str(path), "bytes": total, "truncated": total > MAX_OUTPUT_BYTES}
             for source, name in ((process.stdout, "stdout"), (process.stderr, "stderr")):
-                thread = threading.Thread(target=drain, args=(source, name), daemon=True)
+                thread = threading.Thread(target=drain, args=(source, name, outputs[name]), daemon=True)
                 readers.append(thread); thread.start()
+            if stop.is_set():
+                return "failed", None, "service_stopping_before_action"
+            if before_dispatch and not before_dispatch():
+                return "failed", None, "definition_withdrawn"
+            boundary["dispatched"] = True
             process.stdin.write((json.dumps([action["executable"], *action["arguments"]]) + "\n").encode("utf-8"))
             process.stdin.close()
             deadline = time.monotonic() + action["timeout_seconds"]
@@ -95,6 +117,8 @@ def process_action(root: Path, workspace: Path, occurrence: dict, stop: threadin
             if any(thread.is_alive() for thread in readers):
                 return "uncertain", metadata, "output_not_drained"
             result = {"returncode": process.returncode, **metadata}
+            if capture_errors:
+                return "failed", result, "output_capture_failed"
             return ("completed" if not reason and process.returncode == 0 else "failed"), result, reason or ("nonzero_exit" if process.returncode else None)
         finally:
             if group is not None and not group_closed:
