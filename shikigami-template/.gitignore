@@ -1,41 +1,20 @@
-# Configuração do Shikigami e cofre KDBX criptografado
-/config.toml
-/*.config.toml
-/venv/
-/installation_id
-/models_cache.json
-/.sandbox_migration
+# O repositório ocupa a raiz do CODEX_HOME. Ignore qualquer arquivo novo por
+# padrão e libere somente as fontes que pertencem à instância do Shikigami.
+/*
 
-# Arquivosd e Backup
-/*.bak
-/*.bak.*
-/generated_images/
+# Identidade e instruções versionadas da instância
+!/.gitignore
+!/README.md
+!/AGENTS.md
+!/instructions.md
+!/environment.toml
+!/*.proposed.md
 
-# Estado local do Codex
-/auth.json
-/history.jsonl
-/session_index.jsonl
-/version.json
-/rules/
-/packages/
-/sessions/
-/state/
-/skills/
-/log/
-/tmp/
-/plugins/
-/cache/
-/thread-writer-locks/
-/*.sqlite
-/*.sqlite-shm
-/*.sqlite-wal
-*.sqlite3
-*.sqlite3-shm
-*.sqlite3-wal
-*.lock
+# Fontes versionáveis de skills específicas da instância
+!/shikigami-skills/
+!/shikigami-skills/**
 
-# Artefatos locais de Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.pytest_cache/
+# Perfis opcionais de subagentes; somente arquivos TOML são fontes
+!/shikigami-agents/
+/shikigami-agents/*
+!/shikigami-agents/*.toml
