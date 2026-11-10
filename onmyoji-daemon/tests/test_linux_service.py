@@ -58,7 +58,9 @@ def test_account_provisioning_uses_inherited_acl_or_exclusive_ownership(tmp_path
 
     def run(command, **kwargs):
         calls.append(command)
-        code = 1 if command[:3] in (["getent", "passwd", "shikigami-teste"], ["getent", "group", "shikigami-teste"]) else 0
+        executable_index = 2 if command[:2] == ["sudo", "--"] else 0
+        normalized = [Path(command[executable_index]).name, *command[executable_index + 1:]]
+        code = 1 if normalized[:3] in (["getent", "passwd", "shikigami-teste"], ["getent", "group", "shikigami-teste"]) else 0
         return subprocess.CompletedProcess(command, code, "", "")
 
     monkeypatch.setattr(linux_service.subprocess, "run", run)
@@ -67,15 +69,15 @@ def test_account_provisioning_uses_inherited_acl_or_exclusive_ownership(tmp_path
 
     assert ok, message
     assert home == Path("/home/shikigami-teste")
-    assert any(command[:3] == ["sudo", "--", "useradd"] for command in calls)
-    assert any("chmod" in command and "0700" in command and str(home) in command for command in calls)
+    assert any(command[:2] == ["sudo", "--"] and Path(command[2]).name == "useradd" for command in calls)
+    assert any(any(Path(value).name == "chmod" for value in command) and "0700" in command and str(home) in command for command in calls)
     if share:
-        assert any("usermod" in command and "instalador" in command for command in calls)
-        assert any("setfacl" in command and "d:u:instalador:rwx,d:u::rwx,d:g::rwx,d:m::rwx,d:o::---" in command for command in calls)
-        assert any("chown" in command and "-R" in command and "shikigami-teste:shikigami-teste" in command for command in calls)
+        assert any(any(Path(value).name == "usermod" for value in command) and "instalador" in command for command in calls)
+        assert any(any(Path(value).name == "setfacl" for value in command) and "d:u:instalador:rwx,d:u::rwx,d:g::rwx,d:m::rwx,d:o::---" in command for command in calls)
+        assert any(any(Path(value).name == "chown" for value in command) and "-R" in command and "shikigami-teste:shikigami-teste" in command for command in calls)
     else:
-        assert not any("usermod" in command for command in calls)
-        assert any("chown" in command and "shikigami-teste:shikigami-teste" in command for command in calls)
+        assert not any(any(Path(value).name == "usermod" for value in command) for command in calls)
+        assert any(any(Path(value).name == "chown" for value in command) and "shikigami-teste:shikigami-teste" in command for command in calls)
 
 
 def test_account_name_is_stable_and_linux_safe():
@@ -83,6 +85,18 @@ def test_account_name_is_stable_and_linux_safe():
     assert linux_service.account_name("Ōkami") == "shikigami-okami"
     with pytest.raises(ValueError):
         linux_service.validate_account("Conta Inválida")
+
+
+def test_linux_tool_finds_administrative_binary_outside_user_path(tmp_path, monkeypatch):
+    administrative = tmp_path / "sbin"; administrative.mkdir()
+    useradd = administrative / "useradd"; useradd.write_text("", encoding="utf-8")
+    monkeypatch.setattr(linux_service.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(linux_service, "ADMINISTRATIVE_TOOL_DIRECTORIES", (administrative,))
+
+    assert linux_service.linux_tool("useradd") == str(useradd)
+    assert linux_service.linux_tool("missing") is None
+    monkeypatch.setattr(linux_service.shutil, "which", lambda _name: str(tmp_path / "untrusted" / "useradd"))
+    assert linux_service.linux_tool("useradd") == str(useradd)
 
 
 def test_execution_profile_round_trip_stays_inside_private_configuration(tmp_path):

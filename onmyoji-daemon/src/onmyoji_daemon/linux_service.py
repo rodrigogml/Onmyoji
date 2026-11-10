@@ -15,6 +15,7 @@ from typing import Callable, Mapping
 ACCOUNT_PATTERN = re.compile(r"[a-z_][a-z0-9_-]{0,30}\Z")
 MIB = 1024 * 1024
 DEDICATED_SETUP_ENVIRONMENT = "ONMYOJI_DEDICATED_SETUP"
+ADMINISTRATIVE_TOOL_DIRECTORIES = (Path("/usr/local/sbin"), Path("/usr/sbin"), Path("/sbin"), Path("/usr/local/bin"), Path("/usr/bin"), Path("/bin"))
 
 
 @dataclass(frozen=True)
@@ -110,6 +111,12 @@ def validate_account(value: str) -> str:
     return candidate
 
 
+def linux_tool(name: str) -> str | None:
+    """Localiza utilitários Linux mesmo quando o PATH do usuário omite sbin."""
+    trusted = next((str(directory / name) for directory in ADMINISTRATIVE_TOOL_DIRECTORIES if (directory / name).is_file()), None)
+    return trusted or shutil.which(name)
+
+
 def execution_profile_path(root: Path) -> Path:
     return root.resolve() / "configs" / "shikigami" / "linux-execution.json"
 
@@ -171,36 +178,37 @@ def provision_account(account: str, installer: str, root: Path, workspace: Path,
         return False, "A instância e o workspace precisam existir antes do isolamento.", Path("/")
     required = ["getent", "useradd", "chown", "chmod", "find", "setfacl"]
     if share_with_installer: required.extend(["usermod", "getfacl"])
-    missing = [name for name in required if not shutil.which(name)]
+    tools = {name: linux_tool(name) for name in required}
+    missing = [name for name, executable in tools.items() if not executable]
     if missing:
         guidance = "Instale o pacote de ACL e os utilitários de contas." if share_with_installer else "Instale os utilitários de contas do sistema."
         return False, "Ferramentas Linux ausentes: " + ", ".join(missing) + ". " + guidance, Path("/")
     elevated = getattr(os, "geteuid", lambda: 0)() != 0
-    existing = subprocess.run(["getent", "passwd", account], text=True, capture_output=True, check=False)
+    existing = subprocess.run([str(tools["getent"]), "passwd", account], text=True, capture_output=True, check=False)
     home = Path("/home") / account
     if existing.returncode == 0:
         fields = existing.stdout.strip().split(":")
-        group = subprocess.run(["getent", "group", account], text=True, capture_output=True, check=False)
+        group = subprocess.run([str(tools["getent"]), "group", account], text=True, capture_output=True, check=False)
         group_fields = group.stdout.strip().split(":") if group.returncode == 0 else []
         if len(fields) < 7 or Path(fields[5]) != home or not fields[6].endswith(("nologin", "false")) or len(group_fields) < 3 or fields[3] != group_fields[2]:
             return False, f"A conta {account} já existe, mas não corresponde à identidade isolada esperada.", home
     else:
         if progress: progress(f"Criando a conta Linux dedicada {account}.")
-        occupied_group = subprocess.run(["getent", "group", account], text=True, capture_output=True, check=False)
+        occupied_group = subprocess.run([str(tools["getent"]), "group", account], text=True, capture_output=True, check=False)
         if occupied_group.returncode == 0:
             return False, f"O grupo {account} já existe sem a conta dedicada correspondente.", home
-        nologin = shutil.which("nologin") or "/usr/sbin/nologin"
-        ok, detail = _checked(["useradd", "--system", "--create-home", "--home-dir", str(home), "--shell", nologin, "--user-group", account], elevated=elevated, use_sudo=use_sudo)
+        nologin = linux_tool("nologin") or "/usr/sbin/nologin"
+        ok, detail = _checked([str(tools["useradd"]), "--system", "--create-home", "--home-dir", str(home), "--shell", nologin, "--user-group", account], elevated=elevated, use_sudo=use_sudo)
         if not ok: return False, detail or f"Não foi possível criar {account}.", home
-    for command in (["chown", f"{account}:{account}", str(home)], ["chmod", "0700", str(home)]):
+    for command in ([str(tools["chown"]), f"{account}:{account}", str(home)], [str(tools["chmod"]), "0700", str(home)]):
         ok, detail = _checked(command, elevated=elevated, use_sudo=use_sudo)
         if not ok: return False, detail or f"Não foi possível proteger o home {home}.", home
     if share_with_installer:
-        installer_entry = subprocess.run(["getent", "passwd", installer], text=True, capture_output=True, check=False)
+        installer_entry = subprocess.run([str(tools["getent"]), "passwd", installer], text=True, capture_output=True, check=False)
         if installer_entry.returncode != 0:
             return False, f"O usuário instalador {installer} não existe no cadastro Linux.", home
         if progress: progress(f"Associando {installer} ao grupo privado {account}.")
-        ok, detail = _checked(["usermod", "--append", "--groups", account, installer], elevated=elevated, use_sudo=use_sudo)
+        ok, detail = _checked([str(tools["usermod"]), "--append", "--groups", account, installer], elevated=elevated, use_sudo=use_sudo)
         if not ok: return False, detail or "Não foi possível configurar o grupo compartilhado.", home
     traversal_prepared: set[Path] = set()
     for directory in (root, workspace):
@@ -215,19 +223,19 @@ def provision_account(account: str, installer: str, root: Path, workspace: Path,
             if publicly_traversable:
                 continue
             if progress: progress(f"Concedendo somente travessia a {account} em {ancestor}.")
-            ok, detail = _checked(["setfacl", "-m", f"u:{account}:--x", str(ancestor)], elevated=elevated, use_sudo=use_sudo)
+            ok, detail = _checked([str(tools["setfacl"]), "-m", f"u:{account}:--x", str(ancestor)], elevated=elevated, use_sudo=use_sudo)
             if not ok: return False, detail or f"Não foi possível liberar a travessia de {ancestor}.", home
         if progress: progress(f"Aplicando permissões herdáveis em {directory}.")
         if share_with_installer:
             commands = (
-                ["chown", "-R", f"{account}:{account}", str(directory)],
-                ["chmod", "-R", "g+rwX,o-rwx", str(directory)],
-                ["find", str(directory), "-type", "d", "-exec", "chmod", "g+s", "{}", "+"],
-                ["setfacl", "-R", "-m", f"u:{installer}:rwX,m::rwX", str(directory)],
-                ["find", str(directory), "-type", "d", "-exec", "setfacl", "-m", f"d:u:{installer}:rwx,d:u::rwx,d:g::rwx,d:m::rwx,d:o::---", "{}", "+"],
+                [str(tools["chown"]), "-R", f"{account}:{account}", str(directory)],
+                [str(tools["chmod"]), "-R", "g+rwX,o-rwx", str(directory)],
+                [str(tools["find"]), str(directory), "-type", "d", "-exec", str(tools["chmod"]), "g+s", "{}", "+"],
+                [str(tools["setfacl"]), "-R", "-m", f"u:{installer}:rwX,m::rwX", str(directory)],
+                [str(tools["find"]), str(directory), "-type", "d", "-exec", str(tools["setfacl"]), "-m", f"d:u:{installer}:rwx,d:u::rwx,d:g::rwx,d:m::rwx,d:o::---", "{}", "+"],
             )
         else:
-            commands = (["chown", "-R", f"{account}:{account}", str(directory)], ["chmod", "-R", "u+rwX,go-rwx", str(directory)])
+            commands = ([str(tools["chown"]), "-R", f"{account}:{account}", str(directory)], [str(tools["chmod"]), "-R", "u+rwX,go-rwx", str(directory)])
         for command in commands:
             ok, detail = _checked(command, elevated=elevated, use_sudo=use_sudo)
             if not ok: return False, detail or f"Não foi possível proteger {directory}.", home
