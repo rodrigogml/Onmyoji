@@ -51,6 +51,8 @@ def process_action(root: Path, workspace: Path, occurrence: dict, stop: threadin
             if key.upper().startswith("ONMYOJI_") and any(part in key.upper() for part in ("TOKEN", "SECRET", "PASSWORD")):
                 del environment[key]
         environment.update(TEMP=temporary, TMP=temporary, TMPDIR=temporary, PYTHONDONTWRITEBYTECODE="1")
+        source_root = str(Path(__file__).resolve().parents[2])
+        environment["PYTHONPATH"] = source_root + (os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else "")
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         process = subprocess.Popen([sys.executable, "-B", "-m", "onmyoji_daemon.task_scheduler.process_worker"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd, env=environment, start_new_session=os.name != "nt", creationflags=flags)
         group = None

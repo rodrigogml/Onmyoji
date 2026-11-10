@@ -119,6 +119,7 @@ def test_interactive_launcher_uses_selected_daemon_runtime(tmp_path: Path, monke
     runtime = tmp_path / "runtime" / "python"
     monkeypatch.setattr(codex_execution, "runtime_ready", lambda _root: True)
     monkeypatch.setattr(codex_execution, "daemon_python", lambda _root: runtime)
+    monkeypatch.setattr(codex_execution.McpReconciliation, "reconcile_if_pending", lambda _self, _registration: False)
 
     command, cwd, environment = codex_execution.CodexLaunch.from_data(tmp_path, data(workspace)).interactive_launcher()
 

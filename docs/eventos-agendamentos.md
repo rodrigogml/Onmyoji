@@ -55,6 +55,54 @@ Reinício retoma pendentes não iniciados; ativos sem resultado ficam incertos e
 
 ## Setup e implantação
 
+### Uso local
+
+Instale/valide o runtime pelo setup para incluir `croniter` e `tzdata`. Configure o workspace e habilite o App Server na plataforma antes de usar notificações ao agente. Para e-mail, configure uma conta SMTP existente e selecione-a em Daemon > N. Notificações ao agente. Para Telegram, cadastre o destino no catálogo pelo fluxo `/channel` existente.
+
+Os exemplos abaixo usam o executável `onmyoji-daemon`; também é possível chamar o mesmo módulo com o Python configurado: `python -B -m onmyoji_daemon.cli`. Substitua `C:/instancias/Shikigami` pela raiz da instância.
+
+```text
+onmyoji-daemon --onmyoji-root C:/instancias/Shikigami enable task-scheduler
+onmyoji-daemon --onmyoji-root C:/instancias/Shikigami start task-scheduler
+onmyoji-daemon --onmyoji-root C:/instancias/Shikigami task create --file C:/work/definicao.json
+onmyoji-daemon --onmyoji-root C:/instancias/Shikigami task list
+onmyoji-daemon --onmyoji-root C:/instancias/Shikigami task preview --id <id> --count 5
+onmyoji-daemon --onmyoji-root C:/instancias/Shikigami task enable <id> --revision 1
+onmyoji-daemon --onmyoji-root C:/instancias/Shikigami task history --id <id>
+```
+
+Exemplo de definição inicialmente desabilitada:
+
+```json
+{
+  "schema_version": 1,
+  "name": "Resumo diário",
+  "enabled": false,
+  "rule": {
+    "type": "cron",
+    "expression": "0 9 * * 1-5",
+    "timezone": "America/Sao_Paulo"
+  },
+  "action": {
+    "type": "notification",
+    "event": {
+      "schema_version": 1,
+      "prompt": "Prepare o resumo solicitado.",
+      "response_channel": {"type": "telegram", "value": "group:-1001234567890:42"},
+      "thread_policy": "reuse"
+    }
+  }
+}
+```
+
+Para processos, substitua a ação por `{"type":"process","executable":"C:/caminho/python.exe","arguments":["-B","C:/work/rotina.py"],"cwd":"C:/work","timeout_seconds":900}`. O executável deve existir; scripts de shell exigem interpretador explícito. Arquivos de definição e saídas ficam no workspace, não em fontes de skills nem em configs.
+
+`task update <id> --revision <n> --file <arquivo>` substitui a definição para ocorrências futuras. `task disable` e `task delete` também exigem revisão. `task resolve <ocorrencia> --reason <motivo> --confirm` registra uma conferência manual sem repetir a ação. `--file -` lê JSON do stdin. `notification submit --file <evento.json>` aguarda o resultado operacional; `--wait-timeout <segundos>` limita só o acompanhamento.
+
+A configuração local de notificações está em `configs/daemon/services/telegram/notification.json`; os limites de execução continuam em `config.toml` desse mesmo serviço. O limite do agendador fica em `configs/daemon/services/task-scheduler/config.toml`, chave `max_parallel_actions`, padrão 4; alterações desse arquivo exigem reinício do serviço. Não há edição direta do SQLite.
+
+### Recuperação e ativação
+
 Contextos separados em D. Daemon: N. Notificações ao agente e A. Agendador. Listagem navegável somente leitura, X volta, oito colunas ordenáveis: nome, estado, próxima execução, criação, ação, canal, destino, política de thread. Atalhos 1–8 invertem direção; 20 itens por página, P anterior, N próxima, R atualizar, padrão próxima execução crescente, nulos no final, ID como desempate. Sem catálogo separado de modelos.
 
 Recursos novos desabilitados por padrão. Backups consistentes antes de migração; versão antiga recusa banco novo. Sem downgrade de banco após trabalho real; correção progressiva. Testes com relógio/canais/App Server falsos, temporários em tmp/ e `python -B -m pytest`. Cada etapa validada recebe commit e push ao origin. Sem workflows GitHub nem publicação externa.

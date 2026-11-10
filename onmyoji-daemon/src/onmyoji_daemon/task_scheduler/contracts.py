@@ -29,6 +29,8 @@ def validate_definition(value, workspace: Path, now):
         executable, cwd = action.get("executable"), action.get("cwd")
         if not isinstance(executable, str) or not Path(executable).is_absolute() or not isinstance(cwd, str) or not Path(cwd).is_absolute():
             raise RpcError("Executável e cwd devem ser absolutos.", "invalid_action")
+        if Path(executable).suffix.casefold() in {".bat", ".cmd"}:
+            raise RpcError("Scripts de shell exigem interpretador explícito como executável.", "invalid_action")
         if not Path(cwd).resolve().is_relative_to(workspace.resolve()) or not Path(cwd).is_dir():
             raise RpcError("cwd deve existir dentro do workspace.", "invalid_action")
         if not isinstance(action.get("arguments", []), list) or any(not isinstance(arg, str) or "\x00" in arg for arg in action.get("arguments", [])):

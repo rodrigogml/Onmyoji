@@ -65,6 +65,7 @@ def test_revisions_coalescing_and_immutable_action(repository):
     store.materialize()
     assert store.history()["total"] == 1
     assert store.history()["items"][0]["snapshot"]["action"]["event"]["prompt"] == "Teste"
+    assert store.history()["items"][0]["scheduled_at"] == first["scheduled_at"]
     active = store.claim()
     now[0] += timedelta(minutes=3)
     store.materialize()
@@ -136,6 +137,15 @@ def test_process_timeout_terminates_tree(tmp_path):
     occurrence = {"id": "timeout", "snapshot": {"action": {"type": "process", "executable": sys.executable, "arguments": ["-B", "-c", "import time; time.sleep(30)"], "cwd": str(workspace), "timeout_seconds": 1}}}
     state, result, reason = process_action(root, workspace, occurrence, threading.Event())
     assert state == "failed" and reason == "process_timeout"
+
+
+def test_process_requires_explicit_shell_interpreter(repository):
+    store, _now = repository
+    value = definition()
+    value["action"] = {"type": "process", "executable": str(store.workspace / "routine.cmd"), "cwd": str(store.workspace)}
+    with pytest.raises(RpcError) as caught:
+        store.create(value)
+    assert caught.value.code == "invalid_action"
 
 
 def test_service_rpc_listing_preview_and_defaults(tmp_path):

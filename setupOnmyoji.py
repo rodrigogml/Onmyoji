@@ -1776,6 +1776,8 @@ def notification_menu(root: Path) -> None:
 
 
 def scheduler_menu(root: Path) -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
     from onmyoji_daemon.rpc import RpcError
     from onmyoji_daemon.task_scheduler.repository import SORT_FIELDS
     sort, descending, offset = "next_run_at", False, 0
@@ -1790,7 +1792,10 @@ def scheduler_menu(root: Path) -> None:
                 listing = local_daemon_rpc(root, "task.list", {"sort": sort, "descending": descending, "offset": offset, "limit": 20})
             print("  " + " | ".join(f"{index}. {label}" for index, label in enumerate(labels, 1)))
             for value in listing["items"]:
-                fields = [value["name"], value["state"], value["next_run_at"], value["created_at"], value["action_type"], value["channel"], value["destination"], value["thread_policy"]]
+                zone = ZoneInfo(value.get("rule", {}).get("timezone", "America/Sao_Paulo"))
+                def local_time(raw):
+                    return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(zone).strftime("%Y-%m-%d %H:%M %z") if raw else None
+                fields = [value["name"], value["state"], local_time(value["next_run_at"]), local_time(value["created_at"]), value["action_type"], value["channel"], value["destination"], value["thread_policy"]]
                 widths = (16, 9, 24, 24, 12, 8, 18, 6)
                 rendered = [str(field or "—")[:width] for field, width in zip(fields, widths)]
                 print("  " + " | ".join(rendered))

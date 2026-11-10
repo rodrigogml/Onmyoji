@@ -142,8 +142,13 @@ class TaskRepository:
                 if latest is None or latest < instant(row["next_run_at"]):
                     continue
                 at = iso(latest)
-                pending = self.db.execute("SELECT id FROM occurrences WHERE definition_id=? AND state='pending'", (row["id"],)).fetchone()
+                pending = self.db.execute("SELECT id,revision FROM occurrences WHERE definition_id=? AND state='pending'", (row["id"],)).fetchone()
                 if pending:
+                    if pending[1] != row["revision"]:
+                        # A ocorrência anterior conserva seu calendário e ação.
+                        # A nova revisão permanece vencida até haver espaço para
+                        # sua própria pendência, sem consumir disparos com dados antigos.
+                        continue
                     self.db.execute("UPDATE occurrences SET scheduled_at=?,coalesced_until=? WHERE id=?", (at, at, pending[0]))
                 else:
                     event_id = uuid7() if value["action"]["type"] == "notification" else None

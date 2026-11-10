@@ -31,3 +31,12 @@ def test_notification_smtp_choice_uses_existing_accounts(tmp_path):
         MODULE.notification_menu(tmp_path)
     assert choice.call_args.args[1] == ["Desabilitar e-mail", "mail"]
     save.assert_called_once_with(tmp_path, {"smtp_account": "mail"})
+
+
+def test_scheduler_shows_schedule_timezone(tmp_path, capsys):
+    entry = {"name": "Teste", "state": "enabled", "rule": {"timezone": "America/Sao_Paulo"}, "next_run_at": "2026-11-10T12:00:00.000Z", "created_at": "2026-11-10T10:00:00.000Z", "action_type": "process", "channel": None, "destination": None, "thread_policy": None}
+    def rpc(root, method, params=None):
+        return {"state": "running"} if method == "status" else {"items": [entry], "total": 1}
+    with patch.object(MODULE, "local_daemon_rpc", side_effect=rpc), patch.object(MODULE, "prompt", return_value="x"):
+        MODULE.scheduler_menu(tmp_path)
+    assert "2026-11-10 09:00 -0300" in capsys.readouterr().out
