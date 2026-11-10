@@ -4,17 +4,19 @@ Auditoria da implementação em 2026-11-10. O contrato e os procedimentos de uso
 
 Evidências da versão consolidada:
 
+- Windows, suíte completa: 3.245 testes e 301 subtestes aprovados, 40 ignorados, zero falhas; 458,15 segundos. Dois avisos existentes dizem respeito a `record_property` no formato JUnit xunit2. Relatório local: `tmp/events-acceptance.xml`.
 - Linux nativo, baseline `b84d522`: 75 testes aprovados, zero falhas, erros ou ignorados; 118,95 segundos. JUnit preservado localmente em `tmp/events-posix-vm/linux-release.xml`.
 - Validador do evento: 100% das instruções e dos ramos cobertos, com 28 testes de contrato aprovados; a rodada conjunta com a CLI aprovou 35 testes.
 - Retenção: sete testes focados aprovados e verificação dos dois watchers com relógio monotônico em 0,5 segundo, confirmando limpeza já na primeira iteração.
 - Publicação de skills: 24 testes focados aprovados após corrigir um bloqueio transitório Windows detectado pela suíte completa. O materializador usa a publicação atômica com tolerância limitada já existente no projeto; teste de injeção comprova recuperação de `WinError 5` durante reparo da pasta gerenciada.
-- Wheel construído e importado diretamente do arquivo: schema carregado por `importlib.resources` e evento validado; 228 arquivos Python/JSON comparados à fonte. SHA-256: `3cc49bd974d874818cbf00bce315251277f275d5b58d017e6e8a256438b93351`.
+- Agendador após o ajuste final do horizonte: todos os 48 testes do módulo aprovados em 41,30 segundos, incluindo ações e Supervisor, rejeição de `once` e intervalos sem ocorrência nos próximos dez anos e preservação de datas únicas vencidas para recuperação. Relatório local: `tmp/events-scheduler-current.xml`.
+- Wheel construído e importado diretamente do arquivo: schema carregado por `importlib.resources` e evento validado; 228 arquivos Python/JSON comparados à fonte. SHA-256: `bc7b001acba9263014691fb2d6e4c2a0dfc054957aa18c8f41d7df7ad173907e`.
 
 ## Critérios verificados
 
 | Etapa | Entrega e evidência |
 | --- | --- |
-| 1. Contrato | Schema v1 fechado incluído no wheel; validador comum para ingresso e ação do agendador. `test_notification_contract.py` cobre tipos, campos ausentes/adicionais, versão, UUIDv7 e erros sem eco do prompt. |
+| 1. Contrato | Schema v1 fechado incluído no wheel; validador comum para CLI emissora, ingresso e ação do agendador. `test_notification_contract.py` cobre tipos, campos ausentes/adicionais, versão, UUIDv7 e erros com caminho completo, sem eco do prompt. |
 | 2. Núcleo | `execution_gateway/execution.py` contém o ciclo compartilhado; o módulo antigo mantém compatibilidade de importação. Regressões `test_telegram_execution.py`, `test_telegram_gateway_async.py`, controles, gerações, delegação, recursos e entregas permanecem na suíte integrada. |
 | 3. Multiorigem | Banco, lease, inbox e App Server únicos; sequência global durável; Telegram prioritário e destinos ocupados pulados. `test_notification_gateway.py` e `test_notification_recovery.py` verificam seleção, exclusão por destino, sequência após limpeza e bloqueio durante entrega recuperada. |
 | 4. RPC e lifecycle | Via longa nos dois servidores, limite de acompanhamentos, controles serializados separados, desligamento com graça do turno. `test_rpc_concurrent.py`, `test_supervisor_telegram_timeout.py` e as regressões de shutdown verificam saturação, desconexão e controles. Bind público é recusado. |
@@ -34,6 +36,7 @@ Windows, na raiz do repositório, com o Python e as dependências do projeto:
 
 ```text
 python -B -m pytest -q --tb=short --basetemp=tmp/pytest-events-acceptance --junitxml=tmp/events-acceptance.xml
+python -B -m pytest onmyoji-daemon/tests/test_task_scheduler.py -q --tb=short --basetemp=tmp/pytest-events-scheduler-current --junitxml=tmp/events-scheduler-current.xml
 ```
 
 Cobertura do validador, incluindo ramos:

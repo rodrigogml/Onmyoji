@@ -2,7 +2,7 @@
 
 Especificação aprovada em 2026-11-10. A disponibilidade operacional depende das etapas implementadas e validadas, não da publicação deste contrato.
 
-Implementação local entregue em 2026-11-10: contrato distribuível, núcleo multiorigem, ingresso síncrono concorrente, entregas Telegram/e-mail, logs e incidentes, agendador, ações, CLI e setup. Validação completa no Windows: 3.188 testes aprovados, 40 ignorados e 301 subtestes aprovados; verificações focadas adicionais cobrem a apresentação de timezone e preferências de áudio. O wheel foi construído e inspecionado para confirmar inclusão do schema e dos pacotes novos. A contenção de processos foi exercitada no Windows; isso não certifica execução nativa POSIX. Nenhum destino real foi acionado e nenhum serviço operacional foi habilitado durante o desenvolvimento.
+Implementação local entregue em 2026-11-10: contrato distribuível, núcleo multiorigem, ingresso síncrono concorrente, entregas Telegram/e-mail, logs e incidentes, agendador, ações, CLI e setup. A suíte completa no Windows aprovou 3.245 testes e 301 subtestes, com 40 testes ignorados. A validação nativa no Linux aprovou 75 testes, incluindo contenção e encerramento de descendentes; isso não certifica outros sistemas POSIX. O validador do evento atingiu 100% de cobertura de instruções e ramos. O wheel foi construído, importado e comparado à fonte. Resultados, limites e comandos estão no [registro de validação](validacao-eventos-agendamentos.md). Nenhum destino real foi acionado e nenhum serviço operacional foi habilitado durante o desenvolvimento.
 
 ## Notificações ao agente
 
