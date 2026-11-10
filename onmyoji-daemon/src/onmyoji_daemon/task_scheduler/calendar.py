@@ -31,10 +31,15 @@ def validate_rule(rule: dict, now: datetime) -> dict:
     if not isinstance(rule, dict):
         raise RpcError("Regra temporal inválida.", "invalid_schedule")
     kind = rule.get("type")
-    allowed = {"once": {"type", "at"}, "interval": {"type", "anchor_at", "every_seconds"}, "cron": {"type", "expression", "timezone"}}
+    allowed = {"once": {"type", "at", "timezone"}, "interval": {"type", "anchor_at", "every_seconds", "timezone"}, "cron": {"type", "expression", "timezone"}}
     if not isinstance(kind, str) or kind not in allowed or set(rule) - allowed[kind]:
         raise RpcError("Tipo ou campos de regra inválidos.", "invalid_schedule")
     result = dict(rule)
+    result["timezone"] = rule.get("timezone", "America/Sao_Paulo")
+    try:
+        ZoneInfo(result["timezone"])
+    except (ZoneInfoNotFoundError, TypeError, ValueError):
+        raise RpcError("Timezone IANA inválido.", "invalid_schedule") from None
     if kind == "once":
         result["at"] = iso(instant(rule.get("at")))
     elif kind == "interval":
@@ -47,11 +52,6 @@ def validate_rule(rule: dict, now: datetime) -> dict:
         if not isinstance(expression, str) or len(expression) > 256 or len(expression.split()) != 5 or any(re.fullmatch(r"[0-9*,/\-]+", part) is None for part in expression.split()) or not croniter.is_valid(expression):
             raise RpcError("Cron exige cinco campos numéricos, listas, intervalos ou passos.", "invalid_schedule")
         result["expression"] = " ".join(expression.split())
-        result["timezone"] = rule.get("timezone", "America/Sao_Paulo")
-        try:
-            ZoneInfo(result["timezone"])
-        except (ZoneInfoNotFoundError, TypeError, ValueError):
-            raise RpcError("Timezone IANA inválido.", "invalid_schedule") from None
         if next_at(result, now) is None:
             raise RpcError("Cron sem ocorrência nos próximos dez anos.", "invalid_schedule")
     return result

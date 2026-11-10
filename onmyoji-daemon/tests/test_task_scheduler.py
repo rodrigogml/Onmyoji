@@ -51,6 +51,19 @@ def test_cron_can_skip_a_whole_nonexistent_calendar_day():
     assert iso(next_at(rule, instant("2011-12-30T09:59:00Z"))) == "2011-12-30T10:00:00.000Z"
 
 
+@pytest.mark.parametrize("rule", [{"type": "once", "at": "2026-11-10T10:00:00+09:00"}, {"type": "interval", "anchor_at": "2026-11-10T10:00:00+09:00", "every_seconds": 60}])
+def test_every_schedule_retains_its_display_timezone_without_changing_instants(repository, rule):
+    store, now = repository
+    default = validate_rule(rule, now[0])
+    assert default["timezone"] == "America/Sao_Paulo"
+    custom = store.create(definition({**rule, "timezone": "Asia/Tokyo"}))["rule"]
+    assert custom["timezone"] == "Asia/Tokyo"
+    assert next_at(default, now[0]) == next_at(custom, now[0])
+    with pytest.raises(RpcError) as caught:
+        store.create(definition({**rule, "timezone": "not/a/zone"}))
+    assert caught.value.code == "invalid_schedule"
+
+
 @pytest.mark.parametrize("rule", [{"type": "once", "at": "2026-01-01"}, {"type": "interval", "anchor_at": "2026-01-01T00:00:00Z", "every_seconds": True}, {"type": "cron", "expression": "@daily"}, {"type": "cron", "expression": "0 0 31 2 *"}, {"type": "cron", "expression": "* * * * *", "timezone": "not/a/zone"}, {"type": "cron", "expression": "0 * * * * *"}])
 def test_invalid_rules(rule):
     with pytest.raises(RpcError):
