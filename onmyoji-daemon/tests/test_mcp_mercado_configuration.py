@@ -59,6 +59,13 @@ def test_disabled_profile_may_have_no_modules_but_present_provider_is_validated(
         validate_configuration(invalid, {"vault"})
 
 
+def test_disabled_profile_may_be_saved_without_description():
+    data = configured(); profile = data["profiles"]["personal"]
+    profile.update({"enabled": False, "description": "", "modules": []})
+    profile.pop("mercadolivre"); profile.pop("mercadopago")
+    validate_configuration(data, {"vault"})
+
+
 def test_auth_modes_and_redirects_are_closed():
     data = configured(); data["profiles"]["personal"]["mercadolivre"]["auth_mode"] = "client_credentials"
     with pytest.raises(MercadoError, match="exige authorization_code"):

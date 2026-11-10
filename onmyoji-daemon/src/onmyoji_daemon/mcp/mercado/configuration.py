@@ -117,7 +117,7 @@ def _validate_profile(name: str, profile: Any, applications: Mapping[str, Any], 
     if not isinstance(profile, Mapping) or type(profile.get("enabled")) is not bool:
         raise MercadoError("invalid_config", f"Estado do perfil Mercado {name} inválido.")
     description = profile.get("description")
-    if not isinstance(description, str) or not 1 <= len(description.strip()) <= 240:
+    if not isinstance(description, str) or len(description.strip()) > 240 or (profile["enabled"] and not description.strip()):
         raise MercadoError("invalid_config", f"Descrição do perfil Mercado {name} é obrigatória e deve ter até 240 caracteres.")
     modules = profile.get("modules")
     if not isinstance(modules, list) or len(modules) != len(set(modules)) or not all(item in MODULES for item in modules):
