@@ -57,6 +57,10 @@ class NotificationConfiguration:
             try:
                 temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
                 publish_file(temporary, self.path)
+                execution = self.path.parent / "config.toml"
+                if not execution.exists():
+                    temporary.write_text('schema_version = 2\n[telegram]\n[agent]\nmax_parallel_conversations = 1\nturn_timeout_seconds = 900\ninterrupt_grace_seconds = 15\n', encoding="utf-8")
+                    publish_file(temporary, execution)
             finally:
                 temporary.unlink(missing_ok=True)
             return {**value, "restart_required": bool(set(changes) & {"long_limit", "max_request_bytes", "telegram_receiver_enabled"})}

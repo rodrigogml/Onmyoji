@@ -1676,6 +1676,156 @@ def codex_menu(root: Path) -> None:
         else: result(False, "Opção inválida.")
 
 
+def local_daemon_rpc(root: Path, method: str, params: dict | None = None):
+    from onmyoji_daemon.rpc import call
+    from onmyoji_daemon.supervisor import endpoint
+    return call(*endpoint(root), method, params or {}, timeout=25 if method in {"start", "stop", "restart"} else 5)
+
+
+def save_notification_configuration(root: Path, changes: dict) -> dict:
+    from onmyoji_daemon.agent_notification.configuration import NotificationConfiguration
+    from onmyoji_daemon.supervisor import endpoint
+    try:
+        endpoint(root)
+    except FileNotFoundError:
+        return NotificationConfiguration(root).configure(changes)
+    state = local_daemon_rpc(root, "status", {"service": "telegram"})
+    if state.get("state") == "running":
+        return local_daemon_rpc(root, "notification.configure", changes)
+    return NotificationConfiguration(root).configure(changes)
+
+
+def notification_menu(root: Path) -> None:
+    from onmyoji_daemon.agent_notification.configuration import NotificationConfiguration
+    from onmyoji_daemon.rpc import RpcError
+    configuration = NotificationConfiguration(root)
+    while True:
+        try:
+            current = configuration.load()
+        except (OSError, ValueError, RpcError) as error:
+            result(False, str(error)); return
+        screen("Notificações ao agente", "Ingresso privado/local · " + ("HABILITADO" if current["enabled"] else "DESABILITADO"))
+        item("1.", "Desabilitar ingresso" if current["enabled"] else "Habilitar ingresso")
+        item("2.", "Diagnóstico")
+        item("3.", "Modo de recepção", "Telegram e eventos" if current["telegram_receiver_enabled"] else "Somente eventos")
+        item("4.", "Conta SMTP padrão", current["smtp_account"] or "Não selecionada")
+        item("5.", "Canal global de incidentes", str(current["incident"] or "Desabilitado"))
+        item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
+        if choice in {"x", "\x1b"}:
+            return
+        try:
+            changes = None
+            if choice == "1":
+                changes = {"enabled": not current["enabled"]}
+                path = telegram_configuration_path(root)
+                telegram = tomllib.loads(path.read_text(encoding="utf-8")).get("telegram", {}) if path.exists() else {}
+                if changes["enabled"] and not telegram.get("token_entry"):
+                    changes["telegram_receiver_enabled"] = False
+                save_notification_configuration(root, changes)
+                if changes["enabled"]:
+                    local_daemon_rpc(root, "enable", {"service": "telegram"})
+                    state = local_daemon_rpc(root, "start", {"service": "telegram"})
+                    result(state.get("state") == "running", "Ingresso configurado; confira o diagnóstico." if state.get("state") == "running" else str(state.get("last_error") or "Não foi possível iniciar o gateway."))
+                else:
+                    result(True, "Ingresso desabilitado.")
+                continue
+            if choice == "2":
+                flow_heading("Diagnóstico de notificações", "Configuração local e execução compartilhada")
+                diagnostic = local_daemon_rpc(root, "notification.diagnose")
+                for label, ready in diagnostic["checks"].items():
+                    result(bool(ready), label.replace("_", " "))
+                note("Execuções: " + json.dumps(diagnostic["counts"], ensure_ascii=False))
+                continue
+            if choice == "3":
+                selected = flow_choice("Modo de recepção", ["Somente eventos", "Telegram e eventos"], "Telegram e eventos" if current["telegram_receiver_enabled"] else "Somente eventos")
+                if selected is None:
+                    continue
+                changes = {"telegram_receiver_enabled": selected == "Telegram e eventos"}
+            elif choice == "4":
+                accounts = McpConfiguration(root).email().get("accounts", {})
+                names = ["Desabilitar e-mail", *sorted(name for name, account in accounts.items() if account.get("enabled") and account.get("smtp"))]
+                selected = flow_choice("Conta SMTP padrão", names, current["smtp_account"] or "Desabilitar e-mail")
+                if selected is None:
+                    continue
+                changes = {"smtp_account": "" if selected == "Desabilitar e-mail" else selected}
+            elif choice == "5":
+                kind = flow_choice("Canal de incidentes", ["Desabilitado", "Telegram", "E-mail"], {"telegram": "Telegram", "email": "E-mail"}.get((current["incident"] or {}).get("type"), "Desabilitado"))
+                if kind is None:
+                    continue
+                if kind == "Desabilitado":
+                    changes = {"incident": None}
+                else:
+                    previous = (current["incident"] or {}).get("value", "")
+                    destination = prompt(f"Destino [{previous or 'vazio = cancelar'}]: ").strip()
+                    if destination.casefold() in {"x", "\x1b"}:
+                        continue
+                    destination = destination or previous
+                    if not destination:
+                        continue
+                    changes = {"incident": {"type": "telegram" if kind == "Telegram" else "email", "value": destination}}
+            else:
+                result(False, "Opção inválida."); continue
+            saved = save_notification_configuration(root, changes)
+            result(True, "Configuração salva.")
+            if saved.get("restart_required"):
+                note("Reinicie o processo do daemon para aplicar limites e o modo de recepção.")
+        except (OSError, ValueError, RpcError) as error:
+            result(False, str(error))
+
+
+def scheduler_menu(root: Path) -> None:
+    from onmyoji_daemon.rpc import RpcError
+    from onmyoji_daemon.task_scheduler.repository import SORT_FIELDS
+    sort, descending, offset = "next_run_at", False, 0
+    labels = ("Nome", "Estado", "Próxima execução", "Criação", "Ação", "Canal", "Destino", "Thread")
+    while True:
+        screen("Agendador", "Consulta de definições · CLI/RPC administram os agendamentos")
+        listing = {"items": [], "total": 0}
+        try:
+            state = local_daemon_rpc(root, "status", {"service": "task-scheduler"})
+            note("Serviço: " + state.get("state", "desconhecido"))
+            if state.get("state") == "running":
+                listing = local_daemon_rpc(root, "task.list", {"sort": sort, "descending": descending, "offset": offset, "limit": 20})
+            print("  " + " | ".join(f"{index}. {label}" for index, label in enumerate(labels, 1)))
+            for value in listing["items"]:
+                fields = [value["name"], value["state"], value["next_run_at"], value["created_at"], value["action_type"], value["channel"], value["destination"], value["thread_policy"]]
+                widths = (16, 9, 24, 24, 12, 8, 18, 6)
+                rendered = [str(field or "—")[:width] for field, width in zip(fields, widths)]
+                print("  " + " | ".join(rendered))
+            note(f"{listing['total']} definição(ões) · página {offset // 20 + 1} · ordem {labels[SORT_FIELDS.index(sort)]} {'decrescente' if descending else 'crescente'}")
+        except (OSError, ValueError, RpcError) as error:
+            result(False, str(error))
+        item("1–8.", "Ordenar por coluna; repetir inverte a direção")
+        item("P.", "Página anterior"); item("N.", "Próxima página"); item("R.", "Atualizar")
+        item("E.", "Habilitar e iniciar serviço"); item("D.", "Desabilitar serviço"); item("H.", "Diagnóstico")
+        item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
+        if choice in {"x", "\x1b"}:
+            return
+        if choice in {str(index) for index in range(1, 9)}:
+            selected = SORT_FIELDS[int(choice) - 1]
+            descending = not descending if sort == selected else False
+            sort, offset = selected, 0
+        elif choice == "p": offset = max(0, offset - 20)
+        elif choice == "n":
+            if offset + 20 < listing["total"]: offset += 20
+        elif choice == "r": pass
+        elif choice in {"e", "d", "h"}:
+            try:
+                if choice == "h":
+                    flow_heading("Diagnóstico do agendador", "Capacidade e ocorrências")
+                    note(json.dumps(local_daemon_rpc(root, "task.status"), ensure_ascii=False))
+                else:
+                    local_daemon_rpc(root, "enable" if choice == "e" else "disable", {"service": "task-scheduler"})
+                    if choice == "e":
+                        started = local_daemon_rpc(root, "start", {"service": "task-scheduler"})
+                        result(started.get("state") == "running", "Serviço em execução." if started.get("state") == "running" else str(started.get("last_error") or "Falha ao iniciar."))
+            except (OSError, ValueError, RpcError) as error:
+                result(False, str(error))
+        else: result(False, "Opção inválida.")
+
+
 def daemon_menu(root: Path) -> None:
     project = root / "onmyoji-daemon"
     script = project / "setupDaemon.py"
@@ -3239,6 +3389,8 @@ def daemon_menu(root: Path) -> None:
         item("T.", "Telegram", "Configuração, teste e pareamento")
         item("M.", "MiniApps", "Aplicações, HTTPS local e OAuth")
         item("P.", "Publicação externa", "Gateway HTTP e Cloudflare Tunnel compartilhados")
+        item("N.", "Notificações ao agente", "Ingresso privado/local e canais operacionais")
+        item("A.", "Agendador", "Consulta e ordenação de definições")
         print()
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
@@ -3251,10 +3403,12 @@ def daemon_menu(root: Path) -> None:
             if not installed(): result(False, "Instale o daemon pela opção 1 antes de operá-lo.")
             else: operation_menu()
         elif choice == "3": uninstall_instance()
-        elif choice in {"t", "m", "p"}:
+        elif choice in {"t", "m", "p", "n", "a"}:
             if not installed(): result(False, "Instale o daemon pela opção 1 antes de configurar serviços.")
             elif choice == "t": telegram_menu()
             elif choice == "m": miniapps_menu()
+            elif choice == "n": notification_menu(root)
+            elif choice == "a": scheduler_menu(root)
             else: publication_menu()
         else: result(False, "Opção inválida.")
 
