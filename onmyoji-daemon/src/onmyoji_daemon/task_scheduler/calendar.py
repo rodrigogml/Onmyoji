@@ -54,6 +54,14 @@ def validate_rule(rule: dict, now: datetime) -> dict:
         result["expression"] = " ".join(expression.split())
         if next_at(result, now) is None:
             raise RpcError("Cron sem ocorrência nos próximos dez anos.", "invalid_schedule")
+    if kind != "cron":
+        candidate = instant(result["at"]) if kind == "once" else next_at(result, now)
+        try:
+            horizon = now.replace(year=min(9999, now.year + 10))
+        except ValueError:
+            horizon = now.replace(year=min(9999, now.year + 10), day=28)
+        if candidate is None or candidate > horizon:
+            raise RpcError("Regra sem ocorrência nos próximos dez anos.", "invalid_schedule")
     return result
 
 

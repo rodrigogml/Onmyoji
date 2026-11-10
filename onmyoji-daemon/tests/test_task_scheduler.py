@@ -70,6 +70,14 @@ def test_invalid_rules(rule):
         validate_rule(rule, instant("2026-11-10T00:00:00Z"))
 
 
+@pytest.mark.parametrize("rule", [{"type": "once", "at": "2037-11-10T00:00:00Z"}, {"type": "interval", "anchor_at": "2037-11-10T00:00:00Z", "every_seconds": 1}, {"type": "interval", "anchor_at": "2026-11-10T00:00:00Z", "every_seconds": 11 * 365 * 86400}])
+def test_ten_year_horizon_also_applies_to_once_and_interval(rule):
+    with pytest.raises(RpcError) as caught:
+        validate_rule(rule, instant("2026-11-10T00:00:00Z"))
+    assert caught.value.code == "invalid_schedule"
+    assert validate_rule({"type": "once", "at": "2026-01-01T00:00:00Z"}, instant("2026-11-10T00:00:00Z"))["at"] == "2026-01-01T00:00:00.000Z"
+
+
 def test_revisions_coalescing_and_immutable_action(repository):
     store, now = repository
     created = store.create(definition())
