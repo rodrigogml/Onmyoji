@@ -36,6 +36,7 @@ from onmyoji_daemon.mcp.eccovox import EccoVoxError, EccoVoxService
 from onmyoji_daemon import runtime as python_runtime
 from onmyoji_daemon.telegram_stickers import MAX_CONTEXT_LENGTH, STATIC_STICKER_TARGET_BYTES, STICKER_ID, convert_static as convert_static_sticker, discover as discover_stickers, discover_static_sources, load as load_sticker_catalog, save as save_sticker_catalog, sticker_folder, suggested_identifier
 from onmyoji_daemon import management as daemon_management
+from onmyoji_daemon.linux_service import ServiceLimits, account_name as linux_account_name, limits_json, limits_summary, recommended_limits, validate_account
 from onmyoji_daemon.publication_diagnostics import diagnose as diagnose_publication
 from onmyoji_daemon.cloudflare_tunnel.installer import inspect_cloudflared_directory
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
@@ -1850,7 +1851,7 @@ def daemon_menu(root: Path) -> None:
         return subprocess.run(arguments, cwd=str(project), env=environment, text=True, encoding="utf-8", errors="replace", input=input_value, **output)
 
     def lifecycle(action: str, extra: list[str] | None = None, input_value: str | None = None) -> bool:
-        visible = action in {"install-service", "configure-windows-service-account", "remove-service", "service-start", "service-stop", "service-restart", "service-force-stop"}
+        visible = action in {"install-service", "configure-windows-service-account", "configure-service-resources", "repair-service-permissions", "service-security", "remove-service", "service-start", "service-stop", "service-restart", "service-force-stop"}
         try:
             completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), action, *(extra or [])], quiet=not visible, input_value=input_value)
         except KeyboardInterrupt:
@@ -2086,8 +2087,65 @@ def daemon_menu(root: Path) -> None:
                     result(False, "A conta Windows exige senha para executar um serviço."); continue
                 return account, password
 
-        def privileged_service_action(action: str) -> bool:
-            extras: list[str] = []
+        def choose_service_limits(current: dict[str, object] | None = None) -> ServiceLimits | None:
+            """Seleciona limites adaptativos ou valores explícitos para o drop-in systemd."""
+            recommended = recommended_limits()
+            flow_heading("Limites do serviço", "Recursos do daemon e de todos os processos iniciados por ele")
+            note("Os valores recomendados foram calculados uma vez para a CPU, memória e swap disponíveis nesta máquina.")
+            print()
+            for line in limits_summary(recommended): print("  " + line)
+            choices = ["Recomendados para esta máquina", "Personalizar", "Sem limites adicionais"]
+            selected = flow_choice("Perfil de recursos", choices, choices[1] if current else choices[0])
+            if selected is None: return None
+            if selected == choices[0]: return recommended
+            if selected == choices[2]: return ServiceLimits()
+            try: base = ServiceLimits.from_mapping(current) if current else recommended
+            except (TypeError, ValueError): base = recommended
+
+            def numeric(label: str, value: int, divisor: int = 1, maximum: int | None = None) -> int | None:
+                shown = value // divisor if divisor > 1 else value
+                while True:
+                    raw = prompt(f"{label} [{shown}]: ").strip().casefold()
+                    if raw in {"x", "\x1b"}: return None
+                    try: selected_value = int(raw) if raw else shown
+                    except ValueError: result(False, "Informe um número inteiro ou X para cancelar."); continue
+                    if selected_value < 0 or (maximum is not None and selected_value > maximum): result(False, f"Use um valor entre 0 e {maximum}."); continue
+                    return selected_value * divisor
+
+            mib = 1024 * 1024
+            cpu = numeric("CPUQuota em porcentagem; 100 equivale a uma CPU, 0 omite", base.cpu_quota_percent)
+            if cpu is None: return None
+            high = numeric("MemoryHigh em MiB; 0 omite", base.memory_high_bytes, mib)
+            if high is None: return None
+            maximum = numeric("MemoryMax em MiB; 0 omite", base.memory_max_bytes, mib)
+            if maximum is None: return None
+            swap = numeric("MemorySwapMax em MiB; 0 omite", base.memory_swap_max_bytes, mib)
+            if swap is None: return None
+            tasks = numeric("TasksMax; 0 omite", base.tasks_max)
+            if tasks is None: return None
+            weight = numeric("IOWeight; 0 usa o padrão", base.io_weight, maximum=10000)
+            if weight is None: return None
+            devices_default = "s" if base.private_devices else "n"
+            devices_hint = "S/n" if base.private_devices else "s/N"
+            while True:
+                raw = prompt(f"Ocultar dispositivos físicos do serviço? [{devices_hint}]: ").strip().casefold() or devices_default
+                if raw in {"x", "\x1b"}: return None
+                if raw in {"s", "sim", "n", "nao", "não"}: break
+                result(False, "Responda S, N ou X.")
+            try:
+                return ServiceLimits.from_mapping({"cpu_quota_percent": cpu, "memory_high_bytes": high, "memory_max_bytes": maximum, "memory_swap_max_bytes": swap, "tasks_max": tasks, "io_weight": weight, "private_devices": raw in {"s", "sim"}})
+            except ValueError as error:
+                result(False, str(error)); return None
+
+        def linux_installer_user() -> str:
+            try:
+                completed = subprocess.run(["id", "-un"], text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=5, check=False)
+                return completed.stdout.strip() or getpass.getuser()
+            except (OSError, subprocess.TimeoutExpired):
+                return getpass.getuser()
+
+        def privileged_service_action(action: str, extra: list[str] | None = None) -> bool:
+            extras: list[str] = list(extra or [])
             if os.name != "nt":
                 try: scope = json.loads((root / "configs" / "daemon" / "service.json").read_text(encoding="utf-8")).get("scope", "system")
                 except (OSError, ValueError): scope = "system"
@@ -2125,23 +2183,45 @@ def daemon_menu(root: Path) -> None:
                     if lifecycle("install-service", extras, password if password else None) and prompt("Iniciar agora e validar o registro? [S/n]: ").strip().casefold() in {"", "s", "sim"}:
                         lifecycle("service-start"); lifecycle("service-status")
                     continue
-                print()
-                item("1.", "Serviço do usuário", "systemd --user · recomendado para o login atual do Codex")
-                item("2.", "Serviço do sistema", "systemd · exige sudo e usuário Linux explícito")
-                selected = prompt("Escopo [1]: ").strip() or "1"
-                if selected == "1": lifecycle("install-service", ["--name", name, "--description", description, "--scope", "user"]); continue
-                if selected != "2": result(False, "Escolha 1 ou 2."); continue
-                run_as_user = prompt(f"Usuário Linux do serviço [{getpass.getuser()}]: ").strip() or getpass.getuser()
-                run_as_group = prompt("Grupo Linux do serviço [padrão do usuário]: ").strip()
-                note("O setup solicitará sudo para gravar e habilitar a unit de sistema. A senha não será lida nem armazenada pelo Onmyōji.")
-                if prompt("Continuar com a instalação de sistema? [s/N]: ").strip().casefold() not in {"s", "sim"}: result(False, "Instalação do serviço cancelada."); continue
-                lifecycle("install-service", ["--name", name, "--description", description, "--scope", "system", "--run-as-user", run_as_user, "--run-as-group", run_as_group, "--use-sudo"]); continue
+                limits = choose_service_limits()
+                if limits is None: result(False, "Instalação do serviço cancelada."); continue
+                selected = flow_choice("Identidade de execução", ["Usuário atual — systemd --user", "Usuário exclusivo — serviço isolado do sistema"], "Usuário exclusivo — serviço isolado do sistema")
+                if selected is None: result(False, "Instalação do serviço cancelada."); continue
+                common = ["--name", name, "--description", description, "--resource-limits", limits_json(limits)]
+                if selected.startswith("Usuário atual"):
+                    lifecycle("install-service", [*common, "--scope", "user"]); continue
+                installer = linux_installer_user()
+                default_account = linux_account_name(visible)
+                run_as_user = prompt(f"Usuário Linux exclusivo [{default_account}]: ").strip() or default_account
+                try: run_as_user = validate_account(run_as_user)
+                except ValueError as error: result(False, str(error)); continue
+                data = load_system(root)
+                workspace = Path(str(data.get("project_directory") or suggested_project_directory(root))).expanduser().resolve()
+                if not workspace.is_dir(): result(False, f"O workspace precisa existir antes do isolamento: {workspace}"); continue
+                share = prompt(f"Permitir ao usuário {installer} acesso completo à instância e ao workspace? [S/n]: ").strip().casefold() not in {"n", "nao", "não"}
+                note(f"Home da conta: /home/{run_as_user}. A instância continuará em {root} e o workspace em {workspace}.")
+                note("O setup solicitará sudo somente para criar a conta, aplicar ACLs e instalar a unit. A senha não será lida nem armazenada.")
+                if not share: note(f"Ao concluir, este setup será encerrado. A manutenção posterior deverá ser executada como {run_as_user} ou root.")
+                if prompt("Continuar com a instalação isolada? [s/N]: ").strip().casefold() not in {"s", "sim"}: result(False, "Instalação do serviço cancelada."); continue
+                extras = [*common, "--scope", "system", "--run-as-user", run_as_user, "--run-as-group", run_as_user, "--isolate-linux", "--installer-user", installer, "--workspace", str(workspace), "--use-sudo"]
+                if share: extras.append("--installer-access")
+                installed_service = lifecycle("install-service", extras)
+                if installed_service and not share:
+                    result(True, f"Isolamento concluído. Para reabrir o setup: sudo -u {run_as_user} -H {sys.executable} {root / 'setupOnmyoji.py'}")
+                    raise SystemExit(0)
+                continue
             item("1.", "Status do serviço")
             item("2.", "Parar serviço" if service_running() else "Iniciar serviço")
             item("3.", "Reiniciar serviço")
             item("4.", "Forçar parada do serviço")
             item("5.", "Remover serviço")
             if os.name == "nt": item("6.", "Configurar conta do serviço", "Necessário para acessar credenciais KeePass do usuário")
+            else:
+                try: service_data = json.loads((root / "configs" / "daemon" / "service.json").read_text(encoding="utf-8"))
+                except (OSError, ValueError): service_data = {}
+                item("6.", "Limites de recursos", "CPU, memória, swap, processos, I/O e dispositivos")
+                if service_data.get("isolated"): item("7.", "Reparar permissões", "Reaplica grupo, setgid e ACLs herdáveis")
+                item("8.", "Avaliar isolamento", "Relatório systemd-analyze security")
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
@@ -2162,6 +2242,13 @@ def daemon_menu(root: Path) -> None:
                 extras = ["--account", account]
                 if password: extras.append("--password-stdin")
                 lifecycle("configure-windows-service-account", extras, password if password else None)
+            elif choice == "6" and os.name != "nt":
+                limits = choose_service_limits(service_data.get("resource_limits") if isinstance(service_data.get("resource_limits"), dict) else None)
+                if limits is not None: privileged_service_action("configure-service-resources", ["--values", limits_json(limits)])
+            elif choice == "7" and os.name != "nt" and service_data.get("isolated"):
+                privileged_service_action("repair-service-permissions")
+            elif choice == "8" and os.name != "nt":
+                privileged_service_action("service-security")
             else: result(False, "Opção inválida.")
 
     def operation_menu() -> None:

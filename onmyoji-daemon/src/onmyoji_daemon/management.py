@@ -25,6 +25,7 @@ from .registry import SERVICES
 from .instance import identity
 from .supervisor import endpoint
 from . import runtime as shared_runtime
+from .linux_service import ServiceLimits, provision_account, recommended_limits, repair_permissions as repair_linux_permissions
 
 
 def daemon_root(root: Path) -> Path: return root.resolve() / "configs" / "daemon"
@@ -277,12 +278,29 @@ def _systemctl(scope: str, *arguments: str) -> list[str]:
     return ["systemctl", *( ["--user"] if scope == "user" else []), *arguments]
 
 
-def _systemd_unit(root: Path, executable: str, source: Path, description: str, scope: str, run_as_user: str, run_as_group: str) -> str:
+def _systemd_quote(value: str | Path) -> str:
+    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _systemd_unit(root: Path, executable: str, source: Path, description: str, scope: str, run_as_user: str, run_as_group: str, *, workspace: Path | None = None, home: Path | None = None, isolated: bool = False, limits: ServiceLimits | None = None) -> str:
     """Gera uma unit sem depender do shell e preservando paths com espaços."""
-    service = ["[Service]", "Type=simple", f"WorkingDirectory={root.resolve()}", f"Environment=PYTHONPATH={source}"]
+    resolved_root = root.resolve()
+    service = ["[Service]", "Type=simple", f"WorkingDirectory={_systemd_quote(resolved_root)}", f"Environment={_systemd_quote('PYTHONPATH=' + str(source))}", f"Environment={_systemd_quote('CODEX_HOME=' + str(resolved_root))}"]
     if scope == "system" and run_as_user: service.append(f"User={run_as_user}")
     if scope == "system" and run_as_group: service.append(f"Group={run_as_group}")
-    service.extend([f"ExecStart={executable} -m onmyoji_daemon.cli --onmyoji-root {root.resolve()} run", "Restart=on-failure", "RestartSec=3"])
+    if home: service.append(f"Environment={_systemd_quote('HOME=' + str(home))}")
+    if isolated:
+        writable = [home, resolved_root, workspace.resolve() if workspace else None]
+        service.extend([
+            "UMask=0007", "ProtectSystem=strict", "ProtectHome=tmpfs", "PrivateTmp=yes", "NoNewPrivileges=yes",
+            "CapabilityBoundingSet=", "AmbientCapabilities=", "RestrictSUIDSGID=yes", "LockPersonality=yes",
+            "ProtectControlGroups=yes", "ProtectKernelModules=yes", "ProtectKernelTunables=yes", "ProtectKernelLogs=yes",
+            "ProtectClock=yes", "ProtectHostname=yes",
+            *(f"BindPaths={_systemd_quote(path)}" for path in writable if path),
+            *(f"ReadWritePaths={_systemd_quote(path)}" for path in writable if path),
+        ])
+    service.extend((limits or ServiceLimits()).systemd_lines())
+    service.extend([f"ExecStart={_systemd_quote(executable)} -m onmyoji_daemon.cli --onmyoji-root {_systemd_quote(resolved_root)} run", "Restart=on-failure", "RestartSec=3"])
     return "\n".join(["[Unit]", f"Description={description}", "Wants=network-online.target", "After=network-online.target", "", *service, "", "[Install]", "WantedBy=default.target" if scope == "user" else "WantedBy=multi-user.target", ""])
 
 
@@ -334,13 +352,16 @@ def configure_windows_service_account(root: Path, account: str, password: str = 
     return True, f"Conta do serviço atualizada para {info['run_as_user']}. Reinicie o serviço para aplicar a alteração."
 
 
-def install_service(root: Path, name: str, description: str, scope: str = "system", run_as_user: str = "", run_as_group: str = "", use_sudo: bool = False, windows_account: str = "", windows_password: str = "", progress: Callable[[str], None] | None = None) -> tuple[bool, str]:
+def install_service(root: Path, name: str, description: str, scope: str = "system", run_as_user: str = "", run_as_group: str = "", use_sudo: bool = False, windows_account: str = "", windows_password: str = "", progress: Callable[[str], None] | None = None, *, isolate_linux: bool = False, installer_user: str = "", installer_access: bool = True, workspace: str = "", resource_limits: dict[str, object] | None = None) -> tuple[bool, str]:
     if not is_installed(root): return False, "Instale primeiro o daemon desta instância."
     if service_path(root).exists(): return False, "Já existe um serviço instalado para esta instância."
     if running_process(root): return False, "Finalize o processo local antes de instalar o serviço."
     ready, message = ensure_runtime(root, allow_install=False)
     if not ready: return False, message
     executable = str(daemon_python(root))
+    try: limits = ServiceLimits.from_mapping(resource_limits) if resource_limits is not None else recommended_limits()
+    except (TypeError, ValueError) as error: return False, str(error)
+    service_home: Path | None = None
     if os.name == "nt":
         if scope != "system": return False, "O Windows Service é sempre instalado no escopo do sistema operacional."
         if progress: progress("Preparando o host do Serviço do Windows.")
@@ -367,9 +388,19 @@ def install_service(root: Path, name: str, description: str, scope: str = "syste
     else:
         if not shutil.which("systemctl"): return False, "systemd não está disponível neste sistema."
         if scope not in {"user", "system"}: return False, "Escopo de serviço inválido."
+        workspace_path = Path(workspace).expanduser().resolve() if workspace else None
+        if isolate_linux:
+            if scope != "system": return False, "A identidade Linux dedicada exige um serviço de sistema."
+            if not run_as_user or not installer_user or workspace_path is None:
+                return False, "Informe conta dedicada, usuário instalador e workspace para habilitar o isolamento."
+            prepared, detail, service_home = provision_account(run_as_user, installer_user, root, workspace_path, use_sudo, progress, share_with_installer=installer_access)
+            if not prepared: return False, detail
+            run_as_group = run_as_user
+        elif scope == "user":
+            service_home = Path.home()
         unit = (Path.home() / ".config" / "systemd" / "user" if scope == "user" else Path("/etc/systemd/system")) / f"{name}.service"
         source = Path(__file__).resolve().parents[1]
-        content = _systemd_unit(root, executable, source, description, scope, run_as_user, run_as_group)
+        content = _systemd_unit(root, executable, source, description, scope, run_as_user, run_as_group, workspace=workspace_path, home=service_home, isolated=isolate_linux, limits=limits)
         elevated = scope == "system" and getattr(os, "geteuid", lambda: 0)() != 0
         if elevated and not use_sudo: return False, "A instalação de serviço do sistema exige confirmação de sudo."
         if elevated and not shutil.which("sudo"): return False, "sudo não está disponível. Execute o setup como root ou use su para obter uma sessão administrativa."
@@ -388,8 +419,64 @@ def install_service(root: Path, name: str, description: str, scope: str = "syste
         enabled = subprocess.run([*command_prefix, *_systemctl(scope, "enable", name)], text=True, capture_output=True, check=False)
         if enabled.returncode != 0: return False, (enabled.stderr or enabled.stdout).strip()
     configured_user = windows_account or run_as_user or ("LocalSystem" if os.name == "nt" else "")
-    _write_json(service_path(root), {"schema_version": 2, "name": name, "description": description, "root": str(root.resolve()), "platform": platform.system(), "scope": scope, "run_as_user": configured_user, "run_as_group": run_as_group})
+    service_state = {"schema_version": 3, "name": name, "description": description, "root": str(root.resolve()), "platform": platform.system(), "scope": scope, "run_as_user": configured_user, "run_as_group": run_as_group, "isolated": isolate_linux, "installer_user": installer_user if isolate_linux else "", "installer_access": installer_access if isolate_linux else False, "workspace": workspace if isolate_linux else "", "home": str(service_home) if service_home else "", "resource_limits": limits.mapping() if os.name != "nt" else {}}
+    if os.name != "nt" and isolate_linux and not installer_access and getattr(os, "geteuid", lambda: 0)() != 0:
+        written = subprocess.run(["sudo", "tee", str(service_path(root))], input=json.dumps(service_state, ensure_ascii=False, indent=2) + "\n", text=True, capture_output=True, check=False)
+        if written.returncode != 0: return False, (written.stderr or written.stdout).strip() or "Não foi possível registrar o serviço na instância isolada."
+        owned = subprocess.run(["sudo", "chown", f"{run_as_user}:{run_as_group}", str(service_path(root))], text=True, capture_output=True, check=False)
+        if owned.returncode != 0: return False, (owned.stderr or owned.stdout).strip() or "Não foi possível atribuir o registro à conta isolada."
+    else:
+        _write_json(service_path(root), service_state)
     return True, f"Serviço {name} instalado."
+
+
+def _service_elevation(info: dict, use_sudo: bool) -> tuple[bool, list[str], str]:
+    elevated = str(info.get("scope") or "system") == "system" and getattr(os, "geteuid", lambda: 0)() != 0
+    if elevated and not use_sudo: return False, [], "A operação deste serviço de sistema exige confirmação de sudo."
+    if elevated and not shutil.which("sudo"): return False, [], "sudo não está disponível."
+    return True, ["sudo"] if elevated else [], ""
+
+
+def configure_service_resources(root: Path, values: dict[str, object], use_sudo: bool = False) -> tuple[bool, str]:
+    """Grava limites em um drop-in, preservando a unit principal e a identidade."""
+    if os.name == "nt": return False, "Limites systemd estão disponíveis somente no Linux."
+    info = service_info(root)
+    if not info: return False, "Serviço do sistema operacional não está instalado para esta instância."
+    try: limits = ServiceLimits.from_mapping(values)
+    except (TypeError, ValueError) as error: return False, str(error)
+    allowed, prefix, detail = _service_elevation(info, use_sudo)
+    if not allowed: return False, detail
+    name, scope = str(info["name"]), str(info.get("scope") or "system")
+    directory = (Path.home() / ".config" / "systemd" / "user" if scope == "user" else Path("/etc/systemd/system")) / f"{name}.service.d"
+    path = directory / "20-onmyoji-resources.conf"
+    content = "\n".join(["[Service]", "CPUQuota=", "MemoryHigh=", "MemoryMax=", "MemorySwapMax=", "TasksMax=", "IOWeight=", "PrivateDevices=no", *limits.systemd_lines(), ""])
+    if prefix:
+        created = subprocess.run([*prefix, "mkdir", "-p", str(directory)], text=True, capture_output=True, check=False)
+        if created.returncode != 0: return False, (created.stderr or created.stdout).strip()
+        written = subprocess.run([*prefix, "tee", str(path)], input=content, text=True, capture_output=True, check=False)
+        if written.returncode != 0: return False, (written.stderr or written.stdout).strip()
+    else:
+        try: directory.mkdir(parents=True, exist_ok=True); path.write_text(content, encoding="utf-8")
+        except OSError as error: return False, f"Não foi possível gravar {path}: {error}"
+    reloaded = subprocess.run([*prefix, *_systemctl(scope, "daemon-reload")], text=True, capture_output=True, check=False)
+    if reloaded.returncode != 0: return False, (reloaded.stderr or reloaded.stdout).strip()
+    info["resource_limits"] = limits.mapping(); _write_json(service_path(root), info)
+    return True, "Limites atualizados; reinicie o serviço para aplicá-los aos processos em execução."
+
+
+def repair_service_permissions(root: Path, use_sudo: bool = False, progress: Callable[[str], None] | None = None) -> tuple[bool, str]:
+    if os.name == "nt": return False, "ACLs Linux não estão disponíveis no Windows."
+    return repair_linux_permissions(root, service_info(root), use_sudo, progress)
+
+
+def service_security(root: Path, use_sudo: bool = False) -> tuple[bool, str]:
+    if os.name == "nt" or not shutil.which("systemd-analyze"): return False, "systemd-analyze não está disponível."
+    info = service_info(root)
+    if not info: return False, "Serviço do sistema operacional não está instalado para esta instância."
+    allowed, prefix, detail = _service_elevation(info, use_sudo)
+    if not allowed: return False, detail
+    value = subprocess.run([*prefix, "systemd-analyze", "security", "--no-pager", str(info["name"])], text=True, capture_output=True, check=False)
+    return value.returncode == 0, (value.stdout or value.stderr).strip()
 
 
 def service_status(root: Path) -> tuple[bool, str]:
@@ -462,9 +549,15 @@ def remove_service(root: Path, use_sudo: bool = False) -> tuple[bool, str]:
         if elevated and not shutil.which("sudo"): return False, "sudo não está disponível. Execute a remoção como root ou use su para obter uma sessão administrativa."
         prefix = ["sudo"] if elevated else []; subprocess.run([*prefix, *_systemctl(scope, "disable", "--now", name)], text=True, capture_output=True, check=False)
         unit = (Path.home() / ".config" / "systemd" / "user" if scope == "user" else Path("/etc/systemd/system")) / f"{name}.service"
+        dropin = unit.parent / f"{name}.service.d" / "20-onmyoji-resources.conf"
         try:
-            if elevated: value = subprocess.run(["sudo", "rm", "-f", str(unit)], text=True, capture_output=True, check=False); value.check_returncode()
-            else: unit.unlink(missing_ok=True)
+            if elevated:
+                value = subprocess.run(["sudo", "rm", "-f", str(unit), str(dropin)], text=True, capture_output=True, check=False); value.check_returncode()
+                subprocess.run(["sudo", "rmdir", str(dropin.parent)], text=True, capture_output=True, check=False)
+            else:
+                unit.unlink(missing_ok=True); dropin.unlink(missing_ok=True)
+                try: dropin.parent.rmdir()
+                except OSError: pass
         except OSError as error: return False, f"Não foi possível remover {unit}: {error}"
         except subprocess.CalledProcessError as error: return False, f"Não foi possível remover {unit}: {error}"
         value = subprocess.run([*prefix, *_systemctl(scope, "daemon-reload")], text=True, capture_output=True, check=False)
