@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 import tomllib
+import unicodedata
 import uuid
 import shutil
 from collections.abc import Callable
@@ -125,12 +126,12 @@ def instance_label(root: Path) -> str:
     return identity(root)
 
 
-def camel_name(value: str) -> str:
-    parts = [part for part in "".join(char if char.isalnum() else " " for char in value).split() if part]
-    return "".join(part[:1].upper() + part[1:] for part in parts) or "Shikigami"
+def normalized_service_name(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii").lower()
+    return re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")[:128].rstrip("-") or "shikigami"
 
 
-def default_service_name(root: Path) -> str: return f"Shikigami-{camel_name(instance_label(root))}"
+def default_service_name(root: Path) -> str: return normalized_service_name(instance_label(root))
 def default_service_description(root: Path) -> str: return f"Shikigami {instance_label(root)} Daemon"
 
 

@@ -2540,7 +2540,7 @@ def daemon_menu(root: Path) -> None:
                 choice = prompt("Opção: ").strip().casefold()
                 if choice in {"x", "\x1b"}: return
                 if choice != "1": result(False, "Opção inválida."); continue
-                default_name = "Shikigami-" + "".join(part[:1].upper() + part[1:] for part in instance_identity(root).split())
+                default_name = daemon_management.default_service_name(root)
                 visible = instance_identity(root)
                 name = prompt(f"Nome do serviço [{default_name}]: ").strip() or default_name
                 description = prompt(f"Descrição [{f'Shikigami {visible} Daemon'}]: ").strip() or f"Shikigami {visible} Daemon"

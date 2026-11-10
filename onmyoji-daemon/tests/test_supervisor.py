@@ -66,7 +66,7 @@ def test_instance_installation_and_service_identity_are_local(tmp_path, monkeypa
     root.mkdir()
     ok, _message = install_instance(root)
     assert ok and is_installed(root)
-    assert default_service_name(root) == "Shikigami-Exemplo"
+    assert default_service_name(root) == "exemplo"
     assert default_service_description(root) == "Shikigami Exemplo Daemon"
     ok, _message = set_enabled(root, "telegram", True)
     assert ok, _message
@@ -79,8 +79,15 @@ def test_instance_installation_and_service_identity_are_local(tmp_path, monkeypa
 def test_instance_identity_comes_from_local_system_configuration(tmp_path):
     configs = tmp_path / "configs"; configs.mkdir()
     (configs / "onmyoji-system.toml").write_text('[shikigami]\nidentity = "Nome Local"\ninstalled = true\n', encoding="utf-8")
-    assert default_service_name(tmp_path) == "Shikigami-NomeLocal"
+    assert default_service_name(tmp_path) == "nome-local"
     assert default_service_description(tmp_path) == "Shikigami Nome Local Daemon"
+
+
+def test_default_service_name_is_lowercase_ascii_and_systemd_safe(tmp_path):
+    configs = tmp_path / "configs"; configs.mkdir()
+    (configs / "onmyoji-system.toml").write_text('[shikigami]\nidentity = "Ōkami da Lua"\ninstalled = true\n', encoding="utf-8")
+
+    assert default_service_name(tmp_path) == "okami-da-lua"
 
 
 def test_configuration_revision_requires_the_running_process_to_match(tmp_path, monkeypatch):
