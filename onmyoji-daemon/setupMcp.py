@@ -19,7 +19,7 @@ if hasattr(sys.stderr, "reconfigure"):
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from setupOnmyoji import Ui, flow_choice, flow_heading, instance_identity, item as render_item, note, prompt, result, screen as render_screen, vault_entry_path
+from setupOnmyoji import Ui, flow_choice, flow_heading, install_linux_packages, instance_identity, item as render_item, note, prompt, result, screen as render_screen, vault_entry_path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
@@ -268,18 +268,134 @@ def profile_auth(name: str, root: Path = ROOT) -> dict:
     return {"windows": {"mode": "windows_credential_manager", "target": target}, "linux": {"mode": "command", "command": linux_command}}
 
 
-def save_password(name: str, auth: dict, root: Path = ROOT, password: str | None = None) -> None:
+def save_password(name: str, auth: dict, root: Path = ROOT, password: str | None = None) -> bool:
     """Grava a senha no cofre do sistema, solicitando-a somente se necessário."""
     if password is None:
         password = getpass.getpass(Ui.text("› Senha mestra KeePass (não será exibida): ", Ui.violet, Ui.bold))
-    if not password: return
+    if not password: return False
     try:
         if os.name == "nt": store_windows_password(auth["windows"]["target"], password)
         else:
             identity = instance_identity(root)
             subprocess.run(["secret-tool", "store", f"--label={identity} MCP KeePass {name}", "service", "shikigami-mcp", "shikigami", identity, "profile", name], input=password + "\n", text=True, check=True, timeout=20, capture_output=True)
         result(True, "Senha mestra salva no provedor do sistema operacional.")
-    except (OSError, subprocess.SubprocessError): result(False, "Não foi possível salvar a senha no provedor do sistema operacional.")
+        return True
+    except (OSError, subprocess.SubprocessError):
+        result(False, "Não foi possível salvar a senha no provedor do sistema operacional.")
+        return False
+
+
+def keepassxc_command_available(command: list[str]) -> bool:
+    """Confirma que o comando selecionado inicia o CLI, sem depender do vault."""
+    if not command:
+        return False
+    executable = command[0]
+    if not (shutil.which(executable) or Path(executable).expanduser().is_file()):
+        return False
+    try:
+        checked = subprocess.run([*command, "--version"], text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=20, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return checked.returncode == 0
+
+
+def discover_keepassxc_command() -> list[str] | None:
+    """Procura instalação nativa e, no Linux, uma instalação Flatpak do usuário."""
+    if executable := shutil.which("keepassxc-cli"):
+        command = [executable]
+        if keepassxc_command_available(command):
+            return command
+    if os.name == "nt" or not shutil.which("flatpak"):
+        return None
+    command = ["flatpak", "run", "--command=keepassxc-cli", "org.keepassxc.KeePassXC"]
+    return command if keepassxc_command_available(command) else None
+
+
+def install_user_keepassxc() -> list[str] | None:
+    """Instala o KeePassXC no escopo da conta atual por Flatpak."""
+    flatpak = shutil.which("flatpak")
+    if not flatpak:
+        result(False, "Flatpak não está disponível para uma instalação local desta conta.")
+        return None
+    flow_heading("Instalação assistida", "KeePassXC para a identidade em execução")
+    note("O KeePassXC será instalado somente para esta conta pelo repositório Flathub.")
+    if prompt("Instalar o KeePassXC nesta conta? [S/n]: ").strip().casefold() in {"n", "nao", "não", "x", "\x1b"}:
+        result(False, "Instalação local do KeePassXC cancelada.")
+        return None
+    try:
+        remote = subprocess.run([flatpak, "remote-add", "--user", "--if-not-exists", "flathub", "https://dl.flathub.org/repo/flathub.flatpakrepo"], check=False)
+        installed = subprocess.run([flatpak, "install", "--user", "--noninteractive", "-y", "flathub", "org.keepassxc.KeePassXC"], check=False) if remote.returncode == 0 else remote
+    except OSError as error:
+        result(False, f"Não foi possível executar o Flatpak: {error}")
+        return None
+    command = [flatpak, "run", "--command=keepassxc-cli", "org.keepassxc.KeePassXC"]
+    ready = installed.returncode == 0 and keepassxc_command_available(command)
+    result(ready, "KeePassXC instalado para esta conta." if ready else "O Flatpak não disponibilizou o keepassxc-cli.")
+    return command if ready else None
+
+
+def select_keepassxc_command() -> list[str] | None:
+    """Obtém um CLI funcional e oferece correção no Linux antes de continuar."""
+    if command := discover_keepassxc_command():
+        note(f"KeePassXC CLI detectado: {' '.join(command)}")
+        return command
+    if os.name == "nt":
+        executable = ask("Executável KeePassXC", "keepassxc-cli", True)
+        command = [executable] if executable else []
+        if keepassxc_command_available(command):
+            return command
+        result(False, "keepassxc-cli não encontrado ou não executável.")
+        return None
+    options = []
+    if shutil.which("flatpak"):
+        options.append("Instalar KeePassXC somente para esta conta (Flatpak)")
+    options.extend(["Instalar KeePassXC pelo gerenciador do sistema", "Informar outro executável"])
+    selected = flow_choice("KeePassXC CLI não encontrado", options, options[0])
+    if selected is None:
+        return None
+    if selected.startswith("Instalar KeePassXC somente"):
+        return install_user_keepassxc()
+    if selected.startswith("Instalar KeePassXC pelo"):
+        installed = install_linux_packages("KeePassXC CLI", {
+            "apt-get": ["keepassxc"], "dnf": ["keepassxc"], "yum": ["keepassxc"],
+            "zypper": ["keepassxc"], "pacman": ["keepassxc"],
+        })
+        command = discover_keepassxc_command() if installed else None
+        if command is None and installed:
+            result(False, "A instalação terminou, mas keepassxc-cli não ficou acessível nesta conta.")
+        return command
+    executable = ask("Executável KeePassXC", "keepassxc-cli", True)
+    command = [str(Path(executable).expanduser())] if executable else []
+    if keepassxc_command_available(command):
+        return command
+    result(False, "keepassxc-cli não encontrado ou não executável.")
+    return None
+
+
+def scope_flatpak_to_database(command: list[str], database: str) -> list[str]:
+    """Concede ao Flatpak somente acesso de escrita à pasta do KDBX selecionado."""
+    if "org.keepassxc.KeePassXC" not in command or not command or Path(command[0]).name != "flatpak":
+        return command
+    permission = f"--filesystem={Path(database).expanduser().resolve().parent}"
+    return [command[0], "run", permission, *command[2:]]
+
+
+def ensure_linux_secret_tool() -> bool:
+    """Prepara o provedor usado para persistir a senha antes de solicitá-la."""
+    if os.name == "nt" or shutil.which("secret-tool"):
+        return True
+    result(False, "secret-tool não está disponível; ele é necessário para salvar a senha mestra com segurança.")
+    selected = flow_choice("Provedor de segredos não encontrado", ["Instalar o provedor do sistema", "Cancelar"], "Instalar o provedor do sistema")
+    if selected != "Instalar o provedor do sistema":
+        return False
+    installed = install_linux_packages("provedor seguro de senhas", {
+        "apt-get": ["libsecret-tools"], "dnf": ["libsecret"], "yum": ["libsecret"],
+        "zypper": ["libsecret-tools"], "pacman": ["libsecret"],
+    })
+    ready = installed and shutil.which("secret-tool") is not None
+    if installed and not ready:
+        result(False, "A instalação terminou, mas secret-tool não ficou acessível nesta conta.")
+    return ready
 
 
 def create_vault_profile(config: McpConfiguration) -> None:
@@ -289,13 +405,16 @@ def create_vault_profile(config: McpConfiguration) -> None:
     if name in data["profiles"]: result(False, "Já existe um perfil com esse nome."); return
     origin = flow_choice("Cofre KeePassXC", ["Associar arquivo KDBX existente", "Criar cofre KDBX local"], "Associar arquivo KDBX existente")
     if origin is None: return
-    executable = ask("Executável KeePassXC", "keepassxc-cli", True)
+    command = select_keepassxc_command()
+    if not command: return
     platform = "windows" if os.name == "nt" else "linux"
     database = str(config.root / "configs" / "mcp" / "vaults" / f"{name}.kdbx") if origin.startswith("Criar") else ask(f"Arquivo KDBX no {platform}", required=True)
-    if not executable or not database: return
+    if not database: return
+    command = scope_flatpak_to_database(command, database)
+    if not ensure_linux_secret_tool(): return
     auth = profile_auth(name, config.root)
     roots = ask("Raízes de entradas permitidas, separadas por ; (vazio = todas)", "")
-    data["vaults"][name] = {"cli_command": [executable], "database": {"windows": database if platform == "windows" else "", "linux": database if platform == "linux" else ""}}
+    data["vaults"][name] = {"cli_command": command, "database": {"windows": database if platform == "windows" else "", "linux": database if platform == "linux" else ""}}
     data["profiles"][name] = {"vault": name, "allowed_entry_roots": [item.strip() for item in (roots or "").split(";") if item.strip()], "auth": auth}
     if origin.startswith("Criar"):
         password = getpass.getpass(Ui.text("› Senha mestra do novo vault (não será exibida): ", Ui.violet, Ui.bold))
@@ -303,10 +422,13 @@ def create_vault_profile(config: McpConfiguration) -> None:
         if not password or password != confirm: result(False, "Senhas não conferem; nada foi salvo."); return
         try:
             Path(database).parent.mkdir(parents=True, exist_ok=True)
-            made = subprocess.run([executable, "db-create", "--set-password", database], input=password + "\n" + password + "\n", text=True, timeout=60, capture_output=True)
+            made = subprocess.run([*command, "db-create", "--set-password", database], input=password + "\n" + password + "\n", text=True, timeout=60, capture_output=True)
             if made.returncode or not Path(database).is_file(): result(False, "KeePassXC não criou o cofre."); return
         except (OSError, subprocess.SubprocessError): result(False, "Não foi possível criar o cofre."); return
-        config.save_credentials(data); save_password(name, auth, config.root, password)
+        if not save_password(name, auth, config.root, password):
+            result(False, f"O cofre foi criado em {database}, mas o perfil não foi salvo.")
+            return
+        config.save_credentials(data)
     else:
         password = getpass.getpass(Ui.text("› Senha mestra do vault existente (não será exibida): ", Ui.violet, Ui.bold))
         if not password:
@@ -317,8 +439,10 @@ def create_vault_profile(config: McpConfiguration) -> None:
         except CredentialError:
             result(False, "Não foi possível acessar o cofre com a senha informada.")
             return
+        if not save_password(name, auth, config.root, password):
+            result(False, "O perfil não foi salvo porque a senha mestra não pôde ser protegida.")
+            return
         config.save_credentials(data)
-        save_password(name, auth, config.root, password)
     result(True, "Perfil de vault salvo.")
 
 

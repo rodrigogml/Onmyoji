@@ -93,9 +93,34 @@ class McpSetupTests(unittest.TestCase):
     def test_new_vault_password_is_reused_without_a_third_prompt(self) -> None:
         auth = {"windows": {"target": "Lavelinha/MCP/KeePass/default"}}
         with patch.object(MODULE, "os", SimpleNamespace(name="nt")), patch.object(MODULE.getpass, "getpass") as getpass, patch.object(MODULE, "store_windows_password") as store, patch.object(MODULE, "result"):
-            MODULE.save_password("default", auth, password="senha-confirmada")
+            saved = MODULE.save_password("default", auth, password="senha-confirmada")
+        self.assertTrue(saved)
         getpass.assert_not_called()
         store.assert_called_once_with("Lavelinha/MCP/KeePass/default", "senha-confirmada")
+
+    def test_linux_missing_keepassxc_offers_a_user_local_installation(self) -> None:
+        command = ["/usr/bin/flatpak", "run", "--command=keepassxc-cli", "org.keepassxc.KeePassXC"]
+        with patch.object(MODULE, "os", SimpleNamespace(name="posix")), patch.object(MODULE, "discover_keepassxc_command", return_value=None), patch.object(MODULE.shutil, "which", return_value="/usr/bin/flatpak"), patch.object(MODULE, "flow_choice", return_value="Instalar KeePassXC somente para esta conta (Flatpak)") as choice, patch.object(MODULE, "install_user_keepassxc", return_value=command) as install:
+            selected = MODULE.select_keepassxc_command()
+
+        self.assertEqual(selected, command)
+        self.assertIn("Instalar KeePassXC somente para esta conta (Flatpak)", choice.call_args.args[1])
+        install.assert_called_once_with()
+
+    def test_flatpak_keepassxc_is_scoped_to_the_database_directory(self) -> None:
+        command = ["/usr/bin/flatpak", "run", "--command=keepassxc-cli", "org.keepassxc.KeePassXC"]
+        database = "/home/shikigami/vaults/default.kdbx"
+        scoped = MODULE.scope_flatpak_to_database(command, database)
+        self.assertEqual(scoped[:3], ["/usr/bin/flatpak", "run", f"--filesystem={Path(database).resolve().parent}"])
+
+    def test_vault_creation_stops_before_credentials_when_keepassxc_is_unavailable(self) -> None:
+        config = MagicMock()
+        config.credentials.return_value = {"defaults": {}, "vaults": {}, "profiles": {}}
+        with patch.object(MODULE, "ask_new_profile_name", return_value="principal"), patch.object(MODULE, "flow_choice", return_value="Criar cofre KDBX local"), patch.object(MODULE, "select_keepassxc_command", return_value=None), patch.object(MODULE.getpass, "getpass") as getpass:
+            MODULE.create_vault_profile(config)
+
+        getpass.assert_not_called()
+        config.save_credentials.assert_not_called()
 
     def test_existing_vault_is_validated_and_its_password_is_saved(self) -> None:
         config = MagicMock()
@@ -103,7 +128,7 @@ class McpSetupTests(unittest.TestCase):
         config.credentials.return_value = {"defaults": {"timeout_seconds": 30}, "vaults": {}, "profiles": {}}
         auth = {"windows": {"target": "Lavelinha/MCP/KeePass/principal"}}
 
-        with patch.object(MODULE, "ask_new_profile_name", return_value="principal"), patch.object(MODULE, "flow_choice", return_value="Associar arquivo KDBX existente"), patch.object(MODULE, "ask", side_effect=["keepassxc-cli", "C:/vaults/principal.kdbx", ""]), patch.object(MODULE, "profile_auth", return_value=auth), patch.object(MODULE.getpass, "getpass", return_value="senha-mestra"), patch.object(MODULE.KeePassCredentialResolver, "validate_vault_access") as validate, patch.object(MODULE, "save_password") as save:
+        with patch.object(MODULE, "ask_new_profile_name", return_value="principal"), patch.object(MODULE, "flow_choice", return_value="Associar arquivo KDBX existente"), patch.object(MODULE, "select_keepassxc_command", return_value=["keepassxc-cli"]), patch.object(MODULE, "ensure_linux_secret_tool", return_value=True), patch.object(MODULE, "ask", side_effect=["C:/vaults/principal.kdbx", ""]), patch.object(MODULE, "profile_auth", return_value=auth), patch.object(MODULE.getpass, "getpass", return_value="senha-mestra"), patch.object(MODULE.KeePassCredentialResolver, "validate_vault_access") as validate, patch.object(MODULE, "save_password", return_value=True) as save:
             MODULE.create_vault_profile(config)
 
         validate.assert_called_once_with({"cli_command": ["keepassxc-cli"], "database": {"windows": "C:/vaults/principal.kdbx", "linux": ""}}, {"timeout_seconds": 30}, "senha-mestra")
@@ -116,10 +141,22 @@ class McpSetupTests(unittest.TestCase):
         config.credentials.return_value = {"defaults": {}, "vaults": {}, "profiles": {}}
         auth = {"windows": {"target": "Lavelinha/MCP/KeePass/principal"}}
 
-        with patch.object(MODULE, "ask_new_profile_name", return_value="principal"), patch.object(MODULE, "flow_choice", return_value="Associar arquivo KDBX existente"), patch.object(MODULE, "ask", side_effect=["keepassxc-cli", "C:/vaults/principal.kdbx", ""]), patch.object(MODULE, "profile_auth", return_value=auth), patch.object(MODULE.getpass, "getpass", return_value="senha-incorreta"), patch.object(MODULE.KeePassCredentialResolver, "validate_vault_access", side_effect=MODULE.CredentialError("keepass_error", "recusado")), patch.object(MODULE, "save_password") as save, patch.object(MODULE, "result") as result:
+        with patch.object(MODULE, "ask_new_profile_name", return_value="principal"), patch.object(MODULE, "flow_choice", return_value="Associar arquivo KDBX existente"), patch.object(MODULE, "select_keepassxc_command", return_value=["keepassxc-cli"]), patch.object(MODULE, "ensure_linux_secret_tool", return_value=True), patch.object(MODULE, "ask", side_effect=["C:/vaults/principal.kdbx", ""]), patch.object(MODULE, "profile_auth", return_value=auth), patch.object(MODULE.getpass, "getpass", return_value="senha-incorreta"), patch.object(MODULE.KeePassCredentialResolver, "validate_vault_access", side_effect=MODULE.CredentialError("keepass_error", "recusado")), patch.object(MODULE, "save_password") as save, patch.object(MODULE, "result") as result:
             MODULE.create_vault_profile(config)
 
         config.save_credentials.assert_not_called()
         save.assert_not_called()
         result.assert_called_once_with(False, "Não foi possível acessar o cofre com a senha informada.")
+
+    def test_existing_vault_is_not_saved_when_the_password_provider_fails(self) -> None:
+        config = MagicMock()
+        config.root = Path("C:/instancia")
+        config.credentials.return_value = {"defaults": {}, "vaults": {}, "profiles": {}}
+        auth = {"windows": {"target": "Lavelinha/MCP/KeePass/principal"}}
+
+        with patch.object(MODULE, "ask_new_profile_name", return_value="principal"), patch.object(MODULE, "flow_choice", return_value="Associar arquivo KDBX existente"), patch.object(MODULE, "select_keepassxc_command", return_value=["keepassxc-cli"]), patch.object(MODULE, "ensure_linux_secret_tool", return_value=True), patch.object(MODULE, "ask", side_effect=["C:/vaults/principal.kdbx", ""]), patch.object(MODULE, "profile_auth", return_value=auth), patch.object(MODULE.getpass, "getpass", return_value="senha-mestra"), patch.object(MODULE.KeePassCredentialResolver, "validate_vault_access"), patch.object(MODULE, "save_password", return_value=False), patch.object(MODULE, "result") as result:
+            MODULE.create_vault_profile(config)
+
+        config.save_credentials.assert_not_called()
+        result.assert_called_once_with(False, "O perfil não foi salvo porque a senha mestra não pôde ser protegida.")
 
