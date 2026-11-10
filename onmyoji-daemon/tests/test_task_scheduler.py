@@ -280,12 +280,15 @@ def test_global_four_slots_and_per_definition_overlap(tmp_path, monkeypatch):
         release.set(); scheduler.close()
 
 
-def test_supervised_scheduler_starts_only_after_containment(tmp_path):
+def test_supervised_scheduler_starts_only_after_containment(tmp_path, monkeypatch):
     from onmyoji_daemon.supervisor import Supervisor
     from onmyoji_daemon.rpc import call
     root, workspace = tmp_path / "instance", tmp_path / "workspace"
     (root / "configs").mkdir(parents=True); workspace.mkdir()
     (root / "configs" / "onmyoji-system.toml").write_text('[codex]\nproject_directory=' + json.dumps(workspace.as_posix()), encoding="utf-8")
+    # Tokens URL-safe podem começar por hífen: argparse deve recebê-los como
+    # valor explícito, sem tentar interpretá-los como uma segunda opção.
+    monkeypatch.setattr("onmyoji_daemon.supervisor.secrets.token_urlsafe", lambda _size: "-fixture-token")
     supervisor = Supervisor(root)
     try:
         status = supervisor.start("task-scheduler")

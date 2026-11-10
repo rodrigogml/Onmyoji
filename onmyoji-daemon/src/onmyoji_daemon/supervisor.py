@@ -147,7 +147,7 @@ class Supervisor:
             service.generation, service.state = uuid.uuid4().hex, "starting"
         service.port, service.token = free_port(), secrets.token_urlsafe(32)
         data_dir = self.root / "services" / name; data_dir.mkdir(parents=True, exist_ok=True)
-        command = service.spec.command(data_dir) + ["--host", self.host, "--port", str(service.port), "--token", service.token, "--onmyoji-root", str(self.onmyoji_root)]
+        command = service.spec.command(data_dir) + ["--host", self.host, "--port", str(service.port), "--token=" + service.token, "--onmyoji-root", str(self.onmyoji_root)]
         try:
             environment = dict(os.environ)
             source_root = str(Path(__file__).resolve().parents[1])
