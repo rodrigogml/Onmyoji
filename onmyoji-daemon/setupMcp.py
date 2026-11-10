@@ -503,7 +503,11 @@ def manage_vault_profile(config: McpConfiguration, name: str) -> None:
 
 def vault_profiles_menu(config: McpConfiguration) -> None:
     while True:
-        names = config.vault_profile_names()
+        try:
+            names = config.vault_profile_names()
+        except McpConfigurationError as error:
+            result(False, str(error))
+            return
         screen("MCP · Perfis de vault", "Cada perfil associa um único cofre KeePassXC")
         item("1.", "Criar perfil")
         item("2.", "Gerenciar perfil", f"{len(names)} configurado(s)")
@@ -2457,7 +2461,11 @@ def integrations_menu(config: McpConfiguration) -> None:
 
 def menu(root: Path) -> int:
     config = McpConfiguration(root)
-    integrations_menu(config)
+    try:
+        integrations_menu(config)
+    except McpConfigurationError as error:
+        result(False, str(error))
+        return 2
     return 0
 
 

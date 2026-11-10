@@ -19,6 +19,15 @@ SPEC.loader.exec_module(MODULE)
 
 
 class McpSetupTests(unittest.TestCase):
+    def test_vault_menu_reports_inaccessible_configuration_without_traceback(self) -> None:
+        config = MagicMock()
+        config.vault_profile_names.side_effect = MODULE.McpConfigurationError("Reparar permissões.")
+
+        with patch.object(MODULE, "result") as show_result:
+            MODULE.vault_profiles_menu(config)
+
+        show_result.assert_called_once_with(False, "Reparar permissões.")
+
     def test_profile_item_displays_the_configured_value_beside_its_edit_action(self) -> None:
         output = io.StringIO()
         profile = {"host": "mail.example.test", "port": 465}

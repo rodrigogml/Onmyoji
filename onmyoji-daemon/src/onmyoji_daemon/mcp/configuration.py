@@ -568,6 +568,8 @@ class McpConfiguration:
             return empty
         try:
             data = tomllib.loads(path.read_text(encoding="utf-8"))
+        except PermissionError as error:
+            raise McpConfigurationError("Sem permissão para ler a configuração MCP. No Linux com conta dedicada, use Daemon > Serviço do sistema operacional > Reparar permissões.") from error
         except (OSError, tomllib.TOMLDecodeError) as error:
             raise McpConfigurationError("Não foi possível ler a configuração MCP.") from error
         if not isinstance(data, dict):
@@ -586,6 +588,7 @@ class McpConfiguration:
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as target:
                 target.write(content)
+            os.chmod(temporary, 0o660)
             tomllib.loads(Path(temporary).read_text(encoding="utf-8"))
             os.replace(temporary, path)
         except Exception:

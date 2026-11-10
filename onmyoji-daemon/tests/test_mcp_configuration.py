@@ -1,7 +1,11 @@
 """Configuração local e disponibilidade derivada das tools MCP."""
 from __future__ import annotations
+import os
+from pathlib import Path
 
-from onmyoji_daemon.mcp.configuration import McpConfiguration
+import pytest
+
+from onmyoji_daemon.mcp.configuration import McpConfiguration, McpConfigurationError
 
 
 def vault_profile() -> dict:
@@ -38,6 +42,31 @@ def test_empty_profile_tables_remain_available_after_saving_and_reloading(tmp_pa
     assert reloaded.credentials()["profiles"] == {}
     assert reloaded.vault_profile_names() == []
     assert reloaded.todoist_tool_available() is False
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Modos POSIX são validados no Linux.")
+def test_private_configuration_is_published_for_owner_and_group(tmp_path):
+    config = McpConfiguration(tmp_path)
+    config.save_credentials(config.credentials())
+
+    assert config.credentials_path.stat().st_mode & 0o777 == 0o660
+
+
+def test_permission_failure_has_actionable_sanitized_message(tmp_path, monkeypatch):
+    config = McpConfiguration(tmp_path)
+    config.credentials_path.parent.mkdir(parents=True)
+    config.credentials_path.touch()
+    original = Path.read_text
+
+    def read_text(path, *args, **kwargs):
+        if path == config.credentials_path:
+            raise PermissionError("private-detail")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    with pytest.raises(McpConfigurationError, match="Reparar permissões") as failure:
+        config.credentials()
+    assert "private-detail" not in str(failure.value)
 
 
 def test_omie_tool_depends_on_enabled_profile_and_existing_vault_profile(tmp_path):
