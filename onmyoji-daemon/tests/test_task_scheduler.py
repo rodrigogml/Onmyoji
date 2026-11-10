@@ -45,6 +45,12 @@ def test_cron_dst_nonexistent_skipped_and_repeated_only_first():
     assert iso(latest_due(rule, instant("2026-11-01T06:10:00Z"))) == "2026-11-01T05:30:00.000Z"
 
 
+def test_cron_can_skip_a_whole_nonexistent_calendar_day():
+    rule = {"type": "cron", "expression": "* * * * *", "timezone": "Pacific/Apia"}
+    # A mudança de linha de data em 2011 removeu 30 de dezembro local.
+    assert iso(next_at(rule, instant("2011-12-30T09:59:00Z"))) == "2011-12-30T10:00:00.000Z"
+
+
 @pytest.mark.parametrize("rule", [{"type": "once", "at": "2026-01-01"}, {"type": "interval", "anchor_at": "2026-01-01T00:00:00Z", "every_seconds": True}, {"type": "cron", "expression": "@daily"}, {"type": "cron", "expression": "0 0 31 2 *"}, {"type": "cron", "expression": "* * * * *", "timezone": "not/a/zone"}, {"type": "cron", "expression": "0 * * * * *"}])
 def test_invalid_rules(rule):
     with pytest.raises(RpcError):

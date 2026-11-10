@@ -64,18 +64,24 @@ def _cron_at(rule: dict, reference: datetime, forward: bool) -> datetime | None:
     if not forward and civil.fold:
         local += civil.replace(fold=0).utcoffset() - civil.utcoffset()
     iterator = croniter(rule["expression"], local, day_or=True, max_years_between_matches=10)
+    year = max(1, min(9999, reference.year + (10 if forward else -10)))
     try:
-        for _ in range(1000):  # Somente horários inválidos/repetidos são pulados.
+        horizon = reference.replace(year=year)
+    except ValueError:
+        horizon = reference.replace(year=year, day=28)
+    try:
+        while True:
             wall = iterator.get_next(datetime) if forward else iterator.get_prev(datetime)
             civil = wall.replace(tzinfo=zone, fold=0)
             candidate = civil.astimezone(UTC)
+            if (forward and candidate > horizon) or (not forward and candidate < horizon):
+                return None
             if candidate.astimezone(zone).replace(tzinfo=None) != wall:
                 continue
             if (forward and candidate > reference) or (not forward and candidate <= reference):
                 return candidate
     except (ValueError, OverflowError):
         return None
-    return None
 
 
 def next_at(rule: dict, after: datetime) -> datetime | None:

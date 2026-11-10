@@ -163,7 +163,7 @@ class Settings:
         # runtime e pelo Telegram; preservamos configurações já criadas.
         voice_format = "mp3" if requested_format == "opus" else requested_format
         if enabled and (not voice_profile or voice_format not in {"mp3", "wav", "flac"} or not 1 <= voice_text <= 4000 or not 1 <= auto_off <= 1440): raise ValueError("Telegram voice reply configuration is invalid")
-        if bool(totp.get("enabled", False)):
+        if bool(totp.get("enabled", False)) and notification["telegram_receiver_enabled"]:
             real, fake = str(totp.get("real_password_entry") or ""), str(totp.get("fake_password_entry") or "")
             if not real or not fake:
                 raise ValueError("TOTP habilitado exige as entradas de senha real e falsa no vault MCP.")

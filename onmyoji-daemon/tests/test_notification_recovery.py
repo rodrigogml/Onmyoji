@@ -281,3 +281,14 @@ def test_pending_incident_recovers_after_terminal_receipt_was_already_saved(lab)
     gateway._notification_send = lambda *args: attempts.append(args) or "confirmed"
     gateway._notification_sync(); gateway._notification_sync()
     assert len(attempts) == 1
+
+
+def test_event_only_settings_do_not_require_disabled_telegram_totp(lab):
+    from onmyoji_daemon.telegram import Settings
+    gateway = lab.gateway
+    gateway.notification_configuration.configure({"telegram_receiver_enabled": False, "enabled": True})
+    path = gateway.settings.data_dir / "config.toml"
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write('\n[totp]\nenabled=true\n')
+    loaded = Settings.load(gateway.settings.root, gateway.settings.data_dir)
+    assert loaded.app_server_enabled
