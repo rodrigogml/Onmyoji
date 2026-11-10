@@ -36,6 +36,8 @@ VALIDATOR = Draft202012Validator(SCHEMA, format_checker=CHECKER)
 
 
 def validate_event(value: object) -> dict:
+    if isinstance(value, dict) and type(value.get("schema_version")) is not int:
+        raise RpcError("Versão deve ser um inteiro.", "invalid_event", {"path": "/schema_version", "rule": "type"})
     errors = sorted(VALIDATOR.iter_errors(value), key=lambda error: tuple(str(part) for part in error.absolute_path))
     if errors:
         error = errors[0]

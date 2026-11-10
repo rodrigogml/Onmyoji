@@ -1,5 +1,6 @@
 """Definições fechadas e snapshots imutáveis de ações."""
 from copy import deepcopy
+import json
 from pathlib import Path
 
 from .calendar import validate_rule
@@ -36,6 +37,8 @@ def validate_definition(value, workspace: Path, now):
         if type(timeout) is not int or not 1 <= timeout <= 604800:
             raise RpcError("Timeout deve ser de 1 a 604800 segundos.", "invalid_action")
         action.setdefault("arguments", [])
+        if len(json.dumps([executable, *action["arguments"]]).encode("utf-8")) + 1 > 1_048_576:
+            raise RpcError("Comando excede o limite de transporte do processo.", "invalid_action")
         action["timeout_seconds"] = timeout
     else:
         raise RpcError("Tipo de ação inválido.", "invalid_action")

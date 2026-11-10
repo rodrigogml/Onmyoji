@@ -87,10 +87,14 @@ class TaskScheduler:
         return result
 
     def tick(self):
+        if self.stop_event.is_set():
+            return
         self.repository.materialize()
         with self.lock:
             available = self.parallel - len(self.active)
         for _ in range(available):
+            if self.stop_event.is_set():
+                break
             occurrence = self.repository.claim()
             if occurrence is None:
                 break
@@ -101,6 +105,9 @@ class TaskScheduler:
 
     def _execute(self, occurrence):
         try:
+            if self.stop_event.is_set():
+                self.repository.finish(occurrence["id"], "failed", reason="service_stopping_before_action")
+                return
             if occurrence["snapshot"]["action"]["type"] == "notification":
                 state, result, reason = notification_action(self.root, occurrence)
             else:

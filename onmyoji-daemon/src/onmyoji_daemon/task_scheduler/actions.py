@@ -54,6 +54,7 @@ def process_action(root: Path, workspace: Path, occurrence: dict, stop: threadin
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         process = subprocess.Popen([sys.executable, "-B", "-m", "onmyoji_daemon.task_scheduler.process_worker"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd, env=environment, start_new_session=os.name != "nt", creationflags=flags)
         group = None
+        group_closed = False
         readers = []
         metadata = {}
         try:
@@ -86,6 +87,7 @@ def process_action(root: Path, workspace: Path, occurrence: dict, stop: threadin
                     reason = "process_timeout"
                     break
             group.close()
+            group_closed = True
             for thread in readers:
                 thread.join(timeout=5)
             if any(thread.is_alive() for thread in readers):
@@ -93,7 +95,7 @@ def process_action(root: Path, workspace: Path, occurrence: dict, stop: threadin
             result = {"returncode": process.returncode, **metadata}
             return ("completed" if not reason and process.returncode == 0 else "failed"), result, reason or ("nonzero_exit" if process.returncode else None)
         finally:
-            if group is not None:
+            if group is not None and not group_closed:
                 group.close()
             elif process.poll() is None:
                 process.terminate(); process.wait(timeout=5)

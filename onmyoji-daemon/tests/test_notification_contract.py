@@ -22,6 +22,13 @@ def test_schema_and_uuid7_roundtrip():
     assert value["response_channel"]["value"] != "changed"
 
 
+def test_version_does_not_accept_json_float():
+    value = event()
+    value["schema_version"] = 1.0
+    with pytest.raises(RpcError):
+        validate_event(value)
+
+
 @pytest.mark.parametrize("field,value", [("schema_version", True), ("schema_version", 2), ("event_id", "invalid"), ("event_id", "00000000-0000-4000-8000-000000000000"), ("prompt", "  \n"), ("prompt", 3), ("thread_policy", "invalid"), ("response_channel", {"type": "web", "value": "x"}), ("response_channel", {"type": "email", "value": " "}), ("extra", True)])
 def test_invalid_values_do_not_echo_payload(field, value):
     request = event()

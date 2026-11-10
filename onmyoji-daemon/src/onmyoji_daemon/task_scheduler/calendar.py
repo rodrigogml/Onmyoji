@@ -32,14 +32,14 @@ def validate_rule(rule: dict, now: datetime) -> dict:
         raise RpcError("Regra temporal inválida.", "invalid_schedule")
     kind = rule.get("type")
     allowed = {"once": {"type", "at"}, "interval": {"type", "anchor_at", "every_seconds"}, "cron": {"type", "expression", "timezone"}}
-    if kind not in allowed or set(rule) - allowed[kind]:
+    if not isinstance(kind, str) or kind not in allowed or set(rule) - allowed[kind]:
         raise RpcError("Tipo ou campos de regra inválidos.", "invalid_schedule")
     result = dict(rule)
     if kind == "once":
         result["at"] = iso(instant(rule.get("at")))
     elif kind == "interval":
         seconds = rule.get("every_seconds")
-        if type(seconds) is not int or seconds < 1:
+        if type(seconds) is not int or not 1 <= seconds <= 2_147_483_647:
             raise RpcError("Intervalo deve ser inteiro de pelo menos um segundo.", "invalid_schedule")
         result["anchor_at"] = iso(instant(rule.get("anchor_at")))
     else:

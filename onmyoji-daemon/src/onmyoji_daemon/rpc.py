@@ -7,6 +7,7 @@ import threading
 from typing import Any, Callable
 
 MAX_REQUEST_BYTES = 1_048_576
+MAX_RESPONSE_BYTES = 128 * 1_048_576
 _CONNECTION = threading.local()
 
 
@@ -115,8 +116,13 @@ def call(host: str, port: int, token: str, method: str, params: dict[str, Any] |
             while not select.select([connection], [], [], 0.25)[0]:
                 if abandon():
                     raise RpcError("Acompanhamento encerrado; aceitação pode ter ocorrido.", "acceptance_unknown")
-        raw = _readline(connection, MAX_REQUEST_BYTES)
-        response = json.loads(raw.decode("utf-8"))
+        try:
+            raw = _readline(connection, MAX_RESPONSE_BYTES)
+            response = json.loads(raw.decode("utf-8"))
+            if not isinstance(response, dict):
+                raise ValueError("invalid response")
+        except (RpcError, UnicodeError, ValueError) as error:
+            raise RpcError("Resposta interrompida; aceitação desconhecida." if method == "notification.submit" else "Resposta RPC inválida.", "acceptance_unknown" if method == "notification.submit" else "invalid_response") from error
     if not response.get("ok"):
         raise RpcError(str(response.get("error") or "remote failure"), response.get("error_code"), response.get("error_details"))
     return response.get("result")
