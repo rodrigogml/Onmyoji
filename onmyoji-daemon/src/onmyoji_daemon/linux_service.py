@@ -14,6 +14,7 @@ from typing import Callable, Mapping
 
 ACCOUNT_PATTERN = re.compile(r"[a-z_][a-z0-9_-]{0,30}\Z")
 MIB = 1024 * 1024
+DEDICATED_SETUP_ENVIRONMENT = "ONMYOJI_DEDICATED_SETUP"
 
 
 @dataclass(frozen=True)
@@ -109,6 +110,39 @@ def validate_account(value: str) -> str:
     return candidate
 
 
+def execution_profile_path(root: Path) -> Path:
+    return root.resolve() / "configs" / "shikigami" / "linux-execution.json"
+
+
+def load_execution_profile(root: Path) -> dict[str, object]:
+    try:
+        value = json.loads(execution_profile_path(root).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(value, dict) or value.get("schema_version") != 1 or value.get("mode") not in {"current", "dedicated"}:
+        return {}
+    return value
+
+
+def save_execution_profile(root: Path, values: Mapping[str, object]) -> None:
+    path = execution_profile_path(root)
+    payload = {"schema_version": 1, **values}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+
+
+def account_command(account: str, home: Path, command: list[str], environment: Mapping[str, str] | None = None) -> list[str]:
+    """Monta uma execução direta sob a conta, sem abrir seu shell de login."""
+    account = validate_account(account)
+    variables = {"HOME": str(home), **dict(environment or {})}
+    delegated = ["env", *(f"{key}={value}" for key, value in variables.items()), *command]
+    if shutil.which("sudo"):
+        return ["sudo", "--user", account, "--set-home", "--", *delegated]
+    if getattr(os, "geteuid", lambda: 1)() == 0 and shutil.which("runuser"):
+        return ["runuser", "--user", account, "--", *delegated]
+    raise RuntimeError("sudo não está disponível para executar a fase dedicada do setup.")
+
+
 def _run(command: list[str], *, elevated: bool, use_sudo: bool, input_value: str | None = None) -> subprocess.CompletedProcess[str]:
     if elevated and not use_sudo:
         return subprocess.CompletedProcess(command, 126, "", "A operação exige confirmação de sudo.")
@@ -124,7 +158,7 @@ def _checked(command: list[str], *, elevated: bool, use_sudo: bool) -> tuple[boo
 
 
 def provision_account(account: str, installer: str, root: Path, workspace: Path, use_sudo: bool, progress: Callable[[str], None] | None = None, *, share_with_installer: bool = True) -> tuple[bool, str, Path]:
-    """Cria uma conta sem login e aplica grupo, setgid e ACL padrão às duas árvores."""
+    """Cria a conta, transfere as árvores e aplica acesso herdável quando compartilhadas."""
     try:
         account = validate_account(account)
         installer = installer.strip()
@@ -135,8 +169,8 @@ def provision_account(account: str, installer: str, root: Path, workspace: Path,
     root, workspace = root.resolve(), workspace.resolve()
     if not root.is_dir() or not workspace.is_dir():
         return False, "A instância e o workspace precisam existir antes do isolamento.", Path("/")
-    required = ["getent", "useradd", "chown", "chmod", "find"]
-    if share_with_installer: required.extend(["usermod", "chgrp", "setfacl", "getfacl"])
+    required = ["getent", "useradd", "chown", "chmod", "find", "setfacl"]
+    if share_with_installer: required.extend(["usermod", "getfacl"])
     missing = [name for name in required if not shutil.which(name)]
     if missing:
         guidance = "Instale o pacote de ACL e os utilitários de contas." if share_with_installer else "Instale os utilitários de contas do sistema."
@@ -168,11 +202,25 @@ def provision_account(account: str, installer: str, root: Path, workspace: Path,
         if progress: progress(f"Associando {installer} ao grupo privado {account}.")
         ok, detail = _checked(["usermod", "--append", "--groups", account, installer], elevated=elevated, use_sudo=use_sudo)
         if not ok: return False, detail or "Não foi possível configurar o grupo compartilhado.", home
+    traversal_prepared: set[Path] = set()
     for directory in (root, workspace):
+        for ancestor in directory.parents:
+            if ancestor == Path("/") or ancestor in traversal_prepared:
+                continue
+            traversal_prepared.add(ancestor)
+            try:
+                publicly_traversable = bool(ancestor.stat().st_mode & 0o001)
+            except OSError as error:
+                return False, f"Não foi possível inspecionar o caminho pai {ancestor}: {error}", home
+            if publicly_traversable:
+                continue
+            if progress: progress(f"Concedendo somente travessia a {account} em {ancestor}.")
+            ok, detail = _checked(["setfacl", "-m", f"u:{account}:--x", str(ancestor)], elevated=elevated, use_sudo=use_sudo)
+            if not ok: return False, detail or f"Não foi possível liberar a travessia de {ancestor}.", home
         if progress: progress(f"Aplicando permissões herdáveis em {directory}.")
         if share_with_installer:
             commands = (
-                ["chgrp", "-R", account, str(directory)],
+                ["chown", "-R", f"{account}:{account}", str(directory)],
                 ["chmod", "-R", "g+rwX,o-rwx", str(directory)],
                 ["find", str(directory), "-type", "d", "-exec", "chmod", "g+s", "{}", "+"],
                 ["setfacl", "-R", "-m", f"u:{installer}:rwX,m::rwX", str(directory)],

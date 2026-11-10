@@ -72,7 +72,7 @@ def test_account_provisioning_uses_inherited_acl_or_exclusive_ownership(tmp_path
     if share:
         assert any("usermod" in command and "instalador" in command for command in calls)
         assert any("setfacl" in command and "d:u:instalador:rwx,d:u::rwx,d:g::rwx,d:m::rwx,d:o::---" in command for command in calls)
-        assert not any("chown" in command and "-R" in command for command in calls)
+        assert any("chown" in command and "-R" in command and "shikigami-teste:shikigami-teste" in command for command in calls)
     else:
         assert not any("usermod" in command for command in calls)
         assert any("chown" in command and "shikigami-teste:shikigami-teste" in command for command in calls)
@@ -83,3 +83,21 @@ def test_account_name_is_stable_and_linux_safe():
     assert linux_service.account_name("Ōkami") == "shikigami-okami"
     with pytest.raises(ValueError):
         linux_service.validate_account("Conta Inválida")
+
+
+def test_execution_profile_round_trip_stays_inside_private_configuration(tmp_path):
+    linux_service.save_execution_profile(tmp_path, {"mode": "dedicated", "account": "shikigami-teste", "validated": False})
+
+    assert linux_service.execution_profile_path(tmp_path) == tmp_path / "configs" / "shikigami" / "linux-execution.json"
+    assert linux_service.load_execution_profile(tmp_path) == {"schema_version": 1, "mode": "dedicated", "account": "shikigami-teste", "validated": False}
+
+
+def test_account_command_sets_dedicated_home_and_environment_without_login_shell(monkeypatch):
+    monkeypatch.setattr(linux_service.shutil, "which", lambda name: "/usr/bin/sudo" if name == "sudo" else None)
+
+    command = linux_service.account_command("shikigami-teste", Path("/home/shikigami-teste"), ["/usr/bin/python3", "setup.py"], {"CODEX_HOME": "/srv/instancia"})
+
+    assert command[:6] == ["sudo", "--user", "shikigami-teste", "--set-home", "--", "env"]
+    assert command[6].replace("\\", "/") == "HOME=/home/shikigami-teste"
+    assert "CODEX_HOME=/srv/instancia" in command
+    assert command[-2:] == ["/usr/bin/python3", "setup.py"]

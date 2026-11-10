@@ -664,6 +664,39 @@ class SystemSetupTests(unittest.TestCase):
         self.assertIsNotNone(installed)
         self.assertEqual(installed["shikigami_identity"], "Lavelinha")
 
+    def test_dedicated_child_profile_requires_the_registered_account_and_marker(self) -> None:
+        profile = {"mode": "dedicated", "account": "shikigami-tsuki", "home": "/home/shikigami-tsuki"}
+        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "load_execution_profile", return_value=profile), patch.object(MODULE, "linux_current_user", return_value="shikigami-tsuki"), patch.dict(MODULE.os.environ, {MODULE.DEDICATED_SETUP_ENVIRONMENT: "1"}, clear=False):
+            self.assertEqual(MODULE.dedicated_child_profile(Path(temporary)), profile)
+        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "load_execution_profile", return_value=profile), patch.object(MODULE, "linux_current_user", return_value="outro"), patch.dict(MODULE.os.environ, {MODULE.DEDICATED_SETUP_ENVIRONMENT: "1"}, clear=False):
+            self.assertEqual(MODULE.dedicated_child_profile(Path(temporary)), {})
+
+    def test_execution_diagnostics_runs_as_the_validated_dedicated_account(self) -> None:
+        profile = {"mode": "dedicated", "account": "shikigami-tsuki", "home": "/home/shikigami-tsuki", "setup_python": "/usr/bin/python3", "validated": True}
+        expected = [{"state": "ok", "label": "Identidade", "detail": "shikigami-tsuki"}]
+        completed = subprocess.CompletedProcess(["sudo"], 0, json.dumps(expected), "")
+        with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "load_execution_profile", return_value=profile), patch.object(MODULE, "linux_current_user", return_value="instalador"), patch.object(MODULE, "account_command", return_value=["sudo", "child"]) as delegated, patch.object(MODULE.subprocess, "run", return_value=completed):
+            diagnostics = MODULE.execution_diagnostics(Path(temporary))
+        self.assertEqual(diagnostics, expected)
+        self.assertIn("--dedicated-checks", delegated.call_args.args[2])
+
+    def test_dedicated_preparation_persists_identity_before_provision_and_handoff(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "instance"; workspace = Path(temporary) / "work"; root.mkdir(); workspace.mkdir()
+            observed = {}
+            def launch(_root, profile):
+                observed.update(profile)
+                saved = MODULE.load_execution_profile(root)
+                saved["validated"] = True
+                MODULE.save_execution_profile(root, saved)
+                return True
+            with patch.object(MODULE, "configure_installer_git_access", return_value=(True, "ok")), patch.object(MODULE, "provision_account", return_value=(True, "ok", Path("/home/shikigami-tsuki"))) as provision, patch.object(MODULE, "launch_dedicated_setup", side_effect=launch):
+                self.assertTrue(MODULE.prepare_dedicated_environment(root, "Tsuki", workspace, "shikigami-tsuki", "instalador", True))
+            provision.assert_called_once()
+            self.assertEqual(observed["account"], "shikigami-tsuki")
+            self.assertEqual(observed["workspace"], str(workspace.resolve()))
+            self.assertFalse(observed["validated"])
+
     def test_telegram_token_entry_uses_the_configured_shikigami_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -36,7 +36,7 @@ from onmyoji_daemon.mcp.eccovox import EccoVoxError, EccoVoxService
 from onmyoji_daemon import runtime as python_runtime
 from onmyoji_daemon.telegram_stickers import MAX_CONTEXT_LENGTH, STATIC_STICKER_TARGET_BYTES, STICKER_ID, convert_static as convert_static_sticker, discover as discover_stickers, discover_static_sources, load as load_sticker_catalog, save as save_sticker_catalog, sticker_folder, suggested_identifier
 from onmyoji_daemon import management as daemon_management
-from onmyoji_daemon.linux_service import ServiceLimits, account_name as linux_account_name, limits_json, limits_summary, recommended_limits, validate_account
+from onmyoji_daemon.linux_service import DEDICATED_SETUP_ENVIRONMENT, ServiceLimits, account_command, account_name as linux_account_name, limits_json, limits_summary, load_execution_profile, provision_account, recommended_limits, save_execution_profile, validate_account
 from onmyoji_daemon.publication_diagnostics import diagnose as diagnose_publication
 from onmyoji_daemon.cloudflare_tunnel.installer import inspect_cloudflared_directory
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
@@ -755,43 +755,221 @@ def configure_initial_codex(root: Path, data: dict[str, object]) -> dict[str, ob
             return candidate
 
 
-def initial_installation_wizard(root: Path, data: dict[str, object]) -> dict[str, object] | None:
-    """Coleta a identidade e confirma um Codex-CLI funcional antes de instalar o Shikigami."""
-    while True:
-        flow_heading("Instalação inicial", "Identidade do Shikigami")
-        note("Informe o nome exibido pelo Shikigami. Digite X para cancelar.")
-        suggested = " ".join(str(data.get("shikigami_identity") or "").split())
-        label = f"Nome do Shikigami [{suggested}]: " if suggested else "Nome do Shikigami: "
-        raw = prompt(label).strip()
-        if raw.casefold() in {"x", "\x1b"}: return None
-        identity = " ".join(raw.split()) or suggested
-        if not identity:
-            result(False, "Informe um nome não vazio.")
+def linux_current_user() -> str:
+    try:
+        completed = subprocess.run(["id", "-un"], text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=5, check=False)
+        return completed.stdout.strip() or getpass.getuser()
+    except (OSError, subprocess.TimeoutExpired):
+        return getpass.getuser()
+
+
+def dedicated_path(home: Path) -> str:
+    values = [str(home / ".local" / "bin"), str(home / "bin"), "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
+    return os.pathsep.join(values)
+
+
+def dedicated_child_profile(root: Path) -> dict[str, object]:
+    if os.environ.get(DEDICATED_SETUP_ENVIRONMENT) != "1": return {}
+    profile = load_execution_profile(root)
+    if profile.get("mode") != "dedicated": return {}
+    account = str(profile.get("account") or "")
+    return profile if account and linux_current_user() == account else {}
+
+
+def configure_installer_git_access(root: Path) -> tuple[bool, str]:
+    """Autoriza somente esta instância no Git global do instalador após a troca de proprietário."""
+    if not shutil.which("git"): return False, "Git não está disponível para configurar o acesso do instalador."
+    current = subprocess.run(["git", "config", "--global", "--get-all", "safe.directory"], text=True, encoding="utf-8", errors="replace", capture_output=True, check=False)
+    resolved = str(root.resolve())
+    if resolved in {line.strip() for line in current.stdout.splitlines()}:
+        return True, "Instância já autorizada no Git do instalador."
+    changed = subprocess.run(["git", "config", "--global", "--add", "safe.directory", resolved], text=True, encoding="utf-8", errors="replace", capture_output=True, check=False)
+    return changed.returncode == 0, (changed.stderr or changed.stdout).strip() or "Instância autorizada no Git do instalador."
+
+
+def validate_dedicated_environment(root: Path, data: dict[str, object]) -> bool:
+    """Exercita o ambiente efetivo que será herdado pelo daemon e pelo Codex."""
+    profile = dedicated_child_profile(root)
+    if not profile:
+        result(False, "A fase dedicada não corresponde à conta registrada."); return False
+    account, home = str(profile["account"]), Path(str(profile["home"]))
+    workspace = Path(str(profile["workspace"])).resolve()
+    flow_heading("Validação da identidade dedicada", f"Conta {account} · home {home}")
+    checks: list[tuple[bool, str]] = [
+        (Path(os.environ.get("HOME", "")).resolve() == home.resolve(), "HOME da conta dedicada"),
+        (os.access(root, os.R_OK | os.W_OK | os.X_OK), "Acesso completo à instância"),
+        (workspace.is_dir() and os.access(workspace, os.R_OK | os.W_OK | os.X_OK), "Acesso completo ao workspace"),
+    ]
+    python_value = str(data.get("python_base_executable") if data.get("python_mode") == "isolated" else data.get("python_executable") or "")
+    python_path = Path(python_value).expanduser()
+    checks.append((python_path.is_file() and os.access(python_path, os.X_OK), "Python selecionado acessível"))
+    codex_path = Path(str(data.get("executable") or "")).expanduser()
+    checks.append((codex_path.is_file() and os.access(codex_path, os.X_OK), "Codex-CLI acessível"))
+    git_environment = dict(os.environ); git_environment.update({"GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0"})
+    try:
+        status = subprocess.run(["git", "status", "--porcelain=v1", "--untracked-files=no"], cwd=str(root), env=git_environment, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=20, check=False)
+        checks.append((status.returncode == 0, "Repositório Git acessível sem conflito de proprietário"))
+        remotes = subprocess.run(["git", "remote"], cwd=str(root), env=git_environment, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=10, check=False)
+        remote_names = remotes.stdout.split() if remotes.returncode == 0 else []
+        for remote in (name for name in ("upstream", "origin") if name in remote_names):
+            reachable = subprocess.run(["git", "ls-remote", remote], cwd=str(root), env=git_environment, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=60, check=False)
+            checks.append((reachable.returncode == 0, f"Acesso ao remoto Git {remote}"))
+    except (OSError, subprocess.TimeoutExpired):
+        checks.append((False, "Execução e remotos do Git"))
+    for ready, label in checks: result(ready, label)
+    return all(ready for ready, _label in checks)
+
+
+def launch_dedicated_setup(root: Path, profile: dict[str, object]) -> bool:
+    account, home = str(profile["account"]), Path(str(profile["home"]))
+    environment = {"CODEX_HOME": str(root.resolve()), DEDICATED_SETUP_ENVIRONMENT: "1", "PYTHONDONTWRITEBYTECODE": "1", "PATH": dedicated_path(home)}
+    candidates = [Path(sys.executable), Path("/usr/bin/python3")]
+    discovered = shutil.which("python3")
+    if discovered: candidates.append(Path(discovered))
+    selected: Path | None = None
+    for candidate in dict.fromkeys(path.resolve() for path in candidates if path.is_file()):
+        try: probe_command = account_command(account, home, [str(candidate), "-B", "-c", "import sys; assert sys.version_info >= (3, 11)"], environment)
+        except (RuntimeError, ValueError) as error: result(False, str(error)); return False
+        try:
+            probe = subprocess.run(probe_command, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=20, check=False)
+        except (OSError, subprocess.TimeoutExpired):
             continue
-        candidate = dict(data); candidate["shikigami_identity"] = identity
+        if probe.returncode == 0: selected = candidate; break
+    if selected is None:
+        result(False, "Nenhum Python 3.11+ acessível à conta dedicada foi encontrado fora do home do instalador."); return False
+    command = account_command(account, home, [str(selected), "-B", str(root / "setupOnmyoji.py"), "--dedicated-phase"], environment)
+    try: completed = subprocess.run(command, check=False)
+    except OSError as error: result(False, f"Não foi possível iniciar a fase dedicada: {error}"); return False
+    if completed.returncode != 0:
+        result(False, f"A fase dedicada terminou com código {completed.returncode}."); return False
+    if not bool(profile.get("installer_access", True)): return True
+    validated = load_execution_profile(root)
+    if validated.get("validated") is not True:
+        result(False, "A fase dedicada terminou sem certificar o ambiente."); return False
+    return True
+
+
+def run_dedicated_menu(root: Path, destination: str) -> bool:
+    profile = load_execution_profile(root)
+    if profile.get("mode") != "dedicated" or profile.get("validated") is not True:
+        return False
+    account, home = str(profile.get("account") or ""), Path(str(profile.get("home") or ""))
+    if linux_current_user() == account:
+        return False
+    python = Path(str(profile.get("setup_python") or "/usr/bin/python3"))
+    environment = {"CODEX_HOME": str(root.resolve()), DEDICATED_SETUP_ENVIRONMENT: "1", "PYTHONDONTWRITEBYTECODE": "1", "PATH": dedicated_path(home)}
+    try: command = account_command(account, home, [str(python), "-B", str(root / "setupOnmyoji.py"), "--dedicated-menu", destination], environment)
+    except (RuntimeError, ValueError) as error: result(False, str(error)); return True
+    try: completed = subprocess.run(command, check=False)
+    except OSError as error: result(False, f"Não foi possível abrir o menu sob {account}: {error}"); return True
+    if completed.returncode: result(False, f"O menu dedicado terminou com código {completed.returncode}.")
+    return True
+
+
+def execution_diagnostics(root: Path, progress=None) -> list[dict[str, str]]:
+    """Executa os diagnósticos sob a identidade que efetivamente executará o Shikigami."""
+    profile = load_execution_profile(root)
+    if profile.get("mode") != "dedicated" or profile.get("validated") is not True or linux_current_user() == profile.get("account"):
+        return shikigami_diagnostics(root, progress)
+    if progress:
+        progress(f"Executando verificações como {profile.get('account')}...")
+    account, home = str(profile.get("account") or ""), Path(str(profile.get("home") or ""))
+    python = Path(str(profile.get("setup_python") or "/usr/bin/python3"))
+    environment = {"CODEX_HOME": str(root.resolve()), DEDICATED_SETUP_ENVIRONMENT: "1", "PYTHONDONTWRITEBYTECODE": "1", "PATH": dedicated_path(home)}
+    try:
+        command = account_command(account, home, [str(python), "-B", str(root / "setupOnmyoji.py"), "--dedicated-checks"], environment)
+        completed = subprocess.run(command, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=180, check=False)
+    except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
+        return [{"state": "error", "label": "Diagnóstico sob identidade dedicada", "detail": str(error)}]
+    try:
+        diagnostics = json.loads(completed.stdout or "[]")
+    except json.JSONDecodeError:
+        diagnostics = None
+    if completed.returncode or not isinstance(diagnostics, list):
+        detail = diagnostic_detail(completed) or f"O diagnóstico terminou com código {completed.returncode}."
+        return [{"state": "error", "label": "Diagnóstico sob identidade dedicada", "detail": detail}]
+    return diagnostics
+
+
+def prepare_dedicated_environment(root: Path, identity: str, workspace: Path, account: str, installer: str, installer_access: bool) -> bool:
+    """Provisiona a identidade e delega toda configuração sensível ao seu processo filho."""
+    home = Path("/home") / account
+    profile = {"mode": "dedicated", "identity": identity, "account": account, "group": account, "home": str(home), "installer_user": installer, "installer_access": installer_access, "workspace": str(workspace.resolve()), "validated": False}
+    try: save_execution_profile(root, profile)
+    except OSError as error: result(False, f"Não foi possível registrar a identidade dedicada: {error}"); return False
+    if installer_access:
+        configured, detail = configure_installer_git_access(root); result(configured, detail)
+        if not configured: return False
+    prepared, detail, _home = provision_account(account, installer, root, workspace, True, lambda message: print("  → " + message), share_with_installer=installer_access)
+    result(prepared, detail)
+    if not prepared: return False
+    return launch_dedicated_setup(root, profile)
+
+
+def configure_python_runtime(data: dict[str, object]) -> dict[str, object] | None:
+    while True:
         flow_heading("Instalação inicial", "Runtime Python do Shikigami")
         print("  1. Ambiente isolado — cria /venv na raiz da instância.")
         print("  2. Python global — instala dependências no interpretador selecionado.")
-        mode = prompt("Opção [1]: ").strip().casefold() or "1"
-        if mode in {"x", "\x1b"}:
-            return None
+        default_mode = "2" if data.get("python_mode") == "global" else "1"
+        mode = prompt(f"Opção [{default_mode}]: ").strip().casefold() or default_mode
+        if mode in {"x", "\x1b"}: return None
         if mode not in {"1", "2"}:
             result(False, "Escolha 1 ou 2.")
             continue
-        selected_python = prompt(f"Python [{sys.executable}]: ").strip() or sys.executable
+        configured = str(data.get("python_base_executable") if mode == "1" else data.get("python_executable") or "")
+        selected_python = prompt(f"Python [{configured or sys.executable}]: ").strip() or configured or sys.executable
         if not Path(selected_python).expanduser().is_file():
             result(False, "Informe um executável Python existente.")
             continue
-        candidate["python_mode"] = "isolated" if mode == "1" else "global"
+        candidate = dict(data); candidate["python_mode"] = "isolated" if mode == "1" else "global"
         candidate["python_base_executable"] = str(Path(selected_python).expanduser()) if mode == "1" else ""
         candidate["python_executable"] = str(Path(selected_python).expanduser()) if mode == "2" else ""
+        return candidate
+
+
+def initial_installation_wizard(root: Path, data: dict[str, object]) -> dict[str, object] | None:
+    """Coleta a identidade e confirma um Codex-CLI funcional antes de instalar o Shikigami."""
+    while True:
+        child_profile = dedicated_child_profile(root)
+        if child_profile:
+            candidate = dict(data); candidate["shikigami_identity"] = str(child_profile.get("identity") or data.get("shikigami_identity") or "Shikigami"); candidate["project_directory"] = str(child_profile["workspace"])
+        else:
+            flow_heading("Instalação inicial", "Identidade do Shikigami")
+            note("Informe o nome exibido pelo Shikigami. Digite X para cancelar.")
+            suggested = " ".join(str(data.get("shikigami_identity") or "").split())
+            label = f"Nome do Shikigami [{suggested}]: " if suggested else "Nome do Shikigami: "
+            raw = prompt(label).strip()
+            if raw.casefold() in {"x", "\x1b"}: return None
+            identity = " ".join(raw.split()) or suggested
+            if not identity: result(False, "Informe um nome não vazio."); continue
+            candidate = dict(data); candidate["shikigami_identity"] = identity
+            project_directory = choose_project_directory(root, str(candidate["project_directory"]))
+            if project_directory is None: return None
+            candidate["project_directory"] = project_directory
+            if os.name != "nt":
+                execution = flow_choice("Identidade de execução", ["Usuário atual", "Usuário Linux exclusivo"], "Usuário Linux exclusivo")
+                if execution is None: return None
+                installer = linux_current_user()
+                if execution == "Usuário Linux exclusivo":
+                    default_account = linux_account_name(identity)
+                    raw_account = prompt(f"Usuário Linux exclusivo [{default_account}]: ").strip() or default_account
+                    try: account = validate_account(raw_account)
+                    except ValueError as error: result(False, str(error)); continue
+                    share = prompt(f"Permitir ao usuário {installer} acesso completo à instância e ao workspace? [S/n]: ").strip().casefold() not in {"n", "nao", "não"}
+                    candidate_saved, detail = save_system(root, candidate, validate=False); result(candidate_saved, detail)
+                    if not candidate_saved: return None
+                    if not prepare_dedicated_environment(root, identity, Path(project_directory), account, installer, share): return None
+                    if not share: raise SystemExit(0)
+                    installed = load_system(root)
+                    return installed if bool(installed.get("shikigami_installed")) else None
+                save_execution_profile(root, {"mode": "current", "identity": identity, "account": installer, "home": str(Path.home()), "workspace": project_directory, "installer_user": installer, "installer_access": True, "validated": True})
+        candidate = configure_python_runtime(candidate)
+        if candidate is None: return None
         candidate = configure_initial_codex(root, candidate)
         if candidate is None:
             return None
-        project_directory = choose_project_directory(root, str(candidate["project_directory"]))
-        if project_directory is None:
-            return None
-        candidate["project_directory"] = project_directory
+        project_directory = str(candidate["project_directory"])
         sandbox = choose_sandbox(root, Path(project_directory), str(candidate["sandbox_mode"]), flow=True)
         if sandbox is None:
             return None
@@ -800,11 +978,35 @@ def initial_installation_wizard(root: Path, data: dict[str, object]) -> dict[str
         if approval is None:
             return None
         candidate["approval_policy"] = approval
+        if child_profile and not validate_dedicated_environment(root, candidate): return None
         candidate["shikigami_installed"] = True
         ok, message = save_system(root, candidate)
         if ok:
+            if child_profile:
+                child_profile["validated"] = True; child_profile["codex_executable"] = str(candidate["executable"]); child_profile["python_mode"] = str(candidate["python_mode"]); child_profile["setup_python"] = sys.executable
+                save_execution_profile(root, child_profile)
             return candidate
         result(False, message)
+
+
+def dedicated_migration_wizard(root: Path, data: dict[str, object]) -> dict[str, object] | None:
+    """Revalida uma instalação existente inteiramente sob a nova identidade Linux."""
+    profile = dedicated_child_profile(root)
+    if not profile:
+        result(False, "A migração não está sendo executada pela conta Linux registrada."); return None
+    candidate = dict(data); candidate["project_directory"] = str(profile["workspace"])
+    candidate = configure_python_runtime(candidate)
+    if candidate is None: return None
+    candidate = configure_initial_codex(root, candidate)
+    if candidate is None: return None
+    if not validate_dedicated_environment(root, candidate): return None
+    ok, message = save_system(root, candidate); result(ok, message)
+    if not ok: return None
+    profile["validated"] = True; profile["codex_executable"] = str(candidate["executable"]); profile["python_mode"] = str(candidate["python_mode"]); profile["setup_python"] = sys.executable
+    try: save_execution_profile(root, profile)
+    except OSError as error: result(False, f"Não foi possível certificar a identidade dedicada: {error}"); return None
+    result(True, "Python, Codex, workspace e Git foram certificados sob a conta dedicada.")
+    return candidate
 
 
 def enabled_ids(root: Path, skills: list[Skill] | None = None) -> set[str]:
@@ -1356,7 +1558,7 @@ def shikigami_diagnostics(root: Path, progress=None) -> list[dict[str, str]]:
 def diagnostics_menu(root: Path) -> None:
     """Exibe os resultados detalhados do diagnóstico básico da instância."""
     flow_heading("Diagnóstico", "Estado da instalação e do Codex-CLI")
-    diagnostics = shikigami_diagnostics(root, lambda message: print("  → " + message))
+    diagnostics = execution_diagnostics(root, lambda message: print("  → " + message))
     print()
     for diagnostic in diagnostics:
         state = diagnostic["state"]
@@ -1840,6 +2042,8 @@ def daemon_menu(root: Path) -> None:
         return
     environment = dict(os.environ); source = str(project / "src")
     environment["PYTHONPATH"] = source + (os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else "")
+    execution_profile = load_execution_profile(root)
+    dedicated_execution = execution_profile.get("mode") == "dedicated" and execution_profile.get("validated") is True and linux_current_user() != execution_profile.get("account")
     telegram_token_changed = False
 
     def windows_service_administrator() -> bool:
@@ -1851,14 +2055,20 @@ def daemon_menu(root: Path) -> None:
         except (AttributeError, OSError):
             return False
 
-    def command(arguments: list[str], quiet: bool = False, input_value: str | None = None, capture_stdout: bool = False) -> subprocess.CompletedProcess[str]:
+    def command(arguments: list[str], quiet: bool = False, input_value: str | None = None, capture_stdout: bool = False, administrative: bool = False) -> subprocess.CompletedProcess[str]:
         output = {"stdout": subprocess.PIPE} if capture_stdout else {"capture_output": quiet}
-        return subprocess.run(arguments, cwd=str(project), env=environment, text=True, encoding="utf-8", errors="replace", input=input_value, **output)
+        effective = list(arguments)
+        if dedicated_execution and not administrative:
+            account, home = str(execution_profile["account"]), Path(str(execution_profile["home"]))
+            if effective and Path(effective[0]).resolve() == Path(sys.executable).resolve(): effective[0] = str(execution_profile.get("setup_python") or "/usr/bin/python3")
+            delegated_environment = {"CODEX_HOME": str(root.resolve()), "PYTHONPATH": environment["PYTHONPATH"], "PYTHONUTF8": "1", "PATH": dedicated_path(home)}
+            effective = account_command(account, home, effective, delegated_environment)
+        return subprocess.run(effective, cwd=str(project), env=environment, text=True, encoding="utf-8", errors="replace", input=input_value, **output)
 
     def lifecycle(action: str, extra: list[str] | None = None, input_value: str | None = None) -> bool:
         visible = action in {"install-service", "configure-windows-service-account", "configure-service-resources", "repair-service-permissions", "service-security", "remove-service", "service-start", "service-stop", "service-restart", "service-force-stop"}
         try:
-            completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), action, *(extra or [])], quiet=not visible, input_value=input_value)
+            completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), action, *(extra or [])], quiet=not visible, input_value=input_value, administrative=visible)
         except KeyboardInterrupt:
             result(False, "Operação interrompida pelo usuário."); return False
         result(completed.returncode == 0, (completed.stdout or completed.stderr or "Operação concluída.").strip())
@@ -1910,7 +2120,7 @@ def daemon_menu(root: Path) -> None:
         """Mostra primeiro os pré-requisitos do Shikigami e depois a plataforma."""
         flow_heading("Diagnóstico do Daemon", "Pré-requisitos do Shikigami e estado da plataforma; serviços não são avaliados aqui")
         print("\n  Diagnóstico principal do Shikigami")
-        main_checks = shikigami_diagnostics(root, lambda message: print("    → " + message)); print_checks(main_checks)
+        main_checks = execution_diagnostics(root, lambda message: print("    → " + message)); print_checks(main_checks)
         print("\n  Diagnóstico da plataforma do daemon")
         daemon_checks = validation("daemon-validation-json"); print_checks(daemon_checks)
         return all(check.get("state") == "ok" for check in [*main_checks, *daemon_checks])
@@ -1919,7 +2129,7 @@ def daemon_menu(root: Path) -> None:
         """Exibe dependências da plataforma antes das verificações do gateway."""
         flow_heading("Diagnóstico do Telegram", "Plataforma, vault MCP e estado do gateway")
         print("\n  Diagnóstico principal do Shikigami")
-        main_checks = shikigami_diagnostics(root, lambda message: print("    → " + message)); print_checks(main_checks)
+        main_checks = execution_diagnostics(root, lambda message: print("    → " + message)); print_checks(main_checks)
         print("\n  Diagnóstico da plataforma do daemon")
         daemon_checks = validation("daemon-validation-json"); print_checks(daemon_checks)
         print("\n  Diagnóstico específico do Telegram")
@@ -1978,7 +2188,7 @@ def daemon_menu(root: Path) -> None:
         """Configura e valida exclusivamente a plataforma local do daemon."""
         flow_heading("Wizard do Daemon", "Configuração e validação da plataforma local")
         note("Cada etapa confirmada é salva imediatamente. Valores já válidos permanecem disponíveis quando o wizard for executado novamente.")
-        main_checks = shikigami_diagnostics(root, lambda message: print("    → " + message))
+        main_checks = execution_diagnostics(root, lambda message: print("    → " + message))
         print("\n  1. Pré-requisitos do Shikigami")
         print_checks(main_checks)
         if any(check.get("state") != "ok" for check in main_checks):
@@ -2142,13 +2352,6 @@ def daemon_menu(root: Path) -> None:
             except ValueError as error:
                 result(False, str(error)); return None
 
-        def linux_installer_user() -> str:
-            try:
-                completed = subprocess.run(["id", "-un"], text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=5, check=False)
-                return completed.stdout.strip() or getpass.getuser()
-            except (OSError, subprocess.TimeoutExpired):
-                return getpass.getuser()
-
         def privileged_service_action(action: str, extra: list[str] | None = None) -> bool:
             extras: list[str] = list(extra or [])
             if os.name != "nt":
@@ -2190,30 +2393,41 @@ def daemon_menu(root: Path) -> None:
                     continue
                 limits = choose_service_limits()
                 if limits is None: result(False, "Instalação do serviço cancelada."); continue
-                selected = flow_choice("Identidade de execução", ["Usuário atual — systemd --user", "Usuário exclusivo — serviço isolado do sistema"], "Usuário exclusivo — serviço isolado do sistema")
+                execution_profile = load_execution_profile(root)
+                if execution_profile.get("mode") == "dedicated":
+                    selected = "Usuário exclusivo — serviço isolado do sistema"
+                    note(f"Identidade preparada: {execution_profile.get('account')} · validada: {'sim' if execution_profile.get('validated') else 'não'}.")
+                else:
+                    default_execution = "Usuário atual — systemd --user" if execution_profile.get("mode") == "current" else "Usuário exclusivo — serviço isolado do sistema"
+                    selected = flow_choice("Identidade de execução", ["Usuário atual — systemd --user", "Usuário exclusivo — serviço isolado do sistema"], default_execution)
                 if selected is None: result(False, "Instalação do serviço cancelada."); continue
                 common = ["--name", name, "--description", description, "--resource-limits", limits_json(limits)]
                 if selected.startswith("Usuário atual"):
                     lifecycle("install-service", [*common, "--scope", "user"]); continue
-                installer = linux_installer_user()
-                default_account = linux_account_name(visible)
-                run_as_user = prompt(f"Usuário Linux exclusivo [{default_account}]: ").strip() or default_account
-                try: run_as_user = validate_account(run_as_user)
-                except ValueError as error: result(False, str(error)); continue
                 data = load_system(root)
                 workspace = Path(str(data.get("project_directory") or suggested_project_directory(root))).expanduser().resolve()
                 if not workspace.is_dir(): result(False, f"O workspace precisa existir antes do isolamento: {workspace}"); continue
-                share = prompt(f"Permitir ao usuário {installer} acesso completo à instância e ao workspace? [S/n]: ").strip().casefold() not in {"n", "nao", "não"}
+                if execution_profile.get("mode") == "dedicated":
+                    run_as_user = str(execution_profile.get("account") or ""); installer = str(execution_profile.get("installer_user") or ""); share = bool(execution_profile.get("installer_access", True))
+                else:
+                    installer = linux_current_user(); default_account = linux_account_name(visible)
+                    run_as_user = prompt(f"Usuário Linux exclusivo [{default_account}]: ").strip() or default_account
+                    try: run_as_user = validate_account(run_as_user)
+                    except ValueError as error: result(False, str(error)); continue
+                    share = prompt(f"Permitir ao usuário {installer} acesso completo à instância e ao workspace? [S/n]: ").strip().casefold() not in {"n", "nao", "não"}
+                if execution_profile.get("validated") is not True:
+                    note(f"O ambiente será migrado e validado como {run_as_user} antes da criação da unit.")
+                    if not prepare_dedicated_environment(root, visible, workspace, run_as_user, installer, share): continue
+                    if not share:
+                        result(True, f"Ambiente dedicado preparado. Execute o setup como root para instalar o serviço de sistema.")
+                        raise SystemExit(0)
+                    execution_profile = load_execution_profile(root)
+                    if execution_profile.get("validated") is not True: result(False, "A identidade dedicada não foi certificada."); continue
                 note(f"Home da conta: /home/{run_as_user}. A instância continuará em {root} e o workspace em {workspace}.")
-                note("O setup solicitará sudo somente para criar a conta, aplicar ACLs e instalar a unit. A senha não será lida nem armazenada.")
-                if not share: note(f"Ao concluir, este setup será encerrado. A manutenção posterior deverá ser executada como {run_as_user} ou root.")
                 if prompt("Continuar com a instalação isolada? [s/N]: ").strip().casefold() not in {"s", "sim"}: result(False, "Instalação do serviço cancelada."); continue
                 extras = [*common, "--scope", "system", "--run-as-user", run_as_user, "--run-as-group", run_as_user, "--isolate-linux", "--installer-user", installer, "--workspace", str(workspace), "--use-sudo"]
                 if share: extras.append("--installer-access")
-                installed_service = lifecycle("install-service", extras)
-                if installed_service and not share:
-                    result(True, f"Isolamento concluído. Para reabrir o setup: sudo -u {run_as_user} -H {sys.executable} {root / 'setupOnmyoji.py'}")
-                    raise SystemExit(0)
+                lifecycle("install-service", extras)
                 continue
             item("1.", "Status do serviço")
             item("2.", "Parar serviço" if service_running() else "Iniciar serviço")
@@ -2768,7 +2982,7 @@ def daemon_menu(root: Path) -> None:
         flow_heading("Wizard do Telegram", "Configuração guiada do gateway e do primeiro owner")
         note("Cada etapa válida é mantida. O pareamento exige uma ação externa no Telegram e pode ser retomado depois.")
         print("\n  1. Pré-requisitos do Shikigami e daemon")
-        main_checks = shikigami_diagnostics(root, lambda message: print("    → " + message)); print_checks(main_checks)
+        main_checks = execution_diagnostics(root, lambda message: print("    → " + message)); print_checks(main_checks)
         daemon_checks = validation("daemon-validation-json"); print_checks(daemon_checks)
         if any(check.get("state") == "error" for check in [*main_checks, *daemon_checks]) or not daemon_running():
             result(False, "Corrija os pré-requisitos e inicie o daemon antes de configurar o Telegram."); return
@@ -3556,18 +3770,26 @@ def menu(skills: list[Skill], root: Path) -> int:
         item("X.", "Sair")
         choice = prompt("Selecione uma opção: ").strip().casefold()
         if choice == "x": return 0
-        if choice == "!": diagnostics_menu(root); continue
-        if choice == "p": python_menu(root); continue
-        if choice == "c": codex_menu(root); continue
+        if choice == "!":
+            if not run_dedicated_menu(root, "diagnostics"): diagnostics_menu(root)
+            continue
+        if choice == "p":
+            if not run_dedicated_menu(root, "python"): python_menu(root)
+            continue
+        if choice == "c":
+            if not run_dedicated_menu(root, "codex"): codex_menu(root)
+            continue
         if choice == "d": daemon_menu(root); continue
-        if choice == "m": subprocess.run([sys.executable, str(root / "onmyoji-daemon" / "setupMcp.py")], check=False); continue
+        if choice == "m":
+            if not run_dedicated_menu(root, "mcp"): subprocess.run([sys.executable, str(root / "onmyoji-daemon" / "setupMcp.py")], check=False)
+            continue
         if choice.isdigit() and 1 <= int(choice) <= len(skills): skill_menu(skills[int(choice) - 1], root, skills)
         else: result(False, "Opção inválida.")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--action", choices=["menu", "list", "enable", "disable", "configure", "status"], default="menu"); parser.add_argument("--skill"); parser.add_argument("--json", action="store_true"); args = parser.parse_args()
-    if args.action == "menu": opening_logo()
+    parser = argparse.ArgumentParser(); parser.add_argument("--action", choices=["menu", "list", "enable", "disable", "configure", "status"], default="menu"); parser.add_argument("--skill"); parser.add_argument("--json", action="store_true"); parser.add_argument("--dedicated-phase", action="store_true", help=argparse.SUPPRESS); parser.add_argument("--dedicated-menu", choices=["diagnostics", "python", "codex", "mcp"], help=argparse.SUPPRESS); parser.add_argument("--dedicated-checks", action="store_true", help=argparse.SUPPRESS); args = parser.parse_args()
+    if args.action == "menu" and not (args.dedicated_phase or args.dedicated_menu or args.dedicated_checks): opening_logo()
     system, message = ensure_shikigami_configuration(ROOT)
     if system is None:
         if args.json: print(json.dumps({"ok": False, "error": {"code": "system_configuration_failed", "message": message}}, ensure_ascii=False))
@@ -3580,7 +3802,24 @@ def main() -> int:
             else: print(message)
             return 2
         system = initial_installation_wizard(ROOT, system)
-        if system is None: return 0
+        if system is None: return 2 if args.dedicated_phase else 0
+    elif args.dedicated_phase:
+        system = dedicated_migration_wizard(ROOT, system)
+        if system is None: return 2
+    if args.dedicated_phase: return 0
+    if args.dedicated_checks:
+        if not dedicated_child_profile(ROOT):
+            print(json.dumps([{"state": "error", "label": "Identidade dedicada", "detail": "A execução não corresponde à conta Linux registrada."}], ensure_ascii=False))
+            return 2
+        print(json.dumps(shikigami_diagnostics(ROOT), ensure_ascii=False))
+        return 0
+    if args.dedicated_menu:
+        if not dedicated_child_profile(ROOT): result(False, "O menu dedicado exige a conta Linux registrada."); return 2
+        if args.dedicated_menu == "diagnostics": diagnostics_menu(ROOT)
+        elif args.dedicated_menu == "python": python_menu(ROOT)
+        elif args.dedicated_menu == "codex": codex_menu(ROOT)
+        else: subprocess.run([sys.executable, str(ROOT / "onmyoji-daemon" / "setupMcp.py")], check=False)
+        return 0
     skills = discover(); conflicts = conflicting_skill_ids(skills); by_id = {skill.identifier: skill for skill in skills if skill.identifier not in conflicts}
     initialized, initialization_message = ensure_skill_state(ROOT, skills)
     if not initialized:

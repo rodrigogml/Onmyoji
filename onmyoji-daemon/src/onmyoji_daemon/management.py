@@ -25,7 +25,7 @@ from .registry import SERVICES
 from .instance import identity
 from .supervisor import endpoint
 from . import runtime as shared_runtime
-from .linux_service import ServiceLimits, provision_account, recommended_limits, repair_permissions as repair_linux_permissions
+from .linux_service import ServiceLimits, load_execution_profile, provision_account, recommended_limits, repair_permissions as repair_linux_permissions
 
 
 def daemon_root(root: Path) -> Path: return root.resolve() / "configs" / "daemon"
@@ -393,6 +393,9 @@ def install_service(root: Path, name: str, description: str, scope: str = "syste
             if scope != "system": return False, "A identidade Linux dedicada exige um serviço de sistema."
             if not run_as_user or not installer_user or workspace_path is None:
                 return False, "Informe conta dedicada, usuário instalador e workspace para habilitar o isolamento."
+            execution_profile = load_execution_profile(root)
+            if execution_profile.get("mode") != "dedicated" or execution_profile.get("validated") is not True or execution_profile.get("account") != run_as_user or Path(str(execution_profile.get("workspace") or "")).resolve() != workspace_path:
+                return False, "A conta dedicada ainda não foi validada pelo setup para esta instância e workspace."
             prepared, detail, service_home = provision_account(run_as_user, installer_user, root, workspace_path, use_sudo, progress, share_with_installer=installer_access)
             if not prepared: return False, detail
             run_as_group = run_as_user
