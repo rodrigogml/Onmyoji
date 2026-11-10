@@ -84,6 +84,8 @@ class BootstrapShikigamiTests(unittest.TestCase):
             hook = (repository / ".git" / "hooks" / "pre-commit").read_text(encoding="utf-8")
         self.assertIn("onmyoji-daemon/setupMcp.py merge=shikigami-upstream", attributes)
         self.assertIn("setupOnmyoji.py merge=shikigami-upstream", attributes)
+        self.assertIn("instructions.md merge=shikigami-local", attributes)
+        self.assertIn("environment.toml merge=shikigami-local", attributes)
         self.assertIn("onmyoji-setup-guard", hook)
         self.assertIn("onmyoji-daemon/setupDaemon.py", hook)
         self.assertTrue(any(call.args[0][:2] == ["config", "merge.shikigami-upstream.driver"] for call in command.call_args_list))
@@ -103,6 +105,31 @@ class BootstrapShikigamiTests(unittest.TestCase):
 
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("pertence ao Onmyōji", completed.stderr)
+
+    def test_merge_rules_keep_template_identity_and_take_upstream_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            for arguments in (["init", "-b", "main"], ["config", "user.name", "Teste"], ["config", "user.email", "teste@example.test"]):
+                subprocess.run(["git", *arguments], cwd=repository, check=True, capture_output=True)
+            (repository / "instructions.md").write_text("base\n", encoding="utf-8")
+            (repository / "setupOnmyoji.py").write_text("base\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=repository, check=True); subprocess.run(["git", "commit", "-m", "Base"], cwd=repository, check=True, capture_output=True)
+            subprocess.run(["git", "branch", "upstream-change"], cwd=repository, check=True)
+            (repository / "instructions.md").write_text("instância\n", encoding="utf-8")
+            (repository / "setupOnmyoji.py").write_text("instância\n", encoding="utf-8")
+            subprocess.run(["git", "commit", "-am", "Personaliza instância"], cwd=repository, check=True, capture_output=True)
+            subprocess.run(["git", "switch", "upstream-change"], cwd=repository, check=True, capture_output=True)
+            (repository / "instructions.md").write_text("template novo\n", encoding="utf-8")
+            (repository / "setupOnmyoji.py").write_text("setup novo\n", encoding="utf-8")
+            subprocess.run(["git", "commit", "-am", "Atualiza Onmyoji"], cwd=repository, check=True, capture_output=True)
+            subprocess.run(["git", "switch", "main"], cwd=repository, check=True, capture_output=True)
+
+            MODULE.configure_merge_protection(repository)
+            merged = subprocess.run(["git", "merge", "--no-edit", "upstream-change"], cwd=repository, text=True, capture_output=True, check=False)
+
+            self.assertEqual(merged.returncode, 0, merged.stderr)
+            self.assertEqual((repository / "instructions.md").read_text(encoding="utf-8"), "instância\n")
+            self.assertEqual((repository / "setupOnmyoji.py").read_text(encoding="utf-8"), "setup novo\n")
 
     def test_interactive_cancellation_does_not_create_instance(self) -> None:
         answers = iter(["Tsuki", "", "", "", "", "", "n"])

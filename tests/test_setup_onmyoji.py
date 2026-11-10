@@ -671,6 +671,52 @@ class SystemSetupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, patch.object(MODULE, "load_execution_profile", return_value=profile), patch.object(MODULE, "linux_current_user", return_value="outro"), patch.dict(MODULE.os.environ, {MODULE.DEDICATED_SETUP_ENVIRONMENT: "1"}, clear=False):
             self.assertEqual(MODULE.dedicated_child_profile(Path(temporary)), {})
 
+    def test_git_setup_migrates_legacy_origin_and_tracks_the_instance_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "instance"; own = Path(temporary) / "own.git"; root.mkdir()
+            subprocess.run(["git", "init", "--bare", str(own)], check=True, capture_output=True)
+            for arguments in (["init", "-b", "main"], ["config", "user.name", "Teste"], ["config", "user.email", "teste@example.test"]):
+                subprocess.run(["git", *arguments], cwd=root, check=True, capture_output=True)
+            (root / "base.txt").write_text("base\n", encoding="utf-8")
+            subprocess.run(["git", "add", "base.txt"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "Base"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "remote", "add", "origin", "https://github.com/rodrigogml/Onmyoji.git"], cwd=root, check=True, capture_output=True)
+
+            with patch.object(MODULE, "prompt", side_effect=["", "", str(own)]):
+                configured, detail = MODULE.configure_git_repository(root)
+
+            self.assertTrue(configured, detail)
+            upstream = subprocess.run(["git", "remote", "get-url", "upstream"], cwd=root, text=True, capture_output=True, check=True).stdout.strip()
+            self.assertEqual(MODULE._git_location(upstream), MODULE._git_location("https://github.com/rodrigogml/Onmyoji.git"))
+            self.assertEqual(subprocess.run(["git", "remote", "get-url", "origin"], cwd=root, text=True, capture_output=True, check=True).stdout.strip(), str(own))
+            self.assertEqual(subprocess.run(["git", "config", "--get", "branch.main.remote"], cwd=root, text=True, capture_output=True, check=True).stdout.strip(), "origin")
+            self.assertEqual(subprocess.run(["git", "config", "--get", "remote.pushDefault"], cwd=root, text=True, capture_output=True, check=True).stdout.strip(), "origin")
+            attributes = (root / ".git" / "info" / "attributes").read_text(encoding="utf-8")
+            self.assertIn("instructions.md merge=shikigami-local", attributes)
+
+    def test_git_sync_merges_upstream_main_into_the_instance_branch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary); upstream = base / "upstream.git"; own = base / "own.git"; seed = base / "seed"; root = base / "instance"
+            subprocess.run(["git", "init", "--bare", str(upstream)], check=True, capture_output=True)
+            subprocess.run(["git", "init", "--bare", str(own)], check=True, capture_output=True)
+            seed.mkdir(); subprocess.run(["git", "init", "-b", "main"], cwd=seed, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Teste"], cwd=seed, check=True); subprocess.run(["git", "config", "user.email", "teste@example.test"], cwd=seed, check=True)
+            (seed / "base.txt").write_text("base\n", encoding="utf-8")
+            subprocess.run(["git", "add", "base.txt"], cwd=seed, check=True); subprocess.run(["git", "commit", "-m", "Base"], cwd=seed, check=True, capture_output=True)
+            subprocess.run(["git", "remote", "add", "origin", str(upstream)], cwd=seed, check=True); subprocess.run(["git", "push", "-u", "origin", "main"], cwd=seed, check=True, capture_output=True)
+            subprocess.run(["git", "clone", "--origin", "upstream", "--branch", "main", str(upstream), str(root)], check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Teste"], cwd=root, check=True); subprocess.run(["git", "config", "user.email", "teste@example.test"], cwd=root, check=True)
+            subprocess.run(["git", "remote", "add", "origin", str(own)], cwd=root, check=True); subprocess.run(["git", "push", "-u", "origin", "main"], cwd=root, check=True, capture_output=True)
+            (seed / "upstream.txt").write_text("nova base\n", encoding="utf-8")
+            subprocess.run(["git", "add", "upstream.txt"], cwd=seed, check=True); subprocess.run(["git", "commit", "-m", "Atualiza base"], cwd=seed, check=True, capture_output=True); subprocess.run(["git", "push", "origin", "main"], cwd=seed, check=True, capture_output=True)
+
+            synchronized, detail = MODULE.sync_git_remote(root, "upstream")
+
+            self.assertTrue(synchronized, detail)
+            self.assertEqual((root / "upstream.txt").read_text(encoding="utf-8"), "nova base\n")
+            parents = subprocess.run(["git", "rev-list", "--parents", "-n", "1", "HEAD"], cwd=root, text=True, capture_output=True, check=True).stdout.split()
+            self.assertEqual(len(parents), 3)
+
     def test_execution_diagnostics_runs_as_the_validated_dedicated_account(self) -> None:
         profile = {"mode": "dedicated", "account": "shikigami-tsuki", "home": "/home/shikigami-tsuki", "setup_python": "/usr/bin/python3", "validated": True}
         expected = [{"state": "ok", "label": "Identidade", "detail": "shikigami-tsuki"}]

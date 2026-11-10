@@ -24,6 +24,8 @@ if hasattr(sys.stderr, "reconfigure"):
 
 ROOT = Path(__file__).resolve().parent
 DAEMON_SOURCE = ROOT / "onmyoji-daemon" / "src"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 if str(DAEMON_SOURCE) not in sys.path:
     sys.path.insert(0, str(DAEMON_SOURCE))
 from onmyoji_daemon.codex_execution import CodexExecutionError, CodexLaunch
@@ -907,6 +909,189 @@ def configure_installer_git_access(root: Path) -> tuple[bool, str]:
         return True, "Instância já autorizada no Git do instalador."
     changed = subprocess.run(["git", "config", "--global", "--add", "safe.directory", resolved], text=True, encoding="utf-8", errors="replace", capture_output=True, check=False)
     return changed.returncode == 0, (changed.stderr or changed.stdout).strip() or "Instância autorizada no Git do instalador."
+
+
+class GitSetupError(RuntimeError):
+    """Falha operacional sanitizada da administração Git da instância."""
+
+
+def _git_detail(completed: subprocess.CompletedProcess[str]) -> str:
+    detail = diagnostic_detail(completed)
+    return re.sub(r"(?i)(https?://)[^/@\s]+@", r"\1[credencial]@", detail)
+
+
+def _git_display_url(value: str) -> str:
+    return re.sub(r"(?i)(https?://)[^/@\s]+@", r"\1[credencial]@", value)
+
+
+def _git(root: Path, arguments: list[str], *, allow_failure: bool = False, timeout: int = 60) -> subprocess.CompletedProcess[str]:
+    if not shutil.which("git"):
+        raise GitSetupError("Git não está disponível nesta conta.")
+    environment = dict(os.environ); environment.update({"GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0"})
+    try:
+        completed = subprocess.run(["git", *arguments], cwd=str(root), env=environment, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise GitSetupError(f"Não foi possível executar Git: {error}") from error
+    if completed.returncode and not allow_failure:
+        raise GitSetupError(_git_detail(completed) or f"Git terminou com código {completed.returncode}.")
+    return completed
+
+
+def _git_output(root: Path, arguments: list[str], *, allow_failure: bool = False) -> str:
+    return _git(root, arguments, allow_failure=allow_failure).stdout.strip()
+
+
+def _git_remote_url(root: Path, name: str) -> str:
+    completed = _git(root, ["remote", "get-url", name], allow_failure=True)
+    return completed.stdout.strip() if completed.returncode == 0 else ""
+
+
+def _git_location(value: str) -> str:
+    """Compara URLs HTTPS/SSH equivalentes sem expor credenciais."""
+    candidate = value.strip().replace("\\", "/").rstrip("/")
+    matched = re.fullmatch(r"[^@\s]+@([^:]+):(.+)", candidate)
+    if matched:
+        candidate = matched.group(1) + "/" + matched.group(2)
+    else:
+        candidate = re.sub(r"^[a-z][a-z0-9+.-]*://", "", candidate, flags=re.IGNORECASE)
+        candidate = candidate.rsplit("@", 1)[-1]
+    return candidate.removesuffix(".git").casefold()
+
+
+def _valid_git_url(value: str) -> str:
+    candidate = value.strip()
+    if not candidate or candidate.casefold() in {"x", "\x1b"}:
+        raise GitSetupError("A configuração do origin foi cancelada.")
+    if any(ord(character) < 32 for character in candidate):
+        raise GitSetupError("A URL do remoto contém caracteres inválidos.")
+    return candidate
+
+
+def _configure_git_merge_rules(root: Path) -> None:
+    try:
+        from bootstrapShikigami import BootstrapError, configure_merge_protection
+        configure_merge_protection(root)
+    except (BootstrapError, OSError) as error:
+        raise GitSetupError(str(error)) from error
+
+
+def configure_git_repository(root: Path) -> tuple[bool, str]:
+    """Organiza origin/upstream, tracking e regras locais de merge."""
+    if not (root / ".git").is_dir():
+        return False, "A instância não é um repositório Git com metadados locais."
+    try:
+        from bootstrapShikigami import DEFAULT_UPSTREAM_URL
+        branch = _git_output(root, ["branch", "--show-current"])
+        if not branch:
+            return False, "Selecione uma branch antes de configurar a sincronização Git."
+        origin, upstream = _git_remote_url(root, "origin"), _git_remote_url(root, "upstream")
+        default_location = _git_location(DEFAULT_UPSTREAM_URL)
+        if not upstream:
+            if origin and _git_location(origin) == default_location:
+                note("O origin atual aponta para o Onmyōji e será migrado para upstream; nenhum commit será alterado.")
+                if prompt("Renomear o remoto origin atual para upstream? [S/n]: ").strip().casefold() not in {"", "s", "sim"}:
+                    return False, "A organização dos remotos foi cancelada."
+                _git(root, ["remote", "rename", "origin", "upstream"])
+                upstream, origin = origin, ""
+            else:
+                own_origin = not origin or prompt("O origin atual é o repositório próprio desta instância? [S/n]: ").strip().casefold() in {"", "s", "sim"}
+                if origin and not own_origin:
+                    _git(root, ["remote", "rename", "origin", "upstream"])
+                    upstream, origin = origin, ""
+                else:
+                    informed = prompt(f"Repositório upstream do Onmyōji [{DEFAULT_UPSTREAM_URL}]: ").strip() or DEFAULT_UPSTREAM_URL
+                    _git(root, ["remote", "add", "upstream", _valid_git_url(informed)])
+                    upstream = informed
+        if origin and _git_location(origin) == _git_location(upstream):
+            note("Origin e upstream apontam para o mesmo repositório; origin precisa identificar a instância do Shikigami.")
+            if prompt("Remover somente o alias origin duplicado e configurar o repositório próprio? [s/N]: ").strip().casefold() not in {"s", "sim"}:
+                return False, "O origin duplicado foi preservado; nenhuma regra de tracking foi alterada."
+            _git(root, ["remote", "remove", "origin"]); origin = ""
+        if not origin:
+            if prompt("Configurar agora o repositório origin próprio do Shikigami? [S/n]: ").strip().casefold() in {"", "s", "sim"}:
+                origin = _valid_git_url(prompt("URL do origin próprio [X = cancelar]: "))
+                _git(root, ["remote", "add", "origin", origin])
+        _configure_git_merge_rules(root)
+        _git(root, ["config", "--local", "pull.rebase", "false"])
+        _git(root, ["config", "--local", "fetch.prune", "true"])
+        if origin:
+            _git(root, ["config", "--local", "remote.pushDefault", "origin"])
+            _git(root, ["config", "--local", f"branch.{branch}.remote", "origin"])
+            _git(root, ["config", "--local", f"branch.{branch}.merge", f"refs/heads/{branch}"])
+            _git(root, ["config", "--local", f"branch.{branch}.pushRemote", "origin"])
+            return True, f"Git preparado: {branch} recebe e publica em origin/{branch}; atualizações da base vêm explicitamente de upstream/main."
+        return True, "Upstream e regras de merge configurados. O origin próprio permanece pendente."
+    except GitSetupError as error:
+        return False, str(error)
+
+
+def sync_git_remote(root: Path, remote: str) -> tuple[bool, str]:
+    """Busca e mescla um remoto conhecido sem misturar as duas responsabilidades."""
+    if remote not in {"origin", "upstream"}: return False, "Remoto de sincronização inválido."
+    try:
+        if not _git_remote_url(root, remote): return False, f"O remoto {remote} não está configurado."
+        branch = _git_output(root, ["branch", "--show-current"])
+        if not branch: return False, "Selecione uma branch antes de sincronizar."
+        dirty = _git_output(root, ["status", "--porcelain=v1", "--untracked-files=no"])
+        if dirty: return False, "Há alterações versionadas não commitadas. Faça commit ou stash antes de sincronizar."
+        _configure_git_merge_rules(root)
+        _git(root, ["fetch", "--prune", remote], timeout=180)
+        remote_branch = branch if remote == "origin" else "main"
+        reference = f"refs/remotes/{remote}/{remote_branch}"
+        exists = _git(root, ["show-ref", "--verify", reference], allow_failure=True)
+        if exists.returncode:
+            return False, f"O remoto {remote} não possui a branch {remote_branch}."
+        arguments = ["merge", "--no-edit"]
+        if remote == "upstream": arguments.append("--no-ff")
+        merged = _git(root, [*arguments, f"{remote}/{remote_branch}"], allow_failure=True, timeout=180)
+        if merged.returncode:
+            return False, (_git_detail(merged) or "O merge encontrou conflitos.") + " Resolva os conflitos e conclua ou aborte o merge pelo Git."
+        return True, (merged.stdout or f"Sincronização com {remote}/{remote_branch} concluída.").strip()
+    except GitSetupError as error:
+        return False, str(error)
+
+
+def push_git_origin(root: Path) -> tuple[bool, str]:
+    try:
+        if not _git_remote_url(root, "origin"): return False, "O remoto origin não está configurado."
+        branch = _git_output(root, ["branch", "--show-current"])
+        if not branch: return False, "Selecione uma branch antes de publicar."
+        pushed = _git(root, ["push", "--set-upstream", "origin", branch], timeout=180)
+        return True, _git_detail(pushed) or f"Branch {branch} publicada no origin."
+    except GitSetupError as error:
+        return False, str(error)
+
+
+def git_menu(root: Path) -> None:
+    while True:
+        try:
+            branch = _git_output(root, ["branch", "--show-current"], allow_failure=True) or "sem branch"
+            origin = _git_remote_url(root, "origin") or "não configurado"
+            upstream = _git_remote_url(root, "upstream") or "não configurado"
+        except GitSetupError as error:
+            result(False, str(error)); return
+        screen("Git e sincronização", f"Branch {branch} · origin da instância e upstream do Onmyōji")
+        note(f"Origin: {_git_display_url(origin)}")
+        note(f"Upstream: {_git_display_url(upstream)}")
+        print()
+        item("1.", "Configurar remotos e regras", "Organiza origin/upstream, tracking, merge e proteção do template")
+        item("2.", "Receber alterações do origin", "Fetch e merge do repositório próprio")
+        item("3.", "Incorporar atualizações do Onmyōji", "Fetch e merge explícito do upstream")
+        item("4.", "Publicar no origin", "Push da branch atual para o repositório próprio")
+        item("5.", "Reaplicar regras de merge", "Restaura atributos e proteção dos arquivos do template")
+        item("X.", "Voltar")
+        choice = prompt("Opção: ").strip().casefold()
+        if choice in {"x", "\x1b"}: return
+        if choice == "1": ok, detail = configure_git_repository(root); result(ok, detail)
+        elif choice == "2": ok, detail = sync_git_remote(root, "origin"); result(ok, detail)
+        elif choice == "3": ok, detail = sync_git_remote(root, "upstream"); result(ok, detail)
+        elif choice == "4":
+            if prompt("Publicar a branch atual no origin? [s/N]: ").strip().casefold() not in {"s", "sim"}: result(False, "Publicação cancelada.")
+            else: ok, detail = push_git_origin(root); result(ok, detail)
+        elif choice == "5":
+            try: _configure_git_merge_rules(root); result(True, "Regras locais de merge e proteção reaplicadas.")
+            except GitSetupError as error: result(False, str(error))
+        else: result(False, "Opção inválida.")
 
 
 def validate_dedicated_environment(root: Path, data: dict[str, object]) -> bool:
@@ -3949,6 +4134,7 @@ def menu(skills: list[Skill], root: Path) -> int:
         screen("Central de configuração", "Onmyōji · integrações do Shikigami")
         item("!.", "Diagnóstico", "Valida nome, executável e modelo do Codex-CLI")
         print()
+        item("G.", "Git e sincronização", "Origin da instância, upstream do Onmyōji e regras de merge")
         item("P.", "Python e bibliotecas", "Runtime único e componentes compartilhados")
         item("C.", "Codex-CLI", "Modelo, projeto, sandbox e permissões")
         item("D.", "Daemon", "Supervisor local e serviços da instância")
@@ -3970,6 +4156,9 @@ def menu(skills: list[Skill], root: Path) -> int:
         if choice == "!":
             if not run_dedicated_menu(root, "diagnostics"): diagnostics_menu(root)
             continue
+        if choice == "g":
+            if not run_dedicated_menu(root, "git"): git_menu(root)
+            continue
         if choice == "p":
             if not run_dedicated_menu(root, "python"): python_menu(root)
             continue
@@ -3985,7 +4174,7 @@ def menu(skills: list[Skill], root: Path) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--action", choices=["menu", "list", "enable", "disable", "configure", "status"], default="menu"); parser.add_argument("--skill"); parser.add_argument("--json", action="store_true"); parser.add_argument("--dedicated-phase", action="store_true", help=argparse.SUPPRESS); parser.add_argument("--dedicated-menu", choices=["diagnostics", "python", "codex", "mcp"], help=argparse.SUPPRESS); parser.add_argument("--dedicated-checks", action="store_true", help=argparse.SUPPRESS); args = parser.parse_args()
+    parser = argparse.ArgumentParser(); parser.add_argument("--action", choices=["menu", "list", "enable", "disable", "configure", "status"], default="menu"); parser.add_argument("--skill"); parser.add_argument("--json", action="store_true"); parser.add_argument("--dedicated-phase", action="store_true", help=argparse.SUPPRESS); parser.add_argument("--dedicated-menu", choices=["diagnostics", "git", "python", "codex", "mcp"], help=argparse.SUPPRESS); parser.add_argument("--dedicated-checks", action="store_true", help=argparse.SUPPRESS); args = parser.parse_args()
     if args.action == "menu" and not (args.dedicated_phase or args.dedicated_menu or args.dedicated_checks): opening_logo()
     system, message = ensure_shikigami_configuration(ROOT)
     if system is None:
@@ -4013,6 +4202,7 @@ def main() -> int:
     if args.dedicated_menu:
         if not dedicated_child_profile(ROOT): result(False, "O menu dedicado exige a conta Linux registrada."); return 2
         if args.dedicated_menu == "diagnostics": diagnostics_menu(ROOT)
+        elif args.dedicated_menu == "git": git_menu(ROOT)
         elif args.dedicated_menu == "python": python_menu(ROOT)
         elif args.dedicated_menu == "codex": codex_menu(ROOT)
         else: launch_mcp_menu(ROOT)

@@ -18,7 +18,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 DEFAULT_UPSTREAM_URL = "https://github.com/rodrigogml/Onmyoji.git"
 TEMPLATE_DIRECTORY = Path("shikigami-template")
-PROTECTED_FILES = ("README.md", "AGENTS.md", ".gitignore")
+PROTECTED_FILES = ("README.md", "AGENTS.md", ".gitignore", "instructions.md", "environment.toml")
 UPSTREAM_SETUP_FILES = ("setupOnmyoji.py", "bootstrapShikigami.py", "onmyoji-daemon/setupDaemon.py", "onmyoji-daemon/setupMcp.py")
 WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{number}" for number in range(1, 10)), *(f"LPT{number}" for number in range(1, 10))}
 TEXT_LOGO = """⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢰⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
@@ -204,7 +204,7 @@ def create_instance(name: str, instance_directory: Path, workspace_directory: Pa
         write_initial_configuration(instance_directory, name)
         configure_identity(instance_directory, ask)
         configure_merge_protection(instance_directory)
-        git(["add", "--", *PROTECTED_FILES, "configs"], cwd=instance_directory)
+        git(["add", "--", *PROTECTED_FILES], cwd=instance_directory)
         git(["commit", "-m", f"Cria a instância {name}"], cwd=instance_directory)
         if origin_url:
             git(["remote", "add", "origin", origin_url], cwd=instance_directory)
