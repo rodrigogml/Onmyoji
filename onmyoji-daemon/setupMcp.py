@@ -497,6 +497,12 @@ def manage_vault_profile(config: McpConfiguration, name: str) -> None:
         profile = data["profiles"].get(name)
         if not isinstance(profile, dict):
             return
+        linux_auth = profile.get("auth", {}).get("linux", {})
+        if linux_auth.get("mode") == "protected_file" and not linux_auth.get("path"):
+            repaired = profile_auth(name, config.root)["linux"]
+            if repaired.get("mode") == "protected_file":
+                profile["auth"]["linux"] = repaired
+                config.save_credentials(data)
         vault = data["vaults"][profile["vault"]]
         profile_screen("MCP · Perfil de vault", name, {**profile, "vault_configurado": vault})
         item("1.", "Alterar cofre associado")
@@ -519,6 +525,7 @@ def manage_vault_profile(config: McpConfiguration, name: str) -> None:
             continue
         elif action == "6":
             try: KeePassCredentialResolver(config.root).test_profile_access(name); result(True, "Acesso ao cofre confirmado.")
+            except CredentialError as error: result(False, f"Não foi possível acessar o cofre com este perfil: {error}")
             except Exception: result(False, "Não foi possível acessar o cofre com este perfil.")
             continue
         elif action == "7":

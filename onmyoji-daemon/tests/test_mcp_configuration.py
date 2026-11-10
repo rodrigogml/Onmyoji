@@ -69,6 +69,24 @@ def test_permission_failure_has_actionable_sanitized_message(tmp_path, monkeypat
     assert "private-detail" not in str(failure.value)
 
 
+def test_protected_file_auth_path_survives_credentials_round_trip(tmp_path):
+    config = McpConfiguration(tmp_path)
+    credentials = config.credentials()
+    secret = tmp_path / "configs" / "mcp" / "secrets" / "default.secret"
+    credentials["vaults"]["default"] = {"cli_command": ["keepassxc-cli"], "database": {"windows": "", "linux": str(tmp_path / "default.kdbx")}}
+    credentials["profiles"]["default"] = {
+        "vault": "default", "allowed_entry_roots": [],
+        "auth": {
+            "windows": {"mode": "windows_credential_manager", "target": "Teste/MCP/KeePass/default"},
+            "linux": {"mode": "protected_file", "path": str(secret)},
+        },
+    }
+
+    config.save_credentials(credentials)
+
+    assert config.credentials()["profiles"]["default"]["auth"]["linux"] == {"mode": "protected_file", "path": str(secret)}
+
+
 def test_omie_tool_depends_on_enabled_profile_and_existing_vault_profile(tmp_path):
     config = McpConfiguration(tmp_path)
     credentials = config.credentials()

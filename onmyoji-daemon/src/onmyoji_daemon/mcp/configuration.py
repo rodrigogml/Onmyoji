@@ -621,6 +621,15 @@ class McpConfiguration:
             auth = profile.get("auth")
             if not isinstance(auth, dict) or not isinstance(auth.get("windows"), dict) or not isinstance(auth.get("linux"), dict):
                 raise McpConfigurationError("Autenticação do perfil de vault incompleta.")
+            linux_auth = auth["linux"]
+            linux_mode = linux_auth.get("mode")
+            if linux_mode == "command":
+                command = linux_auth.get("command")
+                if not isinstance(command, list) or not command or not all(isinstance(value, str) and value for value in command):
+                    raise McpConfigurationError("Comando de autenticação Linux inválido.")
+            elif linux_mode == "protected_file":
+                if not isinstance(linux_auth.get("path"), str) or not linux_auth["path"]:
+                    raise McpConfigurationError("Arquivo protegido da autenticação Linux não configurado.")
 
     def _validate_todoist(self, data: dict[str, Any]) -> None:
         if data.get("schema_version") != 1 or not isinstance(data.get("defaults"), dict) or not isinstance(data.get("profiles"), dict):
@@ -864,7 +873,12 @@ class McpConfiguration:
             lines += ["", f"[vaults.{name}]", f"cli_command = {_array(vault['cli_command'])}", "", f"[vaults.{name}.database]", f"windows = {_quote(vault['database']['windows'])}", f"linux = {_quote(vault['database']['linux'])}"]
         for name, profile in sorted(data["profiles"].items()):
             auth = profile["auth"]
-            lines += ["", f"[profiles.{name}]", f"vault = {_quote(profile['vault'])}", f"allowed_entry_roots = {_array(profile['allowed_entry_roots'])}", "", f"[profiles.{name}.auth.windows]", f"mode = {_quote(auth['windows']['mode'])}", f"target = {_quote(auth['windows'].get('target', ''))}", "", f"[profiles.{name}.auth.linux]", f"mode = {_quote(auth['linux']['mode'])}", f"command = {_array(auth['linux'].get('command', []))}"]
+            linux_auth = auth["linux"]
+            lines += ["", f"[profiles.{name}]", f"vault = {_quote(profile['vault'])}", f"allowed_entry_roots = {_array(profile['allowed_entry_roots'])}", "", f"[profiles.{name}.auth.windows]", f"mode = {_quote(auth['windows']['mode'])}", f"target = {_quote(auth['windows'].get('target', ''))}", "", f"[profiles.{name}.auth.linux]", f"mode = {_quote(linux_auth['mode'])}"]
+            if linux_auth["mode"] == "protected_file":
+                lines.append(f"path = {_quote(linux_auth['path'])}")
+            else:
+                lines.append(f"command = {_array(linux_auth.get('command', []))}")
         return "\n".join(lines) + "\n"
 
     @staticmethod
