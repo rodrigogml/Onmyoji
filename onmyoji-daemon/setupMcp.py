@@ -25,6 +25,7 @@ from setupOnmyoji import Ui, flow_choice, flow_heading, install_linux_packages, 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from onmyoji_daemon.mcp.configuration import McpConfiguration, McpConfigurationError
+from onmyoji_daemon.config_publication import apply_shared_file_mode
 from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialResolver
 from onmyoji_daemon.mcp.todoist import TodoistError, TodoistService
 from onmyoji_daemon.mcp.omie import OmieError, OmieService
@@ -275,16 +276,16 @@ def profile_auth(name: str, root: Path = ROOT) -> dict:
 
 
 def store_protected_password(path: Path, password: str) -> None:
-    """Persiste o segredo para uma conta headless usando somente ACL do SO."""
+    """Persiste o segredo para as duas contas autorizadas da instância."""
     directory = path.parent
     directory.mkdir(parents=True, exist_ok=True)
-    directory.chmod(0o700)
+    directory.chmod(0o2770)
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
-    descriptor = os.open(path, flags, 0o600)
+    descriptor = os.open(path, flags, 0o660)
     try:
-        os.fchmod(descriptor, 0o600)
+        os.fchmod(descriptor, 0o660)
         os.write(descriptor, password.encode("utf-8"))
     finally:
         os.close(descriptor)
@@ -466,6 +467,7 @@ def create_vault_profile(config: McpConfiguration) -> None:
             if made.returncode:
                 result(False, keepassxc_creation_error(made)); return
             if not Path(database).is_file(): result(False, "KeePassXC informou sucesso, mas o arquivo do cofre não foi criado."); return
+            apply_shared_file_mode(Path(database))
         except (OSError, subprocess.SubprocessError): result(False, "Não foi possível criar o cofre."); return
         if not save_password(name, auth, config.root, password):
             result(False, f"O cofre foi criado em {database}, mas o perfil não foi salvo.")

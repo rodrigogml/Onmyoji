@@ -13,11 +13,14 @@ import tempfile
 import time
 from typing import Any
 
+from ...config_publication import apply_shared_file_mode
+
 
 def replace_database(source: Path, destination: Path) -> None:
     """Substitui o KDBX preservando a ACL do destino no Windows."""
     if os.name != "nt":
         os.replace(source, destination)
+        apply_shared_file_mode(destination)
         return
     from ctypes import wintypes
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -33,6 +36,7 @@ def database_lock(database: Path):
     """Serializa escritas OAuth em entradas diferentes do mesmo KDBX entre processos."""
     from .keepass import CredentialError
     with database.with_name(database.name + ".oauth.lock").open("a+b") as stream:
+        apply_shared_file_mode(Path(stream.name))
         if stream.tell() == 0:
             stream.write(b"0")
             stream.flush()

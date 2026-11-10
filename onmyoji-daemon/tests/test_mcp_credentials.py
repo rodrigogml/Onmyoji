@@ -56,16 +56,27 @@ def test_linux_resolves_master_password_from_protected_file(tmp_path, monkeypatc
     assert resolver._master_password({"auth": {"linux": {"mode": "protected_file", "path": str(secret)}}}) == "master-password"
 
 
-def test_linux_rejects_protected_password_file_with_excessive_permissions(tmp_path, monkeypatch):
+def test_linux_accepts_protected_password_file_shared_with_the_instance_group(tmp_path, monkeypatch):
     secret = tmp_path / "configs" / "mcp" / "secrets" / "profile.secret"
     secret.parent.mkdir(parents=True)
     secret.write_text("master-password", encoding="utf-8")
-    secret.chmod(0o640)
+    secret.chmod(0o660)
     resolver = KeePassCredentialResolver(tmp_path)
     monkeypatch.setattr("onmyoji_daemon.mcp.credentials.keepass._platform_name", lambda: "linux")
 
-    with pytest.raises(CredentialError, match="permissões excessivas"):
-        resolver._master_password({"auth": {"linux": {"mode": "protected_file", "path": str(secret)}}})
+    assert resolver._master_password({"auth": {"linux": {"mode": "protected_file", "path": str(secret)}}) == "master-password"
+
+
+def test_linux_rejects_protected_password_file_readable_by_other_users(tmp_path, monkeypatch):
+    secret = tmp_path / "configs" / "mcp" / "secrets" / "profile.secret"
+    secret.parent.mkdir(parents=True)
+    secret.write_text("master-password", encoding="utf-8")
+    secret.chmod(0o604)
+    resolver = KeePassCredentialResolver(tmp_path)
+    monkeypatch.setattr("onmyoji_daemon.mcp.credentials.keepass._platform_name", lambda: "linux")
+
+    with pytest.raises(CredentialError, match="outros usuários"):
+        resolver._master_password({"auth": {"linux": {"mode": "protected_file", "path": str(secret)}})
 
 
 def test_windows_resolves_secret_without_putting_master_password_in_command(tmp_path, monkeypatch):

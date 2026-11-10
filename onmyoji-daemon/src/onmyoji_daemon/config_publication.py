@@ -1,8 +1,15 @@
 """Publicação local de configuração com tolerância limitada a compartilhamento Windows."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import time
+
+
+def apply_shared_file_mode(path: Path) -> None:
+    """Mantém arquivos operacionais graváveis pelas duas contas da instância."""
+    if os.name != "nt" and path.is_file():
+        path.chmod(0o660)
 
 
 def publish_file(source: Path, destination: Path, *, mode: int | None = None) -> None:

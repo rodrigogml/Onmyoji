@@ -18,6 +18,8 @@ import tomllib
 from typing import Any
 import xml.etree.ElementTree as ET
 
+from ...config_publication import apply_shared_file_mode
+
 
 class CredentialError(ValueError):
     """Erro sanitizado de resolução de credencial, sem dados sensíveis."""
@@ -335,8 +337,8 @@ class KeePassCredentialResolver:
             try:
                 path = configured_path.resolve(strict=True)
                 path.relative_to(allowed_root)
-                if path.stat().st_mode & 0o077:
-                    raise CredentialError("auth_unavailable", "O arquivo da senha mestra possui permissões excessivas.")
+                if path.stat().st_mode & 0o007:
+                    raise CredentialError("auth_unavailable", "O arquivo da senha mestra está acessível a outros usuários.")
                 password = path.read_text(encoding="utf-8")
             except CredentialError:
                 raise
@@ -430,6 +432,7 @@ class KeePassCredentialResolver:
             raise CredentialError("vault_unavailable", "Não foi possível iniciar o KeePassXC.") from error
         if result.returncode:
             raise CredentialError("keepass_error", "KeePassXC recusou a alteração no cofre.")
+        apply_shared_file_mode(Path(database_path))
         return result.stdout.rstrip("\r\n")
 
     @classmethod
@@ -517,3 +520,4 @@ class KeePassCredentialResolver:
             raise CredentialError("vault_unavailable", "Não foi possível acessar o KeePassXC.") from error
         if result.returncode:
             raise CredentialError("keepass_error", "KeePassXC recusou o acesso ao cofre.")
+        apply_shared_file_mode(Path(database_path))

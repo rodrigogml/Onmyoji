@@ -55,6 +55,17 @@ def test_private_publication_applies_owner_and_group_mode_before_replace(tmp_pat
     assert destination.stat().st_mode & 0o777 == 0o660
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Modos POSIX são validados no Linux.")
+def test_shared_file_mode_restores_the_acl_mask_bits_requested_by_restrictive_creators(tmp_path):
+    path = tmp_path / "vault.kdbx"
+    path.write_bytes(b"encrypted")
+    path.chmod(0o600)
+
+    config_publication.apply_shared_file_mode(path)
+
+    assert path.stat().st_mode & 0o777 == 0o660
+
+
 def test_fifth_windows_failure_propagates_same_error_and_preserves_both_files(tmp_path, monkeypatch):
     source, destination = tmp_path / "candidate.toml", tmp_path / "config.toml"
     source.write_bytes(b"candidate\r\n"); destination.write_bytes(b"original\r\n")

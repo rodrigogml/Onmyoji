@@ -9,6 +9,8 @@ import shutil
 import ssl
 import subprocess
 
+from ...config_publication import apply_shared_file_mode
+
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -17,7 +19,7 @@ from cryptography.x509.oid import NameOID
 
 def _write_private(path: Path, value: rsa.RSAPrivateKey) -> None:
     path.write_bytes(value.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
-    if os.name != "nt": path.chmod(0o600)
+    apply_shared_file_mode(path)
 
 
 def ensure_material(directory: Path) -> tuple[Path, Path, Path]:
