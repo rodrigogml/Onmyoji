@@ -1,6 +1,6 @@
 # Plano de implementação do gateway de notificações e do agendador do daemon
 
-**Estado:** plano fechado para entrega ao desenvolvimento; a publicação deste documento não implementa as capacidades descritas.
+**Estado:** plano histórico de arquitetura. As decisões P1–P4 foram fechadas pelo proprietário em 2026-11-10; o contrato vigente da implementação está em [eventos e agendamentos](../eventos-agendamentos.md). Os checklists abaixo são históricos e não constituem acompanhamento de entrega.
 
 **Revisão:** 2026-11-09.
 

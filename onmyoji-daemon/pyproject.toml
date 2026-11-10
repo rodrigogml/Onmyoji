@@ -22,5 +22,6 @@ onmyoji-daemon = "onmyoji_daemon.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
+"onmyoji_daemon.agent_notification" = ["schemas/*.json"]
 "onmyoji_daemon.mcp.btg" = ["api_contracts.json"]
 "onmyoji_daemon.file_review" = ["assets/*.html", "assets/*.js", "assets/*.css"]
