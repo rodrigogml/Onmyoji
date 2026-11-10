@@ -20,7 +20,7 @@ from typing import Any
 from .config_publication import publish_file
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 NONTERMINAL = ("starting", "active", "interrupting", "reconciling", "uncertain")
 
 
@@ -96,12 +96,17 @@ class GatewayStore:
                 backup = Path(database_path).with_name(f"gateway-before-delegation-v{version}.sqlite3")
                 if not backup.exists():
                     self.backup(backup)
+            if version == 3:
+                self._migrate_multiorigin()
+                return
             if version == 2:
                 self._migrate_structured_content()
+                self._migrate_multiorigin()
                 return
             if version == 1:
                 self._migrate_terminal_outputs()
                 self._migrate_structured_content()
+                self._migrate_multiorigin()
                 return
             columns = {row[1] for row in self.db.execute("PRAGMA table_info(inbox_items)")}
             for name, definition in (("source_key", "TEXT"), ("sequence", "INTEGER"), ("route", "TEXT NOT NULL DEFAULT 'auto'"), ("execution_id", "TEXT"), ("failure_reason", "TEXT")):
@@ -129,6 +134,24 @@ class GatewayStore:
             self.db.execute("INSERT INTO gateway_schema_migrations VALUES (?,?)", (1, time.time()))
             self._migrate_terminal_outputs()
             self._migrate_structured_content()
+            self._migrate_multiorigin()
+
+    def _migrate_multiorigin(self) -> None:
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(inbox_items)")}
+        for name, definition in (("origin", "TEXT NOT NULL DEFAULT 'telegram'"), ("priority", "INTEGER NOT NULL DEFAULT 0"), ("global_sequence", "INTEGER")):
+            if name not in columns:
+                self.db.execute(f"ALTER TABLE inbox_items ADD COLUMN {name} {definition}")
+        ordered = self.db.execute("SELECT id FROM inbox_items ORDER BY created_at,sequence,id").fetchall()
+        for index, (identifier,) in enumerate(ordered, 1):
+            self.db.execute("UPDATE inbox_items SET global_sequence=? WHERE id=? AND global_sequence IS NULL", (index, identifier))
+        self.db.execute("CREATE UNIQUE INDEX IF NOT EXISTS inbox_global_sequence ON inbox_items(global_sequence)")
+        self.db.execute("CREATE TABLE IF NOT EXISTS notification_receipts(inbox_id TEXT PRIMARY KEY,event_id TEXT NOT NULL,received_at TEXT NOT NULL,envelope TEXT NOT NULL,execution_state TEXT,delivery_state TEXT NOT NULL DEFAULT 'not_attempted',reason TEXT,incident_state TEXT NOT NULL DEFAULT 'pending')")
+        self.db.execute("CREATE TABLE IF NOT EXISTS notification_log_journal(id INTEGER PRIMARY KEY AUTOINCREMENT,at TEXT NOT NULL,payload TEXT NOT NULL,flushed INTEGER NOT NULL DEFAULT 0)")
+        self.db.execute("INSERT OR IGNORE INTO gateway_schema_migrations VALUES (4,?)", (time.time(),))
+
+    def candidates(self) -> list[str]:
+        with self.lock:
+            return list(dict.fromkeys(row[0] for row in self.db.execute("SELECT chat_id FROM inbox_items WHERE state='pending' AND (origin!='event' OR NOT EXISTS (SELECT 1 FROM notification_log_journal WHERE flushed=0)) ORDER BY priority,global_sequence").fetchall()))
 
     def _migrate_terminal_outputs(self) -> None:
         attachment_columns = {row[1] for row in self.db.execute("PRAGMA table_info(conversation_attachments)")}
@@ -160,6 +183,7 @@ class GatewayStore:
             self.db.execute("UPDATE execution_turns SET state='uncertain', result='gateway_restarted' WHERE state IN ('starting','active','interrupting','reconciling')")
             self.db.execute("UPDATE inbox_items SET state='uncertain', failure_reason='gateway_restarted' WHERE state='running'")
             self.db.execute("UPDATE gateway_deliveries SET state='uncertain', reason='gateway_restarted' WHERE state='sending'")
+            self.db.execute("UPDATE notification_receipts SET delivery_state='uncertain',reason='gateway_restarted' WHERE delivery_state='sending'")
             self.db.execute("UPDATE ingress_updates SET state='uncertain', updated_at=? WHERE state='preparing'", (time.time(),))
             for source, payload in self.db.execute("SELECT source_key,payload FROM ingress_updates WHERE state='uncertain'").fetchall():
                 try:
@@ -305,7 +329,7 @@ class GatewayStore:
         with self.lock:
             return self.db.execute(f"SELECT source_key,payload,conversation_id,generation FROM ingress_updates WHERE {where} ORDER BY rowid", (conversation,) if conversation is not None else ()).fetchall()
 
-    def enqueue(self, conversation: str, generation: int, text: str, attachments: list[str], context: dict[str, Any], *, structured_content: dict[str, Any] | None = None, source: str | None = None, route: str = "auto", limit: int = 50) -> str | None:
+    def enqueue(self, conversation: str, generation: int, text: str, attachments: list[str], context: dict[str, Any], *, structured_content: dict[str, Any] | None = None, source: str | None = None, route: str = "auto", limit: int = 50, origin: str = "telegram", receipt: dict | None = None) -> str | None:
         with self.lock, self.db:
             if source and self.db.execute("SELECT 1 FROM inbox_items WHERE source_key=?", (source,)).fetchone():
                 return None
@@ -315,12 +339,20 @@ class GatewayStore:
             sequence = self.db.execute("SELECT COALESCE(MAX(sequence),0)+1 FROM inbox_items WHERE chat_id=?", (conversation,)).fetchone()[0]
             identifier = secrets.token_urlsafe(18)
             self.db.execute("INSERT INTO inbox_items(id,chat_id,generation,text,attachment_ids,turn_context,structured_content,state,created_at,source_key,sequence,route) VALUES (?,?,?,?,?,?,?,'pending',?,?,?,?)", (identifier, conversation, generation, text, json.dumps(attachments), json.dumps(context, ensure_ascii=False), json.dumps(structured_content or {}, ensure_ascii=False, allow_nan=False), time.time(), source, sequence, route))
+            global_sequence = self.db.execute("SELECT COALESCE(MAX(global_sequence),0)+1 FROM inbox_items").fetchone()[0]
+            self.db.execute("UPDATE inbox_items SET origin=?,priority=?,global_sequence=? WHERE id=?", (origin, 0 if origin == "telegram" else 1, global_sequence, identifier))
+            if receipt:
+                self.db.execute("INSERT INTO notification_receipts(inbox_id,event_id,received_at,envelope) VALUES (?,?,?,?)", (identifier, receipt["event_id"], receipt["received_at"], json.dumps(receipt["envelope"], ensure_ascii=False)))
+                self.db.execute("INSERT INTO notification_log_journal(at,payload) VALUES (?,?)", (receipt["received_at"], json.dumps({"stage": "received", **receipt}, ensure_ascii=False)))
         return identifier
 
     def next_input(self, conversation: str, generation: int) -> dict[str, Any] | None:
         with self.lock:
-            row = self.db.execute("SELECT id,text,attachment_ids,turn_context,route,sequence,structured_content FROM inbox_items WHERE chat_id=? AND generation=? AND state='pending' ORDER BY (route='result'),sequence LIMIT 1", (conversation, generation)).fetchone()
-        return dict(zip(("id", "text", "attachment_ids", "turn_context", "route", "sequence", "structured_content"), row)) if row else None
+            row = self.db.execute("SELECT id,text,attachment_ids,turn_context,route,sequence,structured_content,origin FROM inbox_items WHERE chat_id=? AND generation=? AND state='pending' ORDER BY priority,(route='result'),global_sequence LIMIT 1", (conversation, generation)).fetchone()
+        value = dict(zip(("id", "text", "attachment_ids", "turn_context", "route", "sequence", "structured_content", "origin"), row)) if row else None
+        if value and value["origin"] == "event":
+            value["notification"] = True
+        return value
 
     def blocked(self, conversation: str) -> bool:
         with self.lock:

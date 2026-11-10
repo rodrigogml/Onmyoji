@@ -27,6 +27,7 @@ from .rpc import RpcServer
 from .telegram_channels import TelegramChannels
 from .telegram_location import OMITTED, LocationValidationError, UnsupportedLocationError, normalize_location, normalize_stored_location, parse_message_location
 from .telegram_execution import TelegramExecution
+from .agent_notification.ingress import NotificationIngress
 from .telegram_work import RelatedWorkMonitor
 from .telegram_persistence import GatewayStore, GatewayPersistenceError, protect_legacy_gateway
 from .telegram_delivery import GatewayDelivery, DeliveryOwner, DeliveryUncertain, DeliverySuppressed
@@ -142,7 +143,9 @@ class Settings:
         if not project.is_dir(): raise ValueError("configured Shikigami workspace does not exist")
         profile = str(telegram.get("vault_profile") or "")
         entry = str(telegram.get("token_entry") or "")
-        if not profile or not entry: raise ValueError("Perfil de vault MCP e entrada do token são obrigatórios")
+        from .agent_notification.configuration import NotificationConfiguration
+        notification = NotificationConfiguration(root).load()
+        if (not profile or not entry) and notification["telegram_receiver_enabled"]: raise ValueError("Perfil de vault MCP e entrada do token são obrigatórios")
         idle = int(app_server.get("idle_timeout_seconds") or 1800)
         if idle < 60: raise ValueError("App Server idle timeout must be at least 60 seconds")
         per_file, batch, pending, retained = int(limits.get("max_attachment_bytes") or 20 * 1024 * 1024), int(limits.get("max_batch_attachment_bytes") or 50 * 1024 * 1024), int(limits.get("max_pending_items") or 50), int(limits.get("max_retained_attachment_bytes") or 250 * 1024 * 1024)
@@ -380,7 +383,7 @@ def under(path: Path, root: Path) -> bool:
     except ValueError: return False
 
 
-class Gateway(TelegramExecution, TelegramChannels):
+class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
     def __init__(self, settings: Settings):
         lease = GatewayStore.open_lease(settings.data_dir / "state" / "gateway-writer.lock")
         try:
@@ -416,6 +419,7 @@ class Gateway(TelegramExecution, TelegramChannels):
         self.api: TelegramApi | None = None; self.bot_id: int | None = None; self.pair: tuple[str, float] | None = None; self.offset = 0; self.work = threading.BoundedSemaphore(settings.parallel); self.totp_sessions: dict[int, dict[str, Any]] = {}; self.config_sessions: dict[str, dict[str, Any]] = {}; self.config_lock = threading.RLock(); self.menu_sessions: dict[str, MenuSession] = {}; self.channel_identify_sessions: dict[str, dict[str, Any]] = {}; self.menu_lock = threading.RLock(); self.last_error: str | None = None; self.cleanup_path = settings.data_dir / "state" / "totp-cleanup.json"; self.pending_deletions = json_file(self.cleanup_path, {}); self.app_server: CodexAppServer | None = None; self.app_server_lock = threading.RLock(); self.app_turns: dict[str, AppServerTurn] = {}; self.last_app_activity = time.monotonic(); self.turn_locks: dict[str, threading.Lock] = {}; self.turn_locks_lock = threading.Lock(); self.workers: set[str] = set(); self.workers_lock = threading.Lock()
         self.workers_changed = threading.Condition(self.workers_lock)
         self.related_work = RelatedWorkMonitor(self.store, lambda: self.capabilities, lambda: self.app_server, self._generation, self._enqueue_related_result, enabled=settings.post_turn_results, timeout_seconds=settings.turn_timeout, diagnostic=self._diagnostic)
+        self._init_notifications()
 
     def _initialize_persistence(self, settings: Settings) -> None:
         """Migra sob posse exclusiva; nenhum cliente externo foi aberto ainda."""
@@ -518,14 +522,27 @@ class Gateway(TelegramExecution, TelegramChannels):
     def start(self) -> None:
         self.store.acquire_lease(self.settings.data_dir / "state" / "gateway-writer.lock")
         try:
-            self.api = TelegramApi(McpVault(self.settings).read(self.settings.token_entry))
-            identity_info = self.api.call("getMe")
+            receiver = self.notification_configuration.load()["telegram_receiver_enabled"]
+            if self.settings.vault_profile and self.settings.token_entry:
+                try:
+                    self.api = TelegramApi(McpVault(self.settings).read(self.settings.token_entry))
+                    identity_info = self.api.call("getMe")
+                except Exception:
+                    self.api = None
+                    if receiver:
+                        raise
+                    identity_info = {}
+            else:
+                identity_info = {}
             self.bot_id = identity_info.get("id") if isinstance(identity_info, dict) and type(identity_info.get("id")) is int else None
             self.bot_username = str(identity_info.get("username") or "") if isinstance(identity_info, dict) else ""
-            self._restore_totp_cleanup()
-            self._configure_owner_commands()
+            if self.api:
+                self._restore_totp_cleanup()
+                self._configure_owner_commands()
             self._start_execution_state()
-            threading.Thread(target=self._poll, daemon=True).start()
+            threading.Thread(target=self._notification_watch, daemon=True).start()
+            if receiver:
+                threading.Thread(target=self._poll, daemon=True).start()
             if self.settings.app_server_enabled:
                 threading.Thread(target=self._app_server_idle_watch, daemon=True).start()
         except Exception:
@@ -959,6 +976,8 @@ class Gateway(TelegramExecution, TelegramChannels):
         return any(fragment in detail for fragment in ("thread not found", "unknown thread", "no such thread", "thread does not exist", "invalid thread id"))
 
     def _app_thread(self, chat_id: int, client: CodexAppServer, turn_context: dict[str, Any] | None = None) -> str:
+        if (turn_context or {}).get("notification"):
+            return self._notification_thread(str(chat_id), client, turn_context["notification"])
         state = self._channel_state(chat_id); bundle = self.instructions.compose(identity=self.identity, telegram=True, reply_mode=str(state["reply_mode"]), outbound_media=self.settings.agent_outbound_media, telegram_context=TelegramTurnContext.from_value(turn_context))
         tool_contract = f"{bundle.baseline_hash}:telegram-tools-v4:{self.settings.busy_input_policy}:{int(self.capabilities.supports('steering'))}:{int(self.capabilities.supports('subagents'))}"
         generation = self._generation(chat_id)
@@ -1756,6 +1775,8 @@ class Gateway(TelegramExecution, TelegramChannels):
                 if removed: publish("Não foi possível obter este TOTP.", cleared=True)
 
     def handle(self, method: str, params: dict[str, Any]) -> Any:
+        if method.startswith("notification."):
+            return self._notification_handle(method, params)
         if method == "ping": return {"service": "telegram", "state": "running"}
         if method == "telegram.status": return {"owners": len(self.contacts.owners()), "listener": "running", "totp_enabled": self._totp_enabled(), "last_error": self.last_error, "commands": json_file(self.settings.data_dir / "state" / "gateway-status.json", {}).get("commands"), "execution_mode": "app-server" if self.settings.app_server_enabled else "unavailable", "busy_input_policy": self.settings.busy_input_policy, "steering_available": self.capabilities.supports("steering"), "steering_reason": self.capabilities.reason("steering"), "post_turn_results": self.settings.post_turn_results and self.capabilities.supports("post_turn"), "execution": self.store.summary(), "app_server_running": bool(self.app_server and self.app_server.running()), "app_server_idle_timeout_seconds": self.settings.app_server_idle_seconds}
         if method == "telegram.sync-commands": return self._configure_owner_commands()
@@ -1782,7 +1803,16 @@ class Gateway(TelegramExecution, TelegramChannels):
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(); parser.add_argument("--data-dir", type=Path, required=True); parser.add_argument("--onmyoji-root", type=Path, required=True); parser.add_argument("--host", default="127.0.0.1"); parser.add_argument("--port", type=int, required=True); parser.add_argument("--token", required=True); args = parser.parse_args(argv)
-    gateway = Gateway(Settings.load(args.onmyoji_root.resolve(), args.data_dir)); gateway.start(); RpcServer(args.host, args.port, args.token, gateway.handle).serve_forever(gateway.stop_event); return 0
+    gateway = Gateway(Settings.load(args.onmyoji_root.resolve(), args.data_dir))
+    gateway.start()
+    configuration = gateway.notification_configuration.load()
+    server = RpcServer(args.host, args.port, args.token, gateway.handle, long_methods=("notification.submit",), long_limit=configuration["long_limit"], event_max_bytes=configuration["max_request_bytes"])
+    try:
+        server.serve_forever(gateway.stop_event)
+    finally:
+        gateway._shutdown_execution()
+        server.close()
+    return 0
 
 
 if __name__ == "__main__": raise SystemExit(main())

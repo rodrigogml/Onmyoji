@@ -209,11 +209,12 @@ def laboratory(tmp_path: Path, monkeypatch):
 def test_two_conversation_limit_and_steering_needs_no_additional_model_slot(laboratory, monkeypatch):
     gw, client, _api = laboratory(parallel=2)
     reserved = threading.Event()
-    original = gw._turn
-    def turn(conversation, *args, **kwargs):
-        if conversation == "11": reserved.set()
-        return original(conversation, *args, **kwargs)
-    monkeypatch.setattr(gw, "_turn", turn)
+    original = gw._enqueue_turn
+    def enqueue(conversation, *args, **kwargs):
+        result = original(conversation, *args, **kwargs)
+        if str(conversation) == "11": reserved.set()
+        return result
+    monkeypatch.setattr(gw, "_enqueue_turn", enqueue)
     gw._receive_update(update(1, 9, "Primeira")); gw._receive_update(update(2, 10, "Segunda"))
     first, second = client.wait_starts(2)
     gw._receive_update(update(3, 11, "Terceira")); assert reserved.wait(2)
@@ -249,13 +250,14 @@ def test_explicit_queue_is_an_ordering_barrier_for_following_automatic_input(lab
 def test_cancel_before_model_slot_never_executes_that_input_and_preserves_queue(laboratory, monkeypatch):
     gw, client, _api = laboratory(parallel=1, policy="queue")
     reserved, cancelled = threading.Event(), threading.Event()
-    original_turn, original_cancel = gw._turn, gw._cancel_conversation
+    original_turn, original_cancel = gw._enqueue_turn, gw._cancel_conversation
     def turn(conversation, *args, **kwargs):
-        if conversation == "10": reserved.set()
-        return original_turn(conversation, *args, **kwargs)
+        result = original_turn(conversation, *args, **kwargs)
+        if str(conversation) == "10": reserved.set()
+        return result
     def cancel(conversation):
         result = original_cancel(conversation); cancelled.set(); return result
-    monkeypatch.setattr(gw, "_turn", turn); monkeypatch.setattr(gw, "_cancel_conversation", cancel)
+    monkeypatch.setattr(gw, "_enqueue_turn", turn); monkeypatch.setattr(gw, "_cancel_conversation", cancel)
     gw._receive_update(update(1, 9, "Ocupa o slot")); first = client.wait_starts(1)[0]
     gw._receive_update(update(2, 10, "Cancelar antes de executar")); assert reserved.wait(2)
     gw._receive_update(update(3, 10, "/cancel")); assert cancelled.wait(2)

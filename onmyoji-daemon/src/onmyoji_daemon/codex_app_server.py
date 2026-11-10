@@ -223,7 +223,7 @@ class CodexAppServer:
                 while len(self._runtimes) > 8:
                     self._runtimes.pop(next(iter(self._runtimes)))
             self._launch_workers(runtime)
-            self._request_runtime(runtime, "initialize", {"clientInfo": {"name": "onmyoji_telegram_gateway", "title": "Onmyoji Telegram Gateway", "version": "1.0"}, "capabilities": {"experimentalApi": True}}, 45)
+            self._request_runtime(runtime, "initialize", {"clientInfo": {"name": "onmyoji_execution_gateway", "title": "Onmyoji Execution Gateway", "version": "1.0"}, "capabilities": {"experimentalApi": True}}, 45)
             self._send_runtime(runtime, {"method": "initialized", "params": {}}, 45)
             with self._lifecycle:
                 if runtime.closed.is_set() or self._runtime is not runtime:

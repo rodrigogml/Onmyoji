@@ -158,7 +158,7 @@ def lab(tmp_path, monkeypatch):
     instance.contacts = SimpleNamespace(owners=lambda: {9, 10})
     capabilities = SimpleNamespace(supports=lambda feature: feature in {"steering", "subagents", "post_turn"}, input_supported=lambda _kind: True)
     instance.capabilities = capabilities
-    launch = SimpleNamespace(synchronize_shikigami_skills=lambda: False, synchronize_shikigami_agents=lambda: False)
+    launch = SimpleNamespace(synchronize_shikigami_skills=lambda: False, synchronize_shikigami_agents=lambda: False, developer_instructions=lambda: "Instruções da instância")
     monkeypatch.setattr(telegram_execution.CodexLaunch, "from_system", lambda _root: launch)
     monkeypatch.setattr(telegram_execution.CapabilitySet, "from_instance", lambda *_args, **_kwargs: capabilities)
     monkeypatch.setattr(telegram_execution, "mcp_reconciliation_pending", lambda _root: False)
@@ -727,17 +727,15 @@ def test_shutdown_never_starts_reserved_second_slot_and_preserves_unsent_queue(l
 
     monkeypatch.setattr(lab.gateway, "_execute_inbox", execute)
     pending = submit(lab, "segunda ainda não enviada", conversation="10")
-    assert second_registered.wait(3)
-    second = active_slot(lab, "10")
-    assert second.active is None
+    assert not second_registered.is_set()
+    assert "10" not in lab.gateway._slots
     lab.client.on_interrupt = lambda params: lab.client.complete(params["threadId"], "interrupted")
     lab.gateway._shutdown_execution()
-    assert first.done.wait(3) and second.done.wait(3)
-    assert second.cancel_requested
+    assert first.done.wait(3)
     assert len(lab.client.wait_calls("turn/start")) == 1
     with lab.gateway.database_lock:
         assert lab.gateway.database.execute("SELECT state,execution_id FROM inbox_items WHERE id=?", (pending,)).fetchone() == ("pending", None)
-        assert lab.gateway.database.execute("SELECT state,result FROM execution_turns WHERE execution_id=?", (second.identifier,)).fetchone() == ("terminal", "not_sent")
+        assert lab.gateway.database.execute("SELECT COUNT(*) FROM execution_turns WHERE conversation_id='10'").fetchone() == (0,)
         assert lab.gateway.database.execute("SELECT codex_thread_id FROM conversations WHERE chat_id='9'").fetchone() == (first_thread,)
         assert lab.gateway.database.execute("SELECT COUNT(*) FROM input_operations WHERE inbox_id=?", (pending,)).fetchone() == (0,)
     lab.gateway.store.recover()
