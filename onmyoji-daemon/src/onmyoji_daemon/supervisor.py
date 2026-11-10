@@ -172,6 +172,8 @@ class Supervisor:
                     raise RuntimeError(detail)
                 try:
                     call(self.host, service.port, service.token, "ping", timeout=0.4)
+                    if name == "task-scheduler":
+                        call(self.host, service.port, service.token, "task.activate", timeout=5)
                     with self.publications.lock:
                         service.state, service.last_error = "running", None
                     return self.status(name)
@@ -262,7 +264,7 @@ class Supervisor:
     def handle(self, method: str, params: dict[str, Any]) -> Any:
         if method == "ping": return {"service": "onmyoji-daemon", "state": "running"}
         if method == "list-services": return [self.status(name) for name in self.services]
-        if method.startswith("gateway.publication.") or method in {"cloudflare-tunnel.activate", "mini-apps.publication.update"}:
+        if method.startswith("gateway.publication.") or method in {"task.activate", "cloudflare-tunnel.activate", "mini-apps.publication.update"}:
             raise RpcError("Operação interna reservada ao Supervisor.", "internal_operation")
         if method in {"start", "stop", "restart", "enable", "disable", "status"}:
             name = str(params.get("service") or "telegram")

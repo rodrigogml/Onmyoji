@@ -53,13 +53,18 @@ def cloudflare_tunnel_command(data_dir: Path) -> list[str]:
     return [runtime_python(data_dir), "-m", "onmyoji_daemon.cloudflare_tunnel", "--data-dir", str(data_dir)]
 
 
+def task_scheduler_command(data_dir: Path) -> list[str]:
+    return [runtime_python(data_dir), "-m", "onmyoji_daemon.task_scheduler.service", "--data-dir", str(data_dir)]
+
+
 SERVICES: dict[str, ServiceSpec] = {
     "telegram": ServiceSpec("telegram", "telegram.", telegram_command, "Gateway de execução da instância", additional_namespaces=("notification.",)),
     "mini-apps": ServiceSpec("mini-apps", "mini-apps.", miniapps_command, "Gateway de Mini Apps da instância", True, 39391, ("a", "oauth")),
     "btg-payments-monitor": ServiceSpec("btg-payments-monitor", "btg-monitor.", btg_monitor_command, "Acompanhamento de pagamentos BTG por consultas"),
     "gateway": ServiceSpec("gateway", "gateway.", gateway_command, "Gateway HTTP compartilhado da instância"),
     "cloudflare-tunnel": ServiceSpec("cloudflare-tunnel", "cloudflare-tunnel.", cloudflare_tunnel_command, "Publicação Cloudflare Tunnel da instância", contain_process_tree=True),
+    "task-scheduler": ServiceSpec("task-scheduler", "task.", task_scheduler_command, "Agendador local de ações", contain_process_tree=True),
 }
 
-# Namespace reservado para o futuro task-scheduler. Só um ServiceSpec poderá ativá-lo.
+# Namespace de posse exclusiva do task-scheduler.
 RESERVED_NAMESPACES = ("task.",)

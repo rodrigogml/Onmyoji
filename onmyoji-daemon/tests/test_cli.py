@@ -4,6 +4,27 @@ from onmyoji_daemon import cli
 from onmyoji_daemon.rpc import RpcError
 
 
+def test_task_cli_routes_json_stdin_and_expected_revision(monkeypatch, capsys):
+    import io
+    import sys
+    monkeypatch.setattr(cli, "endpoint", lambda _root: ("127.0.0.1", 1234, "token"))
+    received = {}
+    monkeypatch.setattr(cli, "call", lambda *args, **kwargs: received.update(method=args[3], params=args[4]) or {"id": "task"})
+    monkeypatch.setattr(sys, "stdin", io.StringIO('{"schema_version": 1}'))
+    assert cli.main(["--onmyoji-root", ".", "task", "update", "task", "--revision", "3", "--file", "-"]) == 0
+    assert received == {"method": "task.update", "params": {"id": "task", "revision": 3, "definition": {"schema_version": 1}}}
+
+
+def test_notification_cli_timeout_does_not_suggest_retry(monkeypatch, capsys):
+    import io
+    import sys
+    monkeypatch.setattr(cli, "endpoint", lambda _root: ("127.0.0.1", 1234, "token"))
+    monkeypatch.setattr(sys, "stdin", io.StringIO('{}'))
+    monkeypatch.setattr(cli, "call", lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError()))
+    assert cli.main(["--onmyoji-root", ".", "notification", "submit", "--file", "-", "--wait-timeout", "1"]) == 2
+    assert "Não reenvie automaticamente" in capsys.readouterr().err
+
+
 def test_cli_reports_remote_failure_without_traceback(monkeypatch, capsys):
     monkeypatch.setattr(cli, "endpoint", lambda _root: ("127.0.0.1", 1234, "token"))
     monkeypatch.setattr(cli, "call", lambda *_args, **_kwargs: (_ for _ in ()).throw(RpcError("cloudflare-tunnel is not running")))
