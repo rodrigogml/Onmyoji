@@ -20,28 +20,57 @@ class NotificationLog:
         with self.store.lock, self.store.db:
             self.store.db.execute("INSERT INTO notification_log_journal(at,payload) VALUES (?,?)", (at, json.dumps({"stage": stage, **values}, ensure_ascii=False)))
 
+    def _validate_directory(self):
+        if self.directory.is_symlink() or getattr(self.directory, "is_junction", lambda: False)() or self.directory.resolve().parent != self.directory.parent.resolve():
+            raise OSError("Diretório de logs não pode redirecionar a operação para outro local.")
+
+    @staticmethod
+    def _recover_entries(path):
+        if path.is_symlink():
+            raise OSError("Arquivo de log não pode ser um link.")
+        entries = set()
+        if not path.exists():
+            return entries
+        with path.open("r+b") as stream:
+            while True:
+                start = stream.tell()
+                raw = stream.readline()
+                if not raw:
+                    break
+                if not raw.endswith(b"\n"):
+                    # Queda durante append: remover apenas a cauda incompleta.
+                    # O journal permanece pendente e repõe a linha inteira.
+                    stream.seek(start); stream.truncate()
+                    stream.flush(); os.fsync(stream.fileno())
+                    break
+                try:
+                    value = json.loads(raw.decode("utf-8"))
+                    entries.add(value["journal_entry"])
+                except (ValueError, KeyError, TypeError) as error:
+                    raise OSError("Log contém uma linha inválida; journal preservado.") from error
+        return entries
+
     def flush(self):
         with self.lock:
+            self._validate_directory()
             self.directory.mkdir(parents=True, exist_ok=True)
             with self.store.lock:
                 rows = self.store.db.execute("SELECT id,at,payload FROM notification_log_journal WHERE flushed=0 ORDER BY id").fetchall()
+            entries_by_day = {}
             for identifier, at, payload in rows:
                 path = self.directory / ("notification-" + at[:10] + ".jsonl")
-                # Uma queda depois de fsync e antes do commit pode repetir a
-                # escrita; o ID privado do journal permite reconhecer a linha.
-                marker = '"journal_entry": ' + str(identifier) + ','
-                already = False
-                if path.exists():
-                    with path.open(encoding="utf-8") as source:
-                        already = any(line.startswith("{" + marker) for line in source)
-                if not already:
+                if path not in entries_by_day:
+                    entries_by_day[path] = self._recover_entries(path)
+                if identifier not in entries_by_day[path]:
                     with path.open("a", encoding="utf-8") as stream:
                         stream.write(json.dumps({"journal_entry": identifier, "at": at, **json.loads(payload)}, ensure_ascii=False) + "\n")
                         stream.flush(); os.fsync(stream.fileno())
+                    entries_by_day[path].add(identifier)
                 with self.store.lock, self.store.db:
                     self.store.db.execute("UPDATE notification_log_journal SET flushed=1 WHERE id=?", (identifier,))
 
     def purge(self, now=None):
+        self._validate_directory()
         now = now or datetime.now(timezone.utc)
         cutoff = (now - timedelta(days=20)).date().isoformat()
         if self.directory.is_dir():

@@ -92,7 +92,7 @@ class GatewayStore:
             if version == SCHEMA_VERSION:
                 return
             database_path = self.db.execute("PRAGMA database_list").fetchone()[2]
-            if database_path and self.db.execute("SELECT COUNT(*) FROM inbox_items").fetchone()[0]:
+            if database_path and (version > 0 or self.db.execute("SELECT COUNT(*) FROM inbox_items").fetchone()[0]):
                 backup = Path(database_path).with_name(f"gateway-before-delegation-v{version}.sqlite3")
                 if not backup.exists():
                     self.backup(backup)
@@ -339,7 +339,10 @@ class GatewayStore:
             sequence = self.db.execute("SELECT COALESCE(MAX(sequence),0)+1 FROM inbox_items WHERE chat_id=?", (conversation,)).fetchone()[0]
             identifier = secrets.token_urlsafe(18)
             self.db.execute("INSERT INTO inbox_items(id,chat_id,generation,text,attachment_ids,turn_context,structured_content,state,created_at,source_key,sequence,route) VALUES (?,?,?,?,?,?,?,'pending',?,?,?,?)", (identifier, conversation, generation, text, json.dumps(attachments), json.dumps(context, ensure_ascii=False), json.dumps(structured_content or {}, ensure_ascii=False, allow_nan=False), time.time(), source, sequence, route))
-            global_sequence = self.db.execute("SELECT COALESCE(MAX(global_sequence),0)+1 FROM inbox_items").fetchone()[0]
+            previous = self.db.execute("SELECT value FROM gateway_checkpoints WHERE key='global_sequence'").fetchone()
+            maximum = self.db.execute("SELECT COALESCE(MAX(global_sequence),0) FROM inbox_items").fetchone()[0]
+            global_sequence = max(int(previous[0]) if previous else 0, maximum) + 1
+            self.db.execute("INSERT OR REPLACE INTO gateway_checkpoints VALUES ('global_sequence',?)", (str(global_sequence),))
             self.db.execute("UPDATE inbox_items SET origin=?,priority=?,global_sequence=? WHERE id=?", (origin, 0 if origin == "telegram" else 1, global_sequence, identifier))
             if receipt:
                 self.db.execute("INSERT INTO notification_receipts(inbox_id,event_id,received_at,envelope) VALUES (?,?,?,?)", (identifier, receipt["event_id"], receipt["received_at"], json.dumps(receipt["envelope"], ensure_ascii=False)))
@@ -356,7 +359,7 @@ class GatewayStore:
 
     def blocked(self, conversation: str) -> bool:
         with self.lock:
-            return bool(self.db.execute("SELECT 1 FROM execution_turns WHERE conversation_id=? AND state IN ('uncertain','reconciling') UNION ALL SELECT 1 FROM inbox_items WHERE chat_id=? AND state IN ('uncertain','uncertain_legacy') UNION ALL SELECT 1 FROM ingress_updates WHERE conversation_id=? AND state='uncertain' LIMIT 1", (conversation, conversation, conversation)).fetchone())
+            return bool(self.db.execute("SELECT 1 FROM execution_turns WHERE conversation_id=? AND (state IN ('uncertain','reconciling') OR state='terminal' AND delivery_state IN ('pending','sending','sent')) UNION ALL SELECT 1 FROM inbox_items WHERE chat_id=? AND state IN ('uncertain','uncertain_legacy') UNION ALL SELECT 1 FROM ingress_updates WHERE conversation_id=? AND state='uncertain' UNION ALL SELECT 1 FROM notification_receipts n JOIN inbox_items i ON i.id=n.inbox_id JOIN execution_turns e ON e.execution_id=i.execution_id WHERE i.chat_id=? AND n.execution_state IS NULL AND e.state='terminal' LIMIT 1", (conversation, conversation, conversation, conversation)).fetchone())
 
     def reserve(self, conversation: str, generation: int, inbox: str, timeout: float) -> str:
         identifier = secrets.token_urlsafe(18)

@@ -165,6 +165,9 @@ def lab(tmp_path, monkeypatch):
     value = SimpleNamespace(gateway=instance, api=instance.api, client=instance.app_server, tmp=tmp_path)
     yield value
     instance.stop_event.set()
+    watcher = getattr(value, "notification_watcher", None)
+    if watcher:
+        watcher.join(timeout=3)
     with instance.app_server_lock:
         active = list(instance.app_turns.values())
     for turn in active:

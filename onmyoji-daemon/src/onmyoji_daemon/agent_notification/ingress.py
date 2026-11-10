@@ -19,6 +19,7 @@ class NotificationIngress:
         self.notification_configuration = NotificationConfiguration(self.settings.root)
         self.notification_log = NotificationLog(self.store, self.settings.data_dir / "notification-logs")
         self._notification_delivery_lock = threading.Lock()
+        self._notification_sync_lock = threading.Lock()
 
     def _notification_handle(self, method, params):
         configuration = self.notification_configuration.load()
@@ -56,7 +57,6 @@ class NotificationIngress:
             pass  # O journal conserva a recepção; watcher recupera antes do despacho.
         self._wake_worker(destination)
         while True:
-            self._notification_sync()
             with self.database_lock:
                 row = self.database.execute("SELECT execution_state,delivery_state,reason FROM notification_receipts WHERE inbox_id=?", (identifier,)).fetchone()
             if row[0] is not None:
@@ -166,7 +166,17 @@ class NotificationIngress:
             self.notification_log.record("delivery", event_id=event["event_id"], state=state)
 
     def _notification_sync(self):
-        # Uma única rotina faz entrega/registro de finais recuperados, sem executar agente.
+        # Acompanhamentos RPC só observam. Um único sincronizador publica
+        # associações e entregas, evitando snapshots concorrentes e rollback
+        # tardio de uma thread já substituída por um evento posterior.
+        if not self._notification_sync_lock.acquire(blocking=False):
+            return
+        try:
+            self._notification_sync_serial()
+        finally:
+            self._notification_sync_lock.release()
+
+    def _notification_sync_serial(self):
         with self.database_lock:
             rows = self.database.execute("SELECT n.inbox_id,n.event_id,n.envelope,n.execution_state,n.delivery_state,i.state,i.execution_id,e.state,e.result,e.terminal_text,e.thread_id,e.resource_revision FROM notification_receipts n JOIN inbox_items i ON i.id=n.inbox_id LEFT JOIN execution_turns e ON e.execution_id=i.execution_id WHERE n.execution_state IS NULL OR n.execution_state='uncertain'").fetchall()
         for inbox, event_id, raw, _state, delivery, input_state, execution, execution_state, result, text, thread, revision in rows:

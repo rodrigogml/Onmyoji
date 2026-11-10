@@ -16,9 +16,14 @@ def event(policy="new", destination="9"):
     return {"schema_version": 1, "event_id": uuid7(), "prompt": "Evento de laboratório", "response_channel": {"type": "telegram", "value": destination}, "thread_policy": policy}
 
 
-def enable(lab):
+def enable(lab, *, watch=True):
     lab.gateway.notification_configuration.configure({"enabled": True})
     lab.gateway._channel_register("9", "Owner", 9)
+    # O laboratório não abre os receptores externos de Gateway.start(), mas
+    # conserva o mesmo watcher operacional de notificações do serviço real.
+    if watch and not getattr(lab, "notification_watcher", None):
+        lab.notification_watcher = threading.Thread(target=lab.gateway._notification_watch, daemon=True)
+        lab.notification_watcher.start()
 
 
 def test_notification_reuses_gateway_and_reprocesses_same_uuid(lab):
