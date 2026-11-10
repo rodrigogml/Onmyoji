@@ -2,6 +2,8 @@
 
 Especificação aprovada em 2026-11-10. A disponibilidade operacional depende das etapas implementadas e validadas, não da publicação deste contrato.
 
+Implementação local entregue em 2026-11-10: contrato distribuível, núcleo multiorigem, ingresso síncrono concorrente, entregas Telegram/e-mail, logs e incidentes, agendador, ações, CLI e setup. Validação completa no Windows: 3.188 testes aprovados, 40 ignorados e 301 subtestes aprovados; verificações focadas adicionais cobrem a apresentação de timezone e preferências de áudio. O wheel foi construído e inspecionado para confirmar inclusão do schema e dos pacotes novos. A contenção de processos foi exercitada no Windows; isso não certifica execução nativa POSIX. Nenhum destino real foi acionado e nenhum serviço operacional foi habilitado durante o desenvolvimento.
+
 ## Notificações ao agente
 
 Ingresso exclusivamente local pelo Supervisor, namespace `notification.`, no mesmo processo, inbox, banco, App Server e limite de turnos do Telegram. `notification.submit` é síncrono e concorrente; desconectar não cancela. Não existe consulta de resultado por UUID nem cancelamento pelo emissor. O token interno do Supervisor permanece obrigatório; não há cadastro/autenticação adicional de emissores.

@@ -2,7 +2,7 @@
 
 O `onmyoji-daemon` é o único processo residente de uma instância Shikigami. Ele atende somente o workspace configurado localmente em `configs/onmyoji-system.toml`.
 
-Os serviços são registrados pelo código, iniciados como subprocessos locais e administrados por RPC autenticado em loopback. O endpoint, o token efêmero, o estado de habilitação, logs, banco SQLite e contatos ficam em `configs/daemon/`. Arquivos de atividade do agente nunca ficam no `CODEX_HOME`: o gateway usa exclusivamente `<workspace>/.onmyoji/telegram/`.
+Os serviços são registrados pelo código, iniciados como subprocessos locais e administrados por RPC autenticado em loopback. O endpoint, o token efêmero, o estado de habilitação, logs, banco SQLite e contatos ficam em `configs/daemon/`. Arquivos de atividade do agente nunca ficam no `CODEX_HOME`: o gateway usa `<workspace>/.onmyoji/telegram/` e as saídas de processos agendados usam `<workspace>/.onmyoji/task-scheduler/`.
 
 O menu **Daemon > Publicação externa** administra os serviços `gateway` e
 `cloudflare-tunnel`, independentes de Mini Apps. Consulte a documentação de
@@ -15,6 +15,14 @@ O menu `D. Daemon` distingue explicitamente três estados: daemon instalado na i
 O processo manual é iniciado desacoplado do configurador e responde pelo endpoint RPC antes de o menu informar sucesso. Um lock e um registro com PID, raiz da instância e identificador efêmero impedem supervisores duplicados. A remoção da instância exige a confirmação literal `desinstalar`, para o processo, remove o serviço eventualmente administrado e então apaga apenas `configs/daemon/` daquela instância.
 
 No Windows, a instalação do serviço requer privilégios administrativos e `pywin32` no Python que executará o daemon. No Linux, o mesmo menu gera e habilita uma unit `systemd`, também exigindo privilégios administrativos. O nome padrão é derivado da instância como `Shikigami-<IdentificadorCamelCase>`; a descrição padrão é `Shikigami <Identificador> Daemon`. Os recursos de serviço ficam registrados localmente para que outra instância nunca seja removida por engano.
+
+## Notificações ao agente e agendador
+
+`D. Daemon → N. Notificações ao agente` configura o ingresso privado/local, a conta SMTP padrão e o canal opcional de incidentes. Eventos entram na mesma inbox e no mesmo App Server do Telegram. O canal de retorno determina instruções, ferramentas e associação de thread: um evento com retorno Telegram segue o mesmo fluxo daquele chat/tópico, com `reuse` ou `new`. O ingresso pode funcionar com a recepção Telegram desligada. Não é publicado endpoint externo.
+
+`D. Daemon → A. Agendador` consulta e ordena definições existentes. O serviço independente `task-scheduler` executa data única, intervalo e cron, com ações de notificação ou processo local. A administração das definições é feita por CLI/RPC; o setup não as cria nem edita. Novos recursos começam desabilitados.
+
+Consulte [contratos, diagrama, comandos e recuperação](eventos-agendamentos.md).
 
 ## Telegram
 
