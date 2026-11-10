@@ -46,6 +46,30 @@ def test_materializer_refuses_to_overwrite_unmanaged_workspace_directory(tmp_pat
         ShikigamiSkillMaterializer(root).synchronize(workspace)
 
 
+def test_materializer_tolerates_transient_windows_directory_sharing(tmp_path, monkeypatch):
+    root, workspace = tmp_path / "root", tmp_path / "work"
+    workspace.mkdir(); source(root); configure(root)
+    materializer = ShikigamiSkillMaterializer(root)
+    materializer.synchronize(workspace)
+    target = materializer.target(workspace, "workflow")
+    (target / "references" / "steps.md").write_text("damaged", encoding="utf-8")
+    replace = Path.replace
+    attempts = []
+    def sharing_then_success(staging, destination):
+        if staging.name.startswith(".workflow.") and Path(destination) == target:
+            attempts.append(staging)
+            if len(attempts) == 1:
+                error = PermissionError("fixture sharing violation")
+                error.winerror = 5
+                raise error
+        return replace(staging, destination)
+    monkeypatch.setattr(Path, "replace", sharing_then_success)
+    assert materializer.synchronize(workspace) is True
+    assert len(attempts) == 2
+    assert (target / "references" / "steps.md").read_text(encoding="utf-8") == "Etapa 1.\n"
+    assert not list(target.parent.glob(".workflow.*"))
+
+
 def test_materializer_removes_only_a_target_registered_for_the_workspace(tmp_path: Path) -> None:
     root, workspace = tmp_path / "root", tmp_path / "work"; workspace.mkdir(); source(root); configure(root)
     materializer = ShikigamiSkillMaterializer(root); materializer.synchronize(workspace)

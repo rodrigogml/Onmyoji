@@ -11,6 +11,7 @@ import tempfile
 import tomllib
 from typing import Any
 
+from .config_publication import publish_file
 from .instance import shikigami_skills_path
 
 
@@ -116,7 +117,7 @@ class ShikigamiSkillMaterializer:
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as output:
                 output.write(content)
-            os.replace(temporary, self.runtime_state_path)
+            publish_file(Path(temporary), self.runtime_state_path)
         except Exception:
             Path(temporary).unlink(missing_ok=True)
             raise
@@ -156,12 +157,12 @@ class ShikigamiSkillMaterializer:
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source_file, destination)
             if backup.exists(): shutil.rmtree(backup)
-            if target.exists(): os.replace(target, backup)
-            os.replace(staging, target)
+            if target.exists(): publish_file(target, backup)
+            publish_file(staging, target)
             if backup.exists(): shutil.rmtree(backup)
         except Exception:
             if staging.exists(): shutil.rmtree(staging)
-            if backup.exists() and not target.exists(): os.replace(backup, target)
+            if backup.exists() and not target.exists(): publish_file(backup, target)
             raise
         return True
 
