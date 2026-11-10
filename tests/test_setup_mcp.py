@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -130,6 +131,28 @@ class McpSetupTests(unittest.TestCase):
 
         getpass.assert_not_called()
         config.save_credentials.assert_not_called()
+
+    def test_keepassxc_creation_error_preserves_cause_without_password_prompts(self) -> None:
+        completed = subprocess.CompletedProcess(
+            ["keepassxc-cli"], 1, "", "Enter password to encrypt database (optional):\nRepeat password:\nError: file already exists.\n"
+        )
+
+        message = MODULE.keepassxc_creation_error(completed)
+
+        self.assertEqual(message, "KeePassXC não criou o cofre: Error: file already exists.")
+
+    def test_new_vault_does_not_overwrite_an_existing_database(self) -> None:
+        config = MagicMock()
+        config.root = Path("C:/instancia")
+        config.credentials.return_value = {"defaults": {}, "vaults": {}, "profiles": {}}
+        database = config.root / "configs" / "mcp" / "vaults" / "principal.kdbx"
+
+        with patch.object(MODULE, "ask_new_profile_name", return_value="principal"), patch.object(MODULE, "flow_choice", return_value="Criar cofre KDBX local"), patch.object(MODULE, "select_keepassxc_command", return_value=["keepassxc-cli"]), patch.object(MODULE, "ensure_linux_secret_tool", return_value=True), patch.object(MODULE, "ask", return_value=""), patch.object(MODULE, "profile_auth", return_value={}), patch.object(MODULE.getpass, "getpass", return_value="senha-mestra"), patch.object(MODULE.Path, "exists", return_value=True), patch.object(MODULE.subprocess, "run") as run, patch.object(MODULE, "result") as result:
+            MODULE.create_vault_profile(config)
+
+        run.assert_not_called()
+        config.save_credentials.assert_not_called()
+        result.assert_called_once_with(False, f"Já existe um arquivo em {database}. Associe esse KDBX como cofre existente ou escolha outro nome de perfil.")
 
     def test_existing_vault_is_validated_and_its_password_is_saved(self) -> None:
         config = MagicMock()

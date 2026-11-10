@@ -380,6 +380,19 @@ def scope_flatpak_to_database(command: list[str], database: str) -> list[str]:
     return [command[0], "run", permission, *command[2:]]
 
 
+def keepassxc_creation_error(completed: subprocess.CompletedProcess[str]) -> str:
+    """Resume a falha do CLI sem repetir prompts ou conteúdo sensível."""
+    detail = (completed.stderr or completed.stdout or "").strip()
+    lines = []
+    for line in detail.splitlines():
+        normalized = " ".join(line.split())
+        if not normalized or normalized.casefold().startswith(("enter password", "repeat password")):
+            continue
+        lines.append(normalized)
+    summary = " ".join(lines)[:500]
+    return f"KeePassXC não criou o cofre: {summary}" if summary else f"KeePassXC não criou o cofre (código {completed.returncode})."
+
+
 def ensure_linux_secret_tool() -> bool:
     """Prepara o provedor usado para persistir a senha antes de solicitá-la."""
     if os.name == "nt" or shutil.which("secret-tool"):
@@ -421,9 +434,14 @@ def create_vault_profile(config: McpConfiguration) -> None:
         confirm = getpass.getpass(Ui.text("› Repita a senha mestra: ", Ui.violet, Ui.bold))
         if not password or password != confirm: result(False, "Senhas não conferem; nada foi salvo."); return
         try:
+            if Path(database).exists():
+                result(False, f"Já existe um arquivo em {database}. Associe esse KDBX como cofre existente ou escolha outro nome de perfil.")
+                return
             Path(database).parent.mkdir(parents=True, exist_ok=True)
             made = subprocess.run([*command, "db-create", "--set-password", database], input=password + "\n" + password + "\n", text=True, timeout=60, capture_output=True)
-            if made.returncode or not Path(database).is_file(): result(False, "KeePassXC não criou o cofre."); return
+            if made.returncode:
+                result(False, keepassxc_creation_error(made)); return
+            if not Path(database).is_file(): result(False, "KeePassXC informou sucesso, mas o arquivo do cofre não foi criado."); return
         except (OSError, subprocess.SubprocessError): result(False, "Não foi possível criar o cofre."); return
         if not save_password(name, auth, config.root, password):
             result(False, f"O cofre foi criado em {database}, mas o perfil não foi salvo.")
