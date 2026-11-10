@@ -16,6 +16,7 @@ def profile(name, modules, providers):
 def registry(monkeypatch, profiles):
     configuration = McpConfiguration(Path("."))
     monkeypatch.setattr(configuration, "enabled_mercado_profiles", lambda: profiles)
+    monkeypatch.setattr(configuration, "mercado", lambda: {"profiles": {item["name"]: item for item in profiles}})
     return MercadoToolRegistry(configuration)
 
 
@@ -58,5 +59,16 @@ def test_lista_de_perfis_nao_expoe_caminhos_ou_segredos(monkeypatch):
     configured = profile("pessoal", ["mercadolivre.account"], {"mercadolivre": "authorization_code"})
     configured["mercadolivre"].update({"authorization_entry_path": "segredo", "site_id": "MLB"})
     result = registry(monkeypatch, [configured]).call("mercado.list_profiles", {})
-    assert result == {"profiles": [{"name": "pessoal", "description": "Perfil pessoal", "modules": ["mercadolivre.account"], "providers": {"mercadolivre": {"authMode": "authorization_code", "authorization": "unknown"}}}]}
+    assert result == {"profiles": [{"name": "pessoal", "description": "Perfil pessoal", "modules": ["mercadolivre.account"], "providers": {"mercadolivre": {"authMode": "authorization_code", "authorization": "unavailable"}}}]}
     assert "segredo" not in str(result)
+
+
+def test_cached_tool_rejects_profile_disabled(monkeypatch):
+    configuration = McpConfiguration(Path("."))
+    disabled = profile("pessoal", ["mercadolivre.account"], {"mercadolivre": "authorization_code"})
+    disabled["enabled"] = False
+    monkeypatch.setattr(configuration, "enabled_mercado_profiles", lambda: [])
+    monkeypatch.setattr(configuration, "mercado", lambda: {"profiles": {"pessoal": disabled}})
+    with pytest.raises(MercadoError) as captured:
+        MercadoToolRegistry(configuration).call("mercadolivre.account_get", {})
+    assert captured.value.code == "profile_disabled"

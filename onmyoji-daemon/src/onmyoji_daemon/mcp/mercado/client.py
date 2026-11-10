@@ -55,8 +55,8 @@ class MercadoClient:
         self.oauth = MercadoOAuth(root, provider, profile)
         self.defaults = self.oauth.defaults
 
-    def request(self, method: str, path: str, *, query: dict[str, Any] | None = None, body: dict[str, Any] | None = None, retry: bool | None = None) -> Any:
-        raw = self.request_bytes(method, path, query=query, body=body, retry=retry)
+    def request(self, method: str, path: str, *, query: dict[str, Any] | None = None, body: dict[str, Any] | None = None, retry: bool | None = None, caller_id: bool = False) -> Any:
+        raw = self.request_bytes(method, path, query=query, body=body, retry=retry, caller_id=caller_id)
         if not raw:
             return {}
         try:
@@ -64,16 +64,20 @@ class MercadoClient:
         except (UnicodeDecodeError, ValueError) as error:
             raise MercadoError("network_error", "O provedor retornou JSON inválido.") from error
 
-    def request_bytes(self, method: str, path: str, *, query: dict[str, Any] | None = None, body: dict[str, Any] | None = None, retry: bool | None = None, max_bytes: int | None = None) -> bytes:
+    def request_bytes(self, method: str, path: str, *, query: dict[str, Any] | None = None, body: dict[str, Any] | None = None, retry: bool | None = None, max_bytes: int | None = None, caller_id: bool = False) -> bytes:
         if method not in {"GET", "POST", "PUT", "DELETE"} or not path.startswith("/") or "://" in path or "?" in path:
             raise MercadoError("invalid_request", "Endpoint Mercado interno inválido.")
-        token, _ = self.oauth.access()
+        token, user_id = self.oauth.access()
         url = BASE_URLS[self.provider] + path
         filtered = {key: value for key, value in (query or {}).items() if value is not None}
         if filtered:
             url += "?" + urllib.parse.urlencode(filtered, doseq=True)
         payload = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode() if body is not None else None
         headers = {"Authorization": "Bearer " + token, "Accept": "application/json", "User-Agent": "Onmyoji-Mercado-MCP/1"}
+        if caller_id:
+            if not isinstance(user_id, str) or not user_id.isascii() or not user_id.isdigit():
+                raise MercadoError("oauth_required", "A autorização não informa o usuário exigido pela operação.")
+            headers["X-Caller-Id"] = user_id
         if payload is not None:
             headers["Content-Type"] = "application/json"
         attempts = self.defaults["max_retries"] if (retry if retry is not None else method == "GET") else 0

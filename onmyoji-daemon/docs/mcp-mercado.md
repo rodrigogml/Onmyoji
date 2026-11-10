@@ -86,3 +86,11 @@ Corpo remoto, Authorization header, URL com query sensível e traceback não sã
 
 > [!NOTE]
 > Todos os testes usam respostas simuladas. A suíte não acessa contas reais nem executa operações financeiras.
+
+## Referências oficiais
+
+- [Bookmarks/Favoritos do Mercado Livre](https://developers.mercadolivre.com.br/pt_br/favoritos)
+- [Pedidos e envios associados](https://developers.mercadolivre.com.br/pt_br/gerenciamento-de-vendas)
+- [Relatórios de faturamento](https://developers.mercadolivre.com.br/pt_br/relatorios-de-faturamento)
+- [Referência de relatórios Mercado Pago](https://www.mercadopago.com.br/developers/en/reference/reports/overview)
+- [Relatórios de atividades via API](https://www.mercadopago.com.br/developers/pt/docs/reports/activities-reports/api)

@@ -40,6 +40,13 @@ class ReportReader:
         target.write_bytes(data)
         return target
 
+    def cached(self, profile: str, report_id: str) -> Path | None:
+        """Retorna somente cache ainda vigente; conteúdo expirado é eliminado."""
+        self.cleanup()
+        key = hashlib.sha256(f"{profile}:{report_id}".encode()).hexdigest()
+        target = self.directory / (key + ".csv")
+        return target if target.is_file() else None
+
     def _extract(self, content: bytes) -> bytes:
         if not content.startswith(b"PK\x03\x04"):
             return content

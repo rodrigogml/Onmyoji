@@ -34,6 +34,14 @@ def test_http_preserves_decimals_as_text_and_token_in_header(monkeypatch, tmp_pa
     assert "access-token" not in captured[0].full_url
 
 
+def test_caller_id_is_derived_from_authorized_user(monkeypatch, tmp_path):
+    monkeypatch.setattr("onmyoji_daemon.mcp.mercado.client.MercadoOAuth", OAuth)
+    captured = []
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: captured.append(request) or Response(b"{}"))
+    MercadoClient(tmp_path, "mercadopago", "pessoal").request("GET", "/v1/chargebacks/1", caller_id=True)
+    assert captured[0].headers["X-caller-id"] == "42"
+
+
 def test_http_maps_permission_error_without_body_or_url(monkeypatch, tmp_path):
     monkeypatch.setattr("onmyoji_daemon.mcp.mercado.client.MercadoOAuth", OAuth)
     error = urllib.error.HTTPError("https://api.mercadopago.com/path?secret=value", 403, "denied", {"X-Request-Id": "safe-id"}, None)

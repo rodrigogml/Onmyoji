@@ -42,7 +42,13 @@ class MercadoToolRegistry:
 
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         profiles = self.configuration.enabled_mercado_profiles()
+        configured = self.configuration.mercado().get("profiles", {})
         if not profiles:
+            requested = arguments.get("profile") if isinstance(arguments, dict) else None
+            if requested is None and len(configured) == 1:
+                requested = next(iter(configured))
+            if requested in configured and configured[requested].get("enabled") is False:
+                raise MercadoError("profile_disabled", "Perfil Mercado está desabilitado.", profile=requested)
             raise MercadoError("profile_not_found", "Não há perfil Mercado habilitado.")
         if name == "mercado.list_profiles":
             self._require_arguments(arguments, set())
@@ -54,6 +60,8 @@ class MercadoToolRegistry:
         profile_name = profiles[0]["name"] if len(profiles) == 1 else arguments.get("profile")
         profile = next((item for item in profiles if item["name"] == profile_name), None)
         if profile is None:
+            if profile_name in configured and configured[profile_name].get("enabled") is False:
+                raise MercadoError("profile_disabled", "Perfil Mercado está desabilitado.", profile=profile_name)
             raise MercadoError("profile_not_found", "Perfil Mercado não encontrado ou desabilitado.", profile=profile_name)
         expected_module = TOOL_MODULE.get(name)
         if expected_module is not None and expected_module not in profile["modules"]:
@@ -72,10 +80,17 @@ class MercadoToolRegistry:
         if not isinstance(arguments, dict) or set(arguments) - allowed:
             raise MercadoError("invalid_request", "Argumentos Mercado inválidos.")
 
-    @staticmethod
-    def _public_profile(profile: dict[str, Any]) -> dict[str, Any]:
+    def _public_profile(self, profile: dict[str, Any]) -> dict[str, Any]:
         providers: dict[str, Any] = {}
         for provider in ("mercadolivre", "mercadopago"):
             if provider in profile:
-                providers[provider] = {"authMode": profile[provider].get("auth_mode", "authorization_code"), "authorization": "unknown"}
+                mode = profile[provider].get("auth_mode", "authorization_code")
+                state = "on_demand" if mode == "client_credentials" else "unavailable"
+                if mode == "authorization_code":
+                    try:
+                        from .oauth import MercadoOAuth
+                        state = MercadoOAuth(self.configuration.root, provider, profile["name"]).status()["state"]
+                    except (MercadoError, OSError, KeyError, TypeError, ValueError):
+                        pass
+                providers[provider] = {"authMode": mode, "authorization": state}
         return {"name": profile["name"], "description": profile["description"], "modules": list(profile["modules"]), "providers": providers}
