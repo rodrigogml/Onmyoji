@@ -64,7 +64,7 @@ def test_permission_failure_has_actionable_sanitized_message(tmp_path, monkeypat
         return original(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", read_text)
-    with pytest.raises(McpConfigurationError, match="Reparar permissões") as failure:
+    with pytest.raises(McpConfigurationError, match="Processo/Serviço do Daemon.*Reparar permissões") as failure:
         config.credentials()
     assert "private-detail" not in str(failure.value)
 
