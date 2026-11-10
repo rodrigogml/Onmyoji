@@ -30,17 +30,6 @@
 !/*-files/
 !/*-files/**
 
-# Preserve somente os diretórios locais versionados como sentinelas. Configuração,
-# estado, temporários e o runtime Python nunca pertencem ao repositório.
+# Configuração pertencente à instância
 !/configs/
-/configs/*
-!/configs/.gitkeep
-!/state/
-/state/*
-!/state/.gitkeep
-!/tmp/
-/tmp/*
-!/tmp/.gitkeep
-!/venv/
-/venv/*
-!/venv/.gitkeep
+!/configs/**
