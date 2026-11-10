@@ -4,6 +4,22 @@ from onmyoji_daemon import cli
 from onmyoji_daemon.rpc import RpcError
 
 
+def test_prepare_instance_runs_before_optional_runtime_dependencies_exist(tmp_path):
+    import os
+    from pathlib import Path
+    import subprocess
+    import sys
+
+    source = Path(cli.__file__).resolve().parents[1]
+    environment = dict(os.environ); environment["PYTHONPATH"] = str(source)
+    root = tmp_path / "instance"; root.mkdir()
+
+    completed = subprocess.run([sys.executable, "-S", "-B", "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "prepare-instance"], cwd=str(tmp_path), env=environment, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=30, check=False)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Manifesto do daemon preparado" in completed.stdout
+
+
 def test_task_cli_routes_json_stdin_and_expected_revision(monkeypatch, capsys):
     import io
     import sys

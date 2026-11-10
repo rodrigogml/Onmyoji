@@ -11,7 +11,6 @@ import time
 from .rpc import RpcError, call
 from .supervisor import Supervisor, endpoint
 from . import management
-from .launcher import main as interactive_main
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -113,7 +112,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.resource_limits is not None and not isinstance(args.resource_limits, dict): return False, "--resource-limits deve conter um objeto JSON."
         return management.install_service(root, args.name, args.description, args.scope, args.run_as_user, args.run_as_group, args.use_sudo, args.windows_account, sys.stdin.read().rstrip("\r\n") if args.password_stdin else "", lambda message: print("› " + message, flush=True), isolate_linux=args.isolate_linux, installer_user=args.installer_user, installer_access=args.installer_access, workspace=args.workspace, resource_limits=args.resource_limits)
     if args.action == "run": Supervisor(root).run_forever(); return 0
-    if args.action == "interactive": return interactive_main(["--onmyoji-root", str(root)])
+    if args.action == "interactive":
+        from .launcher import main as interactive_main
+        return interactive_main(["--onmyoji-root", str(root)])
     if args.action == "publication-diagnose":
         from .publication_diagnostics import diagnose
         response = diagnose(root, progress=lambda message: print("› " + message, file=sys.stderr, flush=True))
