@@ -67,7 +67,8 @@ def test_failed_new_keeps_old_association_and_delivery_failure_keeps_new(lab):
         thread = lab.client.wait_calls("turn/start", 2)[1]["threadId"]
         lab.client.item(thread, "Resposta")
         lab.client.complete(thread)
-        assert success.result(3)["delivery"] == "uncertain"
+        result = success.result(3)
+        assert result["delivery"] == "uncertain" and result["reason"] == "delivery_uncertain"
         assert lab.gateway.database.execute("SELECT codex_thread_id FROM conversations WHERE chat_id='9'").fetchone() == (thread,)
 
 
@@ -106,6 +107,23 @@ def test_invalid_destination_does_not_start_agent_and_disabled_rejects(lab):
     result = lab.gateway.handle("notification.submit", event(destination="unknown"))
     assert result["execution"] == "not_started"
     assert result["delivery"] == "not_attempted"
+    assert result["reason"] == "destination_unavailable"
+    assert not lab.client.calls
+
+
+def test_diagnosis_checks_selected_accounts_without_sending(lab, monkeypatch):
+    enable(lab)
+    from onmyoji_daemon.mcp.email.service import EmailService
+    from onmyoji_daemon.mcp.email.contracts import EmailError
+    lab.gateway.notification_configuration.configure({"smtp_account": "removed", "incident": {"type": "telegram", "value": "missing"}})
+    def unavailable(*args):
+        raise EmailError("account_unavailable", "fixture")
+    monkeypatch.setattr(EmailService, "account", unavailable)
+    monkeypatch.setattr(EmailService, "invoke", lambda *args: pytest.fail("diagnosis must not send"))
+    checks = lab.gateway.handle("notification.diagnose", {})["checks"]
+    assert checks["contract_valid"] and checks["smtp_configured"]
+    assert not checks["smtp_available"] and checks["smtp_reason"] == "account_unavailable"
+    assert not checks["incident_available"] and checks["incident_reason"] == "destination_unavailable"
     assert not lab.client.calls
 
 

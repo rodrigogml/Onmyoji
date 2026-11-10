@@ -19,6 +19,7 @@ from ..codex_capabilities import CapabilitySet
 from ..codex_execution import CodexExecutionError, CodexLaunch
 from ..instructions import TelegramTurnContext
 from ..mcp.reconciliation import mcp_reconciliation_pending
+from ..rpc import RpcError
 from ..telegram_delivery import DeliveryOwner, DeliverySuppressed, DeliveryUncertain, DeliveryQueueFull
 from ..telegram_formatting import plain_text
 from ..telegram_persistence import GatewayPersistenceError
@@ -375,7 +376,8 @@ class ExecutionGateway:
             else:
                 self._turn(slot.conversation_id, slot.inbox["text"], attachments, context)
         except Exception as error:
-            self.store.fail_input(slot.inbox["id"], "preparation_failed")
+            reason = error.code if slot.inbox.get("notification") and isinstance(error, RpcError) else "preparation_failed"
+            self.store.fail_input(slot.inbox["id"], reason)
             self.store.terminal(slot.identifier, "not_started" if slot.inbox.get("notification") else "failed")
             self._record_error("Não foi possível preparar a solicitação.")
             if self.api and not slot.inbox.get("notification") and slot.generation == self._generation(slot.conversation_id):

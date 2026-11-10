@@ -34,6 +34,8 @@ class NotificationIngress:
             with self.database_lock:
                 counts = dict(self.database.execute("SELECT COALESCE(execution_state,'pending'),COUNT(*) FROM notification_receipts GROUP BY execution_state").fetchall())
             checks = {"app_server_enabled": self.settings.app_server_enabled, "telegram_available": bool(self.api), "smtp_configured": bool(configuration["smtp_account"])}
+            if method == "notification.diagnose":
+                checks.update(self._notification_diagnose(configuration))
             return {"enabled": configuration["enabled"], "configuration": configuration, "counts": counts, "checks": checks, "execution": self.store.summary()}
         if method != "notification.submit":
             raise RpcError("Operação de notificação desconhecida.", "unknown_method")
@@ -68,6 +70,26 @@ class NotificationIngress:
                 raise RpcError("Acompanhamento abandonado; execução aceita continua.", "acceptance_unknown")
             if self.stop_event.wait(0.1):
                 raise RpcError("Gateway encerrando; execução aceita permanece registrada.", "acceptance_unknown")
+
+    def _notification_diagnose(self, configuration):
+        from .contract import SCHEMA, VALIDATOR
+        VALIDATOR.check_schema(SCHEMA)
+        checks = {"contract_valid": True, "schema_version": 1, "smtp_available": False, "smtp_reason": "smtp_unconfigured", "incident_available": None}
+        if configuration["smtp_account"]:
+            try:
+                self._notification_destination({"response_channel": {"type": "email", "value": "diagnostic@example.invalid"}}, configuration["smtp_account"])
+            except Exception as error:
+                checks["smtp_reason"] = getattr(error, "code", "smtp_configuration_invalid")
+            else:
+                checks.update(smtp_available=True, smtp_reason=None)
+        if configuration["incident"]:
+            try:
+                self._notification_destination({"response_channel": configuration["incident"]}, configuration["smtp_account"])
+            except Exception as error:
+                checks.update(incident_available=False, incident_reason=getattr(error, "code", "destination_unavailable"))
+            else:
+                checks["incident_available"] = True
+        return checks
 
     def _notification_thread(self, conversation, client, event):
         with self.database_lock:
@@ -186,8 +208,8 @@ class NotificationIngress:
 
     def _notification_sync_serial(self):
         with self.database_lock:
-            rows = self.database.execute("SELECT n.inbox_id,n.event_id,n.envelope,n.execution_state,n.delivery_state,i.state,i.execution_id,e.state,e.result,e.terminal_text,e.thread_id,e.resource_revision FROM notification_receipts n JOIN inbox_items i ON i.id=n.inbox_id LEFT JOIN execution_turns e ON e.execution_id=i.execution_id WHERE n.execution_state IS NULL OR n.execution_state='uncertain'").fetchall()
-        for inbox, event_id, raw, _state, delivery, input_state, execution, execution_state, result, text, thread, revision in rows:
+            rows = self.database.execute("SELECT n.inbox_id,n.event_id,n.envelope,n.execution_state,n.delivery_state,i.state,i.execution_id,e.state,e.result,e.terminal_text,e.thread_id,e.resource_revision,i.failure_reason FROM notification_receipts n JOIN inbox_items i ON i.id=n.inbox_id LEFT JOIN execution_turns e ON e.execution_id=i.execution_id WHERE n.execution_state IS NULL OR n.execution_state='uncertain'").fetchall()
+        for inbox, event_id, raw, _state, delivery, input_state, execution, execution_state, result, text, thread, revision, failure_reason in rows:
             if execution_state not in {"terminal", "uncertain"} and input_state not in {"failed", "cancelled", "uncertain", "uncertain_legacy"}:
                 continue
             event = json.loads(raw)
@@ -201,7 +223,7 @@ class NotificationIngress:
                 current = self.database.execute("SELECT delivery_state FROM notification_receipts WHERE inbox_id=?", (inbox,)).fetchone()[0]
                 if current == "sending":
                     continue
-                reason = None if state == "completed" and current == "confirmed" else result or input_state
+                reason = (None if current == "confirmed" else "delivery_" + current) if state == "completed" else failure_reason or result or input_state
                 changed = self.database.execute("UPDATE notification_receipts SET execution_state=?,reason=? WHERE inbox_id=? AND (execution_state IS NULL OR execution_state!=?)", (state, reason, inbox, state)).rowcount
                 if changed:
                     self.notification_log.record("terminal", transaction=self.database, event_id=event_id, execution=state, delivery=current, output=text, reason=reason)
