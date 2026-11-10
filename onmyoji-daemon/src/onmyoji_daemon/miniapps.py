@@ -30,7 +30,7 @@ from aiohttp import web
 
 from .rpc import RpcServer
 from .gateway.component.tls import ensure_material, install_trust, server_context
-from .mcp.oauth_broker import BTG_CALLBACK_PATH, BTG_INTEGRATION, EMAIL_CALLBACK_PATH, EMAIL_INTEGRATION, OAUTH_ADAPTERS, McpOAuthBroker, OAuthError
+from .mcp.oauth_broker import BTG_INTEGRATION, OAUTH_ADAPTERS, OAUTH_CALLBACKS, McpOAuthBroker, OAuthError
 
 
 STATES = {"CREATED", "PUBLISHED_UNCLAIMED", "ACTIVE", "UNPUBLISHED", "EXPIRED", "ERROR", "DELETED"}
@@ -789,7 +789,9 @@ class MiniAppsGateway:
         try:
             broker = self._oauth_broker()
             query = {key: request.query.getall(key) for key in request.query.keys()}
-            integration = EMAIL_INTEGRATION if request.path == EMAIL_CALLBACK_PATH else BTG_INTEGRATION
+            integration = OAUTH_CALLBACKS.get(request.path)
+            if integration is None:
+                raise ValueError("Rota OAuth desconhecida")
             identifier = await asyncio.to_thread(broker.callback, integration, query)
         except (ValueError, OSError, sqlite3.Error):
             return self._oauth_page("Retorno inválido, expirado ou já utilizado. Consulte o agente no chat.", 400)
@@ -822,8 +824,8 @@ class MiniAppsGateway:
         app.router.add_route("*", "/internal/v1/apps/{app_id}", self.admin_request)
         app.router.add_route("POST", "/internal/v1/apps/{app_id}/{action:publish|unpublish|reload}", self.admin_request)
         app.router.add_route("GET", "/internal/v1/status", self.admin_status)
-        app.router.add_route("GET", BTG_CALLBACK_PATH, self.mcp_oauth_callback)
-        app.router.add_route("GET", EMAIL_CALLBACK_PATH, self.mcp_oauth_callback)
+        for callback_path in OAUTH_CALLBACKS:
+            app.router.add_route("GET", callback_path, self.mcp_oauth_callback)
         app.router.add_route("GET", "/oauth/result/{session_id}", self.mcp_oauth_result)
         app.router.add_route("*", "/a/{app_id}/{tail:.*}", self.public_request)
         app.router.add_route("*", "/a/{app_id}", self.public_request)
