@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from math import isfinite
 from typing import Any, Mapping
 
+from .contracts import DIRECT_DOCUMENT_TYPES
 from .exception import OmieError
 from .service import OmieService
 
@@ -103,6 +105,26 @@ SPECS += [
 ]
 BY_NAME = {spec.name: spec for spec in SPECS}
 
+# A chave pública identifica a origem do código; não inferir pelo seu conteúdo.
+IDENTIFIER_NAMES = {
+    "bank_accounts": {"id": "nCodCC", "codigo_integracao": "cCodCCInt"},
+    "categories": {"codigo": "codigo"},
+    "departments": {"codigo": "codigo"},
+    "projects": {"id": "codigo", "codigo_integracao": "codInt"},
+    "payables": {"id": "codigo_lancamento_omie", "codigo_integracao": "codigo_lancamento_integracao"},
+    "receivables": {"id": "codigo_lancamento_omie", "codigo_integracao": "codigo_lancamento_integracao"},
+    "account_transactions": {"id": "nCodLanc", "codigo_integracao": "cCodIntLanc"},
+}
+IDENTIFIER_LENGTHS = {"bank_accounts": 20, "categories": 20, "departments": 40, "projects": 20, "payables": 60, "receivables": 60, "account_transactions": 20}
+TRANSACTION_NAMES = {
+    "id": "id", "codigo_integracao": "integration_id", "conta_corrente_id": "account_id",
+    "data": "date", "valor": "amount", "categoria_codigo": "category_code",
+    "tipo_documento": "document_type", "numero_documento": "document_number",
+    "cliente_id": "customer_id", "projeto_id": "project_id", "observacao": "note",
+    "departamentos": "departments",
+}
+TRANSACTION_REQUIRED = ("conta_corrente_id", "data", "valor", "categoria_codigo", "tipo_documento")
+
 
 def _invalid(field: str, message: str, *, use_instead: list[str] | None = None) -> None:
     details: dict[str, Any] = {"field": field, "reason": message, "retryable": False}
@@ -122,6 +144,88 @@ def _object(arguments: Mapping[str, Any], field: str) -> Mapping[str, Any]:
     value = arguments.get(field, {})
     if not isinstance(value, Mapping): _invalid(field, "deve ser um objeto JSON.")
     return value
+
+
+def _positive_id(value: Any, field: str) -> None:
+    if type(value) is not int or value < 1:
+        _invalid(field, "deve ser um inteiro positivo, sem aspas.")
+
+
+def _text(value: Any, field: str, *, max_length: int | None = None) -> None:
+    if not isinstance(value, str) or not value.strip():
+        _invalid(field, "deve ser um texto não vazio.")
+    if max_length is not None and len(value) > max_length:
+        _invalid(field, f"deve ter no máximo {max_length} caracteres.")
+
+
+def _identifier_schema(spec: FinanceSpec) -> dict[str, Any]:
+    resource = spec.legacy.rsplit("_", 1)[0]
+    properties: dict[str, Any] = {}
+    for field in IDENTIFIER_NAMES[resource]:
+        if field == "id":
+            properties[field] = {"type": "integer", "minimum": 1, "description": "ID numérico gerado pela Omie. Informe como inteiro, sem aspas."}
+        else:
+            properties[field] = {"type": "string", "minLength": 1, "pattern": r"\S"}
+            if resource in IDENTIFIER_LENGTHS:
+                properties[field]["maxLength"] = IDENTIFIER_LENGTHS[resource]
+            properties[field]["description"] = "Código definido pela integração na inclusão." if field == "codigo_integracao" else "Código do cadastro retornado pela Omie."
+    return {"type": "object", "properties": properties, "oneOf": [{"required": [field]} for field in properties], "additionalProperties": False}
+
+
+def _identifier_params(spec: FinanceSpec, data: Mapping[str, Any], field: str) -> dict[str, Any]:
+    resource = spec.legacy.rsplit("_", 1)[0]
+    names = IDENTIFIER_NAMES[resource]
+    options = [f"{field}.{name}" for name in names]
+    unknown = set(data) - set(names)
+    if unknown:
+        _invalid(f"{field}.{sorted(unknown)[0]}", "não pertence a esta operação; use exatamente um dos identificadores publicados: " + " ou ".join(options) + ".", use_instead=options)
+    if len(data) != 1:
+        _invalid(field, "informe exatamente um identificador: " + " ou ".join(options) + ".", use_instead=options)
+    key, value = next(iter(data.items()))
+    if key == "id":
+        _positive_id(value, f"{field}.{key}")
+    else:
+        _text(value, f"{field}.{key}", max_length=IDENTIFIER_LENGTHS.get(resource))
+    return {names[key]: value}
+
+
+def _transaction_names(spec: FinanceSpec) -> dict[str, str]:
+    return {key: value for key, value in TRANSACTION_NAMES.items() if key != "id" or spec.legacy.endswith("_update")}
+
+
+def _transaction_required(spec: FinanceSpec) -> tuple[str, ...]:
+    return ("codigo_integracao", *TRANSACTION_REQUIRED) if spec.legacy.endswith("_create") else TRANSACTION_REQUIRED
+
+
+def _transaction_body(spec: FinanceSpec, data: Mapping[str, Any]) -> dict[str, Any]:
+    names = _transaction_names(spec)
+    unknown = set(data) - set(names)
+    if unknown:
+        _invalid(f"dados.{sorted(unknown)[0]}", "não pertence ao contrato desta operação.")
+    for field in _transaction_required(spec):
+        if field not in data:
+            _invalid(f"dados.{field}", "é obrigatório nesta operação.")
+    if spec.legacy.endswith("_update") and not {"id", "codigo_integracao"} & set(data):
+        _invalid("dados", "informe id ou codigo_integracao para identificar o lançamento existente.", use_instead=["dados.id", "dados.codigo_integracao"])
+    for field in ("id", "conta_corrente_id", "cliente_id", "projeto_id"):
+        if field in data:
+            _positive_id(data[field], f"dados.{field}")
+    for field in ("codigo_integracao", "categoria_codigo", "numero_documento"):
+        if field in data:
+            _text(data[field], f"dados.{field}", max_length=20)
+    if not isinstance(data["data"], str) or len(data["data"]) != 10:
+        _invalid("dados.data", "deve ser uma data no formato dd/mm/aaaa.")
+    _date(data["data"], "dados.data")
+    amount = data["valor"]
+    if type(amount) not in (int, float) or amount <= 0 or (isinstance(amount, float) and not isfinite(amount)):
+        _invalid("dados.valor", "deve ser um número finito maior que zero.")
+    if not isinstance(data["tipo_documento"], str) or data["tipo_documento"] not in DIRECT_DOCUMENT_TYPES:
+        _invalid("dados.tipo_documento", "deve ser um dos tipos de documento publicados no contrato.")
+    if "observacao" in data and not isinstance(data["observacao"], str):
+        _invalid("dados.observacao", "deve ser um texto.")
+    if "departamentos" in data and (not isinstance(data["departamentos"], list) or not all(isinstance(item, Mapping) for item in data["departamentos"])):
+        _invalid("dados.departamentos", "deve ser uma lista de objetos JSON.")
+    return {names[key]: value for key, value in data.items()}
 
 
 def _page(arguments: Mapping[str, Any], *, native: bool) -> dict[str, int]:
@@ -156,6 +260,18 @@ def _schema(spec: FinanceSpec, profiles: list[dict[str, str]]) -> dict[str, Any]
         elif spec.kind == "receipt": data_schema["required"] = ["id_baixa"]
         elif spec.kind == "transfer": data_schema["required"] = ["codigo_integracao", "conta_origem_id", "conta_destino_id", "data", "valor", "categoria_codigo"]
         elif spec.kind == "batch": data_schema["required"] = ["lote", "titulos"]
+        elif spec.kind == "get":
+            data_schema = _identifier_schema(spec)
+        elif spec.kind == "transaction":
+            data_schema["properties"] = {field: data_properties[field] for field in _transaction_names(spec)}
+            data_schema["properties"]["codigo_integracao"] = {"type": "string", "minLength": 1, "maxLength": 20, "pattern": r"\S", "description": "Código estável definido pela integração. Obrigatório na criação pelo MCP; até 20 caracteres. Guarde-o para consultar o resultado da inclusão."}
+            data_schema["properties"]["tipo_documento"] = {"type": "string", "enum": sorted(DIRECT_DOCUMENT_TYPES), "description": "Tipo de documento aceito pelo MCP, por exemplo 99999 para Outros."}
+            for field in ("categoria_codigo", "numero_documento"):
+                data_schema["properties"][field].update({"minLength": 1, "maxLength": 20, "pattern": r"\S"})
+            data_schema["required"] = list(_transaction_required(spec))
+            if spec.legacy.endswith("_update"):
+                data_schema["properties"]["id"] = {"type": "integer", "minimum": 1, "description": "ID do lançamento existente, gerado pela Omie."}
+                data_schema["anyOf"] = [{"required": ["id"]}, {"required": ["codigo_integracao"]}]
         properties["dados"] = data_schema
         properties["confirmar"] = {"type": "boolean", "const": True, "description": "Deve ser true para confirmar a escrita."}
         required = ["dados", "confirmar"]
@@ -172,9 +288,8 @@ def _schema(spec: FinanceSpec, profiles: list[dict[str, str]]) -> dict[str, Any]
                 filters["conta_corrente_id"] = {"type": "integer", "minimum": 1, "description": account_description}
             required = ["filtros"]
         elif spec.kind == "get":
-            filters = {"id": {"type": "integer", "minimum": 1}, "codigo_integracao": {"type": "string", "minLength": 1}, "codigo": {"type": "string", "minLength": 1}}
             required = ["filtros"]
-        properties.update({"filtros": {"type": "object", "properties": filters, "required": ["data_inicial", "data_final"] if spec.period else [], "additionalProperties": False}})
+        properties["filtros"] = _identifier_schema(spec) if spec.kind == "get" else {"type": "object", "properties": filters, "required": ["data_inicial", "data_final"] if spec.period else [], "additionalProperties": False}
         if spec.account_required:
             properties["filtros"]["required"].append("conta_corrente_id")
         if spec.paginated:
@@ -202,6 +317,11 @@ class OmieFinanceFacade:
             description = spec.description
             if spec.legacy == "account_transactions_list":
                 description += " Aceita conta_corrente_id; o MCP consulta todas as páginas do período, filtra a conta e só então aplica pagina e tamanho_pagina (máximo 50)."
+            if spec.kind == "get":
+                fields = list(IDENTIFIER_NAMES[spec.legacy.rsplit("_", 1)[0]])
+                description += " Informe exatamente um identificador em " + ("dados" if spec.writes else "filtros") + ": " + " ou ".join(fields) + "."
+            if spec.legacy == "account_transactions_create":
+                description += " Exige codigo_integracao (texto de até 20 caracteres), conta_corrente_id, data, valor, categoria_codigo e tipo_documento em dados. O id é gerado pela Omie."
             tools.append({"name": spec.name, "description": description + " Não use parâmetros técnicos da Omie.", "input_schema": _schema(spec, profiles)})
         return tools
 
@@ -226,10 +346,7 @@ class OmieFinanceFacade:
             if arguments.get("confirmar") is not True: raise OmieError("confirmation_required", "Operações de escrita exigem confirmar=true.", {"retryable": False})
             data = _object(arguments, "dados")
             if spec.kind == "get":
-                names = {"id": "nCodLanc", "codigo_integracao": "cCodIntLanc"} if spec.legacy == "account_transactions_delete" else {"id": "codigo_lancamento_omie", "codigo_integracao": "codigo_lancamento_integracao"}
-                identifiers = self._map(data, names)
-                if len(identifiers) != 1: _invalid("dados", "informe exatamente um identificador.")
-                return {"params": identifiers}
+                return {"params": _identifier_params(spec, data, "dados")}
             if spec.kind == "title": return {"body": _translate_title(data)}
             if spec.kind == "batch":
                 titles = data.get("titulos")
@@ -242,8 +359,7 @@ class OmieFinanceFacade:
             if spec.kind == "receipt": return {"body": self._map(data, {"id_baixa": "codigo_baixa"})}
             if spec.kind == "allocation": return {"body": self._map(data, {"id": "codigo_lancamento_omie", "chave": "chave_lancamento", "distribuicao": "distribuicao"})}
             if spec.kind == "transaction":
-                names = {"id": "id", "codigo_integracao": "integration_id", "conta_corrente_id": "account_id", "data": "date", "valor": "amount", "categoria_codigo": "category_code", "tipo_documento": "document_type", "numero_documento": "document_number", "cliente_id": "customer_id", "projeto_id": "project_id", "observacao": "note", "departamentos": "departments"}
-                return {"body": self._map(data, names)}
+                return {"body": _transaction_body(spec, data)}
             if spec.kind == "transfer":
                 names = {"codigo_integracao": "integration_id", "conta_origem_id": "source_account_id", "conta_destino_id": "destination_account_id", "data": "date", "valor": "amount", "categoria_codigo": "category_code", "numero_documento": "document_number", "observacao": "note", "projeto_id": "project_id", "departamentos": "departments"}
                 return {"body": self._map(data, names)}
@@ -278,13 +394,7 @@ class OmieFinanceFacade:
             if spec.legacy == "financial_movements_list" and "conta_corrente_id" in filters:
                 params["nCodCC"] = filters["conta_corrente_id"]
         elif spec.kind == "get":
-            if set(filters) != {next(iter(filters))} if filters else True: _invalid("filtros", "informe exatamente um identificador.")
-            value = next(iter(filters.values()), None)
-            if spec.legacy == "bank_accounts_get": params = {"nCodCC": value} if "id" in filters else {"cCodCCInt": value}
-            elif spec.legacy == "categories_get" or spec.legacy == "departments_get": params = {"codigo": value}
-            elif spec.legacy == "projects_get": params = {"codigo": value} if "id" in filters else {"codInt": value}
-            elif spec.legacy in {"account_transactions_get", "account_transactions_delete"}: params = {"nCodLanc": value} if "id" in filters else {"cCodIntLanc": value}
-            else: params = {"codigo_lancamento_omie": value} if "id" in filters else {"codigo_lancamento_integracao": value}
+            params = _identifier_params(spec, filters, "filtros")
         return {"params": params}
 
     @staticmethod
@@ -298,7 +408,9 @@ class OmieFinanceFacade:
         if not isinstance(response, Mapping): return {"dados": response}
         metadata = {"pagina", "total_de_paginas", "total_de_registros", "registros_por_pagina", "nPagina", "nTotPaginas", "nRegistros", "nTotRegistros"}
         row_key = {"account_transactions_list": "listaLancamentos", "financial_movements_list": "movimentos"}.get(spec.legacy)
-        rows = response.get(row_key) if row_key else next((value for key, value in response.items() if key not in metadata and isinstance(value, list)), None)
+        rows = None
+        if spec.kind in {"list", "catalog"}:
+            rows = response.get(row_key) if row_key else next((value for key, value in response.items() if key not in metadata and isinstance(value, list)), None)
         if spec.legacy == "financial_movements_list" and isinstance(rows, list):
             rows = [OmieFinanceFacade._with_reconciliation_status(row) for row in rows]
         result: dict[str, Any] = {"dados": rows if rows is not None else [dict(response)]}

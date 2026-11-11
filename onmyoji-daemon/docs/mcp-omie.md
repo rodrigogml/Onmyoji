@@ -59,6 +59,57 @@ internamente. Esses métodos recusam parâmetros de paginação antes de acessar
 credenciais ou HTTP, com orientação para removê-los; reduzir o tamanho de
 100 para 50 não é uma correção para uma operação sem paginação.
 
+### Identificadores de consultas e exclusões
+
+Cada `.consultar` exige exatamente um identificador em `filtros`. As exclusões
+financeiras usam os mesmos identificadores em `dados`, com `confirmar: true`.
+O contrato publicado e a validação seguem o recurso consultado:
+
+| Recurso | Identificador aceito |
+| --- | --- |
+| Categorias | `codigo`: texto de até 20 caracteres. |
+| Departamentos | `codigo`: texto de até 40 caracteres, preservando zeros à esquerda. |
+| Contas correntes e projetos | `id`: inteiro positivo; ou `codigo_integracao`: texto de até 20 caracteres. |
+| Contas a pagar e a receber | `id`: inteiro positivo; ou `codigo_integracao`: texto de até 60 caracteres. |
+| Lançamentos de conta corrente | `id`: inteiro positivo; ou `codigo_integracao`: texto de até 20 caracteres. |
+
+Em `lancamentos_conta.consultar`, `filtros.id` corresponde a `nCodLanc`, o
+identificador gerado pela Omie, e `filtros.codigo_integracao` corresponde a
+`cCodIntLanc`, definido pela integração na inclusão. Uma integração pode conter
+somente dígitos; por isso, a fachada usa a chave explícita e preserva seu valor.
+O campo genérico `codigo` não é aceito para lançamentos. Campos ambíguos, IDs
+em texto, valores vazios ou múltiplos identificadores são recusados antes do
+acesso ao perfil ou à API, com orientação sobre os campos corretos.
+Consultas individuais preservam o objeto completo em `dados`, incluindo suas
+listas internas. Um rateio `departamentos` vazio ou preenchido não substitui o
+lançamento retornado nem indica ausência de resultado.
+
+Exemplo de conferência de um lançamento existente, usando um ID fictício:
+
+```json
+{"tool":"omie.financeiro.lancamentos_conta.consultar","arguments":{"filtros":{"id":9000000001},"incluir_dados_omie":true}}
+```
+
+### Criação e alteração de lançamentos
+
+`omie.financeiro.lancamentos_conta.criar` exige em `dados`: `codigo_integracao`,
+`conta_corrente_id`, `data`, `valor`, `categoria_codigo` e `tipo_documento`.
+A obrigatoriedade da integração é uma regra do MCP e aparece no schema da tool.
+O código deve ser um texto estável de até 20 caracteres; guarde-o para consultar
+o resultado da inclusão. O ID é gerado pela Omie e não é um campo de criação.
+
+A alteração exige os mesmos cinco campos financeiros e pelo menos um entre
+`id` e `codigo_integracao`; os dois identificadores podem ser enviados juntos.
+Criação e alteração publicam somente os campos que conseguem traduzir, com
+os tipos de documento aceitos pelo MCP e os limites específicos de cada campo.
+Ausência ou invalidade de campos obrigatórios gera erro com o nome público,
+por exemplo `dados.codigo_integracao`, antes de qualquer acesso externo.
+
+Após uma inclusão confirmada, a conferência usa `.consultar` pelo ID retornado
+ou pelo código de integração original. Em resposta incerta, consulte antes de
+repetir a escrita. Referência dos campos nativos:
+[lançamentos de conta corrente da Omie](https://api.omie.com.br/docs/apis/financas/contacorrentelancamentos).
+
 ### Conta corrente e período
 
 Use `omie.financeiro.lancamentos_conta.listar_por_periodo` para consultar os
