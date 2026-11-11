@@ -2477,6 +2477,7 @@ def daemon_menu(root: Path) -> None:
         print("\n  [3/4] Componentes necessários")
         print("    • aiohttp — comunicação HTTP do daemon e seus gateways.")
         print("    • cryptography — recursos criptográficos e certificados locais.")
+        print("    • jsonschema — validação dos contratos de notificações do agente.")
         if os.name == "nt": print("    • pywin32 — integração opcional com Serviço do Windows.")
         print("\n  [4/4] Preparando o runtime e os componentes")
         note("O daemon instala automaticamente os componentes necessários no runtime único; a manutenção manual fica em Python e bibliotecas.")

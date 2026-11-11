@@ -127,8 +127,21 @@ def test_runtime_install_creates_private_environment(tmp_path, monkeypatch):
     assert "--target" not in calls[1] and "--editable" not in calls[1]
     assert all(requirement in calls[1] for requirement in management.runtime_requirements())
     assert calls[2][0] == str(executable) and calls[2][1:4] == ["-I", "-B", "-c"]
-    assert "aiohttp" in calls[2][-1] and "cryptography" in calls[2][-1]
+    assert "aiohttp" in calls[2][-1] and "cryptography" in calls[2][-1] and "jsonschema" in calls[2][-1]
     assert not (tmp_path / "configs" / "daemon" / "venv").exists()
+
+
+def test_runtime_check_rejects_missing_jsonschema(tmp_path, monkeypatch):
+    executable = tmp_path / "python"
+    executable.touch()
+    probes = []
+    def run(command, **_kwargs):
+        probes.append(command[-1])
+        return SimpleNamespace(returncode=1 if "jsonschema" in command[-1] else 0)
+    monkeypatch.setattr(management.subprocess, "run", run)
+
+    assert not management._runtime_ready(executable)
+    assert "from jsonschema import Draft202012Validator, FormatChecker" in probes[0]
 
 
 def test_windows_service_host_is_prepared_inside_dedicated_environment(tmp_path, monkeypatch):

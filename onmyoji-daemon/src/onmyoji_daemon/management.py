@@ -51,6 +51,8 @@ def parsed(name): return tuple(int(part) for part in version(name).split('.')[:2
 assert sys.version_info >= (3, 11)
 assert (3, 10) <= parsed('aiohttp') < (4, 0)
 assert (42, 0) <= parsed('cryptography') < (47, 0)
+assert (4, 0) <= parsed('jsonschema') < (5, 0)
+from jsonschema import Draft202012Validator, FormatChecker
 """
     try:
         result = subprocess.run([str(executable), "-c", probe], text=True, capture_output=True, check=False, timeout=10)
@@ -102,7 +104,7 @@ def ensure_runtime(root: Path, show_progress: bool = False, allow_install: bool 
             return True, "Runtime Python do Shikigami está pronto."
         if not allow_install:
             return False, "O runtime Python do Shikigami não possui os componentes necessários. Use a manutenção para instalá-los."
-        message = shared_runtime.ensure(root, runtime_requirements(), "from importlib.metadata import version; import sys; assert sys.version_info >= (3, 11); assert (3, 10) <= tuple(map(int, version('aiohttp').split('.')[:2])) < (4, 0); assert (42, 0) <= tuple(map(int, version('cryptography').split('.')[:2])) < (47, 0)", print if show_progress else None)
+        message = shared_runtime.ensure(root, runtime_requirements(), "from importlib.metadata import version; import sys; from jsonschema import Draft202012Validator, FormatChecker; assert sys.version_info >= (3, 11); assert (3, 10) <= tuple(map(int, version('aiohttp').split('.')[:2])) < (4, 0); assert (42, 0) <= tuple(map(int, version('cryptography').split('.')[:2])) < (47, 0); assert (4, 0) <= tuple(map(int, version('jsonschema').split('.')[:2])) < (5, 0)", print if show_progress else None)
         return True, message
     except (OSError, ValueError, tomllib.TOMLDecodeError, shared_runtime.RuntimeError) as error:
         return False, str(error)
