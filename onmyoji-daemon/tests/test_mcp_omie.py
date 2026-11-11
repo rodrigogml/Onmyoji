@@ -150,3 +150,15 @@ def test_http_500_is_not_retried(tmp_path, monkeypatch):
     assert error.value.code == "omie_http_error"
     assert error.value.details == {"http_status": 500, "retryable": False}
     assert len(calls) == 1
+
+
+def test_http_425_is_retried_for_reads(tmp_path, monkeypatch):
+    calls = []
+    def request(*_args, **_kwargs):
+        calls.append(True)
+        if len(calls) == 1: raise HTTPError("https://app.omie.com.br/", 425, "too early", {}, None)
+        return Response()
+    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.urlopen", request)
+    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.time.sleep", lambda _seconds: None)
+    result = OmieService(tmp_path, Credentials())._request({"credential_profile": "vault", "credential_entry_path": "APIs/Omie", "app_key_field": "username", "app_secret_field": "password"}, {"max_retries": 1}, "departments", "ListarDepartamentos", {})
+    assert result["pagina"] == 1 and len(calls) == 2

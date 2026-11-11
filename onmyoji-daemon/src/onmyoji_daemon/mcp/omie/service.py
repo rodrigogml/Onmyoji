@@ -129,7 +129,7 @@ class OmieService:
             except HTTPError as error:
                 # HTTP 500 da Omie também é usado para contratos inválidos; não oculte
                 # esse diagnóstico atrás de tentativas que não podem corrigir a entrada.
-                if error.code not in {429, 502, 503, 504} or attempt == retries:
+                if error.code not in {425, 429, 502, 503, 504} or attempt == retries:
                     raise OmieError("omie_http_error", f"A API Omie retornou HTTP {error.code}.", {"http_status": error.code, "retryable": False}) from error
             except (URLError, TimeoutError) as error:
                 if attempt == retries:

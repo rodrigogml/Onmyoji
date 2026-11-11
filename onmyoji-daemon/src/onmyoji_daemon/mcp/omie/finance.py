@@ -21,6 +21,7 @@ PERIODS = {
     "pagamento": ("dDtPagtoDe", "dDtPagtoAte", "pagamento"),
     "vencimento": ("dDtVencDe", "dDtVencAte", "vencimento"),
     "previsao": ("dDtPrevDe", "dDtPrevAte", "previsão"),
+    "periodo": ("dtPagInicial", "dtPagFinal", "período do extrato"),
 }
 
 
@@ -32,6 +33,8 @@ class FinanceSpec:
     writes: bool = False
     period: str | None = None
     kind: str = "list"
+    account_required: bool = False
+    collect_pages: bool = False
 
 
 def _list_specs(resource: str, legacy: str, label: str) -> list[FinanceSpec]:
@@ -58,7 +61,12 @@ SPECS: list[FinanceSpec] = [
     FinanceSpec("omie.financeiro.tipos_documento.listar", "document_types_list", "Lista tipos de documento aceitos pela Omie."),
 ]
 SPECS += _list_specs("movimentos", "financial_movements_list", "movimentos financeiros")
-SPECS += _list_specs("lancamentos_conta", "account_transactions_list", "lançamentos de conta corrente")
+SPECS += [
+    FinanceSpec("omie.financeiro.lancamentos_conta.listar_por_inclusao", "account_transactions_list", "Lista lançamentos de conta corrente pela data de inclusão.", period="inclusao"),
+    FinanceSpec("omie.financeiro.lancamentos_conta.listar_por_alteracao", "account_transactions_list", "Lista lançamentos de conta corrente pela data de alteração.", period="alteracao"),
+    FinanceSpec("omie.financeiro.lancamentos_conta.listar_por_periodo", "account_transactions_list", "Lista lançamentos brutos de conta corrente pelo período do extrato.", period="periodo"),
+    FinanceSpec("omie.financeiro.movimentos.listar_para_conciliacao", "financial_movements_list", "Consulta completa para conciliar um extrato bancário: exige conta e período, coleta todas as páginas e informa o estado de conciliação.", period="pagamento", account_required=True, collect_pages=True),
+]
 
 for resource, legacy, label in (("contas_pagar", "payables", "contas a pagar"), ("contas_receber", "receivables", "contas a receber")):
     SPECS += [
@@ -150,11 +158,17 @@ def _schema(spec: FinanceSpec, profiles: list[dict[str, str]]) -> dict[str, Any]
         filters: dict[str, Any] = {}
         if spec.period:
             filters = {"data_inicial": date, "data_final": date}
+            if spec.legacy in {"financial_movements_list", "account_transactions_list"}:
+                filters["conta_corrente_id"] = {"type": "integer", "minimum": 1, "description": "Conta corrente Omie; restrinja a consulta quando conhecida."}
             required = ["filtros"]
         elif spec.kind == "get":
             filters = {"id": {"type": "integer", "minimum": 1}, "codigo_integracao": {"type": "string", "minLength": 1}, "codigo": {"type": "string", "minLength": 1}}
             required = ["filtros"]
-        properties.update({"filtros": {"type": "object", "properties": filters, "required": list(filters) if spec.period else [], "additionalProperties": False}, "pagina": {"type": "integer", "minimum": 1, "default": 1}, "tamanho_pagina": {"type": "integer", "minimum": 1, "maximum": 50, "default": 50}})
+        properties.update({"filtros": {"type": "object", "properties": filters, "required": ["data_inicial", "data_final"] if spec.period else [], "additionalProperties": False}})
+        if spec.account_required:
+            properties["filtros"]["required"].append("conta_corrente_id")
+        if not spec.collect_pages:
+            properties.update({"pagina": {"type": "integer", "minimum": 1, "default": 1}, "tamanho_pagina": {"type": "integer", "minimum": 1, "maximum": 50, "default": 50}})
     if len(profiles) > 1:
         properties["profile"] = {"type": "string", "enum": [profile["name"] for profile in profiles]}; required.append("profile")
     return {"type": "object", "properties": properties, "required": required, "additionalProperties": False}
@@ -180,7 +194,10 @@ class OmieFinanceFacade:
         if spec is None: raise ValueError("Tool financeira Omie indisponível.")
         if not isinstance(arguments, Mapping): raise OmieError("invalid_parameter", "Os argumentos devem ser um objeto JSON.")
         legacy = self._legacy_arguments(spec, arguments)
-        response = OmieService(self.configuration.root).invoke_financial(profile, spec.legacy, legacy, writes=spec.writes)
+        service = OmieService(self.configuration.root)
+        response = service.invoke_financial(profile, spec.legacy, legacy, writes=spec.writes)
+        if spec.collect_pages:
+            response = self._collect_pages(service, profile, spec, legacy, response)
         return self._normalize(spec, response, arguments.get("incluir_dados_omie") is True)
 
     def _legacy_arguments(self, spec: FinanceSpec, arguments: Mapping[str, Any]) -> dict[str, Any]:
@@ -213,14 +230,16 @@ class OmieFinanceFacade:
         native = spec.legacy in {"financial_movements_list", "account_transactions_list"}
         params = _page(arguments, native=native)
         if spec.period:
-            expected = {"data_inicial", "data_final"}
-            if set(filters) != expected: _invalid("filtros", "exige somente data_inicial e data_final para esta finalidade.")
+            expected = {"data_inicial", "data_final", "conta_corrente_id"}
+            if not {"data_inicial", "data_final"} <= set(filters) or not set(filters) <= expected: _invalid("filtros", "exige data_inicial, data_final e, opcionalmente, conta_corrente_id.")
             start, end = _date(filters["data_inicial"], "filtros.data_inicial"), _date(filters["data_final"], "filtros.data_final")
             if datetime.strptime(start, "%d/%m/%Y") > datetime.strptime(end, "%d/%m/%Y"): _invalid("filtros", "data_inicial não pode ser posterior a data_final.")
             if spec.legacy in {"payables_list", "receivables_list"}:
                 params.update({"filtrar_por_data_de": start, "filtrar_por_data_ate": end})
             else:
                 prefix, suffix, _ = PERIODS[spec.period]; params.update({prefix: start, suffix: end})
+            if "conta_corrente_id" in filters:
+                params["nCodCC"] = filters["conta_corrente_id"]
         elif spec.kind == "get":
             if set(filters) != {next(iter(filters))} if filters else True: _invalid("filtros", "informe exatamente um identificador.")
             value = next(iter(filters.values()), None)
@@ -240,16 +259,33 @@ class OmieFinanceFacade:
     @staticmethod
     def _normalize(spec: FinanceSpec, response: Any, include_native: bool) -> dict[str, Any]:
         if not isinstance(response, Mapping): return {"dados": response}
-        metadata = {"pagina", "total_de_paginas", "total_de_registros", "registros_por_pagina"}
+        metadata = {"pagina", "total_de_paginas", "total_de_registros", "registros_por_pagina", "nPagina", "nTotPaginas", "nRegistros", "nTotRegistros"}
         rows = next((value for key, value in response.items() if key not in metadata and isinstance(value, list)), None)
         if spec.legacy == "financial_movements_list" and isinstance(rows, list):
             rows = [OmieFinanceFacade._with_reconciliation_status(row) for row in rows]
         result: dict[str, Any] = {"dados": rows if rows is not None else [dict(response)]}
-        if "pagina" in response:
-            current, total = response.get("pagina"), response.get("total_de_paginas")
-            result["paginacao"] = {"pagina": current, "total_paginas": total, "total_registros": response.get("total_de_registros"), "proxima_pagina": current + 1 if isinstance(current, int) and isinstance(total, int) and current < total else None}
+        if "pagina" in response or "nPagina" in response:
+            current, total = response.get("pagina", response.get("nPagina")), response.get("total_de_paginas", response.get("nTotPaginas"))
+            result["paginacao"] = {"pagina": current, "total_paginas": total, "total_registros": response.get("total_de_registros", response.get("nTotRegistros")), "proxima_pagina": current + 1 if isinstance(current, int) and isinstance(total, int) and current < total else None}
         if include_native: result["dados_omie"] = dict(response)
         return result
+
+    @staticmethod
+    def _collect_pages(service: OmieService, profile: str, spec: FinanceSpec, legacy: dict[str, Any], first: Any) -> Any:
+        if not isinstance(first, Mapping): return first
+        total = first.get("nTotPaginas")
+        current = first.get("nPagina")
+        rows = first.get("movimentos")
+        if not isinstance(total, int) or not isinstance(current, int) or not isinstance(rows, list): return first
+        merged = dict(first); merged["movimentos"] = list(rows)
+        while current < total:
+            current += 1
+            params = dict(legacy["params"]); params["nPagina"] = current
+            page = service.invoke_financial(profile, spec.legacy, {"params": params}, writes=False)
+            if not isinstance(page, Mapping) or not isinstance(page.get("movimentos"), list): break
+            merged["movimentos"].extend(page["movimentos"])
+        merged["nPagina"] = 1; merged["nTotPaginas"] = 1; merged["nRegistros"] = len(merged["movimentos"]); merged["nTotRegistros"] = len(merged["movimentos"])
+        return merged
 
     @staticmethod
     def _with_reconciliation_status(row: Any) -> Any:
