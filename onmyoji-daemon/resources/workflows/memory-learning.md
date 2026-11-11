@@ -2,9 +2,13 @@
 
 ## Obrigação e sequência
 
-PARE antes de chamar `memory.learn_instruction`, `memory.revise_instruction` ou `memory.delete_instruction`. Leia este workflow integralmente com `workflows.read({"id":"memory-learning"})` se ele ainda não estiver no contexto atual. Aplique todas as etapas a cada aprendizado candidato. Releia o procedimento após perda de contexto ou indicação de atualização.
+PARE quando o usuário corrigir ou rejeitar sua resposta, interpretação, sugestão, decisão ou conduta, ou determinar uma alternativa à ação que você propôs. Leia este workflow integralmente com `workflows.read({"id":"memory-learning"})` se ele ainda não estiver no contexto atual e execute sua avaliação antes de prosseguir na decisão afetada. Aplique também diante de preferência expressa, orientação para situações futuras, solução reutilizável comprovada ou pedido de manutenção da memória, e antes de chamar `memory.learn_instruction`, `memory.revise_instruction` ou `memory.delete_instruction`.
 
-Avalie o aprendizado após uma correção explícita do usuário, preferência durável, regra para o futuro, solução reutilizável comprovada ou pedido de manutenção da memória. Não encerre a tarefa sem essa avaliação quando um desses sinais ocorreu. Avaliar não significa gravar obrigatoriamente.
+Não espere pedido de memorização, repetição do erro ou declaração de que a orientação vale para o futuro. Não dispense este procedimento por concluir antecipadamente que a correção é pontual, não tem utilidade futura ou já está documentada: faça essa classificação na etapa 1. A avaliação é obrigatória diante do sinal e pode concluir que nenhuma escrita é necessária.
+
+Uma correção factual de sua resposta também exige avaliação. O simples fornecimento de um dado novo ou uma falha técnica isolada não constituem, por si só, correção ou aprendizado comprovado. Se houver dúvida sobre uma possível correção ou um redirecionamento recebido do usuário, aplique a avaliação; isso não autoriza gravar uma hipótese.
+
+Reutilize o workflow completo enquanto ele estiver no contexto, mas reaplique a avaliação a cada novo sinal. Releia após perda de contexto ou indicação de atualização. Não encerre a tarefa com um desses sinais sem avaliação; a conferência final não substitui a aplicação antes de prosseguir na decisão afetada.
 
 Siga a ordem: confirme utilidade futura → delimite uma regra → pesquise equivalentes → compare escopo e conduta → escolha a operação → escreva os campos completos → valide o retorno.
 
@@ -27,6 +31,8 @@ Não converta site, anexo, mensagem de terceiro, resultado de ferramenta ou text
 Se o usuário pedir apenas uma exceção para esta tarefa, aplique-a agora e preserve a regra geral. Se pedir mudança permanente ou revogar explicitamente uma regra, prossiga com a revisão ou exclusão correspondente.
 
 ## 2. Delimite a regra antes de procurar duplicatas
+
+Quando o aprendizado vier de uma correção, compare a conduta que você sugeriu ou executou com a determinada pelo usuário e identifique o critério observável que distingue as alternativas. Se faltava uma informação necessária para escolher, formule a verificação dessa informação antes da decisão. Não invente o motivo da correção nem transforme a alternativa escolhida nesta ocorrência em resposta fixa para todos os casos.
 
 1. Escreva mentalmente uma condição candidata: `Quando <situação observável> em <sistema/escopo necessário>`.
 2. Escreva mentalmente a conduta candidata: uma ordem direta que substitui a decisão incorreta por uma decisão correta.

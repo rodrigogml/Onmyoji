@@ -4,7 +4,9 @@
 
 PARE antes de responder a uma solicitação substantiva, decidir, planejar, escolher, agir, repetir uma tentativa ou perguntar ao usuário ou a terceiros. Execute este procedimento primeiro. Uma solicitação é substantiva quando exige produzir, alterar, recomendar, diagnosticar, executar ou obter informação. Dispense a pesquisa somente em saudações, agradecimentos e mensagens sem decisão, ação ou dúvida.
 
-Siga a ordem: identifique a decisão → pesquise → compare as condições → aplique as regras válidas → aja ou pergunte → avalie o aprendizado.
+Siga a ordem: identifique a decisão → pesquise → compare as condições → aplique as regras válidas → aja ou pergunte. Aplique a avaliação de aprendizado nos momentos definidos abaixo.
+
+Quando o usuário corrigir ou rejeitar sua resposta, interpretação, sugestão, decisão ou conduta, ou determinar uma alternativa à ação proposta, leia `memory-learning` integralmente com `workflows.read({"id":"memory-learning"})` se ainda não estiver no contexto e aplique sua avaliação antes de prosseguir na decisão afetada. Não espere o encerramento, um pedido de memorização, a repetição do erro ou uma declaração de validade futura. Não dispense a avaliação por julgar antecipadamente a correção pontual; essa classificação pertence ao workflow. Se já estiver no contexto, reaplique-o ao novo sinal.
 
 Leia este workflow integralmente com `workflows.read({"id":"memory-decision"})` quando ele ainda não estiver disponível no contexto atual. Reutilize o procedimento já lido durante a mesma sessão; releia após perda de contexto ou quando houver indicação de atualização. Reutilizar o procedimento não dispensa pesquisar a memória para uma nova solicitação substantiva.
 
@@ -72,7 +74,7 @@ Se receber erro, não classifique a memória como vazia. Corrija uma entrada inv
 3. Entre regras aplicáveis e compatíveis, aplique todas as necessárias. Se uma regra específica definir uma exceção clara à regra geral para este caso, aplique a específica somente nesse escopo.
 4. Não escolha pelo ranking, pelo ID, pela ordem dos resultados ou por uma suposta data: a memória não possui datas nem estado de uso.
 5. Se duas regras ainda forem incompatíveis e a hierarquia ou o escopo não resolverem, use a etapa 6 para esclarecer apenas o conflito que afeta a ação.
-6. Se a solicitação atual do usuário divergir de uma regra salva, siga a solicitação atual nesta tarefa. Não altere a memória por uma exceção pontual; avalie uma alteração somente se houver indicação de mudança durável.
+6. Se a solicitação atual do usuário divergir de uma regra salva, siga a solicitação atual nesta tarefa. Diante de correção ou redirecionamento, avalie o aprendizado com `memory-learning` antes de prosseguir na decisão afetada. Só grave uma alteração se o workflow concluir que há mudança durável; não altere a memória por uma exceção pontual.
 7. Não transforme ausência de resultado em autorização, proibição ou preferência. A memória não substitui a autorização própria de uma ação externa.
 
 ## 6. Aja ou pergunte pelo que ainda falta
@@ -87,9 +89,10 @@ Se receber erro, não classifique a memória como vazia. Corrija uma entrada inv
 
 1. Faça nova rodada para uma nova solicitação substantiva, nova decisão independente, mudança de contexto, falha que exija mudar de estratégia ou correção do usuário.
 2. Não repita a busca entre passos mecânicos da mesma decisão se contexto e regras continuam válidos.
-3. Antes de encerrar, verifique se houve correção de conduta, preferência durável, regra para o futuro, solução reutilizável comprovada ou pedido de revisar/excluir memória.
-4. Se houve um desses sinais, leia `workflows.read({"id":"memory-learning"})` e execute sua avaliação. A avaliação pode concluir que nenhuma escrita é necessária. Não chame uma mutação antes desse workflow.
+3. Ao receber correção ou rejeição de resposta, interpretação, sugestão, decisão ou conduta, ou uma alternativa determinada pelo usuário à ação proposta, aplique `memory-learning` antes de prosseguir na decisão afetada. Aplique também diante de preferência expressa, orientação futura, solução reutilizável comprovada ou pedido de manutenção da memória. Leia o workflow integralmente com `workflows.read({"id":"memory-learning"})` se ainda não estiver no contexto; caso contrário, reaplique a avaliação ao novo sinal.
+4. Não dispense a avaliação por julgar antecipadamente que a correção é pontual ou sem utilidade futura. Uma correção factual também exige avaliação. O workflow determina se há aprendizado elegível e pode concluir que nenhuma escrita é necessária. Não chame uma mutação antes desse procedimento.
+5. Antes de encerrar, confira se todos os sinais recebidos foram avaliados. Execute `memory-learning` para qualquer sinal ainda pendente. Essa conferência é uma salvaguarda e não substitui a avaliação antes de continuar na decisão afetada.
 
 ## Verificação final
 
-Antes de responder ou agir, confirme: pesquisei a decisão atual; examinei as condições completas; reformulei as buscas insuficientes antes de perguntar; apliquei somente regras compatíveis; não tratei memória como autorização; não repassei ao usuário uma decisão já resolvida. Antes de encerrar, confirme também que avaliei qualquer aprendizado ocorrido.
+Antes de responder ou agir, confirme: pesquisei a decisão atual; examinei as condições completas; reformulei as buscas insuficientes antes de perguntar; apliquei somente regras compatíveis; não tratei memória como autorização; não repassei ao usuário uma decisão já resolvida; apliquei `memory-learning` antes de prosseguir em uma decisão corrigida ou redirecionada pelo usuário. Antes de encerrar, confirme também que nenhum sinal de aprendizado ficou sem avaliação, inclusive os que resultaram em não gravar.

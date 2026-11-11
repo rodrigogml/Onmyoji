@@ -34,7 +34,15 @@ class WorkflowRegistry:
         if self.configuration.memory_tool_available():
             workflows.extend((
                 Workflow("memory-decision", "memory", "Antes de responder a uma solicitação substantiva, decidir, planejar, agir ou perguntar ao usuário ou a terceiros, aplique este procedimento de pesquisa.", "memory-decision.md"),
-                Workflow("memory-learning", "memory", "Após correção, preferência durável ou aprendizado validado, avalie este procedimento antes de encerrar; aplique-o antes de criar, revisar ou excluir memória.", "memory-learning.md"),
+                Workflow(
+                    "memory-learning", "memory",
+                    "Quando o usuário corrigir ou rejeitar sua resposta, interpretação, sugestão, decisão ou conduta, ou determinar uma alternativa à ação proposta, "
+                    "leia este workflow integralmente se ainda não estiver no contexto e aplique sua avaliação antes de prosseguir na decisão afetada. "
+                    "Não espere pedido de memorização, repetição do erro ou declaração de validade futura; não dispense a avaliação por julgar antecipadamente a correção pontual. "
+                    "Reaplique a cada novo sinal; avaliar pode resultar em não gravar. "
+                    "Aplique também diante de preferência expressa, orientação futura, aprendizado comprovado ou pedido de manutenção da memória, e antes de criar, revisar ou excluir memória.",
+                    "memory-learning.md",
+                ),
             ))
         if self.configuration.data_tables_schema_authoring_available():
             workflows.append(Workflow("data-tables-schema-authoring", "data_tables", "Quando o usuário solicitar criar, alterar, corrigir ou estruturar um schema destinado exclusivamente ao serviço MCP data_tables, aplique este procedimento antes de editar a definição.", "data-tables-schema-authoring.md"))

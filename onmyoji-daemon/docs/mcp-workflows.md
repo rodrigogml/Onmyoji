@@ -11,7 +11,7 @@ Os documentos canônicos ficam em `onmyoji-daemon/resources/workflows/`. O catá
 | Identificador | Quando fica disponível | Quando ler |
 | --- | --- | --- |
 | `memory-decision` | Memória habilitada. | Antes de responder a uma solicitação substantiva, decidir, planejar, agir ou perguntar ao usuário ou a terceiros. |
-| `memory-learning` | Memória habilitada. | Após correção, preferência durável ou aprendizado validado, e antes de criar, revisar ou excluir uma instrução de memória. |
+| `memory-learning` | Memória habilitada. | Diante de correção, rejeição ou redirecionamento do usuário, antes de prosseguir na decisão afetada; também diante de preferência expressa, orientação futura, aprendizado comprovado ou pedido de manutenção, e antes de qualquer mutação de memória. |
 | `data-tables-schema-authoring` | Autoria de schemas Data Tables habilitada no setup. | Antes de criar ou alterar schemas destinados especificamente ao serviço MCP `data_tables`. |
 | `email-operations` | Há conta de E-mail habilitada e elegível para publicação. | Antes de consultar, organizar ou enviar mensagens com `email.*`. |
 
@@ -24,5 +24,7 @@ Os documentos canônicos ficam em `onmyoji-daemon/resources/workflows/`. O catá
 ```
 
 O schema da ferramenta enumera os identificadores disponíveis na instância. Ao ocorrer um gatilho, o agente deve ler o documento completo, caso ainda não esteja no contexto atual, e seguir suas etapas antes de continuar.
+
+Para `memory-learning`, a decisão sobre gravar pertence à avaliação do workflow. O agente não pode dispensar sua aplicação por julgar antecipadamente uma correção pontual, nem exigir pedido de memorização ou repetição do erro. Cada novo sinal exige uma nova avaliação, reutilizando o documento completo que ainda estiver no contexto; a avaliação pode concluir sem escrita.
 
 As rotas são publicadas nas instruções do servidor MCP e incorporadas à composição centralizada de developer instructions. O procedimento completo permanece no servidor e é lido somente quando necessário. Veja [Developer instructions](../../docs/developer-instructions.md) para a composição compartilhada entre CLI, console e Gateway.

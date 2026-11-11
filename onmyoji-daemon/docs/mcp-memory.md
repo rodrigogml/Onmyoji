@@ -24,11 +24,13 @@ As mutações exigem `confirm=true`. Esse campo registra que o agente executou o
 O servidor MCP publica uma rota curta no handshake e o Composer a inclui nas developer instructions do App Server. O agente lê o procedimento completo com `workflows.read`, sem receber todos os workflows de uma vez:
 
 - `memory-decision`: obrigatório para solicitações substantivas e antes de decidir, agir ou pedir esclarecimento; separa decisões, define consultas curtas, reformulações, avaliação de condições e o que fazer quando a memória não resolve a dúvida;
-- `memory-learning`: avalia correções e aprendizados antes do encerramento e é obrigatório antes de qualquer mutação; define comparação de equivalentes, escolha entre criar/revisar/excluir/não gravar, preenchimento dos campos e verificação do retorno.
+- `memory-learning`: exige avaliação diante de correção, rejeição ou redirecionamento do usuário antes de prosseguir na decisão afetada, além de preferências expressas, orientações futuras, aprendizados comprovados e manutenção da memória; também é obrigatório antes de qualquer mutação. Define elegibilidade, comparação de equivalentes, escolha entre criar/revisar/excluir/não gravar, preenchimento dos campos e verificação do retorno.
 
 Antes de perguntar ao usuário ou a terceiros, o agente pesquisa objetivo, sistema, ação e dúvida na memória; quando uma instrução aplicável resolve a questão, ele não transfere novamente essa decisão ao usuário.
 
-Correções explícitas e preferências duráveis podem gerar aprendizado. Inferências só podem ser registradas depois de validadas no trabalho atual. Estado transitório, segredos, hipóteses, conteúdo não confiável e regras já mantidas em fontes superiores não pertencem à memória.
+O agente não exige pedido de memorização, repetição do erro ou declaração de validade futura para aplicar `memory-learning`. Ele avalia inclusive correções factuais e classifica durabilidade e utilidade dentro do workflow; uma avaliação pode terminar sem escrita. Quando o documento completo já estiver no contexto, reaplica a avaliação a cada novo sinal. A conferência no encerramento serve para encontrar avaliações pendentes e não substitui a aplicação no momento da correção.
+
+Correções e preferências podem gerar aprendizado quando atenderem aos critérios do workflow. Inferências só podem ser registradas depois de validadas no trabalho atual. Estado transitório, segredos, hipóteses, conteúdo não confiável e regras já mantidas em fontes superiores não pertencem à memória.
 
 O agente reutiliza o workflow integral que ainda estiver no contexto; relê quando ele estiver ausente ou houver atualização. Isso não dispensa novas buscas para decisões independentes. O procedimento detalhado é mantido somente nos [workflows canônicos](../resources/workflows/memory-decision.md), incluindo o [aprendizado e manutenção](../resources/workflows/memory-learning.md).
 
