@@ -37,7 +37,10 @@ class SystemSetupTests(unittest.TestCase):
         output = io.StringIO()
         with patch.object(MODULE, "terminal_width", return_value=56), patch.object(MODULE.sys, "stdout", output):
             MODULE.opening_logo()
-        self.assertEqual(output.getvalue().splitlines(), [line.center(56) for line in MODULE.TEXT_LOGO.splitlines()])
+        self.assertEqual(
+            output.getvalue().splitlines(),
+            [*[line.center(56) for line in MODULE.TEXT_LOGO.splitlines()], f"Versão {MODULE.SETUP_VERSION}".center(56)],
+        )
 
     def test_flow_choice_uses_numeric_default_without_opening_a_screen(self) -> None:
         with patch.object(MODULE, "prompt", return_value="") as prompt_mock, patch.object(MODULE, "screen") as screen_mock:

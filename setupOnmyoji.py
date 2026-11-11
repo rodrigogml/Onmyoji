@@ -1628,6 +1628,7 @@ def opening_logo() -> None:
     width = terminal_width()
     for line in TEXT_LOGO.splitlines():
         print(line.center(width))
+    print(f"Versão {SETUP_VERSION}".center(width))
 
 
 def screen(title: str, subtitle: str = "") -> None:
