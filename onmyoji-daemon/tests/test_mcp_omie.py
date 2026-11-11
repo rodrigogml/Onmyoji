@@ -168,6 +168,7 @@ def test_http_failure_exposes_sanitized_omie_diagnostic(tmp_path, monkeypatch):
     write_config(tmp_path)
     class Body:
         def read(self): return b'{"code": 123, "description": "Filtro de data invalido"}'
+        def close(self): pass
     monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.urlopen", lambda *_args, **_kwargs: (_ for _ in ()).throw(HTTPError("https://app.omie.com.br/", 500, "error", {}, Body())))
     with pytest.raises(OmieError) as error:
         OmieService(tmp_path, Credentials()).invoke("example", "projects_get", {"params": {"codInt": "P1"}})
