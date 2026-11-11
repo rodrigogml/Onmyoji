@@ -23,6 +23,8 @@ def test_finance_tools_publish_closed_schemas_in_portuguese(tmp_path):
     payment = next(tool for tool in tools if tool["name"].endswith("lancamentos_conta.listar_por_pagamento"))
     Draft202012Validator.check_schema(payment["input_schema"])
     Draft202012Validator(payment["input_schema"]).validate({"filtros": {"data_inicial": "01/11/2026", "data_final": "30/11/2026"}})
+    movements = next(tool for tool in tools if tool["name"].endswith("movimentos.listar_por_pagamento"))
+    assert "conciliacao.conciliado" in movements["description"]
     with pytest.raises(Exception):
         Draft202012Validator(payment["input_schema"]).validate({"filtros": {"dtPagInicial": "01/11/2026", "dtPagFinal": "30/11/2026"}})
 
@@ -37,6 +39,28 @@ def test_payment_filter_translates_to_omie_and_returns_pagination(tmp_path, monk
     assert request.call_args.args[1] == "account_transactions_list"
     assert request.call_args.args[2] == {"params": {"nPagina": 1, "nRegPorPagina": 50, "dDtPagtoDe": "01/11/2026", "dDtPagtoAte": "30/11/2026"}}
     assert result["paginacao"]["proxima_pagina"] == 2
+
+
+def test_financial_movements_expose_an_unambiguous_reconciliation_status(tmp_path, monkeypatch):
+    request = Mock(return_value={"movimentos": [
+        {"detalhes": {"dDtConcilia": "10/11/2026", "cHrConcilia": "14:35:00", "cUsConcilia": "rodrigo"}},
+        {"detalhes": {}},
+        {},
+    ]})
+    monkeypatch.setattr(OmieService, "invoke_financial", request)
+
+    result = OmieFinanceFacade(Configuration(tmp_path)).call(
+        "omie.financeiro.movimentos.listar_por_pagamento",
+        {"filtros": {"data_inicial": "01/11/2026", "data_final": "30/11/2026"}}, "empresa",
+    )
+
+    assert result["dados"][0]["conciliacao"] == {
+        "conciliado": True, "data": "10/11/2026", "hora": "14:35:00", "usuario": "rodrigo",
+    }
+    assert result["dados"][1]["conciliacao"] == {
+        "conciliado": False, "data": None, "hora": None, "usuario": None,
+    }
+    assert result["dados"][2]["conciliacao"]["conciliado"] is False
 
 
 @pytest.mark.parametrize("filters", [

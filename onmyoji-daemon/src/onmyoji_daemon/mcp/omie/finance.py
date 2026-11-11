@@ -35,9 +35,14 @@ class FinanceSpec:
 
 
 def _list_specs(resource: str, legacy: str, label: str) -> list[FinanceSpec]:
+    reconciliation_note = (
+        " Cada item informa conciliacao.conciliado: true quando a Omie retorna "
+        "a data de conciliação; false quando ela está ausente."
+        if legacy == "financial_movements_list" else ""
+    )
     return [FinanceSpec(
         f"omie.financeiro.{resource}.listar_por_{period}", legacy,
-        f"Lista {label} exclusivamente pelo período de {text}.", period=period,
+        f"Lista {label} exclusivamente pelo período de {text}.{reconciliation_note}", period=period,
     ) for period, (_, _, text) in PERIODS.items()]
 
 
@@ -176,7 +181,7 @@ class OmieFinanceFacade:
         if not isinstance(arguments, Mapping): raise OmieError("invalid_parameter", "Os argumentos devem ser um objeto JSON.")
         legacy = self._legacy_arguments(spec, arguments)
         response = OmieService(self.configuration.root).invoke_financial(profile, spec.legacy, legacy, writes=spec.writes)
-        return self._normalize(response, arguments.get("incluir_dados_omie") is True)
+        return self._normalize(spec, response, arguments.get("incluir_dados_omie") is True)
 
     def _legacy_arguments(self, spec: FinanceSpec, arguments: Mapping[str, Any]) -> dict[str, Any]:
         if spec.writes:
@@ -233,13 +238,32 @@ class OmieFinanceFacade:
         return {names[key]: value for key, value in data.items()}
 
     @staticmethod
-    def _normalize(response: Any, include_native: bool) -> dict[str, Any]:
+    def _normalize(spec: FinanceSpec, response: Any, include_native: bool) -> dict[str, Any]:
         if not isinstance(response, Mapping): return {"dados": response}
         metadata = {"pagina", "total_de_paginas", "total_de_registros", "registros_por_pagina"}
         rows = next((value for key, value in response.items() if key not in metadata and isinstance(value, list)), None)
+        if spec.legacy == "financial_movements_list" and isinstance(rows, list):
+            rows = [OmieFinanceFacade._with_reconciliation_status(row) for row in rows]
         result: dict[str, Any] = {"dados": rows if rows is not None else [dict(response)]}
         if "pagina" in response:
             current, total = response.get("pagina"), response.get("total_de_paginas")
             result["paginacao"] = {"pagina": current, "total_paginas": total, "total_registros": response.get("total_de_registros"), "proxima_pagina": current + 1 if isinstance(current, int) and isinstance(total, int) and current < total else None}
         if include_native: result["dados_omie"] = dict(response)
         return result
+
+    @staticmethod
+    def _with_reconciliation_status(row: Any) -> Any:
+        """Expõe o estado de conciliação sem exigir inferência de campos nativos."""
+        if not isinstance(row, Mapping): return row
+        movement = dict(row)
+        details = movement.get("detalhes")
+        if not isinstance(details, Mapping): details = {}
+        date = details.get("dDtConcilia")
+        reconciled = isinstance(date, str) and bool(date.strip())
+        movement["conciliacao"] = {
+            "conciliado": reconciled,
+            "data": date if reconciled else None,
+            "hora": details.get("cHrConcilia") if reconciled else None,
+            "usuario": details.get("cUsConcilia") if reconciled else None,
+        }
+        return movement
