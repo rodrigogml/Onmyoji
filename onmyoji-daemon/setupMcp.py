@@ -50,6 +50,9 @@ from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime
 from onmyoji_daemon.mcp.email.setup import email_menu
 from onmyoji_daemon.mcp.document_processing.setup import document_menu
 from onmyoji_daemon.mcp.excel.config.setup import excel_menu
+from onmyoji_daemon.mcp.mercado.configuration import MODULES, MODULE_PROVIDER
+from onmyoji_daemon.mcp.mercado.exception import MercadoError
+from onmyoji_daemon.mcp.mercado.service import MercadoService
 
 
 def ask(label: str, current: str = "", required: bool = False) -> str | None:
@@ -2421,6 +2424,304 @@ def data_tables_menu(config: McpConfiguration) -> None:
             except DataTablesError as error: result(False, str(error))
 
 
+def choose_mercado_modules(current: list[str]) -> list[str] | None:
+    """Seleciona módulos individualmente, sem aplicar presets implícitos."""
+    selected = list(current)
+    while True:
+        labels = [f"{'✓' if module in selected else ' '} {module}" for module in MODULES] + ["Concluir seleção"]
+        choice = flow_choice("Módulos Mercado", labels, "Concluir seleção")
+        if choice is None:
+            return None
+        if choice == "Concluir seleção":
+            return selected
+        module = choice[2:]
+        if module in selected:
+            selected.remove(module)
+        else:
+            selected.append(module)
+        note("Selecionados: " + (", ".join(selected) if selected else "nenhum módulo"))
+
+
+def _mercado_callback(config: McpConfiguration, provider: str) -> str:
+    from onmyoji_daemon.rpc import RpcError, call
+    from onmyoji_daemon.supervisor import endpoint
+    try:
+        host, port, token = endpoint(config.root)
+        response = call(host, port, token, "mini-apps.oauth.callback-url", {"integration": provider}, timeout=10)
+        return str(response["callbackUrl"])
+    except (OSError, ValueError, KeyError, RuntimeError, RpcError) as error:
+        raise MercadoError("network_error", "Inicie o Gateway e o Tunnel para calcular o callback HTTPS.") from error
+
+
+def _mercado_app_references(data: dict, provider: str, application: str) -> list[str]:
+    return [name for name, profile in data["profiles"].items() if profile.get(provider, {}).get("application") == application]
+
+
+def create_mercado_application(config: McpConfiguration, provider: str) -> None:
+    data = config.mercado()
+    catalog = data["applications"][provider]
+    name = ask_new_profile_name("Nome do aplicativo", catalog)
+    if not name or name in catalog:
+        result(False, "Nome de aplicativo inválido, repetido ou criação cancelada.")
+        return
+    environment = flow_choice("Ambiente", ["production", "sandbox"], "production")
+    if environment is None:
+        return
+    vault = select("Perfil de vault do aplicativo", config.vault_profile_names())
+    if not vault:
+        return
+    label = "MercadoLivre" if provider == "mercadolivre" else "MercadoPago"
+    entry = ask("Entrada KeePass do aplicativo", vault_entry_path(config.root, "MCP", label, "Applications", name), True)
+    if not entry:
+        return
+    note("Client ID será salvo em username e Client Secret em password. Tokens de usuário não usam esta entrada.")
+    credential = configure_vault_entry_fields(config, vault, entry, label, [("client_id", "Client ID", "username"), ("client_secret", "Client Secret", "password")])
+    if credential is None:
+        return
+    try:
+        callback = _mercado_callback(config, provider)
+        note("Cadastre exatamente este callback HTTPS no portal do provedor: " + callback)
+    except MercadoError as error:
+        note(str(error))
+        callback = ""
+    redirect = ask("Redirect URI já cadastrada no provedor", callback, True)
+    scopes_value = ask("Escopos separados por ;", "read;write;offline_access", True)
+    if not redirect or not scopes_value:
+        return
+    scopes = [value.strip() for value in scopes_value.split(";") if value.strip()]
+    catalog[name] = {"environment": environment, "credential_profile": vault, "credential_entry_path": credential[0], "redirect_uri": redirect, "scopes": scopes}
+    try:
+        config.save_mercado(data)
+        result(True, "Aplicativo salvo. O setup não cria o aplicativo no portal do provedor.")
+    except McpConfigurationError as error:
+        result(False, str(error))
+
+
+def manage_mercado_application(config: McpConfiguration, provider: str, name: str) -> None:
+    while True:
+        data = config.mercado(); application = data["applications"][provider].get(name)
+        if not isinstance(application, dict):
+            return
+        profile_screen("MCP · Mercado · Aplicativo", f"{provider} · {name}", application)
+        item("1.", "Alterar ambiente")
+        item("2.", "Alterar entrada e credenciais")
+        item("3.", "Alterar Redirect URI")
+        item("4.", "Alterar escopos")
+        item("5.", "Validar credenciais", "Somente presença; valores não são exibidos")
+        item("6.", "Remover aplicativo")
+        item("X.", "Voltar")
+        action = prompt("Opção: ").strip().casefold()
+        if action in {"x", "\x1b"}: return
+        if action == "1":
+            value = flow_choice("Ambiente", ["production", "sandbox"], application["environment"])
+            if value is None: continue
+            application["environment"] = value
+        elif action == "2":
+            vault = select("Perfil de vault", config.vault_profile_names(), application["credential_profile"])
+            if not vault: continue
+            entry = ask("Entrada KeePass", application["credential_entry_path"], True)
+            if not entry: continue
+            saved = configure_vault_entry_fields(config, vault, entry, provider, [("client_id", "Client ID", "username"), ("client_secret", "Client Secret", "password")])
+            if saved is None: continue
+            application["credential_profile"], application["credential_entry_path"] = vault, saved[0]
+        elif action == "3":
+            try:
+                note("Callback calculado pelo Gateway: " + _mercado_callback(config, provider))
+            except MercadoError as error: note(str(error))
+            value = ask("Redirect URI cadastrada", application["redirect_uri"], True)
+            if not value: continue
+            application["redirect_uri"] = value
+        elif action == "4":
+            value = ask("Escopos separados por ;", ";".join(application["scopes"]), True)
+            if not value: continue
+            application["scopes"] = [item.strip() for item in value.split(";") if item.strip()]
+        elif action == "5":
+            try:
+                resolver = KeePassCredentialResolver(config.root)
+                username = resolver.field_exists(application["credential_profile"], application["credential_entry_path"], "username")
+                password = resolver.field_exists(application["credential_profile"], application["credential_entry_path"], "password")
+                result(username and password, "Client ID e Client Secret estão disponíveis." if username and password else "Credenciais incompletas.")
+            except CredentialError as error: result(False, str(error))
+            continue
+        elif action == "6":
+            references = _mercado_app_references(data, provider, name)
+            if references:
+                result(False, "Aplicativo ainda referenciado por: " + ", ".join(references))
+                continue
+            if prompt("Remover este registro de aplicativo? [s/N]: ").strip().casefold() not in {"s", "sim"}: continue
+            del data["applications"][provider][name]
+            try: config.save_mercado(data); result(True, "Aplicativo removido; a entrada KeePass foi preservada.")
+            except McpConfigurationError as error: result(False, str(error)); continue
+            return
+        else:
+            result(False, "Opção inválida."); continue
+        try: config.save_mercado(data); result(True, "Aplicativo atualizado. Perfis vinculados exigirão nova autorização se o binding mudou.")
+        except McpConfigurationError as error: result(False, str(error))
+
+
+def mercado_applications_menu(config: McpConfiguration, provider: str) -> None:
+    while True:
+        data = config.mercado(); catalog = data["applications"][provider]
+        screen("MCP · Mercado · Aplicativos", provider)
+        item("1.", "Criar aplicativo")
+        item("2.", "Gerenciar aplicativo", f"{len(catalog)} configurado(s)")
+        item("X.", "Voltar")
+        action = prompt("Opção: ").strip().casefold()
+        if action in {"x", "\x1b"}: return
+        if action == "1": create_mercado_application(config, provider)
+        elif action == "2":
+            selected = select("Aplicativo", sorted(catalog))
+            if selected: manage_mercado_application(config, provider, selected)
+        else: result(False, "Opção inválida.")
+
+
+def configure_mercado_profile_provider(config: McpConfiguration, data: dict, profile_name: str, provider: str, current: dict | None = None) -> dict | None:
+    applications = sorted(data["applications"][provider])
+    application = select(f"Aplicativo {provider}", applications, (current or {}).get("application", ""))
+    if not application:
+        return None
+    site = ask("Site Mercado", (current or {}).get("site_id", "MLB"), True)
+    if not site:
+        return None
+    mode = "authorization_code"
+    if provider == "mercadopago":
+        mode = flow_choice("Autenticação Mercado Pago", ["authorization_code", "client_credentials"], (current or {}).get("auth_mode", "authorization_code"))
+        if mode is None: return None
+    configured = {"application": application, "site_id": site, "auth_mode": mode}
+    if mode == "authorization_code":
+        vault = select("Perfil de vault da autorização", config.vault_profile_names(), (current or {}).get("authorization_credential_profile", ""))
+        if not vault: return None
+        label = "MercadoLivre" if provider == "mercadolivre" else "MercadoPago"
+        entry = ask("Entrada KeePass da autorização", (current or {}).get("authorization_entry_path", vault_entry_path(config.root, "MCP", label, "Authorizations", profile_name)), True)
+        if not entry: return None
+        try:
+            resolver = KeePassCredentialResolver(config.root)
+            if not resolver.entry_exists(vault, entry):
+                resolver.save_field(vault, entry, "notes", "{}")
+            elif not resolver.field_exists(vault, entry, "notes"):
+                resolver.save_field(vault, entry, "notes", "{}")
+        except CredentialError as error:
+            result(False, str(error)); return None
+        configured.update({"authorization_credential_profile": vault, "authorization_entry_path": entry})
+    return configured
+
+
+def create_mercado_profile(config: McpConfiguration) -> None:
+    data = config.mercado()
+    name = ask_new_profile_name("Nome do perfil Mercado", data["profiles"])
+    if not name or name in data["profiles"]:
+        result(False, "Nome de perfil inválido, repetido ou criação cancelada."); return
+    description = ask("Descrição de uso", required=True)
+    if not description: return
+    modules = choose_mercado_modules([])
+    if modules is None: return
+    profile: dict = {"enabled": False, "description": description, "modules": modules}
+    for provider in sorted({MODULE_PROVIDER[module] for module in modules}):
+        configured = configure_mercado_profile_provider(config, data, name, provider)
+        if configured is None: return
+        profile[provider] = configured
+    enable = prompt("Habilitar o perfil agora? [s/N]: ").strip().casefold() in {"s", "sim"}
+    profile["enabled"] = enable
+    data["profiles"][name] = profile
+    try:
+        config.save_mercado(data)
+        result(True, "Perfil Mercado salvo. Reconecte clientes que mantenham tools/list em cache.")
+    except McpConfigurationError as error: result(False, str(error))
+
+
+def _mercado_profile_action(config: McpConfiguration, name: str, provider: str, action: str) -> None:
+    service = MercadoService(config.root)
+    try:
+        if action == "status":
+            status = service.invoke(name, f"{provider}.get_auth_status", {})
+            result(True, f"{provider}: {status['state']}")
+        elif action == "authorize":
+            authorization = service.invoke(name, f"{provider}.start_authorization", {"confirm": True})
+            result(True, "Abra este link no navegador para autorizar:")
+            print(authorization["authorizationUrl"])
+        elif action == "cancel":
+            service.invoke(name, f"{provider}.cancel_authorization", {"confirm": True})
+            result(True, "Sessão pendente cancelada; tokens anteriores foram preservados.")
+        else:
+            service.invoke(name, f"{provider}.get_auth_status", {})
+            result(True, "Configuração e estado local consultados. Use uma ferramenta de leitura para validar a permissão remota.")
+    except MercadoError as error: result(False, str(error))
+
+
+def manage_mercado_profile(config: McpConfiguration, name: str) -> None:
+    while True:
+        data = config.mercado(); profile = data["profiles"].get(name)
+        if not isinstance(profile, dict): return
+        profile_screen("MCP · Mercado · Perfil", name, profile)
+        item("1.", "Alterar descrição")
+        item("2.", "Habilitar/desabilitar módulos")
+        item("3.", "Configurar Mercado Livre")
+        item("4.", "Configurar Mercado Pago")
+        item("5.", "Habilitar perfil" if not profile["enabled"] else "Desabilitar perfil")
+        item("6.", "Autorizar provedor")
+        item("7.", "Consultar autorização")
+        item("8.", "Cancelar autorização pendente")
+        item("9.", "Testar configuração")
+        item("10.", "Remover perfil", "Entradas KeePass serão preservadas")
+        item("X.", "Voltar")
+        action = prompt("Opção: ").strip().casefold()
+        if action in {"x", "\x1b"}: return
+        if action == "1":
+            value = ask("Descrição", profile["description"], True)
+            if not value: continue
+            profile["description"] = value
+        elif action == "2":
+            modules = choose_mercado_modules(profile["modules"])
+            if modules is None: continue
+            profile["modules"] = modules
+            needed = {MODULE_PROVIDER[module] for module in modules}
+            for provider in needed:
+                if provider not in profile:
+                    configured = configure_mercado_profile_provider(config, data, name, provider)
+                    if configured is None: break
+                    profile[provider] = configured
+            else: pass
+        elif action in {"3", "4"}:
+            provider = "mercadolivre" if action == "3" else "mercadopago"
+            configured = configure_mercado_profile_provider(config, data, name, provider, profile.get(provider))
+            if configured is None: continue
+            profile[provider] = configured
+        elif action == "5": profile["enabled"] = not profile["enabled"]
+        elif action in {"6", "7", "8", "9"}:
+            providers = [provider for provider in ("mercadolivre", "mercadopago") if provider in profile]
+            provider = select("Provedor", providers)
+            if not provider: continue
+            _mercado_profile_action(config, name, provider, {"6": "authorize", "7": "status", "8": "cancel", "9": "test"}[action]); continue
+        elif action == "10":
+            if prompt("Remover o perfil e preservar as entradas KeePass? [s/N]: ").strip().casefold() not in {"s", "sim"}: continue
+            del data["profiles"][name]
+            try: config.save_mercado(data); result(True, "Perfil removido; entradas KeePass preservadas.")
+            except McpConfigurationError as error: result(False, str(error)); continue
+            return
+        else: result(False, "Opção inválida."); continue
+        try: config.save_mercado(data); result(True, "Perfil atualizado. A lista de ferramentas muda no próximo tools/list; reconecte clientes com cache.")
+        except McpConfigurationError as error: result(False, str(error))
+
+
+def mercado_menu(config: McpConfiguration) -> None:
+    while True:
+        data = config.mercado()
+        screen("MCP · Mercado Livre e Mercado Pago", "Aplicativos compartilhados, perfis e módulos")
+        item("1.", "Aplicativos Mercado Livre", f"{len(data['applications']['mercadolivre'])} configurado(s)")
+        item("2.", "Aplicativos Mercado Pago", f"{len(data['applications']['mercadopago'])} configurado(s)")
+        item("3.", "Criar perfil")
+        item("4.", "Gerenciar perfil", f"{len(data['profiles'])} configurado(s)")
+        item("X.", "Voltar")
+        action = prompt("Opção: ").strip().casefold()
+        if action in {"x", "\x1b"}: return
+        if action in {"1", "2"}: mercado_applications_menu(config, "mercadolivre" if action == "1" else "mercadopago")
+        elif action == "3": create_mercado_profile(config)
+        elif action == "4":
+            selected = select("Perfil Mercado", sorted(data["profiles"]))
+            if selected: manage_mercado_profile(config, selected)
+        else: result(False, "Opção inválida.")
+
+
 def integrations_menu(config: McpConfiguration) -> None:
     """Lista vault e integrações MCP em uma única tela de navegação."""
     while True:
@@ -2440,6 +2741,7 @@ def integrations_menu(config: McpConfiguration) -> None:
         spotify_profiles = config.spotify()["profiles"]
         memory_enabled = config.memory_tool_available()
         data_tables_enabled = config.data_tables_tool_available()
+        mercado_profiles = config.mercado()["profiles"]
         screen("MCP", "Perfis de vault e integrações MCP locais")
         item("V.", "Perfis de vault", "KeePassXC e autenticação local")
         print("\n  INTEGRAÇÕES DISPONÍVEIS")
@@ -2463,6 +2765,7 @@ def integrations_menu(config: McpConfiguration) -> None:
         integration_item("18.", "PDF", config.pdf()["profiles"])
         integration_item("19.", "OCR", config.ocr()["profiles"])
         integration_item("20.", "Excel", config.excel()["profiles"])
+        integration_item("21.", "Mercado Livre / Mercado Pago", mercado_profiles)
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}:
@@ -2507,6 +2810,8 @@ def integrations_menu(config: McpConfiguration) -> None:
             document_menu(config, sys.modules[__name__], "pdf" if choice == "18" else "ocr")
         elif choice == "20":
             excel_menu(config, sys.modules[__name__])
+        elif choice == "21":
+            mercado_menu(config)
         else:
             alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 

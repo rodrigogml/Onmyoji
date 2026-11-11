@@ -39,6 +39,8 @@ from .ocr.tools import OcrToolRegistry
 from .excel.tools import ExcelToolRegistry
 from .excel.exception import ExcelExceptions
 from .document_processing.contracts import DocumentError
+from .mercado.exception import MercadoError
+from .mercado.tools import MercadoToolRegistry
 
 
 class McpApplication:
@@ -72,15 +74,18 @@ class McpApplication:
         self.pdf = PdfToolRegistry(self.configuration)
         self.ocr = OcrToolRegistry(self.configuration)
         self.excel = ExcelToolRegistry(self.configuration)
+        self.mercado = MercadoToolRegistry(self.configuration)
 
     def definitions(self) -> list[dict[str, Any]]:
-        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions() + self.cloudflare.definitions() + self.eccovox.definitions() + self.forward_email.definitions() + self.notion.definitions() + self.aws.definitions() + self.mysql.definitions() + self.ssh.definitions() + self.bis2cmd.definitions() + self.bis10cmd.definitions() + self.google.definitions() + self.spotify.definitions() + self.memory.definitions() + self.data_tables.definitions() + self.telegram.definitions() + self.mini_apps.definitions() + self.file_review.definitions() + self.publication.definitions() + self.workflows.definitions() + self.email.definitions() + self.pdf.definitions() + self.ocr.definitions() + self.excel.definitions()
+        return self.todoist.definitions() + self.omie.definitions() + self.btg.definitions() + self.cloudflare.definitions() + self.eccovox.definitions() + self.forward_email.definitions() + self.notion.definitions() + self.aws.definitions() + self.mysql.definitions() + self.ssh.definitions() + self.bis2cmd.definitions() + self.bis10cmd.definitions() + self.google.definitions() + self.spotify.definitions() + self.memory.definitions() + self.data_tables.definitions() + self.telegram.definitions() + self.mini_apps.definitions() + self.file_review.definitions() + self.publication.definitions() + self.workflows.definitions() + self.email.definitions() + self.pdf.definitions() + self.ocr.definitions() + self.excel.definitions() + self.mercado.definitions()
 
     def instructions(self) -> str | None:
         """Publica as contribuições dos módulos MCP habilitados."""
         return self.instructions_registry.developer_instructions()
 
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if name.startswith(("mercado.", "mercadolivre.", "mercadopago.")):
+            return self.mercado.call(name, arguments)
         if name.startswith(("gateway.", "cloudflare_tunnel.")):
             return self.publication.call(name, arguments)
         if name.startswith("pdf."):
@@ -144,7 +149,7 @@ def create_server(root: Path):
 
     async def call_tool(_ctx, params):
         try:
-            if params.name.startswith(("pdf.", "ocr.", "excel.", "bis10cmd.", "file_review.")):
+            if params.name.startswith(("pdf.", "ocr.", "excel.", "bis10cmd.", "file_review.", "mercado.", "mercadolivre.", "mercadopago.")):
                 data = await asyncio.to_thread(application.call, params.name, params.arguments or {})
             else:
                 data = application.call(params.name, params.arguments or {})
@@ -156,6 +161,9 @@ def create_server(root: Path):
                 data = {"error": {"code": error.code, "message": str(error)}}
                 return CallToolResult(content=[TextContent(type="text", text=json.dumps(data, ensure_ascii=False))], structured_content=data, is_error=True)
             if isinstance(error, (PublicationMcpError, FileReviewMcpError, Bis10CmdError, ExcelExceptions)):
+                data = {"error": error.as_dict()}
+                return CallToolResult(content=[TextContent(type="text", text=json.dumps(data, ensure_ascii=False))], structured_content=data, is_error=True)
+            if isinstance(error, MercadoError):
                 data = {"error": error.as_dict()}
                 return CallToolResult(content=[TextContent(type="text", text=json.dumps(data, ensure_ascii=False))], structured_content=data, is_error=True)
             return CallToolResult(content=[TextContent(type="text", text=str(error))], is_error=True)

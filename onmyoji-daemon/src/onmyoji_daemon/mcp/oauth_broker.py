@@ -38,10 +38,17 @@ BTG_INTEGRATION = "btg"
 BTG_CALLBACK_PATH = "/oauth/mcp/btg/callback"
 EMAIL_INTEGRATION = "email"
 EMAIL_CALLBACK_PATH = "/oauth/mcp/email/callback"
+MERCADOLIVRE_INTEGRATION = "mercadolivre"
+MERCADOLIVRE_CALLBACK_PATH = "/oauth/mcp/mercadolivre/callback"
+MERCADOPAGO_INTEGRATION = "mercadopago"
+MERCADOPAGO_CALLBACK_PATH = "/oauth/mcp/mercadopago/callback"
 OAUTH_ADAPTERS = {
     BTG_INTEGRATION: ("onmyoji_daemon.mcp.btg.oauth_adapter", "btg-empresas", BTG_CALLBACK_PATH),
     EMAIL_INTEGRATION: ("onmyoji_daemon.mcp.email.oauth_adapter", "email", EMAIL_CALLBACK_PATH),
+    MERCADOLIVRE_INTEGRATION: ("onmyoji_daemon.mcp.mercado.mercadolivre_oauth_adapter", "mercado", MERCADOLIVRE_CALLBACK_PATH),
+    MERCADOPAGO_INTEGRATION: ("onmyoji_daemon.mcp.mercado.mercadopago_oauth_adapter", "mercado", MERCADOPAGO_CALLBACK_PATH),
 }
+OAUTH_CALLBACKS = {values[2]: integration for integration, values in OAUTH_ADAPTERS.items()}
 
 
 class McpOAuthBroker:

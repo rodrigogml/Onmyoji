@@ -17,6 +17,7 @@ def mock_configuration():
     config.pdf.return_value = {"profiles": {}}
     config.ocr.return_value = {"profiles": {}}
     config.excel.return_value = {"profiles": {}}
+    config.mercado.return_value = {"profiles": {}, "applications": {"mercadolivre": {}, "mercadopago": {}}}
     return config
 
 

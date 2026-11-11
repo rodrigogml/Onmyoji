@@ -17,6 +17,7 @@ from .btg.configuration import BtgConfigurationError, configuration_lock as btg_
 from .google.configuration import empty_configuration as empty_google, render_configuration as render_google, validate_configuration as validate_google
 from .spotify.configuration import empty_configuration as empty_spotify, render_configuration as render_spotify, validate_configuration as validate_spotify
 from .email.configuration import empty_configuration as empty_email, render_configuration as render_email, validate_configuration as validate_email, validate_roots as validate_email_roots
+from .mercado.configuration import empty_configuration as empty_mercado, enabled_profiles as enabled_mercado, load_configuration as load_mercado, render_configuration as render_mercado, validate_configuration as validate_mercado
 
 
 def omie_config_path(onmyoji_root: Path) -> Path:
@@ -180,6 +181,10 @@ class McpConfiguration:
     def data_tables_path(self) -> Path:
         return self.root / "configs" / "mcp" / "data-tables.toml"
 
+    @property
+    def mercado_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "mercado.toml"
+
     def credentials(self) -> dict[str, Any]:
         return self._load(self.credentials_path, empty_credentials())
 
@@ -317,6 +322,9 @@ class McpConfiguration:
     def data_tables(self) -> dict[str, Any]:
         return self._load(self.data_tables_path, empty_data_tables())
 
+    def mercado(self) -> dict[str, Any]:
+        return load_mercado(self.root)
+
     def save_credentials(self, data: dict[str, Any]) -> None:
         self._validate_credentials(data)
         self._save(self.credentials_path, self._render_credentials(data))
@@ -377,6 +385,17 @@ class McpConfiguration:
         try: validate_spotify(data)
         except ValueError as error: raise McpConfigurationError(str(error)) from error
         self._save(self.spotify_path, render_spotify(data)); McpReconciliation(self.root).mark_pending()
+
+    def save_mercado(self, data: dict[str, Any]) -> None:
+        try:
+            validate_mercado(data, set(self.credentials()["profiles"]))
+        except ValueError as error:
+            raise McpConfigurationError(str(error)) from error
+        self._save(self.mercado_path, render_mercado(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def enabled_mercado_profiles(self) -> list[dict[str, Any]]:
+        return enabled_mercado(self.mercado())
 
     def save_btg(self, data: dict[str, Any]) -> None:
         try:
