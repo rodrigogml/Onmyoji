@@ -147,7 +147,7 @@ def save_telegram(root: Path, profile: str, entry: str, data: dict | None = None
     path = target(root)
     rendered = path.read_text(encoding="utf-8")
     marker = f"max_outbound_media_per_turn = {int(limits.get('max_outbound_media_per_turn', 3))}"
-    context = f"context_max_messages = {int(limits.get('context_max_messages', 100))}\ncontext_max_age_seconds = {int(limits.get('context_max_age_seconds', 604800))}"
+    context = f"context_max_messages = {int(limits.get('context_max_messages', 100))}\ncontext_max_age_seconds = {int(limits.get('context_max_age_seconds', 604800))}\ncontext_max_bytes = {int(limits.get('context_max_bytes', 512 * 1024))}\ncontext_compaction_message_interval = {int(limits.get('context_compaction_message_interval', 16))}"
     path.write_text(rendered.replace(marker, marker + "\n" + context), encoding="utf-8", newline="\n")
 
 
@@ -239,6 +239,22 @@ def save_max_parallel_conversations(root: Path, maximum: int) -> None:
         raise ValueError("O máximo de conversas em paralelo deve estar entre 1 e 16.")
     data = telegram_data(root); agent = data.setdefault("agent", {})
     agent["max_parallel_conversations"] = maximum
+    telegram = data.get("telegram", {})
+    save_telegram(root, str(telegram.get("vault_profile") or ""), str(telegram.get("token_entry") or ""), data)
+
+
+def save_context_limits(root: Path, messages: int, age_seconds: int, maximum_bytes: int, compact_interval: int) -> None:
+    """Salva limites que mantêm cada entrada e thread Telegram manejáveis."""
+    if type(messages) is not int or messages < 0:
+        raise ValueError("A quantidade de mensagens deve ser zero ou positiva.")
+    if type(age_seconds) is not int or age_seconds < 0:
+        raise ValueError("A idade do histórico deve ser zero ou positiva.")
+    if type(maximum_bytes) is not int or not 64 * 1024 <= maximum_bytes < 4 * 1024 * 1024:
+        raise ValueError("O orçamento do histórico deve estar entre 64 KiB e menos de 4 MiB.")
+    if type(compact_interval) is not int or compact_interval < 0:
+        raise ValueError("O intervalo de compactação deve ser zero ou positivo.")
+    data = telegram_data(root); limits = data.setdefault("limits", {})
+    limits.update({"context_max_messages": messages, "context_max_age_seconds": age_seconds, "context_max_bytes": maximum_bytes, "context_compaction_message_interval": compact_interval})
     telegram = data.get("telegram", {})
     save_telegram(root, str(telegram.get("vault_profile") or ""), str(telegram.get("token_entry") or ""), data)
 
@@ -618,7 +634,7 @@ def test_telegram(root: Path) -> tuple[bool, str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--onmyoji-root", default=str(ROOT)); parser.add_argument("--action", choices=["bootstrap", "daemon-bootstrap", "validate", "validation-json", "keepass-validation-json", "daemon-validation-json", "instructions-status", "profiles", "set-runtime", "set-credential", "set-totp", "set-app-server", "set-owner-execution-preferences", "set-default-thought-preferences", "set-max-parallel-conversations", "set-gateway-execution", "set-voice-reply", "set-agent-outbound-media", "check-entry", "write-token", "test-telegram", "test-agent"], default="bootstrap"); parser.add_argument("--profile"); parser.add_argument("--entry"); parser.add_argument("--real-entry"); parser.add_argument("--fake-entry"); parser.add_argument("--runtime-mode"); parser.add_argument("--python"); parser.add_argument("--base-python"); parser.add_argument("--enabled", action="store_true"); parser.add_argument("--disabled", action="store_true"); parser.add_argument("--idle-timeout", type=int); parser.add_argument("--auto-off-minutes", type=int); parser.add_argument("--voice"); parser.add_argument("--language"); parser.add_argument("--models", default=""); parser.add_argument("--efforts", default=""); parser.add_argument("--share-thoughts", choices=["true", "false"]); parser.add_argument("--delete-thoughts", choices=["true", "false"]); parser.add_argument("--max-parallel-conversations", type=int)
+    parser = argparse.ArgumentParser(); parser.add_argument("--onmyoji-root", default=str(ROOT)); parser.add_argument("--action", choices=["bootstrap", "daemon-bootstrap", "validate", "validation-json", "keepass-validation-json", "daemon-validation-json", "instructions-status", "profiles", "set-runtime", "set-credential", "set-totp", "set-app-server", "set-owner-execution-preferences", "set-default-thought-preferences", "set-max-parallel-conversations", "set-context-limits", "set-gateway-execution", "set-voice-reply", "set-agent-outbound-media", "check-entry", "write-token", "test-telegram", "test-agent"], default="bootstrap"); parser.add_argument("--profile"); parser.add_argument("--entry"); parser.add_argument("--real-entry"); parser.add_argument("--fake-entry"); parser.add_argument("--runtime-mode"); parser.add_argument("--python"); parser.add_argument("--base-python"); parser.add_argument("--enabled", action="store_true"); parser.add_argument("--disabled", action="store_true"); parser.add_argument("--idle-timeout", type=int); parser.add_argument("--auto-off-minutes", type=int); parser.add_argument("--voice"); parser.add_argument("--language"); parser.add_argument("--models", default=""); parser.add_argument("--efforts", default=""); parser.add_argument("--share-thoughts", choices=["true", "false"]); parser.add_argument("--delete-thoughts", choices=["true", "false"]); parser.add_argument("--max-parallel-conversations", type=int); parser.add_argument("--context-max-messages", type=int); parser.add_argument("--context-max-age-seconds", type=int); parser.add_argument("--context-max-bytes", type=int); parser.add_argument("--context-compaction-message-interval", type=int)
     parser.add_argument("--busy-input-policy", choices=["queue", "steer"])
     parser.add_argument("--preparation-workers", type=int, default=4)
     parser.add_argument("--interrupt-grace-seconds", type=int, default=15)
@@ -649,6 +665,10 @@ def main() -> int:
     if args.action == "set-max-parallel-conversations":
         if args.max_parallel_conversations is None: parser.error("--max-parallel-conversations é obrigatório")
         bootstrap(root); save_max_parallel_conversations(root, args.max_parallel_conversations); print("Limite de conversas em paralelo salvo."); return 0
+    if args.action == "set-context-limits":
+        values = (args.context_max_messages, args.context_max_age_seconds, args.context_max_bytes, args.context_compaction_message_interval)
+        if any(value is None for value in values): parser.error("todos os limites de contexto são obrigatórios")
+        bootstrap(root); save_context_limits(root, *values); print("Limites de contexto e compactação salvos."); return 0
     if args.action == "set-gateway-execution":
         if args.busy_input_policy is None: parser.error("--busy-input-policy é obrigatório")
         bootstrap(root); save_gateway_execution(root, args.busy_input_policy, args.preparation_workers, args.interrupt_grace_seconds, args.post_turn_results == "true")

@@ -143,6 +143,44 @@ def test_max_parallel_conversations_is_persisted_with_safe_limits(tmp_path):
         raise AssertionError("O limite acima de 16 deveria ser rejeitado.")
 
 
+def test_context_limits_are_persisted_and_preserved_by_other_actions(tmp_path):
+    module = setup_module(); module.bootstrap(tmp_path)
+
+    module.save_context_limits(tmp_path, 30, 3600, 256 * 1024, 8)
+    module.save_default_thought_preferences(tmp_path, False, True)
+
+    saved = tomllib.loads(module.target(tmp_path).read_text(encoding="utf-8"))["limits"]
+    assert saved["context_max_messages"] == 30
+    assert saved["context_max_age_seconds"] == 3600
+    assert saved["context_max_bytes"] == 256 * 1024
+    assert saved["context_compaction_message_interval"] == 8
+
+
+def test_context_limits_cli_persists_all_values_without_network(tmp_path):
+    module = setup_module()
+    arguments = ["setupDaemon.py", "--onmyoji-root", str(tmp_path), "--action", "set-context-limits", "--context-max-messages", "30", "--context-max-age-seconds", "3600", "--context-max-bytes", str(256 * 1024), "--context-compaction-message-interval", "8"]
+
+    with patch.object(sys, "argv", arguments), patch.object(module.subprocess, "run") as run:
+        assert module.main() == 0
+
+    saved = module.telegram_data(tmp_path)["limits"]
+    assert saved["context_max_messages"] == 30
+    assert saved["context_max_age_seconds"] == 3600
+    assert saved["context_max_bytes"] == 256 * 1024
+    assert saved["context_compaction_message_interval"] == 8
+    run.assert_not_called()
+
+
+@pytest.mark.parametrize("values", [(-1, 0, 64 * 1024, 0), (1, -1, 64 * 1024, 0), (1, 0, 64 * 1024 - 1, 0), (1, 0, 4 * 1024 * 1024, 0), (1, 0, 64 * 1024, -1)])
+def test_context_limits_reject_invalid_values_without_changing_config(tmp_path, values):
+    module = setup_module(); module.bootstrap(tmp_path); original = module.target(tmp_path).read_bytes()
+
+    with pytest.raises(ValueError):
+        module.save_context_limits(tmp_path, *values)
+
+    assert module.target(tmp_path).read_bytes() == original
+
+
 def test_validation_requires_an_absolute_codex_executable_for_services(tmp_path):
     module = setup_module(); workspace = tmp_path / "workspace"; workspace.mkdir()
     configs = tmp_path / "configs"; configs.mkdir()

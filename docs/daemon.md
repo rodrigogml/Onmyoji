@@ -37,6 +37,8 @@ Consulte [contratos, diagrama, comandos e recuperação](eventos-agendamentos.md
 
 Abra `D. Daemon → Gateway Telegram` para criar a configuração local em `configs/daemon/services/telegram/config.toml` e selecionar um perfil KeePass existente. O token não é solicitado nem armazenado pelo Onmyōji: o menu guarda somente uma referência, sugerida como `APIs/Telegram:<IdentificadorCamelCase>`. O teste de conexão obtém o token pelo KeePass e chama `getMe`, sem exibir o segredo.
 
+O submenu `Gateway Telegram → Contexto e compactação` apresenta e permite alterar individualmente o número e a idade das mensagens do histórico, o orçamento UTF-8 enviado ao Codex e o intervalo de compactação da thread. As alterações exigem reinicialização do Gateway.
+
 Ao definir a referência, o setup tenta ler a entrada. Quando já há token, permite mantê-lo, substituí-lo ou corrigir o caminho. Quando a entrada não existe, permite corrigir o caminho, criar a entrada com token informado por prompt oculto e enviado ao KeePass somente via stdin, ou salvar a referência para preenchimento posterior. A validação também informa a quantidade de owners pareados.
 
 A validação mostra cada dependência separadamente: instalação do daemon, TOML do gateway, perfil KeePass, referência do token, owners pareados, workspace do Shikigami, Codex-CLI, teste de conexão e execução controlada do agente. O gateway só pode ser habilitado após os testes Telegram e Codex; falhas recentes do gateway também são exibidas sem incluir segredos.

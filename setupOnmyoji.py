@@ -3093,6 +3093,55 @@ def daemon_menu(root: Path) -> None:
             note("O novo limite será usado após reiniciar o gateway Telegram.")
             offer_restart()
 
+    def configure_context_compaction() -> None:
+        """Exibe e altera individualmente os limites de contexto do Telegram."""
+        telegram_path = telegram_configuration_path(root)
+        while True:
+            command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "bootstrap"], quiet=True)
+            try:
+                limits = tomllib.loads(telegram_path.read_text(encoding="utf-8")).get("limits", {})
+                messages = int(limits.get("context_max_messages", 100))
+                age = int(limits.get("context_max_age_seconds", 7 * 24 * 3600))
+                maximum_bytes = int(limits.get("context_max_bytes", 512 * 1024))
+                interval = int(limits.get("context_compaction_message_interval", 16))
+            except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
+                messages, age, maximum_bytes, interval = 100, 7 * 24 * 3600, 512 * 1024, 16
+            screen("Contexto e compactação", "Janela enviada ao Codex e manutenção automática da thread")
+            item("1.", "Mensagens no histórico", f"{messages} · 0 = todas dentro dos demais limites")
+            item("2.", "Idade máxima do histórico", f"{age} s · 0 = sem prazo")
+            item("3.", "Orçamento do histórico", f"{maximum_bytes // 1024} KiB · protege o frame de 4 MiB")
+            item("4.", "Intervalo de compactação", f"{interval} mensagem(ns) · 0 = desabilitado")
+            item("X.", "Voltar")
+            choice = prompt("Opção: ").strip().casefold()
+            if choice in {"x", "\x1b"}:
+                return
+            values = {"1": ("Mensagens no histórico", messages, 0, None), "2": ("Idade máxima do histórico, em segundos", age, 0, None), "3": ("Orçamento do histórico, em KiB", maximum_bytes // 1024, 64, 4095), "4": ("Intervalo de compactação, em mensagens", interval, 0, None)}
+            if choice not in values:
+                alert("Opção inválida. Escolha uma alternativa ou volte.")
+                continue
+            label, current, minimum, maximum = values[choice]
+            raw = prompt(f"{label} [{current}]: ").strip()
+            if raw.casefold() in {"x", "\x1b"}:
+                continue
+            try:
+                selected = int(raw) if raw else current
+            except ValueError:
+                result(False, "Informe um número inteiro.")
+                continue
+            if selected < minimum or maximum is not None and selected > maximum:
+                limit = f"entre {minimum} e {maximum}" if maximum is not None else f"maior ou igual a {minimum}"
+                result(False, f"Informe um valor {limit}.")
+                continue
+            if choice == "1": messages = selected
+            elif choice == "2": age = selected
+            elif choice == "3": maximum_bytes = selected * 1024
+            else: interval = selected
+            changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-context-limits", "--context-max-messages", str(messages), "--context-max-age-seconds", str(age), "--context-max-bytes", str(maximum_bytes), "--context-compaction-message-interval", str(interval)], quiet=True)
+            result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
+            if changed.returncode == 0:
+                note("A nova configuração será usada após reiniciar o gateway Telegram.")
+                offer_restart()
+
     def convert_stickers_menu() -> None:
         """Converte fontes estáticas sem alterar os originais nem sobrescrever saídas."""
         while True:
@@ -3606,6 +3655,7 @@ def daemon_menu(root: Path) -> None:
             item("9.", "Figurinhas do agente", "Catálogo e explicações de uso")
             item("10.", "Paralelismo de respostas", "Máximo de conversas processadas simultaneamente")
             item("11.", "Entradas durante execução", "Fila, direcionamento e entrega pós-turno condicionada")
+            item("12.", "Contexto e compactação", "Janela enviada ao Codex e manutenção automática da thread")
             print()
             item("X.", "Voltar")
             choice = prompt("Opção: ").strip().casefold()
@@ -3624,6 +3674,7 @@ def daemon_menu(root: Path) -> None:
             elif choice == "10": configure_parallel_responses()
             elif choice == "11":
                 if configure_gateway_execution(root): offer_restart()
+            elif choice == "12": configure_context_compaction()
             else: alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
     def miniapps_command(*arguments: str) -> subprocess.CompletedProcess[str]:
