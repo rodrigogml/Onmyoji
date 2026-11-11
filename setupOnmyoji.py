@@ -1098,42 +1098,48 @@ def update_upstream(root: Path) -> None:
                 index += 1
                 if index < len(records): paths.append(records[index])
             index += 1
-        if any(_update_sensitive_path(path) for path in paths):
-            raise GitSetupError("Há arquivos operacionais ou sensíveis entre as alterações Git. Eles não podem ser incluídos em commit ou stash. Corrija o rastreamento e preserve esses arquivos antes de atualizar.")
+        protected = [path for path in paths if _update_sensitive_path(path)]
+        eligible = [path for path in paths if not _update_sensitive_path(path)]
         origin = bool(_git_remote_url(root, "origin"))
         choice = None
         if paths:
             alert(f"Há {len(paths)} caminho(s) com alterações locais; escolha como preservá-las antes da atualização.")
             for path in paths: note(path)
+            if protected:
+                alert("Alterações operacionais ou potencialmente sensíveis permanecerão locais e não entrarão no novo commit ou stash. O merge só prosseguirá se o Git puder preservá-las; um push também pode publicar commits anteriores.")
             options = (["Salvar em commit e publicar no origin"] if origin else []) + ["Salvar apenas em commit", "Guardar temporariamente em stash"]
-            choice = flow_choice("Alterações locais", options, "Guardar temporariamente em stash")
-            if choice is None: note("Atualização cancelada; alterações locais preservadas."); return
+            while True:
+                choice = flow_choice("Alterações locais", options, "Guardar temporariamente em stash")
+                if choice is None: note("Atualização cancelada; alterações locais preservadas."); return
+                if "commit" not in choice.casefold() or eligible: break
+                alert("Não há alterações versionáveis para um commit. Escolha stash para preservar os arquivos locais durante a atualização ou cancele.")
         note("Buscando somente a branch main do upstream.")
         _git(root, ["fetch", "--no-tags", "upstream", "+refs/heads/main:refs/remotes/upstream/main"], timeout=180)
         if choice and "commit" in choice.casefold():
             message = prompt("Mensagem do commit [X = cancelar]: ").strip()
             if not message or message.casefold() == "x": note("Atualização cancelada; alterações locais preservadas."); return
-            _git(root, ["add", "-A"])
-            staged = _git(root, ["diff", "--cached", "--name-only", "-z"]).stdout.split("\0")
-            if any(_update_sensitive_path(path) for path in staged if path):
-                raise GitSetupError("Arquivos operacionais ou sensíveis entraram na área de preparação. Nenhum commit foi criado; revise a área de preparação.")
-            _git(root, ["commit", "-m", message], timeout=180)
+            targets = [":(literal)" + path for path in eligible]
+            _git(root, ["add", "-A", "--", *targets])
+            _git(root, ["commit", "--only", "-m", message, "--", *targets], timeout=180)
             if "publicar" in choice:
                 _git(root, ["push", "origin", f"HEAD:refs/heads/{branch}"], timeout=180)
                 result(True, "Commit publicado no origin.")
-        elif choice:
+        elif choice and eligible:
+            staged = _git(root, ["diff", "--cached", "--name-only", "-z"]).stdout.split("\0")
+            if any(_update_sensitive_path(path) for path in staged if path):
+                raise GitSetupError("Há arquivos operacionais ou sensíveis na área de preparação; o stash do Git poderia incluí-los. Retire-os da preparação preservando os arquivos e tente novamente.")
             previous = _git(root, ["rev-parse", "--verify", "refs/stash"], allow_failure=True).stdout.strip()
-            _git(root, ["stash", "push", "--include-untracked", "--message", "onmyoji-update-temporario"], timeout=180)
+            _git(root, ["stash", "push", "--include-untracked", "--message", "onmyoji-update-temporario", "--", *[":(literal)" + path for path in eligible]], timeout=180)
             stash_id = _git_output(root, ["rev-parse", "--verify", "refs/stash"])
             if stash_id == previous:
                 raise GitSetupError("O Git não criou um novo stash; as alterações locais permanecem no lugar.")
-            if _git(root, ["status", "--porcelain=v1", "--untracked-files=all"]).stdout:
+            if not protected and _git(root, ["status", "--porcelain=v1", "--untracked-files=all"]).stdout:
                 raise GitSetupError(f"Há alterações que não puderam ser guardadas, possivelmente em submódulos. O stash {stash_id} foi preservado; restaure-o manualmente antes de continuar.")
         note("Mesclando upstream/main na branch atual.")
         merged = _git(root, ["merge", "--no-edit", "upstream/main"], allow_failure=True, timeout=180)
         if merged.returncode:
             detail = _git_detail(merged) or "O merge não foi concluído."
-            raise GitSetupError(detail + " Resolva ou aborte o merge pelo Git." + (" O stash temporário foi preservado; restaure-o após concluir o merge." if stash_id else ""))
+            raise GitSetupError(detail + " Confira o estado do Git antes de resolver ou abortar um eventual merge." + (" O stash temporário foi preservado; restaure-o após concluir o merge." if stash_id else ""))
         if stash_id:
             if _git_output(root, ["rev-parse", "--verify", "refs/stash"]) != stash_id:
                 raise GitSetupError(f"O stash temporário {stash_id} foi preservado; a pilha mudou e sua restauração deve ser feita manualmente.")
