@@ -988,6 +988,8 @@ class SystemSetupTests(unittest.TestCase):
             self.assertIn('model_reasoning_effort = "high"', codex)
             self.assertIn('[sandbox_workspace_write]', codex)
             self.assertNotIn("project_directory", codex)
+            registration = json.loads((root / "configs" / "mcp" / "codex-registration.json").read_text(encoding="utf-8"))
+            self.assertTrue(registration["pending"])
 
     def test_invalid_project_path_does_not_replace_saved_system_settings(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

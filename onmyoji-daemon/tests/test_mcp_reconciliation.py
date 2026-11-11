@@ -26,6 +26,16 @@ def test_pending_state_is_consumed_only_after_successful_reconciliation(tmp_path
     assert state.reconcile_if_pending(registration) is True
     assert registration.calls == 1 and mcp_reconciliation_pending(tmp_path) is False
     assert state.reconcile_if_pending(registration) is False
+    assert registration.calls == 2
+
+
+def test_synchronized_marker_does_not_skip_real_registration_check(tmp_path):
+    state = McpReconciliation(tmp_path)
+    state.mark_synchronized()
+    registration = Registration()
+
+    assert state.reconcile_if_pending(registration) is False
+    assert registration.calls == 1
 
 
 def test_failed_reconciliation_keeps_state_pending_for_the_next_gateway_call(tmp_path):

@@ -66,16 +66,20 @@ class McpReconciliation:
             self._write(False)
 
     def reconcile_if_pending(self, registration: ReconciliableRegistration) -> bool:
-        """Reconcilia uma única vez e preserva a pendência em caso de falha."""
+        """Confere o registro real a cada abertura e preserva a pendência em falhas.
+
+        O marcador reduz apenas escrita de estado: não é prova de que um
+        atualizador ou restauração não removeu a seção MCP do ``config.toml``.
+        """
         with self._lock():
-            if not mcp_reconciliation_pending(self.root):
-                return False
+            pending = mcp_reconciliation_pending(self.root)
             try:
                 registration.reconcile()
             except Exception as error:
                 raise McpReconciliationError("Não foi possível reconciliar o registro MCP do Codex CLI.") from error
-            self._write(False)
-            return True
+            if pending:
+                self._write(False)
+            return pending
 
     def _write(self, pending: bool) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

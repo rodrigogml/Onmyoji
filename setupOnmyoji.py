@@ -33,6 +33,7 @@ from onmyoji_daemon.codex_capabilities import CapabilitySet, load_profile_capabi
 from onmyoji_daemon.shikigami_agents import ShikigamiAgentMaterializationError, ShikigamiAgentMaterializer
 from onmyoji_daemon.instance import telegram_configuration_path
 from onmyoji_daemon.mcp.configuration import McpConfiguration
+from onmyoji_daemon.mcp.reconciliation import McpReconciliation, McpReconciliationError
 from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialResolver
 from onmyoji_daemon.mcp.eccovox import EccoVoxError, EccoVoxService
 from onmyoji_daemon import runtime as python_runtime
@@ -666,7 +667,10 @@ def save_system(root: Path, data: dict[str, object], validate: bool = True) -> t
         system.write_text(render_system(data), encoding="utf-8", newline="\n")
         codex.write_text(replace_block(old_codex or "", SYSTEM_BEGIN, SYSTEM_END, render_codex_system(data)), encoding="utf-8", newline="\n")
         tomllib.loads(system.read_text(encoding="utf-8")); tomllib.loads(codex.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as error:
+        # O arquivo de configuração do Codex também armazena a seção MCP.
+        # Qualquer regravação precisa solicitar uma reconciliação posterior.
+        McpReconciliation(root).mark_pending()
+    except (OSError, tomllib.TOMLDecodeError, McpReconciliationError) as error:
         if old_system is None: system.unlink(missing_ok=True)
         else: system.write_text(old_system, encoding="utf-8", newline="\n")
         if old_codex is None: codex.unlink(missing_ok=True)
