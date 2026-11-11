@@ -1337,3 +1337,37 @@ def test_telegram_agent_test_uses_instance_python_under_dedicated_account(tmp_pa
     assert len(tests) == 1
     assert tests[0][0] == "isolado"
     assert tests[0][1][0] == str(runtime)
+
+
+def test_daemon_wizard_restarts_system_service_with_sudo_confirmation(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    project = tmp_path / "onmyoji-daemon"
+    project.mkdir()
+    (project / "setupDaemon.py").touch()
+    daemon = tmp_path / "configs" / "daemon"
+    daemon.mkdir(parents=True)
+    (daemon / "daemon.toml").write_text('[app_server]\nenabled = true\n', encoding="utf-8")
+    (daemon / "service.json").write_text('{"scope": "system"}', encoding="utf-8")
+    real_os = MODULE.os
+    class LinuxOs:
+        name = "posix"
+        def geteuid(self): return 1000
+        def __getattr__(self, name): return getattr(real_os, name)
+    calls = []
+    answers = iter(["w", "n", "s", "", "s", "s", "x"])
+    def run(args, **_kwargs):
+        calls.append(args)
+        output = '[{"label":"Runtime Python do daemon","state":"ok"}]' if "daemon-validation-json" in args else "ok"
+        return subprocess.CompletedProcess(args, 0, stdout=output, stderr="")
+    monkeypatch.setattr(MODULE, "os", LinuxOs())
+    monkeypatch.setattr(MODULE, "load_execution_profile", lambda _root: {})
+    monkeypatch.setattr(MODULE, "execution_diagnostics", lambda *_args: [])
+    monkeypatch.setattr(MODULE.python_runtime, "python", lambda _root: tmp_path / "venv" / "bin" / "python")
+    monkeypatch.setattr(MODULE, "prompt", lambda _label: next(answers))
+    monkeypatch.setattr(MODULE.subprocess, "run", run)
+
+    MODULE.daemon_menu(tmp_path)
+
+    restart = [args for args in calls if "service-restart" in args]
+    assert len(restart) == 1
+    assert "--use-sudo" in restart[0]

@@ -2482,6 +2482,17 @@ def daemon_menu(root: Path) -> None:
         result(completed.returncode == 0, detail)
         return completed.returncode == 0
 
+    def privileged_service_action(action: str, extra: list[str] | None = None) -> bool:
+        extras: list[str] = list(extra or [])
+        if os.name != "nt":
+            try: scope = json.loads((root / "configs" / "daemon" / "service.json").read_text(encoding="utf-8")).get("scope", "system")
+            except (OSError, ValueError): scope = "system"
+            if scope == "system" and hasattr(os, "geteuid") and os.geteuid() != 0:
+                note("Esta operação exige sudo. A senha será solicitada pelo sistema, sem ser lida ou armazenada pelo Onmyōji.")
+                if prompt("Continuar? [s/N]: ").strip().casefold() not in {"s", "sim"}: result(False, "Operação cancelada."); return False
+                extras.append("--use-sudo")
+        return lifecycle(action, extras)
+
     def install_daemon() -> bool:
         """Prepara, configura e valida o runtime escolhido pelo usuário."""
         print()
@@ -2585,7 +2596,7 @@ def daemon_menu(root: Path) -> None:
         note(f"{reason} só entra em vigor no gateway após reiniciar o daemon.")
         answer = prompt("O daemon está em execução; reiniciar agora para efetivar a alteração? [S/n]: ").strip().casefold()
         if answer not in {"", "s", "sim"}: result(False, f"{reason} foi salva, mas o gateway continua com a configuração anterior até o próximo reinício."); return
-        if service_installed(): lifecycle("service-restart")
+        if service_installed(): privileged_service_action("service-restart")
         elif lifecycle("process-stop"): lifecycle("process-start")
 
     def service_running() -> bool:
@@ -2652,11 +2663,11 @@ def daemon_menu(root: Path) -> None:
                 result(False, "Configuração salva e testada, mas pendente de aplicação. Reinicie o daemon quando desejar concluir o wizard.")
                 return
             if service_installed():
-                if not lifecycle("service-restart"): return
+                if not privileged_service_action("service-restart"): return
             elif lifecycle("process-stop"):
                 if not lifecycle("process-start"): return
             else: return
-        elif not lifecycle("service-start" if service_installed() else "process-start"):
+        elif not (privileged_service_action("service-start") if service_installed() else lifecycle("process-start")):
             return
         if not wait_for_daemon_ready():
             result(False, "O comando de início foi aceito, mas o daemon não respondeu dentro de 10 segundos. Consulte Operação do daemon.")
@@ -2758,17 +2769,6 @@ def daemon_menu(root: Path) -> None:
                 return ServiceLimits.from_mapping({"cpu_quota_percent": cpu, "memory_high_bytes": high, "memory_max_bytes": maximum, "memory_swap_max_bytes": swap, "tasks_max": tasks, "io_weight": weight, "private_devices": raw in {"s", "sim"}})
             except ValueError as error:
                 result(False, str(error)); return None
-
-        def privileged_service_action(action: str, extra: list[str] | None = None) -> bool:
-            extras: list[str] = list(extra or [])
-            if os.name != "nt":
-                try: scope = json.loads((root / "configs" / "daemon" / "service.json").read_text(encoding="utf-8")).get("scope", "system")
-                except (OSError, ValueError): scope = "system"
-                if scope == "system" and hasattr(os, "geteuid") and os.geteuid() != 0:
-                    note("Esta operação exige sudo. A senha será solicitada pelo sistema, sem ser lida ou armazenada pelo Onmyōji.")
-                    if prompt("Continuar? [s/N]: ").strip().casefold() not in {"s", "sim"}: result(False, "Operação cancelada."); return False
-                    extras.append("--use-sudo")
-            return lifecycle(action, extras)
 
         while True:
             screen("Serviço do sistema operacional", "O daemon será iniciado e controlado pelo sistema operacional")
@@ -3437,9 +3437,9 @@ def daemon_menu(root: Path) -> None:
         if daemon_running():
             answer = prompt("O daemon está em execução; reiniciar agora para efetivar a alteração? [S/n]: ").strip().casefold()
             if answer not in {"", "s", "sim"}: result(False, "Gateway habilitado, mas pendente de reinício. Execute o wizard novamente após reiniciá-lo."); return
-            restarted = lifecycle("service-restart") if service_installed() else (lifecycle("process-stop") and lifecycle("process-start"))
+            restarted = privileged_service_action("service-restart") if service_installed() else (lifecycle("process-stop") and lifecycle("process-start"))
             if not restarted: return
-        elif not lifecycle("service-start" if service_installed() else "process-start"):
+        elif not (privileged_service_action("service-start") if service_installed() else lifecycle("process-start")):
             return
         if not wait_for_daemon_ready() or not wait_for_telegram_ready():
             result(False, "O daemon iniciou, mas o gateway Telegram não respondeu em até 15 segundos. Consulte o diagnóstico do Telegram."); return
@@ -3893,7 +3893,7 @@ def daemon_menu(root: Path) -> None:
             if not installed():
                 result(False, "Prepare o daemon em 'Validar runtime do daemon' e execute este wizard novamente."); return
             if prompt("Iniciar o daemon agora para configurar a publicação? [S/n]: ").strip().casefold() not in {"", "s", "sim"}: return
-            if not lifecycle("service-start" if service_installed() else "process-start") or not wait_for_daemon_ready():
+            if not (privileged_service_action("service-start") if service_installed() else lifecycle("process-start")) or not wait_for_daemon_ready():
                 result(False, "O daemon não respondeu. Consulte o diagnóstico (!)."); return
         registered = publication_command("list-services")
         try: names = {item["name"] for item in json.loads(registered.stdout or "[]") if isinstance(item, dict) and "name" in item}
