@@ -41,6 +41,12 @@ recebem `pagina` e `tamanho_pagina` (máximo 50) e retornam `paginacao` com
 `proxima_pagina`. Defina `incluir_dados_omie: true` apenas quando os campos
 nativos forem indispensáveis para auditoria.
 
+As consultas `omie.financeiro.movimentos.listar_por_*` retornam, em cada item,
+`conciliacao.conciliado`. O valor é `true` quando a Omie informa a data de
+conciliação e `false` quando não a informa; não use o status financeiro do
+título para deduzir a conciliação. Quando conciliado, `conciliacao` também
+traz `data`, `hora` e `usuario`.
+
 A validação e normalização são executadas antes de ler credenciais ou fazer
 HTTP. Erros retornam `error.code`, mensagem e detalhes sanitizados, incluindo
 o campo e sugestão quando aplicável. Escritas nunca sofrem retry automático;
