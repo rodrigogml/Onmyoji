@@ -137,8 +137,11 @@ def test_change_during_run_only_changes_next_snapshot(repository):
     path.write_text(event_toml(prompt="Antigo"), encoding="utf-8")
     store.reconcile(); now[0] += timedelta(minutes=1); store.materialize()
     active = store.claim(); assert store.begin(active["id"])
+    now[0] += timedelta(minutes=1); store.materialize()
+    assert store.summary() == {"pending": 1, "running": 1}
     path.write_text(event_toml(prompt="Novo"), encoding="utf-8")
     store.reconcile(force=True)
+    assert store.summary() == {"discarded": 1, "running": 1}
     now[0] += timedelta(minutes=1); store.materialize()
     store.finish(active["id"], "completed")
     following = store.claim()

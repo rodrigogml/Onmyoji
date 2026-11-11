@@ -99,6 +99,8 @@ class TaskRepository:
                 except (OSError, UnicodeError, tomllib.TOMLDecodeError, RpcError) as error:
                     self._record_invalid(identifier, mtime, getattr(error, "code", "invalid_toml"))
                     continue
+                if row:
+                    self._discard_pending(identifier, "definition_changed")
                 revision = row["revision"] + 1 if row else 1
                 next_run = iso(initial_at(value["time"], now)) if value["enabled"] else None
                 self.db.execute("INSERT OR REPLACE INTO definitions(id,revision,document,enabled,created_at,updated_at,next_run_at,deleted_at,source_mtime_ns,diagnosis,source_present) VALUES (?,?,?,?,?,?,?,NULL,?,NULL,1)", (identifier, revision, json.dumps(value, ensure_ascii=False), int(value["enabled"]), value["created_at"], iso(now), next_run, mtime))

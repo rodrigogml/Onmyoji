@@ -1,16 +1,16 @@
 # Validação de eventos e agendamentos
 
-Auditoria da implementação em 2026-11-10. O contrato e os procedimentos de uso estão em [eventos e agendamentos](eventos-agendamentos.md). Esta matriz relaciona os critérios de entrega ao código e às verificações executáveis; os checklists do rascunho antigo são históricos.
+Auditoria da implementação atualizada em 2026-11-11. O contrato e os procedimentos de uso estão em [eventos e agendamentos](eventos-agendamentos.md). Esta matriz relaciona os critérios de entrega ao código e às verificações executáveis; os checklists do rascunho antigo são históricos.
 
 Evidências da versão consolidada:
 
-- Windows, suíte completa: 3.245 testes e 301 subtestes aprovados, 40 ignorados, zero falhas; 458,15 segundos. Dois avisos existentes dizem respeito a `record_property` no formato JUnit xunit2. Relatório local: `tmp/events-acceptance.xml`.
-- Linux nativo, baseline `b84d522`: 75 testes aprovados, zero falhas, erros ou ignorados; 118,95 segundos. JUnit preservado localmente em `tmp/events-posix-vm/linux-release.xml`.
-- Validador do evento: 100% das instruções e dos ramos cobertos, com 28 testes de contrato aprovados; a rodada conjunta com a CLI aprovou 35 testes.
+- Windows, suíte completa: 3.246 testes e 301 subtestes aprovados, 46 ignorados, zero falhas; 179,46 segundos. Dois avisos existentes dizem respeito a `record_property` no formato JUnit xunit2. Relatório local: `tmp/events-full-latest.xml`.
+- A evidência Linux do baseline anterior não foi repetida nesta atualização; os testes de permissões POSIX permanecem explicitamente restritos ao sistema compatível.
+- Contrato, gateway HTTP, recuperação, agendador, CLI e setup: 186 testes e 18 subtestes focados aprovados antes da rodada integral.
+- Validador do evento: 29 testes aprovados e 100% das instruções e ramos cobertos.
 - Retenção: sete testes focados aprovados e verificação dos dois watchers com relógio monotônico em 0,5 segundo, confirmando limpeza já na primeira iteração.
 - Publicação de skills: 24 testes focados aprovados após corrigir um bloqueio transitório Windows detectado pela suíte completa. O materializador usa a publicação atômica com tolerância limitada já existente no projeto; teste de injeção comprova recuperação de `WinError 5` durante reparo da pasta gerenciada.
 - Agendador TOML e setup: 139 testes e 18 subtestes focados aprovados em 7,86 segundos, incluindo contrato temporal, observação de arquivos, ações, HTTP integrado, CLI somente leitura e as dez colunas do setup.
-- Wheel construído e importado diretamente do arquivo: schema carregado por `importlib.resources` e evento validado; 228 arquivos Python/JSON comparados à fonte. SHA-256: `bc7b001acba9263014691fb2d6e4c2a0dfc054957aa18c8f41d7df7ad173907e`.
 
 ## Critérios verificados
 
@@ -35,8 +35,8 @@ Os testes citados sem caminho completo pertencem a `onmyoji-daemon/tests/`. A su
 Windows, na raiz do repositório, com o Python e as dependências do projeto:
 
 ```text
-python -B -m pytest -q --tb=short --basetemp=tmp/pytest-events-acceptance --junitxml=tmp/events-acceptance.xml
-python -B -m pytest onmyoji-daemon/tests/test_task_scheduler.py -q --tb=short --basetemp=tmp/pytest-events-scheduler-current --junitxml=tmp/events-scheduler-current.xml
+python -B -m pytest -q --tb=short --basetemp=tmp/pytest-full-events-latest --junitxml=tmp/events-full-latest.xml
+python -B -m pytest onmyoji-daemon/tests/test_task_scheduler.py -q --tb=short --basetemp=tmp/pytest-task-scheduler
 ```
 
 Cobertura do validador, incluindo ramos:
