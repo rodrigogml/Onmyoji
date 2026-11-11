@@ -36,6 +36,11 @@ class FinanceSpec:
     account_required: bool = False
     collect_pages: bool = False
 
+    @property
+    def paginated(self) -> bool:
+        """Somente listagens por página recebem paginação do agente."""
+        return not self.writes and self.kind == "list" and not self.collect_pages
+
 
 def _list_specs(resource: str, legacy: str, label: str) -> list[FinanceSpec]:
     reconciliation_note = (
@@ -58,7 +63,7 @@ SPECS: list[FinanceSpec] = [
     FinanceSpec("omie.financeiro.departamentos.consultar", "departments_get", "Consulta um departamento pelo código.", kind="get"),
     FinanceSpec("omie.financeiro.projetos.listar", "projects_list", "Lista projetos para classificação financeira."),
     FinanceSpec("omie.financeiro.projetos.consultar", "projects_get", "Consulta um projeto pelo identificador.", kind="get"),
-    FinanceSpec("omie.financeiro.tipos_documento.listar", "document_types_list", "Lista tipos de documento aceitos pela Omie."),
+    FinanceSpec("omie.financeiro.tipos_documento.listar", "document_types_list", "Retorna o catálogo completo de tipos de documento em uma única chamada, sem paginação e sem filtros. Chame com {} quando houver um único perfil; não envie pagina nem tamanho_pagina.", kind="catalog"),
 ]
 SPECS += _list_specs("movimentos", "financial_movements_list", "movimentos financeiros")
 SPECS += [
@@ -154,7 +159,7 @@ def _schema(spec: FinanceSpec, profiles: list[dict[str, str]]) -> dict[str, Any]
         properties["dados"] = data_schema
         properties["confirmar"] = {"type": "boolean", "const": True, "description": "Deve ser true para confirmar a escrita."}
         required = ["dados", "confirmar"]
-    else:
+    elif spec.kind != "catalog":
         filters: dict[str, Any] = {}
         if spec.period:
             filters = {"data_inicial": date, "data_final": date}
@@ -172,7 +177,7 @@ def _schema(spec: FinanceSpec, profiles: list[dict[str, str]]) -> dict[str, Any]
         properties.update({"filtros": {"type": "object", "properties": filters, "required": ["data_inicial", "data_final"] if spec.period else [], "additionalProperties": False}})
         if spec.account_required:
             properties["filtros"]["required"].append("conta_corrente_id")
-        if not spec.collect_pages:
+        if spec.paginated:
             properties.update({"pagina": {"type": "integer", "minimum": 1, "default": 1}, "tamanho_pagina": {"type": "integer", "minimum": 1, "maximum": 50, "default": 50}})
     if len(profiles) > 1:
         properties["profile"] = {"type": "string", "enum": [profile["name"] for profile in profiles]}; required.append("profile")
@@ -242,9 +247,18 @@ class OmieFinanceFacade:
             if spec.kind == "transfer":
                 names = {"codigo_integracao": "integration_id", "conta_origem_id": "source_account_id", "conta_destino_id": "destination_account_id", "data": "date", "valor": "amount", "categoria_codigo": "category_code", "numero_documento": "document_number", "observacao": "note", "projeto_id": "project_id", "departamentos": "departments"}
                 return {"body": self._map(data, names)}
+        if not spec.paginated:
+            for field in ("pagina", "tamanho_pagina"):
+                if field in arguments:
+                    _invalid(field, "esta consulta não aceita paginação; remova pagina e tamanho_pagina.")
+        if spec.kind == "catalog":
+            unknown = set(arguments) - {"profile", "incluir_dados_omie"}
+            if unknown:
+                _invalid(sorted(unknown)[0], "este catálogo não aceita filtros; chame com {} ou somente os controles publicados de perfil e auditoria.")
+            return {"params": {}}
         filters = _object(arguments, "filtros")
         native = spec.legacy in {"financial_movements_list", "account_transactions_list"}
-        params = _page(arguments, native=native)
+        params = _page(arguments, native=native) if spec.paginated else {}
         if spec.period:
             expected = {"data_inicial", "data_final"}
             if native:

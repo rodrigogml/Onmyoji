@@ -19,6 +19,16 @@ class Configuration:
 PERIOD = {"data_inicial": "01/11/2026", "data_final": "30/11/2026"}
 ACCOUNT_QUERY = "omie.financeiro.lancamentos_conta.listar_por_periodo"
 RECONCILIATION_QUERY = "omie.financeiro.movimentos.listar_para_conciliacao"
+DOCUMENT_CATALOG = "omie.financeiro.tipos_documento.listar"
+DETAIL_QUERIES = [
+    ("contas_correntes", {"id": 12}, "bank_accounts", "ConsultarContaCorrente", {"nCodCC": 12}),
+    ("categorias", {"codigo": "1.01"}, "categories", "ConsultarCategoria", {"codigo": "1.01"}),
+    ("departamentos", {"codigo": "D1"}, "departments", "ConsultarDepartamento", {"codigo": "D1"}),
+    ("projetos", {"id": 12}, "projects", "ConsultarProjeto", {"codigo": 12}),
+    ("contas_pagar", {"id": 12}, "payables", "ConsultarContaPagar", {"codigo_lancamento_omie": 12}),
+    ("contas_receber", {"id": 12}, "receivables", "ConsultarContaReceber", {"codigo_lancamento_omie": 12}),
+    ("lancamentos_conta", {"id": 12}, "account_transactions", "ConsultaLancCC", {"nCodLanc": 12}),
+]
 
 
 def transaction(identifier, account=12):
@@ -62,6 +72,110 @@ def test_finance_tools_publish_closed_schemas_in_portuguese(tmp_path):
     assert "omie.financeiro.movimentos.listar_por_periodo" not in {tool["name"] for tool in tools}
     with pytest.raises(Exception):
         Draft202012Validator(payment["input_schema"]).validate({"filtros": {"dtPagInicial": "01/11/2026", "dtPagFinal": "30/11/2026"}})
+
+
+@pytest.mark.parametrize("multiple_profiles", [False, True])
+def test_document_catalog_schema_requires_no_filters_or_pagination(tmp_path, multiple_profiles):
+    profiles = [{"name": "empresa", "description": "ERP"}]
+    if multiple_profiles:
+        profiles.append({"name": "filial", "description": "ERP filial"})
+    tool = next(tool for tool in OmieFinanceFacade(Configuration(tmp_path)).definitions(profiles) if tool["name"] == DOCUMENT_CATALOG)
+    schema = tool["input_schema"]
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+    assert set(schema["properties"]) == ({"incluir_dados_omie", "profile"} if multiple_profiles else {"incluir_dados_omie"})
+    arguments = {"profile": "filial"} if multiple_profiles else {}
+    validator.validate(arguments)
+    validator.validate({**arguments, "incluir_dados_omie": True})
+    assert validator.is_valid({}) is not multiple_profiles
+    for extra in ({"filtros": {}}, {"pagina": 1}, {"tamanho_pagina": 50}):
+        assert not validator.is_valid({**arguments, **extra})
+    if multiple_profiles:
+        assert not validator.is_valid({"profile": "desconhecido"})
+    assert "sem paginação" in tool["description"].lower()
+
+
+@pytest.mark.parametrize("arguments", [{}, {"incluir_dados_omie": True}])
+def test_document_catalog_reaches_omie_once_with_only_an_empty_code(tmp_path, monkeypatch, arguments):
+    rows = [{"codigo": "FAT", "descricao": "Fatura"}, {"codigo": "NFS", "descricao": "Nota Fiscal de Serviço"}]
+    response = {"tipo_documento_cadastro": rows}
+    profile, request = mock_remote(monkeypatch, [deepcopy(response)])
+
+    result = OmieFinanceFacade(Configuration(tmp_path)).call(DOCUMENT_CATALOG, arguments, "empresa")
+
+    profile.assert_called_once_with("empresa")
+    request.assert_called_once_with({}, {}, "document_types", "PesquisarTipoDocumento", {"codigo": ""}, retries=None)
+    assert result["dados"] == rows
+    assert "paginacao" not in result
+    if arguments.get("incluir_dados_omie"):
+        assert result["dados_omie"] == response
+    else:
+        assert "dados_omie" not in result
+
+
+@pytest.mark.parametrize("arguments", [{"filtros": {}}, {"filtros": {"codigo": "FAT"}}, {"params": {}}, {"codigo": "FAT"}])
+def test_document_catalog_rejects_unsupported_arguments_before_access(tmp_path, monkeypatch, arguments):
+    profile, request = mock_remote(monkeypatch, [])
+
+    with pytest.raises(OmieError) as error:
+        OmieFinanceFacade(Configuration(tmp_path)).call(DOCUMENT_CATALOG, arguments, "empresa")
+
+    assert error.value.code == "invalid_parameter"
+    profile.assert_not_called()
+    request.assert_not_called()
+
+
+@pytest.mark.parametrize("resource,filters,endpoint,method,native", DETAIL_QUERIES, ids=[case[0] for case in DETAIL_QUERIES])
+def test_individual_queries_publish_no_pagination_and_send_only_identifiers(tmp_path, monkeypatch, resource, filters, endpoint, method, native):
+    name = f"omie.financeiro.{resource}.consultar"
+    facade = OmieFinanceFacade(Configuration(tmp_path))
+    tool = next(tool for tool in facade.definitions([{"name": "empresa", "description": "ERP"}]) if tool["name"] == name)
+    validator = Draft202012Validator(tool["input_schema"])
+    arguments = {"filtros": filters}
+    validator.validate(arguments)
+    for extra in ({"pagina": 1}, {"tamanho_pagina": 50}):
+        assert not validator.is_valid({**arguments, **extra})
+    response = {"codigo": 12}
+    _, request = mock_remote(monkeypatch, [response])
+
+    result = facade.call(name, arguments, "empresa")
+
+    request.assert_called_once_with({}, {}, endpoint, method, native, retries=None)
+    assert result["dados"] == [response]
+    assert "paginacao" not in result
+
+
+@pytest.mark.parametrize("name,arguments", [
+    (DOCUMENT_CATALOG, {}),
+    (RECONCILIATION_QUERY, {"filtros": {**PERIOD, "conta_corrente_id": 12}}),
+] + [(f"omie.financeiro.{resource}.consultar", {"filtros": filters}) for resource, filters, *_ in DETAIL_QUERIES])
+@pytest.mark.parametrize("pagination", [{"pagina": 1}, {"tamanho_pagina": 50}, {"tamanho_pagina": 100}])
+def test_unpaginated_queries_reject_public_pagination_before_access(tmp_path, monkeypatch, name, arguments, pagination):
+    profile, request = mock_remote(monkeypatch, [])
+
+    with pytest.raises(OmieError, match="não aceita paginação") as error:
+        OmieFinanceFacade(Configuration(tmp_path)).call(name, {**arguments, **pagination}, "empresa")
+
+    assert error.value.code == "invalid_parameter"
+    profile.assert_not_called()
+    request.assert_not_called()
+
+
+def test_paginated_directory_listing_still_accepts_and_forwards_pagination(tmp_path, monkeypatch):
+    name = "omie.financeiro.departamentos.listar"
+    arguments = {"pagina": 2, "tamanho_pagina": 2}
+    rows = [{"codigo": "D3", "descricao": "Terceiro"}, {"codigo": "D4", "descricao": "Quarto"}]
+    response = {"pagina": 2, "total_de_paginas": 3, "total_de_registros": 5, "departamentos": rows}
+    facade = OmieFinanceFacade(Configuration(tmp_path))
+    schema = next(tool["input_schema"] for tool in facade.definitions([{"name": "empresa", "description": "ERP"}]) if tool["name"] == name)
+    Draft202012Validator(schema).validate(arguments)
+    _, request = mock_remote(monkeypatch, [response])
+
+    result = facade.call(name, arguments, "empresa")
+
+    request.assert_called_once_with({}, {}, "departments", "ListarDepartamentos", {"pagina": 2, "registros_por_pagina": 2}, retries=None)
+    assert result["dados"] == rows
+    assert result["paginacao"] == {"pagina": 2, "total_paginas": 3, "total_registros": 5, "proxima_pagina": 3}
 
 
 def test_account_filter_collects_native_pages_before_public_pagination(tmp_path, monkeypatch):

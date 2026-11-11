@@ -37,9 +37,27 @@ operação; o servidor já é pré-aprovado na configuração do Codex.
 As tools financeiras usam `filtros` nas leituras e `dados` nas escritas. Cada
 consulta por período aceita exclusivamente `data_inicial` e `data_final` para
 sua finalidade; não use nomes internos da Omie como `dtPagInicial`. Listagens
-recebem `pagina` e `tamanho_pagina` (máximo 50) e retornam `paginacao` com
+paginadas recebem `pagina` e `tamanho_pagina` (máximo 50) e retornam `paginacao` com
 `proxima_pagina`. Defina `incluir_dados_omie: true` apenas quando os campos
 nativos forem indispensáveis para auditoria.
+
+### Tipos de documento: catálogo sem paginação
+
+`omie.financeiro.tipos_documento.listar` retorna o catálogo completo em uma
+única chamada. Com um único perfil habilitado, use argumentos `{}`. Com vários
+perfis, informe somente `profile`; `incluir_dados_omie` continua opcional para
+auditoria. Não envie `pagina`, `tamanho_pagina` nem `filtros`.
+
+O MCP chama `PesquisarTipoDocumento` com `codigo` vazio, conforme o
+[contrato oficial de tipos de documento](https://api.omie.com.br/docs/apis/geral/tiposdoc).
+O retorno normalizado contém os tipos em `dados`, sem `paginacao` nem próxima
+página. O catálogo não recebe valores padrão de paginação internamente.
+
+Consultas individuais terminadas em `.consultar` também não recebem
+`pagina` nem `tamanho_pagina`. A consulta para conciliação reúne suas páginas
+internamente. Esses métodos recusam parâmetros de paginação antes de acessar
+credenciais ou HTTP, com orientação para removê-los; reduzir o tamanho de
+100 para 50 não é uma correção para uma operação sem paginação.
 
 ### Conta corrente e período
 
@@ -116,6 +134,7 @@ repetir; reduzir o intervalo de datas não corrige um campo rejeitado.
 Exemplos com um único perfil habilitado:
 
 ```json
+{"tool":"omie.financeiro.tipos_documento.listar","arguments":{}}
 {"tool":"omie.customers_list","arguments":{"params":{"page":1,"page_size":50,"clientesFiltro":{"cnpj_cpf":"012.345.678-90"}}}}
 {"tool":"omie.financeiro.lancamentos_conta.listar_por_periodo","arguments":{"filtros":{"conta_corrente_id":123,"data_inicial":"01/11/2026","data_final":"30/11/2026"},"pagina":1,"tamanho_pagina":50}}
 {"tool":"omie.financeiro.transferencias.criar","arguments":{"confirmar":true,"dados":{"codigo_integracao":"TR-20261111-001","conta_origem_id":123,"conta_destino_id":456,"data":"11/11/2026","valor":100.00,"categoria_codigo":"0.01.02","observacao":"Transferência entre contas da empresa"}}}
@@ -129,7 +148,8 @@ gera os reflexos de débito e crédito a partir dessa única inclusão, portanto
 agente não deve criar dois lançamentos manuais.
 
 As listagens financeiras paginadas retornam a página solicitada em `dados` e
-indicam a seguinte em `paginacao.proxima_pagina`; a consulta de conciliação
+indicam a seguinte em `paginacao.proxima_pagina`; o catálogo de tipos de documento
+retorna todos os tipos em `dados`, sem paginação, e a consulta de conciliação
 retorna todos os movimentos coletados. As demais listagens retornam uma página
 por chamada em `data`, preservando os campos e metadados nativos. O agente deve
 percorrer as demais páginas quando necessário.
