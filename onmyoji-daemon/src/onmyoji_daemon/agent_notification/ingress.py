@@ -34,7 +34,7 @@ class NotificationIngress:
         if method in {"notification.status", "notification.diagnose"}:
             with self.database_lock:
                 counts = dict(self.database.execute("SELECT COALESCE(execution_state,'pending'),COUNT(*) FROM notification_receipts GROUP BY execution_state").fetchall())
-            checks = {"app_server_enabled": self.settings.app_server_enabled, "telegram_available": bool(self.api), "smtp_configured": bool(configuration["smtp_account"])}
+            checks = {"app_server_enabled": self.settings.app_server_enabled, "telegram_available": bool(self.api), "email_account_per_event": True}
             if method == "notification.diagnose":
                 checks.update(self._notification_diagnose(configuration))
             return {"enabled": configuration["enabled"], "configuration": configuration, "counts": counts, "checks": checks, "execution": self.store.summary()}
@@ -73,7 +73,7 @@ class NotificationIngress:
                 row = self.database.execute("SELECT execution_state,delivery_state,reason FROM notification_receipts WHERE inbox_id=?", (identifier,)).fetchone()
             if row[0] is not None:
                 status = "uncertain" if "uncertain" in {row[0], row[1]} else "completed" if row[0] == "completed" and row[1] == "confirmed" else "failed"
-                return {"event_id": event["event_id"], "received_at": received, "status": status, "execution": row[0], "delivery": row[1], **({"reason": row[2]} if row[2] else {})}
+                return {"event_id": event["event_id"], "received_at": received, "status": status, "result": row[0], "execution": row[0], "delivery": row[1], **({"reason": row[2]} if row[2] else {})}
             if disconnected():
                 raise RpcError("Acompanhamento abandonado; execução aceita continua.", "acceptance_unknown")
             if self.stop_event.wait(0.1):
@@ -88,7 +88,7 @@ class NotificationIngress:
     def _start_notification_http(self):
         from .http import NotificationHttpServer
         configuration = self.notification_configuration.load()
-        self._notification_http = NotificationHttpServer(configuration["port"], self, configuration["max_request_bytes"])
+        self._notification_http = NotificationHttpServer(configuration["port"], self, configuration["max_request_bytes"], configuration["long_limit"])
         self._notification_http.start()
 
     def _stop_notification_http(self):
@@ -134,7 +134,7 @@ class NotificationIngress:
             raise RpcError("Motivo de rejeição inválido.", "invalid_argument")
         self.notification_log.record("transport_rejected", code=code)
 
-    def _notification_destination(self, event, smtp_account=None):
+    def _notification_destination(self, event):
         channel = event["response_channel"]
         if channel["type"] == "telegram":
             if not self.api or not self._channel_registered(channel["value"]):
@@ -151,7 +151,7 @@ class NotificationIngress:
             if not configured.get("smtp"):
                 raise RpcError("Conta sem SMTP.", "smtp_unconfigured")
 
-    def _notification_send(self, channel, text, key, event_id, smtp_account=None):
+    def _notification_send(self, channel, text, key, event_id):
         if channel["type"] == "telegram":
             if not self.api or not self._channel_registered(channel["value"]):
                 return "failed"

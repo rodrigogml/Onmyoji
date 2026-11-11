@@ -117,15 +117,21 @@ class TaskScheduler:
         while not self.stop_event.is_set():
             self.changed.clear()
             try:
-                if time.monotonic() - self._last_reconcile >= 5:
-                    self.repository.reconcile()
-                    self._last_reconcile = time.monotonic()
+                self._reconcile_if_due()
                 self.tick()
                 if time.monotonic() - last_purge >= 86400:
                     self.repository.purge(); last_purge = time.monotonic()
             except Exception:
                 self.last_error = "Falha de manutenção do agendador; consulte estado e histórico."
             self.changed.wait(1)
+
+    def _reconcile_if_due(self):
+        now = time.monotonic()
+        if now - self._last_reconcile < 5:
+            return False
+        self.repository.reconcile()
+        self._last_reconcile = now
+        return True
 
     def start(self):
         self.repository.reconcile()

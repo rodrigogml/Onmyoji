@@ -8,7 +8,7 @@ import pytest
 from onmyoji_daemon.agent_notification.http import NotificationHttpServer
 from onmyoji_daemon.agent_notification.configuration import NotificationConfiguration
 from onmyoji_daemon.rpc import RpcError
-from onmyoji_daemon.task_scheduler.actions import event_action, script_action
+from onmyoji_daemon.task_scheduler.actions import MAX_OUTPUT_BYTES, event_action, script_action
 from onmyoji_daemon.task_scheduler.calendar import instant, iso, latest_due, next_at, validate_rule
 from onmyoji_daemon.task_scheduler.repository import SORT_FIELDS, TaskRepository
 from onmyoji_daemon.task_scheduler.service import TaskScheduler
@@ -40,6 +40,7 @@ value = "9"
 
 def script_toml(path="job.py", *, enabled=True, time=None, timeout=900):
     time = time or 'type = "once"\nat = "2026-11-10T00:00:00Z"'
+    timeout_line = f"timeout_seconds = {timeout}\n" if timeout is not None else ""
     return f'''schema_version = 1
 enabled = {str(enabled).lower()}
 description = "Script"
@@ -52,7 +53,7 @@ created_at = "2026-11-10T00:00:00Z"
 type = "script"
 path = "{path}"
 args = []
-timeout_seconds = {timeout}
+{timeout_line}
 '''
 
 
@@ -99,6 +100,15 @@ def test_toml_is_source_of_truth_and_mtime_avoids_spurious_revision(repository):
     store.reconcile(force=True)
     assert store.get("daily")["revision"] == first["revision"] + 1
     assert store.get("daily")["action"]["event"]["prompt"] == "Alterado"
+
+
+def test_sort_keeps_missing_values_last_and_id_as_stable_tiebreak(repository):
+    store, _now, schedules = repository
+    for identifier in ("zeta", "alpha", "middle"):
+        (schedules / f"{identifier}.toml").write_text(event_toml(enabled=False), encoding="utf-8")
+    store.reconcile()
+    assert [item["id"] for item in store.list(descending=True, limit=20)["items"]] == ["alpha", "middle", "zeta"]
+    assert [item["id"] for item in store.list(sort="expression", descending=True, limit=20)["items"]] == ["alpha", "middle", "zeta"]
 
 
 def test_invalid_file_pauses_definition_and_fix_restores_it(repository):
@@ -193,6 +203,79 @@ def test_script_uses_daemon_python_workspace_path_and_captures_output(tmp_path):
     output = Path(result["stdout"]["path"]).read_text(encoding="utf-8")
     assert state == "completed" and reason is None
     assert str(Path(sys.executable)) in output and output.rstrip().endswith("ok")
+
+
+def test_script_timeout_and_output_limits_are_enforced(tmp_path):
+    root, workspace = tmp_path / "instance", tmp_path / "workspace"
+    root.mkdir(); workspace.mkdir()
+    (workspace / "slow.py").write_text("import time; time.sleep(30)", encoding="utf-8")
+    timeout = {"id": "script-timeout", "snapshot": {"action": {"type": "script", "path": "slow.py", "args": [], "timeout_seconds": 1}}}
+    state, _result, reason = script_action(root, workspace, timeout, threading.Event(), before_dispatch=lambda: True)
+    assert state == "failed" and reason == "process_timeout"
+    count = MAX_OUTPUT_BYTES + 1024
+    (workspace / "output.py").write_text(f"import sys; sys.stdout.buffer.write(b'x'*{count}); sys.stderr.buffer.write(b'y'*{count})", encoding="utf-8")
+    output = {"id": "script-output", "snapshot": {"action": {"type": "script", "path": "output.py", "args": [], "timeout_seconds": 10}}}
+    state, result, reason = script_action(root, workspace, output, threading.Event(), before_dispatch=lambda: True)
+    assert state == "completed" and reason is None
+    for stream in ("stdout", "stderr"):
+        assert result[stream]["bytes"] == count and result[stream]["truncated"]
+        assert Path(result[stream]["path"]).stat().st_size == MAX_OUTPUT_BYTES
+
+
+def test_script_stopped_before_boundary_leaves_reservation_resumable(tmp_path):
+    root, workspace = tmp_path / "instance", tmp_path / "workspace"
+    root.mkdir(); workspace.mkdir()
+    (workspace / "job.py").write_text("print('resumed')", encoding="utf-8")
+    occurrence = {"id": "script-resume", "snapshot": {"action": {"type": "script", "path": "job.py", "args": [], "timeout_seconds": 5}}}
+    stop = threading.Event(); stop.set()
+    begins = []
+    state, result, reason = script_action(root, workspace, occurrence, stop, before_dispatch=lambda: begins.append(True) or True)
+    assert (state, result, reason) == ("failed", None, "service_stopping_before_action")
+    assert not begins and not (workspace / ".onmyoji" / "task-scheduler" / occurrence["id"]).exists()
+    state, result, reason = script_action(root, workspace, occurrence, threading.Event(), before_dispatch=lambda: True)
+    assert state == "completed" and reason is None
+    assert Path(result["stdout"]["path"]).read_text(encoding="utf-8").strip() == "resumed"
+
+
+def test_configurable_script_default_and_workspace_boundary(tmp_path):
+    root, workspace = tmp_path / "instance", tmp_path / "workspace"
+    root.mkdir(); workspace.mkdir()
+    data = root / "data"; (data / "schedules").mkdir(parents=True)
+    (data / "config.toml").write_text("script_timeout_seconds = 7\n", encoding="utf-8")
+    (workspace / "job.py").write_text("print('ok')", encoding="utf-8")
+    (data / "schedules" / "script.toml").write_text(script_toml(timeout=None), encoding="utf-8")
+    scheduler = TaskScheduler(root, data, workspace=workspace)
+    try:
+        scheduler.repository.reconcile()
+        assert scheduler.repository.get("script")["action"]["timeout_seconds"] == 7
+        outside = tmp_path / "outside.py"; outside.write_text("print('outside')", encoding="utf-8")
+        (data / "schedules" / "escape.toml").write_text(script_toml("../outside.py", timeout=None), encoding="utf-8")
+        scheduler.repository.reconcile(force=True)
+        assert scheduler.repository.get("escape")["status"] == "invalid"
+    finally:
+        scheduler.close()
+
+
+def test_definition_mtimes_are_rechecked_at_five_second_intervals(tmp_path, monkeypatch):
+    from onmyoji_daemon.task_scheduler import service
+    root, workspace = tmp_path / "instance", tmp_path / "workspace"
+    root.mkdir(); workspace.mkdir()
+    scheduler = TaskScheduler(root, root / "data", workspace=workspace)
+    moments = [104.999]
+    calls = []
+    scheduler._last_reconcile = 100.0
+    monkeypatch.setattr(service.time, "monotonic", lambda: moments[0])
+    monkeypatch.setattr(scheduler.repository, "reconcile", lambda: calls.append(moments[0]))
+    try:
+        assert not scheduler._reconcile_if_due() and not calls
+        moments[0] = 105.0
+        assert scheduler._reconcile_if_due() and calls == [105.0]
+        moments[0] = 109.999
+        assert not scheduler._reconcile_if_due() and calls == [105.0]
+        moments[0] = 110.0
+        assert scheduler._reconcile_if_due() and calls == [105.0, 110.0]
+    finally:
+        scheduler.close()
 
 
 def test_event_action_generates_occurrence_uuid_and_calls_local_http(tmp_path):

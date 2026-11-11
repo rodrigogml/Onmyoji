@@ -53,6 +53,41 @@ def test_email_account_subject_and_receipts_are_captured_per_reception(lab, monk
     assert requests[0][1]["request_id"] != requests[1][1]["request_id"]
     assert [args["subject"] for name, args in requests] == ["Primeiro assunto", "Segundo assunto"]
     assert all(args["request_id"].startswith("gateway:") and args["request_id"].endswith(":delivery") for name, args in requests)
+    destinations = [row[0] for row in lab.gateway.database.execute("SELECT chat_id FROM conversations WHERE chat_id LIKE 'email:%' ORDER BY chat_id")]
+    assert len(destinations) == 2 and any('original' in value for value in destinations) and any('changed' in value for value in destinations)
+
+
+def test_unstarted_event_reservation_returns_to_pending_on_recovery(lab):
+    enable(lab, watch=False)
+    gateway = lab.gateway
+    value = event()
+    receipt = {"event_id": value["event_id"], "received_at": "2026-11-10T12:00:00.000Z", "envelope": value}
+    identifier = gateway.store.enqueue("9", gateway._generation("9"), "fixture", [], {"notification": value}, origin="event", receipt=receipt)
+    gateway.notification_log.flush()
+    execution = gateway.store.reserve("9", 0, identifier, 30)
+    gateway.store.recover()
+    row = gateway.database.execute("SELECT state,execution_id FROM inbox_items WHERE id=?", (identifier,)).fetchone()
+    assert row == ("pending", None)
+    assert gateway.database.execute("SELECT state,result FROM execution_turns WHERE execution_id=?", (execution,)).fetchone() == ("terminal", "not_sent")
+    assert gateway.database.execute("SELECT execution_state FROM notification_receipts WHERE inbox_id=?", (identifier,)).fetchone() == (None,)
+    assert "9" in gateway.store.candidates()
+
+
+def test_interrupted_active_event_becomes_uncertain_without_reexecution(lab):
+    enable(lab, watch=False)
+    gateway = lab.gateway
+    value = event()
+    receipt = {"event_id": value["event_id"], "received_at": "2026-11-10T12:00:00.000Z", "envelope": value}
+    identifier = gateway.store.enqueue("9", gateway._generation("9"), "fixture", [], {"notification": value}, origin="event", receipt=receipt)
+    gateway.notification_log.flush()
+    execution = gateway.store.reserve("9", 0, identifier, 30)
+    operation = gateway.store.operation(identifier, execution, "turn/start", None)
+    gateway.store.bind(execution, "epoch", "thread", "turn")
+    gateway.store.operation_result(operation, "accepted")
+    gateway.store.recover(); gateway._notification_sync()
+    assert gateway.database.execute("SELECT state,result FROM execution_turns WHERE execution_id=?", (execution,)).fetchone() == ("uncertain", "gateway_restarted")
+    assert gateway.database.execute("SELECT execution_state,reason FROM notification_receipts WHERE inbox_id=?", (identifier,)).fetchone() == ("uncertain", "gateway_restarted")
+    assert gateway.store.blocked("9") and not lab.client.calls
 
 
 def test_delivery_inflight_on_restart_becomes_uncertain_without_resending(lab):
@@ -88,6 +123,7 @@ def test_incident_failure_does_not_recurse(lab):
     assert attempted.wait(3)
     lab.gateway._notification_sync(); lab.gateway._notification_sync()
     assert len(attempts) == 1
+    assert "log=agent-gateway-" in attempts[0][1]
 
 
 def test_detaching_rpc_during_smtp_releases_waiter_before_delivery_finishes(lab, monkeypatch):

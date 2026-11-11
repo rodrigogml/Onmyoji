@@ -14,9 +14,11 @@ class _Server(ThreadingHTTPServer):
     allow_reuse_address = True
     daemon_threads = True
 
-    def __init__(self, port: int, gateway, max_request_bytes: int):
+    def __init__(self, port: int, gateway, max_request_bytes: int, long_limit: int):
         self.gateway = gateway
         self.max_request_bytes = max_request_bytes
+        self.long_limit = threading.BoundedSemaphore(long_limit)
+        self.request_queue_size = max(16, long_limit)
         super().__init__(("127.0.0.1", port), _Handler)
 
 
@@ -69,8 +71,12 @@ class _Handler(BaseHTTPRequestHandler):
         except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
             self._error(400, "invalid_json")
             return
+        wait = query.get("wait", ["true"])[0] == "true"
+        permit = self.server.long_limit if wait else None
+        if permit is not None and not permit.acquire(blocking=False):
+            self._error(429, "capacity_exceeded")
+            return
         try:
-            wait = query.get("wait", ["true"])[0] == "true"
             result = self.server.gateway._notification_submit(event, wait=wait)
         except RpcError as error:
             status = 400 if error.code in {"invalid_event", "invalid_argument"} else 429 if error.code == "capacity_exceeded" else 503
@@ -82,6 +88,9 @@ class _Handler(BaseHTTPRequestHandler):
         except (OSError, RuntimeError):
             self._error(503, "service_unavailable")
             return
+        finally:
+            if permit is not None:
+                permit.release()
         self._write(200 if wait else 202, result)
 
     def do_GET(self) -> None:
@@ -95,8 +104,8 @@ class _Handler(BaseHTTPRequestHandler):
 class NotificationHttpServer:
     """Executa o listener loopback em thread independente do RPC interno."""
 
-    def __init__(self, port: int, gateway, max_request_bytes: int = 1_048_576):
-        self.server = _Server(port, gateway, max_request_bytes)
+    def __init__(self, port: int, gateway, max_request_bytes: int = 1_048_576, long_limit: int = 32):
+        self.server = _Server(port, gateway, max_request_bytes, long_limit)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True, name="agent-events-http")
 
     @property

@@ -23,6 +23,7 @@ def request(server, target, value):
 def test_wait_false_returns_202_after_durable_acceptance(lab):
     enable(lab)
     server = NotificationHttpServer(0, lab.gateway)
+    assert server.server.server_address[0] == "127.0.0.1" and server.server.max_request_bytes == 1_048_576
     server.start()
     lab.gateway.work.acquire()
     try:
@@ -50,8 +51,27 @@ def test_wait_true_defaults_and_returns_terminal_envelope(lab):
             lab.client.item(thread, "Resposta HTTP"); lab.client.complete(thread)
             status, result = future.result(3)
         assert status == 200
-        assert result["status"] == "completed" and result["execution"] == "completed"
+        assert result["status"] == "completed" and result["result"] == result["execution"] == "completed"
         assert result["delivery"] == "confirmed"
+    finally:
+        server.close()
+
+
+def test_wait_true_returns_200_when_result_completed_but_delivery_failed(lab):
+    from onmyoji_daemon.telegram_delivery import DeliverySuppressed
+    enable(lab)
+    server = NotificationHttpServer(0, lab.gateway)
+    server.start()
+    lab.gateway._deliver_terminal = lambda *_args: (_ for _ in ()).throw(DeliverySuppressed("fixture"))
+    try:
+        with ThreadPoolExecutor() as pool:
+            future = pool.submit(request, server, "/v1/events", event())
+            thread = lab.client.wait_calls("turn/start")[0]["threadId"]
+            lab.client.item(thread, "Resultado sem entrega"); lab.client.complete(thread)
+            status, result = future.result(3)
+        assert status == 200
+        assert result["status"] == "failed" and result["result"] == "completed"
+        assert result["delivery"] == "failed" and result["reason"] == "delivery_failed"
     finally:
         server.close()
 
@@ -62,6 +82,8 @@ def test_http_rejections_use_closed_status_set(lab):
     server.start()
     try:
         status, result = request(server, "/v1/events?wait=invalid", {})
+        assert status == 400 and result["error"]["code"] == "invalid_request"
+        status, result = request(server, "/v1/events/query", {})
         assert status == 400 and result["error"]["code"] == "invalid_request"
         status, result = request(server, "/v1/events", {"payload": "x" * 100})
         assert status == 413 and result["error"]["code"] == "request_too_large"
@@ -80,6 +102,26 @@ def test_http_reports_disabled_and_capacity_without_accepting(lab, monkeypatch):
         status, result = request(server, "/v1/events", event())
         assert status == 429 and result["error"]["code"] == "capacity_exceeded"
     finally:
+        server.close()
+
+
+def test_waiter_limit_rejects_wait_true_before_acceptance_but_not_wait_false(lab):
+    enable(lab)
+    server = NotificationHttpServer(0, lab.gateway, long_limit=1)
+    server.start()
+    assert server.server.long_limit.acquire(blocking=False)
+    try:
+        value = event()
+        status, result = request(server, "/v1/events", value)
+        assert status == 429 and result["error"]["code"] == "capacity_exceeded"
+        assert lab.gateway.database.execute("SELECT COUNT(*) FROM notification_receipts WHERE event_id=?", (value["event_id"],)).fetchone() == (0,)
+        async_value = event()
+        status, result = request(server, "/v1/events?wait=false", async_value)
+        assert status == 202 and result["accepted"]
+        thread = lab.client.wait_calls("turn/start")[0]["threadId"]
+        lab.client.item(thread, "Resposta assíncrona"); lab.client.complete(thread)
+    finally:
+        server.server.long_limit.release()
         server.close()
 
 

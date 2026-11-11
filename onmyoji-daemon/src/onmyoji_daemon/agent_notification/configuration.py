@@ -10,6 +10,8 @@ import threading
 from ..config_publication import publish_file
 from ..rpc import RpcError
 
+# ``smtp_account`` é aceito somente para abrir configurações v1 anteriores;
+# entregas novas sempre capturam conta e assunto no próprio destino.
 DEFAULTS = {"schema_version": 1, "enabled": False, "telegram_receiver_enabled": True, "port": 39392, "max_request_bytes": 1_048_576, "long_limit": 32, "smtp_account": "", "incident": None}
 
 

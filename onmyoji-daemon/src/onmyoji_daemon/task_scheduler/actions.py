@@ -57,6 +57,10 @@ def _script_action(root: Path, workspace: Path, occurrence: dict, stop: threadin
     script = (cwd / action["path"]).resolve(strict=True)
     if not script.is_relative_to(cwd) or not script.is_file() or script.suffix.casefold() != ".py":
         return "failed", None, "invalid_script_path"
+    if stop.is_set():
+        return "failed", None, "service_stopping_before_action"
+    if before_dispatch and not before_dispatch():
+        return "failed", None, "definition_withdrawn"
     output = workspace / ".onmyoji" / "task-scheduler" / occurrence["id"]
     if not output.resolve().is_relative_to(workspace.resolve()):
         return "failed", None, "invalid_output_path"
@@ -102,9 +106,7 @@ def _script_action(root: Path, workspace: Path, occurrence: dict, stop: threadin
                 thread = threading.Thread(target=drain, args=(source, name, outputs[name]), daemon=True)
                 readers.append(thread); thread.start()
             if stop.is_set():
-                return "failed", None, "service_stopping_before_action"
-            if before_dispatch and not before_dispatch():
-                return "failed", None, "definition_withdrawn"
+                return "failed", None, "service_stopping"
             boundary["dispatched"] = True
             process.stdin.write((json.dumps([sys.executable, "-B", str(script), *action["args"]]) + "\n").encode("utf-8"))
             process.stdin.close()
