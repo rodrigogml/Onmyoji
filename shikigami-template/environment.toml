@@ -1,5 +1,5 @@
 schema_version = 1
 
-[section]
-property = "value"
+[default]
+shikigami-files = "${CODEX_HOME}/{{SHIKIGAMI_NAME}}-files/"
 

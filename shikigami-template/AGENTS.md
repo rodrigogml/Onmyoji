@@ -1,24 +1,5 @@
 # {{SHIKIGAMI_NAME}}
 
-## Configuração local do Shikigami
-
-O arquivo autoritativo de configuração local é `${CODEX_HOME}/env.toml`.
-
-Referências no formato `{{env.<chave>}}` representam caminhos de chaves nesse arquivo TOML. Por exemplo:
-
-- `{{env.resources.personal_files.path}}` corresponde à chave `resources.personal_files.path`.
-- `{{env.skills.organizar-documentos.archive_subdirectory}}` corresponde à chave `skills."organizar-documentos".archive_subdirectory`.
-
-Antes de usar uma referência:
-1. Leia o arquivo TOML autoritativo.
-2. Resolva a chave completa indicada pela referência.
-3. Substitua conceitualmente a referência pelo valor encontrado.
-4. Valide que o valor possui o tipo esperado.
-5. Para caminhos, valide que são absolutos e que o recurso existe quando a operação exigir sua existência.
-6. Nunca trate a referência textual como um caminho literal.
-7. Nunca suponha nem invente um valor ausente.
-8. Se o arquivo ou uma chave obrigatória não existir, interrompa o procedimento e informe exatamente qual chave está ausente.
-
 ## Alteração de instruções e skills
 
 Ao alterar arquivos `README.md`, `AGENTS.md`, `SKILL.md` ou qualquer arquivo `.md` de definição de skill (não se aplica a arquivos de scripts, wrappers e outros códigos):

@@ -11,6 +11,7 @@
 !/*.proposed.md
 !/setupOnmyoji.py
 
+
 # Documentação e recursos próprios da instância
 !/docs/
 !/docs/**
@@ -27,8 +28,8 @@
 !/shikigami-agents/*.toml
 
 # Arquivos próprios do Shikigami, em uma pasta nomeada <nome>-files
-!/*-files/
-!/*-files/**
+!/{{SHIKIGAMI_NAME}}-files/
+!/{{SHIKIGAMI_NAME}}-files/**
 
 # Configuração pertencente à instância
 !/configs/
