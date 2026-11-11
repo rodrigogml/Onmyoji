@@ -129,6 +129,20 @@ class _LinuxProcess:
         if not select.select([self.fd], [], [], MAX_WAIT_SECONDS)[0]:
             raise ProcessRecoveryError("process_termination_unconfirmed")
 
+    def matches_node_launcher(self, executable: str) -> bool:
+        """Confere o Node e os argumentos do processo pinado sem registrar seu conteúdo."""
+        try:
+            proc = Path("/proc") / str(self.pid)
+            native = Path(os.readlink(proc / "exe"))
+            arguments = (proc / "cmdline").read_bytes().split(b"\0")
+            if self._exited() or native.name not in {"node", "nodejs"} or len(arguments) < 4:
+                return False
+            launcher = Path(os.fsdecode(arguments[1])).resolve(strict=True)
+            expected = Path(executable).expanduser().resolve(strict=True)
+            return launcher == expected and arguments[2:4] == [b"app-server", b"--stdio"]
+        except (OSError, ValueError):
+            raise ProcessRecoveryError("process_identity_unavailable") from None
+
     def close(self) -> None:
         if self.fd is not None:
             os.close(self.fd)
@@ -163,6 +177,8 @@ def _read(store) -> dict | None:
         for key in ("instance_sha256", "native_executable_path_sha256", "native_executable_sha256", "expected_executable_sha256"):
             if not isinstance(value.get(key), str) or len(value[key]) != 64 or any(character not in "0123456789abcdef" for character in value[key]):
                 raise ValueError()
+        if value.get("launcher", "native") not in {"native", "node_script"}:
+            raise ValueError()
         return value
     except (ValueError, TypeError) as error:
         raise ProcessRecoveryError("process_checkpoint_invalid") from error
@@ -203,9 +219,15 @@ def record_process(store, root: Path, executable: str, client) -> bool:
     try:
         identity = native.identity() if native else None
         expected = executable_digest(executable)
-        if not identity or process.poll() is not None or not expected or identity["native_executable_sha256"] != expected:
+        if not identity or process.poll() is not None or not expected:
             raise ProcessRecoveryError("process_identity_unavailable")
-        record = {"schema_version": 1, "process_epoch": epoch, "state": "active", "instance_sha256": _path_hash(root), "expected_executable_sha256": expected, **identity}
+        launcher = "native"
+        if identity["native_executable_sha256"] != expected:
+            verify = getattr(native, "matches_node_launcher", None)
+            if not callable(verify) or not verify(executable) or native.identity() != identity or executable_digest(executable) != expected or process.poll() is not None:
+                raise ProcessRecoveryError("process_identity_unavailable")
+            launcher = "node_script"
+        record = {"schema_version": 1, "process_epoch": epoch, "state": "active", "instance_sha256": _path_hash(root), "expected_executable_sha256": expected, "launcher": launcher, **identity}
         with store.lock, store.db:
             previous = _read(store)
             if previous and previous["state"] == "active" and previous != record:
@@ -246,6 +268,13 @@ def recover_process(store, root: Path, executable: str) -> ProcessRecoveryResult
             raise ProcessRecoveryError("process_executable_unverified")
         if executable_digest(executable) != record["expected_executable_sha256"]:
             raise ProcessRecoveryError("process_executable_changed")
+        if record.get("launcher") == "node_script":
+            verify = getattr(native, "matches_node_launcher", None)
+            if not callable(verify) or not verify(executable) or native.identity() != identity or executable_digest(executable) != record["expected_executable_sha256"]:
+                raise ProcessRecoveryError("process_executable_unverified")
+            # O wrapper Node pode manter um filho nativo. A morte do wrapper
+            # não comprova que esse filho terminou nem autoriza outro servidor.
+            raise ProcessRecoveryError("process_launcher_recovery_unverified")
         native.terminate()
         _finish(store, record, "stopped")
         return ProcessRecoveryResult("terminated", epoch, pid)

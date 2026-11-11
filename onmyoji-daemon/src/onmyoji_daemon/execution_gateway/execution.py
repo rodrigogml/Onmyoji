@@ -677,8 +677,10 @@ class ExecutionGateway:
         generation = slot.generation if slot else self._generation(conversation)
         if self.stop_event.is_set() or slot and (slot.cancel_requested or generation != self._generation(conversation)):
             raise CodexProtocolError("Solicitação cancelada antes de iniciar geração.", kind="not_sent")
+        self._execution_local.failure_stage = "app_server"
         client = self._app_client()
         notification = (turn_context or {}).get("notification")
+        self._execution_local.failure_stage = "thread"
         thread = self._app_thread(chat_id, client, turn_context)
         email = notification and notification["response_channel"]["type"] == "email"
         address, topic = (0, {}) if email else self._telegram_address(conversation)
@@ -726,6 +728,7 @@ class ExecutionGateway:
                     self.store.operation_result(active.operation_id, "not_sent", "generation_reset")
                 active.suppressed = True
                 raise CodexProtocolError("Conversa reiniciada antes do início.", kind="not_sent")
+            self._execution_local.failure_stage = "turn_start"
             result = client.request("turn/start", params)
             turn = result.get("turn", result)
             identifier = str(turn.get("id") or "") if isinstance(turn, dict) else ""
@@ -737,6 +740,7 @@ class ExecutionGateway:
                 self.store.bind(active.execution_id, active.process_epoch, thread, identifier)
             with self.workers_changed:
                 self.workers_changed.notify_all()
+            self._execution_local.failure_stage = "turn_execution"
             if not active.completed.wait(self.settings.turn_timeout):
                 active.cancel_requested = True
                 deadline = time.monotonic() + self.settings.interrupt_grace_seconds
@@ -1064,7 +1068,9 @@ class ExecutionGateway:
             self._diagnostic("delivery.uncertain", generation=active.generation if active else self._generation(conversation), kind="final")
         except Exception as error:
             active = active or getattr(self._execution_local, "active", None)
-            self._record_error("Não foi possível concluir o turno do Codex.")
+            self._record_error(error)
+            reason = error.reason if isinstance(error, ProcessRecoveryError) else error.kind if isinstance(error, CodexProtocolError) else "operational_failure"
+            self._diagnostic("turn.failed", stage=getattr(self._execution_local, "failure_stage", "preparation"), reason=reason)
             if self.api and not notification and (not active or not active.suppressed):
                 message = self._public_turn_error(error)
                 if active and self.store.blocked(conversation):
@@ -1084,6 +1090,7 @@ class ExecutionGateway:
                 self._settle_visible(active)
                 self._finish_resources(active)
             self._execution_local.active = None
+            self._execution_local.failure_stage = "preparation"
             typing_stop.set(); thread.join(timeout=1)
             if not permit_released:
                 if active and not active.completed.is_set() and self.app_server and self.app_server.running():

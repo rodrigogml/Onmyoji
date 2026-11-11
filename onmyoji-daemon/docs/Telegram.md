@@ -212,6 +212,8 @@ thread e só descarta sua referência quando o App Server confirma que ela não
 existe mais. Falhas transitórias de retomada ficam registradas para diagnóstico
 e são tentadas novamente no próximo turno.
 
+No Linux, o checkpoint também aceita o lançador JavaScript do Codex sob Node. Antes de registrar ou recuperar, verifica o script e seus argumentos, além da identidade nativa, criação e hash do processo. Se o wrapper ainda estiver vivo após uma interrupção, a recuperação bloqueia outra abertura e requer intervenção do operador: encerrar apenas o Node não comprova o término de eventual filho nativo. Se a identidade estiver inacessível ou alterada, o encerramento automático também é bloqueado. O diagnóstico registra apenas a etapa e o código operacional, sem conteúdo de mensagens ou erro bruto.
+
 `/new` é a forma explícita de descartar o contexto. Cada tópico direto do
 Telegram também é uma conversa independente, embora pertença ao mesmo DM.
 

@@ -30,6 +30,7 @@ from .telegram_execution import TelegramExecution
 from .agent_notification.ingress import NotificationIngress
 from .telegram_work import RelatedWorkMonitor
 from .telegram_persistence import GatewayStore, GatewayPersistenceError, protect_legacy_gateway
+from .telegram_process import ProcessRecoveryError
 from .telegram_delivery import GatewayDelivery, DeliveryOwner, DeliveryUncertain, DeliverySuppressed
 from .codex_capabilities import CapabilitySet
 from .instructions import InstructionComposer, TelegramTurnContext
@@ -480,7 +481,7 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
     def _totp_enabled(self) -> bool:
         return self.settings.totp_enabled
     def _record_error(self, error: Exception | str) -> None:
-        kind = getattr(error, "kind", "operational_failure")
+        kind = error.reason if isinstance(error, ProcessRecoveryError) else getattr(error, "kind", "operational_failure")
         code = kind if isinstance(kind, str) and re.fullmatch(r"[a-z_]{1,64}", kind) else "operational_failure"
         self.last_error = "Falha operacional registrada; confira a etapa e o código de diagnóstico."
         with self._status_lock:

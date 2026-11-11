@@ -207,6 +207,39 @@ def test_gateway_records_the_instant_of_a_credential_error(tmp_path, monkeypatch
     assert status["last_error_at"] == 123.0 and status["updated_at"] == 123.0
 
 
+def test_gateway_records_process_recovery_code_without_exception_text(tmp_path):
+    from onmyoji_daemon.telegram_process import ProcessRecoveryError
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"
+    write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data))
+    gateway._record_error(ProcessRecoveryError("process_identity_unavailable"))
+
+    status = json.loads((data / "state" / "gateway-status.json").read_text(encoding="utf-8"))
+    assert status["last_error_code"] == "process_identity_unavailable"
+    assert "Reconciliação" not in json.dumps(status)
+
+
+def test_gateway_reports_process_failure_stage_without_private_error(tmp_path):
+    from onmyoji_daemon.telegram_process import ProcessRecoveryError
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"
+    write_settings(tmp_path, data)
+    gateway = Gateway(replace(Settings.load(tmp_path, data), app_server_enabled=True))
+    gateway.api = type("Api", (), {"typing": lambda *_args, **_kwargs: None})()
+    gateway._send_agent_text = lambda *_args, **_kwargs: None
+    def fail(*_args):
+        gateway._execution_local.failure_stage = "app_server"
+        raise ProcessRecoveryError("process_identity_unavailable")
+    gateway._app_turn = fail
+
+    gateway._turn_serial(9, "conteúdo privado", [])
+
+    status = json.loads((data / "state" / "gateway-status.json").read_text(encoding="utf-8"))
+    assert status["last_error_code"] == "process_identity_unavailable"
+    assert status["diagnostics"][-1]["stage"] == "app_server"
+    assert status["diagnostics"][-1]["reason"] == "process_identity_unavailable"
+    assert "conteúdo privado" not in json.dumps(status, ensure_ascii=False)
+
+
 def test_totp_filter_supports_case_insensitive_wildcards():
     entries = ["APIs/MSN/Rodrigo", "APIs/msn/Outro", "Banco/Rodrigo"]
     assert Gateway._filter_totp(entries, "MSN*Rodrigo") == ["APIs/MSN/Rodrigo"]

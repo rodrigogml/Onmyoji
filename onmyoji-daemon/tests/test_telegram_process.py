@@ -67,6 +67,90 @@ def test_record_is_durable_private_and_idempotent_before_model(native_fixture):
     assert fixture.terminated == [] and fixture.closed == [True, True]
 
 
+def test_node_launcher_recovery_requires_both_script_and_native_identity(native_fixture):
+    fixture = native_fixture
+    fixture.identity["native_executable_sha256"] = "b" * 64
+    fixture.native.matches_node_launcher = lambda executable: executable == str(fixture.binary)
+    assert lifecycle.record_process(fixture.store, fixture.root, str(fixture.binary), fixture.client)
+    assert checkpoint(fixture.store)["launcher"] == "node_script"
+    with pytest.raises(lifecycle.ProcessRecoveryError, match="process_launcher_recovery_unverified"):
+        lifecycle.recover_process(fixture.store, fixture.root, str(fixture.binary))
+    assert not fixture.terminated and checkpoint(fixture.store)["state"] == "active"
+
+
+def test_node_launcher_changed_arguments_block_recovery(native_fixture):
+    fixture = native_fixture
+    fixture.identity["native_executable_sha256"] = "b" * 64
+    fixture.native.matches_node_launcher = lambda _executable: True
+    lifecycle.record_process(fixture.store, fixture.root, str(fixture.binary), fixture.client)
+    fixture.native.matches_node_launcher = lambda _executable: False
+    with pytest.raises(lifecycle.ProcessRecoveryError, match="process_executable_unverified"):
+        lifecycle.recover_process(fixture.store, fixture.root, str(fixture.binary))
+    assert not fixture.terminated and checkpoint(fixture.store)["state"] == "active"
+
+
+def test_node_launcher_changed_script_blocks_recovery(native_fixture):
+    fixture = native_fixture
+    fixture.identity["native_executable_sha256"] = "b" * 64
+    fixture.native.matches_node_launcher = lambda _executable: True
+    lifecycle.record_process(fixture.store, fixture.root, str(fixture.binary), fixture.client)
+    fixture.binary.write_bytes(b"changed launcher")
+    with pytest.raises(lifecycle.ProcessRecoveryError, match="process_executable_changed"):
+        lifecycle.recover_process(fixture.store, fixture.root, str(fixture.binary))
+    assert not fixture.terminated
+
+
+def test_node_launcher_rejects_unverified_process_on_registration(native_fixture):
+    fixture = native_fixture
+    fixture.identity["native_executable_sha256"] = "b" * 64
+    fixture.native.matches_node_launcher = lambda _executable: False
+    with pytest.raises(lifecycle.ProcessRecoveryError, match="process_identity_unavailable"):
+        lifecycle.record_process(fixture.store, fixture.root, str(fixture.binary), fixture.client)
+    assert checkpoint(fixture.store) is None
+
+
+@pytest.mark.parametrize("native_name,arguments,expected", [
+    ("node", ["node", "script", "app-server", "--stdio"], True),
+    ("nodejs", ["nodejs", "script", "app-server", "--stdio"], True),
+    ("python", ["python", "script", "app-server", "--stdio"], False),
+    ("node", ["node", "script", "other", "--stdio"], False),
+    ("node", ["node", "other", "app-server", "--stdio"], False),
+])
+def test_linux_node_launcher_matches_exact_script_and_arguments(tmp_path, monkeypatch, native_name, arguments, expected):
+    script = tmp_path / "codex.js"
+    script.write_text("fixture", encoding="utf-8")
+    other = tmp_path / "other.js"
+    other.write_text("other", encoding="utf-8")
+    arguments = [str(script) if value == "script" else str(other) if value == "other" else value for value in arguments]
+    original = Path.read_bytes
+    def read_bytes(path):
+        return b"\0".join(os.fsencode(value) for value in arguments) + b"\0" if path.name == "cmdline" else original(path)
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    monkeypatch.setattr(lifecycle.os, "readlink", lambda _path: "/usr/bin/" + native_name)
+    process = object.__new__(lifecycle._LinuxProcess)
+    process.pid, process.fd = 424242, None
+    assert process.matches_node_launcher(str(script)) is expected
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Exige identidade real em /proc Linux")
+def test_real_linux_node_script_can_be_registered_without_terminating_another_process(tmp_path, process_store):
+    node = shutil.which("node")
+    if not node or not hasattr(os, "pidfd_open"):
+        pytest.skip("Node e pidfd são necessários")
+    script = tmp_path / "codex.js"
+    script.write_text("setInterval(() => {}, 1000);", encoding="utf-8")
+    process = subprocess.Popen([node, str(script), "app-server", "--stdio"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    client = SimpleNamespace(process=process, process_epoch="node-real-test")
+    try:
+        assert lifecycle.record_process(process_store, tmp_path, str(script), client)
+        with pytest.raises(lifecycle.ProcessRecoveryError, match="process_launcher_recovery_unverified"):
+            lifecycle.recover_process(process_store, tmp_path, str(script))
+        assert process.poll() is None
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
+
+
 def test_matching_orphan_is_terminated_once_and_checkpoint_becomes_stopped(native_fixture):
     fixture = native_fixture
     lifecycle.record_process(fixture.store, fixture.root, str(fixture.binary), fixture.client)
