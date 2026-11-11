@@ -267,3 +267,30 @@ def test_empty_agent_result_fails_without_delivery_or_thread_replacement(lab):
     assert result["delivery"] == "not_attempted"
     assert lab.gateway.database.execute("SELECT codex_thread_id FROM conversations WHERE chat_id='9'").fetchone() == ("old",)
     assert not lab.api.sent
+
+
+def test_explicit_gateway_tool_completes_event_silently_with_success_record(lab):
+    enable(lab)
+    value = event()
+    with ThreadPoolExecutor() as pool:
+        future = pool.submit(lab.gateway.handle, "notification.submit", value)
+        started = lab.client.wait_calls("turn/start")[0]
+        thread = started["threadId"]
+        thread_start = lab.client.wait_calls("thread/start")[0]
+        assert {tool["name"] for tool in thread_start["dynamicTools"]} == {"telegram_gateway", "onmyoji_gateway"}
+        active = lab.gateway._slots["9"].active
+        response = lab.gateway._app_request_event("item/tool/call", {
+            "namespace": "onmyoji_gateway", "tool": "complete_silently", "arguments": {},
+            "threadId": thread, "turnId": active.turn_id,
+        }, {"process_epoch": lab.client.process_epoch, "rpc_id": "silent-fixture"})
+        assert response["success"] and json.loads(response["contentItems"][0]["text"])["completed_silently"]
+        lab.client.complete(thread)
+        result = future.result(3)
+    assert result["status"] == result["execution"] == "completed"
+    assert result["delivery"] == "suppressed" and "reason" not in result
+    assert not lab.api.sent
+    assert lab.gateway.database.execute("SELECT result,silent_completion,delivery_state FROM execution_turns ORDER BY completed_at DESC LIMIT 1").fetchone() == ("completed_silent", 1, "suppressed")
+    lab.gateway.notification_log.flush()
+    entries = [json.loads(line) for path in lab.gateway.notification_log.directory.glob("*.jsonl") for line in path.read_text(encoding="utf-8").splitlines()]
+    terminal = next(entry for entry in entries if entry.get("stage") == "terminal" and entry.get("event_id") == value["event_id"])
+    assert terminal["execution"] == "completed" and terminal["delivery"] == "suppressed" and terminal["silent"] is True

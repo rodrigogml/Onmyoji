@@ -15,6 +15,10 @@ from ..rpc import RpcError, disconnected
 
 
 class NotificationIngress:
+    @staticmethod
+    def _notification_tools():
+        return [{"type": "namespace", "name": "onmyoji_gateway", "description": "Controle geral do gateway para eventos autorizados.", "tools": [{"type": "function", "name": "complete_silently", "description": "Conclui com sucesso sem enviar resposta ao canal obrigatório deste evento. Use somente quando nenhuma notificação ao destinatário for necessária; uma resposta final vazia sem esta chamada continua sendo erro.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}]}]
+
     def _init_notifications(self):
         self.notification_configuration = NotificationConfiguration(self.settings.root)
         self.notification_log = NotificationLog(self.store, self.settings.root / "configs" / "daemon" / "runtime" / "logs" / "agent-gateway")
@@ -72,7 +76,7 @@ class NotificationIngress:
             with self.database_lock:
                 row = self.database.execute("SELECT execution_state,delivery_state,reason FROM notification_receipts WHERE inbox_id=?", (identifier,)).fetchone()
             if row[0] is not None:
-                status = "uncertain" if "uncertain" in {row[0], row[1]} else "completed" if row[0] == "completed" and row[1] == "confirmed" else "failed"
+                status = "uncertain" if "uncertain" in {row[0], row[1]} else "completed" if row[0] == "completed" and row[1] in {"confirmed", "suppressed"} else "failed"
                 return {"event_id": event["event_id"], "received_at": received, "status": status, "result": row[0], "execution": row[0], "delivery": row[1], **({"reason": row[2]} if row[2] else {})}
             if disconnected():
                 raise RpcError("Acompanhamento abandonado; execução aceita continua.", "acceptance_unknown")
@@ -113,7 +117,8 @@ class NotificationIngress:
         with self.database_lock:
             row = self.database.execute("SELECT codex_thread_id FROM conversations WHERE chat_id=?", (conversation,)).fetchone()
         previous = row[0] if row else None
-        params = {"cwd": str(self.settings.project), "approvalPolicy": self.settings.approval, "sandbox": self.settings.sandbox, "developerInstructions": CodexLaunch.from_system(self.settings.root).developer_instructions()}
+        instructions = CodexLaunch.from_system(self.settings.root).developer_instructions() + "\n\nEm eventos, use onmyoji_gateway.complete_silently para concluir com sucesso sem enviar ao canal. Não produza resposta final vazia sem chamar essa ferramenta."
+        params = {"cwd": str(self.settings.project), "approvalPolicy": self.settings.approval, "sandbox": self.settings.sandbox, "developerInstructions": instructions}
         if self.settings.model:
             params["model"] = self.settings.model
         if previous and event["thread_policy"] == "reuse":
@@ -123,7 +128,7 @@ class NotificationIngress:
             except CodexProtocolError as error:
                 if not self._thread_is_missing(error):
                     raise
-        response = client.request("thread/start", {**params, "dynamicTools": [], "serviceName": "onmyoji_notification"})
+        response = client.request("thread/start", {**params, "dynamicTools": self._notification_tools(), "serviceName": "onmyoji_notification"})
         thread = response.get("thread", response)
         if not isinstance(thread, dict) or not isinstance(thread.get("id"), str) or not thread["id"]:
             raise CodexProtocolError("Criação de thread sem identificador.", kind="not_sent")
@@ -230,21 +235,27 @@ class NotificationIngress:
             if execution_state not in {"terminal", "uncertain"} and input_state not in {"failed", "cancelled", "uncertain", "uncertain_legacy"}:
                 continue
             event = json.loads(raw)
+            silent_result = execution_state == "terminal" and result == "completed_silent"
             empty_result = execution_state == "terminal" and result == "completed" and not text
-            state = "uncertain" if execution_state == "uncertain" or input_state in {"uncertain", "uncertain_legacy"} else "failed" if empty_result else "completed" if result == "completed" else "not_started" if result in {None, "not_started", "not_sent"} else "failed"
-            if execution_state == "terminal" and result == "completed" and text and thread:
+            state = "uncertain" if execution_state == "uncertain" or input_state in {"uncertain", "uncertain_legacy"} else "failed" if empty_result else "completed" if result in {"completed", "completed_silent"} else "not_started" if result in {None, "not_started", "not_sent"} else "failed"
+            if execution_state == "terminal" and thread and (silent_result or result == "completed" and text):
                 with self.database_lock, self.database:
                     self.database.execute("UPDATE conversations SET codex_thread_id=?,instruction_baseline_hash=? WHERE chat_id=(SELECT chat_id FROM inbox_items WHERE id=?) AND generation=(SELECT generation FROM inbox_items WHERE id=?)", (thread, revision, inbox, inbox))
+            if silent_result and delivery == "not_attempted":
+                with self.database_lock, self.database:
+                    self.database.execute("UPDATE notification_receipts SET delivery_state='suppressed' WHERE inbox_id=? AND delivery_state='not_attempted'", (inbox,))
+                    self.database.execute("UPDATE execution_turns SET delivery_state='suppressed' WHERE execution_id=?", (execution,))
+                    self.notification_log.record("delivery", transaction=self.database, event_id=event_id, state="suppressed", reason="explicit_silent_completion")
             if text and execution_state == "terminal" and delivery == "not_attempted":
                 self._notification_deliver(execution, event, text)
             with self.database_lock, self.database:
                 current = self.database.execute("SELECT delivery_state FROM notification_receipts WHERE inbox_id=?", (inbox,)).fetchone()[0]
                 if current == "sending":
                     continue
-                reason = (None if current == "confirmed" else "delivery_" + current) if state == "completed" else "empty_agent_result" if empty_result else failure_reason or result or input_state
+                reason = (None if current in {"confirmed", "suppressed"} else "delivery_" + current) if state == "completed" else "empty_agent_result" if empty_result else failure_reason or result or input_state
                 changed = self.database.execute("UPDATE notification_receipts SET execution_state=?,reason=? WHERE inbox_id=? AND (execution_state IS NULL OR execution_state!=?)", (state, reason, inbox, state)).rowcount
                 if changed:
-                    self.notification_log.record("terminal", transaction=self.database, event_id=event_id, execution=state, delivery=current, output=text, reason=reason)
+                    self.notification_log.record("terminal", transaction=self.database, event_id=event_id, execution=state, delivery=current, output=text, reason=reason, silent=silent_result)
             if changed:
                 self._notification_incident(inbox, event_id, state, current, reason)
         with self.database_lock:
@@ -256,7 +267,7 @@ class NotificationIngress:
         with self.database_lock, self.database:
             changed = self.database.execute("UPDATE notification_receipts SET incident_state='attempted' WHERE inbox_id=? AND incident_state='pending'", (inbox,)).rowcount
         channel = self.notification_configuration.load()["incident"]
-        if changed and channel and (state != "completed" or delivery != "confirmed"):
+        if changed and channel and (state != "completed" or delivery not in {"confirmed", "suppressed"}):
             at = timestamp()
             log_ref = "agent-gateway-" + at[:10] + ".jsonl"
             summary = f"Onmyōji · {event_id} · {at} · execução={state} · entrega={delivery} · motivo={reason} · log={log_ref}"

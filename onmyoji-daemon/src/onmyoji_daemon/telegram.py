@@ -223,6 +223,7 @@ class AppServerTurn:
     reply_to_message_id: int | None = None
     source_trust: str = "UNTRUSTED_USER"
     sticker_only_sent: bool = False
+    silent_completion: bool = False
     location_reply_context: str = field(default_factory=lambda: secrets.token_urlsafe(32))
     generation: int = 0
     process_epoch: str = "legacy"
@@ -817,7 +818,17 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
         return self._send_active_location(active, {key: value for key, value in params.items() if key != "reply_context"})
 
     def _app_server_request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        if method != "item/tool/call" or params.get("namespace") != "telegram_gateway": raise RuntimeError("Ferramenta do gateway não autorizada.")
+        if method != "item/tool/call": raise RuntimeError("Ferramenta do gateway não autorizada.")
+        if params.get("namespace") == "onmyoji_gateway":
+            active = self._gateway_tool_active(params)
+            if params.get("tool") != "complete_silently" or params.get("arguments") not in ({}, None):
+                raise RuntimeError("Chamada de conclusão silenciosa inválida.")
+            active.silent_completion = True
+            with self.database_lock, self.database:
+                self.database.execute("UPDATE execution_turns SET silent_completion=1 WHERE execution_id=?", (active.execution_id,))
+            self._diagnostic("event.silent_completion_requested", execution_id=active.execution_id)
+            return {"contentItems": [{"type": "inputText", "text": json.dumps({"completed_silently": True})}], "success": True}
+        if params.get("namespace") != "telegram_gateway": raise RuntimeError("Ferramenta do gateway não autorizada.")
         thread_id, tool = params.get("threadId"), params.get("tool")
         if not isinstance(thread_id, str) or not isinstance(tool, str): raise RuntimeError("Chamada de ferramenta inválida.")
         active = self._tool_active(params)
@@ -992,11 +1003,16 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
             thread_id = ""
         revised = bool(thread_id and str(row[1] or "") != tool_contract)
         params = {"cwd": str(self.settings.project), "approvalPolicy": self.settings.approval, "sandbox": self.settings.sandbox, "developerInstructions": bundle.text + self._channel_capability_instructions()}
+        if notification:
+            params["developerInstructions"] += "\n\nEm eventos, use onmyoji_gateway.complete_silently para concluir com sucesso sem enviar ao canal. Não produza resposta final vazia sem chamar essa ferramenta."
         model, _effort = self._execution_preferences(chat_id)
         if model: params["model"] = model
         if thread_id:
             try:
-                client.request("thread/resume", {"threadId": thread_id, **params})
+                resume = {"threadId": thread_id, **params}
+                if notification:
+                    resume["dynamicTools"] = self._notification_tools()
+                client.request("thread/resume", resume)
                 with self.database_lock:
                     if generation != self._generation(chat_id): raise DeliverySuppressed("Conversa reiniciada durante a retomada da thread.")
                     if revised:
@@ -1014,6 +1030,7 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
                         self.database.execute("UPDATE conversations SET codex_thread_id=NULL, instruction_baseline_hash=NULL, updated_at=? WHERE chat_id=? AND generation=?", (time.time(), str(chat_id), generation)); self.database.commit()
                 self._diagnostic("thread.reset", conversation=str(chat_id), reason="resume_missing")
         tools = [{"type": "namespace", "name": "telegram_gateway", "description": "Interface restrita à DM Telegram ativa.", "tools": [{"type": "function", "name": "get_channel_state", "description": "Consulta o modo de resposta da conversa ativa.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "set_reply_mode", "description": "Define a resposta final como texto ou áudio nesta conversa.", "inputSchema": {"type": "object", "properties": {"mode": {"type": "string", "enum": ["text", "audio"]}}, "required": ["mode"], "additionalProperties": False}}, {"type": "function", "name": "get_outbox", "description": "Reserva o diretório exclusivo deste turno para mídia recém-criada.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "send_file", "description": "Envia arquivo do outbox por file_name ou arquivo existente em raiz autorizada por file_path. Caminho direto exige owner autorizado.", "inputSchema": {"type": "object", "properties": {"file_name": {"type": "string"}, "file_path": {"type": "string"}, "kind": {"type": "string", "enum": ["photo", "document", "audio"]}, "caption": {"type": "string"}}, "required": ["kind"], "additionalProperties": False}}, {"type": "function", "name": "list_stickers", "description": "Lista IDs e contextos das figurinhas pré-cadastradas para a conversa ativa.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}, {"type": "function", "name": "send_sticker", "description": "Envia uma figurinha pré-cadastrada pelo seu ID, sem legenda.", "inputSchema": {"type": "object", "properties": {"sticker_id": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["sticker_id"], "additionalProperties": False}}, {"type": "function", "name": "list_attachments", "description": "Lista os metadados dos anexos retidos na conversa atual.", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False}}, {"type": "function", "name": "materialize_attachment", "description": "Copia um anexo retido para o staging seguro do turno atual.", "inputSchema": {"type": "object", "properties": {"attachment_id": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["attachment_id"], "additionalProperties": False}}]}]
+        tools.extend(self._notification_tools())
         tools[0]["tools"].extend([{"type": "function", "name": "send_message", "description": "Envia mensagem adicional somente à DM Telegram ativa; pode expirar automaticamente.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "minLength": 1, "maxLength": 4000}, "ttl_seconds": {"type": "integer", "minimum": 0, "maximum": 86400}, "protect_content": {"type": "boolean"}}, "required": ["text"], "additionalProperties": False}}, {"type": "function", "name": "ask_menu", "description": "Exibe opções ao owner da DM ativa e aguarda a seleção com prazo limitado.", "inputSchema": {"type": "object", "properties": {"question": {"type": "string", "minLength": 1, "maxLength": 4000}, "options": {"type": "array", "minItems": 2, "maxItems": 20, "items": {"type": "object", "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 64}, "label": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["id", "label"], "additionalProperties": False}}, "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": 300}, "protect_content": {"type": "boolean"}}, "required": ["question", "options"], "additionalProperties": False}}])
         tools[0]["description"] = "Interface restrita à conversa Telegram ativa. Cada ferramenta declara o escopo em que funciona."
         tools[0]["tools"].append({"type": "function", "name": "send_location", "description": "Envia um ponto geográfico fixo nativo somente à conversa ativa. Exige origem autorizada e mídia de saída habilitada; não acompanha localização ao vivo.", "inputSchema": {"type": "object", "properties": {"latitude": {"type": "number", "minimum": -90, "maximum": 90}, "longitude": {"type": "number", "minimum": -180, "maximum": 180}, "horizontal_accuracy": {"type": "number", "minimum": 0, "maximum": 1500, "description": "Raio de incerteza opcional em metros; omita quando desconhecido."}}, "required": ["latitude", "longitude"], "additionalProperties": False}})

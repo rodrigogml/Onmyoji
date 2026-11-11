@@ -158,7 +158,7 @@ class GatewayStore:
         if attachment_columns and "transcription" not in attachment_columns:
             self.db.execute("ALTER TABLE conversation_attachments ADD COLUMN transcription TEXT")
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(execution_turns)")}
-        for name, definition in (("terminal_text", "TEXT"), ("final_item_id", "TEXT"), ("reply_mode", "TEXT"), ("delete_thoughts", "INTEGER"), ("delivery_state", "TEXT"), ("user_cancelled", "INTEGER NOT NULL DEFAULT 0")):
+        for name, definition in (("terminal_text", "TEXT"), ("final_item_id", "TEXT"), ("reply_mode", "TEXT"), ("delete_thoughts", "INTEGER"), ("delivery_state", "TEXT"), ("user_cancelled", "INTEGER NOT NULL DEFAULT 0"), ("silent_completion", "INTEGER NOT NULL DEFAULT 0")):
             if name not in columns:
                 self.db.execute(f"ALTER TABLE execution_turns ADD COLUMN {name} {definition}")
         self.db.execute("CREATE TABLE IF NOT EXISTS related_work_monitor(work_id TEXT PRIMARY KEY, deadline REAL NOT NULL, poll_after REAL NOT NULL, last_process_epoch TEXT)")

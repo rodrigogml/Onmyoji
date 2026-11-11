@@ -534,7 +534,7 @@ class ExecutionGateway:
                 active.progress_failed = True
 
     def _terminal_answer(self, active: Any) -> str | None:
-        if active.suppressed or active.status == "completed" and active.sticker_only_sent:
+        if active.suppressed or active.status == "completed" and (active.sticker_only_sent or active.silent_completion):
             return None
         if active.user_cancelled:
             return "O turno foi cancelado. As mensagens ainda na fila foram preservadas. Efeitos externos já iniciados podem exigir conferência."
@@ -750,7 +750,7 @@ class ExecutionGateway:
             if active.status == "completed":
                 self._mark_external(conversation, external_ids)
             if slot:
-                self.store.terminal(slot.identifier, active.status)
+                self.store.terminal(slot.identifier, "completed_silent" if active.status == "completed" and active.silent_completion else active.status)
             if active.suppressed:
                 return None, active.reply_mode
             if active.sticker_only_sent and active.status == "completed":
@@ -783,10 +783,10 @@ class ExecutionGateway:
                     with self.database_lock, self.database:
                         self.database.execute("UPDATE execution_turns SET state='uncertain',result='terminality_missing' WHERE execution_id=?", (slot.identifier,))
                 elif row and row[0] == "accepted" and active.completed.is_set() and active.status in {"completed", "interrupted", "failed"}:
-                    self.store.terminal(slot.identifier, active.status)
+                    self.store.terminal(slot.identifier, "completed_silent" if active.status == "completed" and active.silent_completion else active.status)
                     return self._terminal_answer(active), active.reply_mode
             if slot and active.completed.is_set():
-                self.store.terminal(slot.identifier, active.status)
+                self.store.terminal(slot.identifier, "completed_silent" if active.status == "completed" and active.silent_completion else active.status)
             raise
         finally:
             with self.app_server_lock:
@@ -857,7 +857,8 @@ class ExecutionGateway:
                 active.failure_detail = self._turn_failure_detail(turn)
             if active.inbox_id:
                 delete = active.delete_on_finish if active.delete_on_finish is not None else self._conversation_settings(active.conversation_id)["delete_thoughts"]
-                self.store.save_terminal_output(active.execution_id, active.status, self._terminal_answer(active), active.final_item_id, active.reply_mode, delete)
+                result = "completed_silent" if active.status == "completed" and active.silent_completion else active.status
+                self.store.save_terminal_output(active.execution_id, result, self._terminal_answer(active), active.final_item_id, active.reply_mode, delete)
                 if active.status == "completed" and active.sticker_only_sent and getattr(active, "origin", "telegram") == "event":
                     with self.database_lock, self.database:
                         self.database.execute("UPDATE notification_receipts SET delivery_state='confirmed' WHERE inbox_id=?", (active.inbox_id,))
@@ -944,11 +945,18 @@ class ExecutionGateway:
             raise RuntimeError("Ferramenta sem turno ativo ou pertencente a contexto encerrado.")
         return active
 
+    def _gateway_tool_active(self, params: dict[str, Any]) -> Any:
+        context = getattr(self._tool_local, "event", None)
+        active = self._correlate(params, context)
+        if not active or getattr(active, "origin", "telegram") != "event" or active.suppressed or active.cancel_requested or active.completed.is_set() or active.generation != self._generation(active.conversation_id):
+            raise RuntimeError("Controle geral sem evento ativo ou pertencente a contexto encerrado.")
+        return active
+
     def _app_request_event(self, method: str, params: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
         self._tool_local.event = event
         active = None
         try:
-            active = self._tool_active(params)
+            active = self._gateway_tool_active(params) if params.get("namespace") == "onmyoji_gateway" else self._tool_active(params)
             with active.cleanup_lock:
                 active.tool_count += 1
             return self._app_server_request(method, params)
@@ -1323,14 +1331,16 @@ class ExecutionGateway:
                     final_item = next((item for item in reversed(turn.get("items", [])) if isinstance(item, dict) and item.get("type") == "agentMessage" and item.get("phase") in {None, "final_answer"} and isinstance(item.get("text"), str)), {})
                     final = final_item.get("text", "")
                     with self.database_lock, self.database:
-                        owner = self.database.execute("SELECT e.generation,e.reply_mode,e.final_item_id,e.user_cancelled,COALESCE(i.origin,'telegram') FROM execution_turns e LEFT JOIN inbox_items i ON i.execution_id=e.execution_id WHERE e.execution_id=? LIMIT 1", (execution,)).fetchone()
+                        owner = self.database.execute("SELECT e.generation,e.reply_mode,e.final_item_id,e.user_cancelled,COALESCE(i.origin,'telegram'),e.silent_completion FROM execution_turns e LEFT JOIN inbox_items i ON i.execution_id=e.execution_id WHERE e.execution_id=? LIMIT 1", (execution,)).fetchone()
                         self.database.execute("UPDATE execution_turns SET turn_id=? WHERE execution_id=?", (turn.get("id"), execution))
-                    answer = (final or (None if owner and owner[4] == "event" else "O agente concluiu o turno sem uma resposta textual.")) if turn["status"] == "completed" else "Resposta parcial; o turno foi interrompido ou falhou.\n\n" + final if final else "O agente não conseguiu concluir esta solicitação."
+                    silent = bool(owner and owner[5] and turn["status"] == "completed")
+                    answer = None if silent else (final or (None if owner and owner[4] == "event" else "O agente concluiu o turno sem uma resposta textual.")) if turn["status"] == "completed" else "Resposta parcial; o turno foi interrompido ou falhou.\n\n" + final if final else "O agente não conseguiu concluir esta solicitação."
                     if owner and owner[3]:
                         answer = "O turno foi cancelado. As mensagens ainda na fila foram preservadas. Efeitos externos já iniciados podem exigir conferência."
                     text = answer if owner and owner[0] == self._generation(conversation) else None
                     item_id = (owner[2] if owner else None) or final_item.get("id") or "recovered-final"
-                    self.store.save_terminal_output(execution, turn["status"], text, item_id, owner[1] or "text" if owner else "text", self._conversation_settings(conversation)["delete_thoughts"])
+                    result = "completed_silent" if silent else turn["status"]
+                    self.store.save_terminal_output(execution, result, text, item_id, owner[1] or "text" if owner else "text", self._conversation_settings(conversation)["delete_thoughts"])
                     self._release_uncertain_permit(execution)
                 # Ausência no histórico nunca é prova suficiente para repetir input.
                 break

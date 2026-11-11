@@ -57,6 +57,24 @@ def test_email_account_subject_and_receipts_are_captured_per_reception(lab, monk
     assert len(destinations) == 2 and any('original' in value for value in destinations) and any('changed' in value for value in destinations)
 
 
+def test_silent_completion_tool_is_available_for_email_event_without_smtp_send(lab, monkeypatch):
+    from onmyoji_daemon.mcp.email.service import EmailService
+    enable(lab)
+    monkeypatch.setattr(EmailService, "account", lambda *_args: ({"smtp": {"protocol": "smtp"}}, {}))
+    monkeypatch.setattr(EmailService, "invoke", lambda *_args: pytest.fail("silent completion must not send email"))
+    value = event(); value["response_channel"] = {"type": "email", "value": "fixture@example.com", "account": "fixture", "subject": "Fixture"}
+    with ThreadPoolExecutor() as pool:
+        future = pool.submit(lab.gateway.handle, "notification.submit", value)
+        started = lab.client.wait_calls("turn/start")[0]
+        thread = started["threadId"]
+        assert [tool["name"] for tool in lab.client.wait_calls("thread/start")[0]["dynamicTools"]] == ["onmyoji_gateway"]
+        active = lab.gateway._slots[lab.gateway._notification_destination_key(value["response_channel"])].active
+        lab.gateway._app_request_event("item/tool/call", {"namespace": "onmyoji_gateway", "tool": "complete_silently", "arguments": {}, "threadId": thread, "turnId": active.turn_id}, {"process_epoch": lab.client.process_epoch, "rpc_id": "email-silent"})
+        lab.client.complete(thread)
+        result = future.result(3)
+    assert result["status"] == "completed" and result["delivery"] == "suppressed"
+
+
 def test_unstarted_event_reservation_returns_to_pending_on_recovery(lab):
     enable(lab, watch=False)
     gateway = lab.gateway
