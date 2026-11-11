@@ -83,7 +83,11 @@ class CodexLaunch:
 
     def direct_command(self) -> list[str]:
         """Monta o cliente nativo com a composição comum de instruções."""
-        command = [self.executable, "--config", self._developer_instruction_override()]
+        command = [
+            self.executable,
+            "--config", self._update_check_override(),
+            "--config", self._developer_instruction_override(),
+        ]
         for directory in self.writable_directories:
             command.extend(["--add-dir", directory])
         return command
@@ -113,6 +117,11 @@ class CodexLaunch:
         """Codifica a composição como valor TOML aceito por ``codex --config``."""
         return "developer_instructions=" + json.dumps(self.developer_instructions(), ensure_ascii=False)
 
+    @staticmethod
+    def _update_check_override() -> str:
+        """Impede que o CLI tente atualizar um prefixo npm que não administra."""
+        return "check_for_update_on_startup=false"
+
     def direct_launch(self) -> tuple[list[str], Path, dict[str, str]]:
         """Prepara o cliente direto e reconcilia o MCP quando houver pendência."""
         self._reconcile_mcp()
@@ -121,7 +130,7 @@ class CodexLaunch:
     def app_server_launch(self) -> tuple[list[str], Path, dict[str, str]]:
         """Prepara o App Server e reconcilia o MCP antes de iniciá-lo."""
         self._reconcile_mcp()
-        return [self.executable, "app-server", "--stdio"], self.workspace, self.environment()
+        return [self.executable, "--config", self._update_check_override(), "app-server", "--stdio"], self.workspace, self.environment()
 
     def _reconcile_mcp(self) -> None:
         """Aplica uma pendência MCP sem exigir reinicialização do gateway."""

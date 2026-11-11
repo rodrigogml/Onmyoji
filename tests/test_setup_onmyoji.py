@@ -986,6 +986,7 @@ class SystemSetupTests(unittest.TestCase):
             codex = MODULE.config_path(root).read_text(encoding="utf-8")
             self.assertIn('model = "gpt-5.6-terra"', codex)
             self.assertIn('model_reasoning_effort = "high"', codex)
+            self.assertIn("check_for_update_on_startup = false", codex)
             self.assertIn('[sandbox_workspace_write]', codex)
             self.assertNotIn("project_directory", codex)
             registration = json.loads((root / "configs" / "mcp" / "codex-registration.json").read_text(encoding="utf-8"))
@@ -1076,7 +1077,9 @@ class SystemSetupTests(unittest.TestCase):
             command = run.call_args.args[0]
             self.assertEqual(command[0], sys.executable)
             self.assertEqual(command[1], "--config")
-            self.assertTrue(command[2].startswith('developer_instructions='))
+            self.assertEqual(command[2], "check_for_update_on_startup=false")
+            self.assertEqual(command[3], "--config")
+            self.assertTrue(command[4].startswith('developer_instructions='))
             self.assertEqual(command[-2:], ["--add-dir", str(extra)])
             self.assertEqual(run.call_args.kwargs["cwd"], str(project))
             environment = run.call_args.kwargs["env"]

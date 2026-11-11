@@ -574,6 +574,9 @@ def replace_block(text: str, begin: str, end: str, block: str) -> str:
 
 def render_codex_system(data: dict[str, object]) -> str:
     lines = [SYSTEM_BEGIN, "# Gerado por setupOnmyoji.py."]
+    # O Onmyōji gerencia a atualização no prefixo local da identidade dedicada.
+    # O CLI não pode tentar instalar no prefixo global do npm durante uma sessão.
+    lines.append("check_for_update_on_startup = false")
     for key in ("model", "model_reasoning_effort", "approval_policy", "sandbox_mode"): lines.append(f"{key} = {json.dumps(data[key], ensure_ascii=False)}")
     lines.extend(["", "[sandbox_workspace_write]", f"writable_roots = {json.dumps(data['additional_writable_directories'], ensure_ascii=False)}"])
     lines.append(SYSTEM_END)
