@@ -1311,3 +1311,29 @@ def test_agent_test_respects_declined_repair(monkeypatch):
     from types import SimpleNamespace
     monkeypatch.setattr(MODULE, "prompt", lambda _text: "n")
     assert not MODULE.test_agent_with_runtime_repair(lambda: SimpleNamespace(returncode=1, stdout="No module named 'jsonschema'", stderr=""), lambda: (_ for _ in ()).throw(AssertionError("Não deve reparar")))
+
+
+def test_telegram_agent_test_uses_instance_python_under_dedicated_account(tmp_path, monkeypatch):
+    project = tmp_path / "onmyoji-daemon"
+    project.mkdir()
+    (project / "setupDaemon.py").touch()
+    manifest = tmp_path / "configs" / "daemon" / "daemon.toml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("", encoding="utf-8")
+    runtime = tmp_path / "venv" / "bin" / "python"
+    profile = {"mode": "dedicated", "validated": True, "account": "isolado", "home": str(tmp_path), "setup_python": "/usr/bin/python3"}
+    delegated = []
+    answers = iter(["t", "3", "1", "x", "x", "x"])
+    monkeypatch.setattr(MODULE, "load_execution_profile", lambda _root: profile)
+    monkeypatch.setattr(MODULE, "linux_current_user", lambda: "operador")
+    monkeypatch.setattr(MODULE.python_runtime, "python", lambda _root: runtime)
+    monkeypatch.setattr(MODULE, "prompt", lambda _label: next(answers))
+    monkeypatch.setattr(MODULE, "account_command", lambda account, home, args, env: delegated.append((account, args)) or args)
+    monkeypatch.setattr(MODULE.subprocess, "run", lambda args, **kwargs: subprocess.CompletedProcess(args, 0, stdout="[]", stderr=""))
+
+    MODULE.daemon_menu(tmp_path)
+
+    tests = [(account, args) for account, args in delegated if "test-agent" in args]
+    assert len(tests) == 1
+    assert tests[0][0] == "isolado"
+    assert tests[0][1][0] == str(runtime)

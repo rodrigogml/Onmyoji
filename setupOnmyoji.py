@@ -2459,14 +2459,17 @@ def daemon_menu(root: Path) -> None:
         except (AttributeError, OSError):
             return False
 
-    def command(arguments: list[str], quiet: bool = False, input_value: str | None = None, capture_stdout: bool = False, administrative: bool = False) -> subprocess.CompletedProcess[str]:
+    def command(arguments: list[str], quiet: bool = False, input_value: str | None = None, capture_stdout: bool = False, administrative: bool = False, use_runtime: bool = False) -> subprocess.CompletedProcess[str]:
         output = {"stdout": subprocess.PIPE} if capture_stdout else {"capture_output": quiet}
         effective = list(arguments)
         if dedicated_execution and not administrative:
             account, home = str(execution_profile["account"]), Path(str(execution_profile["home"]))
             if effective and Path(effective[0]).resolve() == Path(sys.executable).resolve(): effective[0] = str(execution_profile.get("setup_python") or "/usr/bin/python3")
+            if use_runtime: effective[0] = str(python_runtime.python(root))
             delegated_environment = {"CODEX_HOME": str(root.resolve()), "PYTHONPATH": environment["PYTHONPATH"], "PYTHONUTF8": "1", "PATH": dedicated_path(home)}
             effective = account_command(account, home, effective, delegated_environment)
+        elif use_runtime:
+            effective[0] = str(python_runtime.python(root))
         return subprocess.run(effective, cwd=str(project), env=environment, text=True, encoding="utf-8", errors="replace", input=input_value, **output)
 
     def lifecycle(action: str, extra: list[str] | None = None, input_value: str | None = None) -> bool:
@@ -2641,7 +2644,7 @@ def daemon_menu(root: Path) -> None:
                 return
             result(False, "Responda S ou N.")
         print("\n  5. Teste controlado do agente Codex")
-        if not test_agent_with_runtime_repair(lambda: command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-agent"], quiet=True), install_daemon): return
+        if not test_agent_with_runtime_repair(lambda: command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-agent"], quiet=True, use_runtime=True), install_daemon): return
         print("\n  6. Início da plataforma")
         if daemon_running():
             restart = prompt("O daemon está em execução. Reiniciar agora para aplicar a configuração? [S/n]: ").strip().casefold()
@@ -3269,7 +3272,7 @@ def daemon_menu(root: Path) -> None:
                     result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
                     if changed.returncode == 0: offer_restart()
             elif choice == "7":
-                tested = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-agent"], quiet=True)
+                tested = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-agent"], quiet=True, use_runtime=True)
                 result(tested.returncode == 0, (tested.stdout or tested.stderr).strip())
             elif choice == "8":
                 synced = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "telegram", "sync-commands"], quiet=True)
@@ -3422,7 +3425,7 @@ def daemon_menu(root: Path) -> None:
             result(True, "Codex App Server habilitado.")
 
         print("\n  6. Teste controlado do agente Codex")
-        agent = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-agent"], quiet=True)
+        agent = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-agent"], quiet=True, use_runtime=True)
         if agent.returncode != 0: result(False, (agent.stdout or agent.stderr).strip()); return
         result(True, (agent.stdout or "Agente Codex validado.").strip())
 
