@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://onmyoji.local/schemas/agent-event-v1.json",
+  "title": "Onmyoji agent event v1",
+  "type": "object",
+  "required": ["schema_version", "event_id", "prompt", "response_channel", "thread_policy"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "event_id": {"type": "string", "format": "uuidv7"},
+    "prompt": {"type": "string", "minLength": 1},
+    "thread_policy": {"type": "string", "enum": ["reuse", "new"]},
+    "response_channel": {
+      "type": "object",
+      "required": ["type", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {"type": "string", "enum": ["telegram", "email"]},
+        "value": {"type": "string", "minLength": 1},
+        "account": {"type": "string", "minLength": 1},
+        "subject": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"type": {"const": "email"}}, "required": ["type"]},
+          "then": {"required": ["account", "subject"]}
+        },
+        {
+          "if": {"properties": {"type": {"const": "telegram"}}, "required": ["type"]},
+          "then": {"not": {"anyOf": [{"required": ["account"]}, {"required": ["subject"]}]}}
+        }
+      ]
+    }
+  }
+}
