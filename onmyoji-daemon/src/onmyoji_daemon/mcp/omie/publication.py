@@ -97,7 +97,18 @@ def input_contract(operation: str) -> tuple[str, dict[str, Any]]:
             schema["anyOf"] = [{"required": [key]} for key in ("id", "integration_id")]
         return "body", schema
     if operation == "account_transfers_create":
-        return "body", obj({"integration_id", "source_account_id", "destination_account_id", "date", "amount", "document_number", "note", "project_id", "departments"}, ("integration_id", "source_account_id", "destination_account_id", "date", "amount"))
+        return "body", obj({
+            "integration_id": {"type": "string", "minLength": 1, "maxLength": 20},
+            "source_account_id": {"type": "integer", "minimum": 1},
+            "destination_account_id": {"type": "integer", "minimum": 1},
+            "date": {"type": "string", "description": "Data da transferência no formato dd/mm/aaaa."},
+            "amount": {"type": "number", "exclusiveMinimum": 0},
+            "category_code": {"type": "string", "minLength": 1, "maxLength": 20, "description": "Categoria de saída da transferência na empresa; enviada como detalhes.cCodCateg."},
+            "document_number": {"type": "string", "maxLength": 20},
+            "note": {"type": "string"},
+            "project_id": {"type": "integer", "minimum": 1},
+            "departments": {"type": "array", "items": {"type": "object"}},
+        }, ("integration_id", "source_account_id", "destination_account_id", "date", "amount", "category_code"))
     if operation.startswith(("payables_", "receivables_")):
         if operation.endswith("_list"):
             return "params", pagination(LIST_FIELDS)
@@ -152,7 +163,7 @@ NOTES = {
     "customers_create": "Valida formato de CPF/CNPJ, percorre o cadastro completo e reutiliza um único ativo. Bloqueia duplicados/inativos e consulta incompleta. Gera código de integração estável; inclusão sem retry automático. Em resposta incerta, consulte antes de repetir.",
     "account_transactions_create": "Cria lançamento direto (não cria conta a pagar). Converte account_id/date/amount para cabecalho e category_code/document_type para detalhes. Não solicita conciliação.",
     "account_transactions_update": "Altera lançamento direto preservando document_type e document_number; exige id ou integration_id.",
-    "account_transfers_create": "Cria uma transferência única entre contas diferentes; não produza dois lançamentos independentes.",
+    "account_transfers_create": "Cria uma transferência única entre contas diferentes por IncluirLancCC; não produza dois lançamentos independentes. category_code é a categoria de saída e será enviada em detalhes.cCodCateg; o tipo TRA e a conta de destino são definidos pelo conector.",
     "payables_update": "Para corrigir tipo de título pago, preserve os demais campos e consulte após alteração. Não recrie título nem cancele/repita baixa para trocar o tipo.",
 }
 

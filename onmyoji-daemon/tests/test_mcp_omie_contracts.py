@@ -205,10 +205,15 @@ class OmieContractRegressionTests(unittest.TestCase):
         self.assertEqual(build_params("category-groups.create", {"body": {"descricao": "Receitas", "tipo_grupo": "R"}}), {"descricao": "Receitas", "tipo_grupo": "R"})
 
     def test_transfer_builds_a_single_registered_transfer(self):
-        data = build_params("account-transfers.create", {"body": {"integration_id": "TR-001", "source_account_id": 10, "destination_account_id": 20, "date": "19/08/2026", "amount": 50.5, "note": "Reserva"}})
+        data = build_params("account-transfers.create", {"body": {"integration_id": "TR-001", "source_account_id": 10, "destination_account_id": 20, "date": "19/08/2026", "amount": 50.5, "category_code": "0.01.02", "note": "Reserva"}})
         self.assertEqual(data["cabecalho"], {"nCodCC": 10, "dDtLanc": "19/08/2026", "nValorLanc": 50.5})
         self.assertEqual(data["transferencia"], {"nCodCCDestino": 20})
-        self.assertEqual(data["detalhes"], {"cTipo": "TRA", "cObs": "Reserva"})
+        self.assertEqual(data["detalhes"], {"cCodCateg": "0.01.02", "cTipo": "TRA", "cObs": "Reserva"})
+
+    def test_transfer_requires_a_category_code(self):
+        with self.assertRaises(OmieError) as error:
+            build_params("account-transfers.create", {"body": {"integration_id": "TR-001", "source_account_id": 10, "destination_account_id": 20, "date": "19/08/2026", "amount": 50.5}})
+        self.assertEqual(error.exception.code, "invalid_body")
 
     def test_financial_title_and_payment_routing(self):
         title = build_params("payables.create", {"body": {"codigo_lancamento_integracao": "P-1", "codigo_cliente_fornecedor": 1, "data_vencimento": "20/08/2026", "valor_documento": 100, "codigo_categoria": "2.01", "data_previsao": "20/08/2026"}})

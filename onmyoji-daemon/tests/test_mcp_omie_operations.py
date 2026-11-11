@@ -33,7 +33,7 @@ def operation_cases():
     add("financial_movements_list account_transactions_list", "params", {"nPagina": 1, "nRegPorPagina": 10})
     add("account_transactions_get account_transactions_delete", "params", {"nCodLanc": 1})
     add("account_transactions_create account_transactions_update", "body", {"integration_id": "L1", "account_id": 1, "date": "25/10/2026", "amount": 100, "category_code": "2.01", "document_type": "NFS", "document_number": "25", "customer_id": 3})
-    add("account_transfers_create", "body", {"integration_id": "TR1", "source_account_id": 1, "destination_account_id": 2, "date": "25/10/2026", "amount": 100})
+    add("account_transfers_create", "body", {"integration_id": "TR1", "source_account_id": 1, "destination_account_id": 2, "date": "25/10/2026", "amount": 100, "category_code": "0.01.02"})
     title = {"codigo_lancamento_integracao": "T1", "codigo_cliente_fornecedor": 1, "data_vencimento": "25/10/2026", "valor_documento": 100, "codigo_categoria": "2.01"}
     add("payables_create payables_update payables_upsert receivables_create receivables_update receivables_upsert", "body", title)
     add("payables_get payables_delete receivables_get receivables_delete", "params", {"codigo_lancamento_omie": 1})
@@ -108,6 +108,9 @@ def test_publication_selects_one_profile_and_publishes_context():
     creation = next(tool for tool in tools if tool["name"] == "omie.customers_create")
     assert creation["input_schema"]["properties"]["body"]["required"] == ["cnpj_cpf", "razao_social"]
     assert "duplicados/inativos" in creation["description"]
+    transfer = next(tool for tool in tools if tool["name"] == "omie.account_transfers_create")
+    assert "category_code" in transfer["input_schema"]["properties"]["body"]["required"]
+    assert "detalhes.cCodCateg" in transfer["description"]
 
 
 def test_multiple_profiles_require_selection_and_expose_context():
@@ -143,7 +146,7 @@ def test_each_published_schema_accepts_its_valid_example(operation):
     ("bank_accounts_get", {"params": {}}),
     ("account_transactions_delete", {"params": {}}),
     ("account_transactions_create", {"body": {"integration_id": "L1"}}),
-    ("account_transfers_create", {"body": {"integration_id": "TR1", "source_account_id": 1, "destination_account_id": 1, "date": "25/10/2026", "amount": 100}}),
+    ("account_transfers_create", {"body": {"integration_id": "TR1", "source_account_id": 1, "destination_account_id": 1, "date": "25/10/2026", "amount": 100, "category_code": "0.01.02"}}),
     ("payables_create", {"body": {"codigo_lancamento_integracao": "T1"}}),
     ("receivables_get", {"params": {}}),
     ("payables_pay", {"body": {"valor": 100, "data": "25/10/2026", "codigo_conta_corrente": 1}}),

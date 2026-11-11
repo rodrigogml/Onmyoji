@@ -40,7 +40,7 @@ método Omie ou credenciais fornecidos pelo agente.
 | Clientes e fornecedores | Cadastro compartilhado; filtros em `clientesFiltro`, detalhe por identificador, páginas de até 50 registros. |
 | Tipos de documento | Catálogo sem paginação; consulta por código de até cinco caracteres. |
 | Departamentos, projetos, categorias e contas | Campos permitidos, limites e identificadores de cada ação. Paginação de cadastros aceita nomes simplificados ou nativos. |
-| Lançamentos e transferências | Converte campos simplificados para `cabecalho`, `detalhes` e `transferencia`; origem e destino diferentes. |
+| Lançamentos e transferências | Converte campos simplificados para `cabecalho`, `detalhes` e `transferencia`; origem e destino diferentes. `account_transfers_create` exige a categoria de saída, fixa `cTipo` como `TRA` e cria uma única transferência por `IncluirLancCC`. |
 | Contas a pagar/receber | Preserva tipos de documento, baixas, conciliação, distribuição e lotes. Linha digitável somente em contas a pagar, texto não vazio de até 70 caracteres sem reformatação. |
 | Recebimentos e NF-e | Converte identificadores, etapa, itens e informações financeiras para os envelopes específicos da Omie. |
 
@@ -49,7 +49,15 @@ Exemplos com um único perfil habilitado:
 ```json
 {"tool":"omie.customers_list","arguments":{"params":{"page":1,"page_size":50,"clientesFiltro":{"cnpj_cpf":"012.345.678-90"}}}}
 {"tool":"omie.payables_update","arguments":{"confirm":true,"body":{"codigo_lancamento_omie":123,"codigo_tipo_documento":"FAT"}}}
+{"tool":"omie.account_transfers_create","arguments":{"confirm":true,"body":{"integration_id":"TR-20261111-001","source_account_id":123,"destination_account_id":456,"date":"11/11/2026","amount":100.00,"category_code":"0.01.02","note":"Transferência entre contas da empresa"}}}
 ```
+
+Na transferência, `category_code` é convertido para `detalhes.cCodCateg`, o
+conector define `detalhes.cTipo` como `TRA` e a conta de destino é enviada em
+`transferencia.nCodCCDestino`. A categoria deve ser a categoria de saída válida
+na empresa; consulte o cadastro de categorias quando não houver certeza. A Omie
+gera os reflexos de débito e crédito a partir dessa única inclusão, portanto o
+agente não deve criar dois lançamentos manuais.
 
 As listagens retornam uma página por chamada em `data`, preservando os campos e
 metadados nativos. O agente deve percorrer as demais páginas quando necessário.

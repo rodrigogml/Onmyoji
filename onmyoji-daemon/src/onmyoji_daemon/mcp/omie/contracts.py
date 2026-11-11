@@ -453,13 +453,13 @@ def _build_params(operation: str, request: Mapping[str, Any]) -> dict[str, Any]:
             result["departamentos"] = transaction["departments"]
         return result
     if operation == "account-transfers.create":
-        transfer = copy_fields(body, {"integration_id", "source_account_id", "destination_account_id", "date", "amount", "document_number", "note", "project_id", "departments"})
-        for field in ("integration_id", "source_account_id", "destination_account_id", "date", "amount"):
+        transfer = copy_fields(body, {"integration_id", "source_account_id", "destination_account_id", "date", "amount", "category_code", "document_number", "note", "project_id", "departments"})
+        for field in ("integration_id", "source_account_id", "destination_account_id", "date", "amount", "category_code"):
             if field not in transfer:
                 fail("invalid_body", f"{field} é obrigatório.")
         if transfer["source_account_id"] == transfer["destination_account_id"]:
             fail("invalid_body", "A conta de origem deve ser diferente da conta de destino.")
-        result = {"cCodIntLanc": require_string(transfer["integration_id"], "integration_id", max_length=20), "cabecalho": {"nCodCC": transfer["source_account_id"], "dDtLanc": transfer["date"], "nValorLanc": transfer["amount"]}, "detalhes": {"cTipo": "TRA"}, "transferencia": {"nCodCCDestino": transfer["destination_account_id"]}}
+        result = {"cCodIntLanc": require_string(transfer["integration_id"], "integration_id", max_length=20), "cabecalho": {"nCodCC": transfer["source_account_id"], "dDtLanc": transfer["date"], "nValorLanc": transfer["amount"]}, "detalhes": {"cCodCateg": require_string(transfer["category_code"], "category_code", max_length=20), "cTipo": "TRA"}, "transferencia": {"nCodCCDestino": transfer["destination_account_id"]}}
         for source, target in (("document_number", "cNumDoc"), ("note", "cObs"), ("project_id", "nCodProjeto")):
             if source in transfer:
                 result["detalhes"][target] = transfer[source]
