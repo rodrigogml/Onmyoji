@@ -11,7 +11,7 @@ from onmyoji_daemon.mcp.memory.tools import MemoryToolRegistry
 from onmyoji_daemon.mcp.workflows import WorkflowRegistry
 
 
-def enable(root: Path, max_results: int = 5) -> McpConfiguration:
+def enable(root: Path, max_results: int = 50) -> McpConfiguration:
     configuration = McpConfiguration(root)
     configuration.save_memory({"schema_version": 1, "enabled": True, "max_results": max_results})
     return configuration
@@ -23,11 +23,12 @@ def instruction(service: MemoryService, condition: str = "Quando o código valid
 
 def test_configuration_has_one_enabled_state_and_bounded_search(tmp_path: Path) -> None:
     configuration = McpConfiguration(tmp_path)
-    assert configuration.memory() == {"schema_version": 1, "enabled": False, "max_results": 5}
+    assert configuration.memory() == {"schema_version": 1, "enabled": False, "max_results": 50}
     assert configuration.memory_tool_available() is False
     enable(tmp_path, 7)
     assert McpConfiguration(tmp_path).memory() == {"schema_version": 1, "enabled": True, "max_results": 7}
-    with pytest.raises(McpConfigurationError): configuration.save_memory({"schema_version": 1, "enabled": True, "max_results": 11})
+    configuration.save_memory({"schema_version": 1, "enabled": True, "max_results": 50})
+    with pytest.raises(McpConfigurationError): configuration.save_memory({"schema_version": 1, "enabled": True, "max_results": 51})
 
 
 def test_memory_has_no_lifecycle_and_delete_is_physical(tmp_path: Path) -> None:
@@ -62,6 +63,7 @@ def test_registry_publishes_memory_tools_only_when_enabled(tmp_path: Path) -> No
     assert {item["name"] for item in definitions} == {"memory.search_instructions", "memory.get_instruction", "memory.list_instructions", "memory.learn_instruction", "memory.revise_instruction", "memory.delete_instruction"}
     search = next(item for item in definitions if item["name"] == "memory.search_instructions")
     assert "antes de" in search["description"].casefold() and "usuário" in search["description"].casefold()
+    assert search["input_schema"]["properties"]["limit"] == {"type": "integer", "minimum": 1, "maximum": 50, "default": 50}
 
 
 def test_workflow_search_variants_match_words_without_filtering_by_domain(tmp_path: Path) -> None:

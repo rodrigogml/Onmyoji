@@ -2364,7 +2364,7 @@ def memory_menu(config: McpConfiguration) -> None:
             try: config.save_memory(data); result(True, "Memória habilitada; ferramentas e workflows MCP estarão disponíveis na próxima sessão do Codex." if not enabled else "Memória desabilitada; suas ferramentas e workflows MCP não serão publicados na próxima sessão do Codex.")
             except McpConfigurationError as error: result(False, str(error))
         elif choice == "2":
-            value = ask("Quantidade máxima por busca (1 a 10)", str(data["max_results"]), True)
+            value = ask("Quantidade máxima por busca (1 a 50)", str(data["max_results"]), True)
             if value is None: continue
             if not value.isdigit() or not 1 <= int(value) <= 10: result(False, "Informe um número entre 1 e 10."); continue
             data["max_results"] = int(value)

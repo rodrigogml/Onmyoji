@@ -14,7 +14,7 @@ class MemoryError(ValueError):
 class MemoryService:
     """Executa somente operações explícitas sobre instruções vigentes."""
 
-    def __init__(self, root: Path, *, max_results: int = 5):
+    def __init__(self, root: Path, *, max_results: int = 50):
         self.store = MemoryStore(root)
         self.max_results = max_results
 
@@ -27,7 +27,7 @@ class MemoryService:
         try:
             if operation == "search_instructions":
                 limit = arguments.get("limit", self.max_results)
-                if not isinstance(limit, int) or not 1 <= limit <= 10: raise MemoryError("limit deve estar entre 1 e 10.")
+                if not isinstance(limit, int) or not 1 <= limit <= 50: raise MemoryError("limit deve estar entre 1 e 50.")
                 return self.store.search(arguments.get("query"), limit)
             if operation == "get_instruction": return {"instruction": self.store.get(arguments.get("id"))}
             if operation == "list_instructions":

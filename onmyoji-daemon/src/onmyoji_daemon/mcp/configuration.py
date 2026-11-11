@@ -80,7 +80,7 @@ def empty_eccovox() -> dict[str, Any]:
 
 def empty_memory() -> dict[str, Any]:
     """Modelo simples da memória de instruções, sem perfis ou ciclo de vida."""
-    return {"schema_version": 1, "enabled": False, "max_results": 5}
+    return {"schema_version": 1, "enabled": False, "max_results": 50}
 
 
 def empty_data_tables() -> dict[str, Any]:
@@ -891,8 +891,8 @@ class McpConfiguration:
     def _validate_memory(data: dict[str, Any]) -> None:
         if data.get("schema_version") != 1 or type(data.get("enabled")) is not bool:
             raise McpConfigurationError("Configuração da memória MCP inválida.")
-        if not isinstance(data.get("max_results"), int) or not 1 <= data["max_results"] <= 10:
-            raise McpConfigurationError("O limite de resultados da memória deve estar entre 1 e 10.")
+        if not isinstance(data.get("max_results"), int) or not 1 <= data["max_results"] <= 50:
+            raise McpConfigurationError("O limite de resultados da memória deve estar entre 1 e 50.")
 
     @staticmethod
     def _validate_data_tables(data: dict[str, Any]) -> None:
