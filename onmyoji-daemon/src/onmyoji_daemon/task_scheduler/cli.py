@@ -1,4 +1,4 @@
-"""CLI fina: toda escrita operacional passa pelo serviço local."""
+"""CLI de consulta; definições são editadas como TOML no diretório observado."""
 import json
 from pathlib import Path
 import sys
@@ -20,13 +20,8 @@ def register(subparsers):
     task = subparsers.add_parser("task")
     actions = task.add_subparsers(dest="task_action", required=True)
     actions.add_parser("status")
-    create = actions.add_parser("create"); create.add_argument("--file", required=True)
-    for name in ("get", "update", "enable", "disable", "delete"):
+    for name in ("get",):
         action = actions.add_parser(name); action.add_argument("id")
-        if name != "get":
-            action.add_argument("--revision", type=int, required=True)
-        if name == "update":
-            action.add_argument("--file", required=True)
     listing = actions.add_parser("list")
     listing.add_argument("--sort", default="next_run_at")
     listing.add_argument("--descending", action="store_true")
@@ -35,8 +30,7 @@ def register(subparsers):
     history = actions.add_parser("history")
     history.add_argument("--id"); history.add_argument("--offset", type=int, default=0); history.add_argument("--limit", type=int, default=20)
     preview = actions.add_parser("preview")
-    source = preview.add_mutually_exclusive_group(required=True)
-    source.add_argument("--id"); source.add_argument("--file")
+    preview.add_argument("--id", required=True)
     preview.add_argument("--count", type=int, default=5)
     resolve = actions.add_parser("resolve")
     resolve.add_argument("id"); resolve.add_argument("--reason", required=True); resolve.add_argument("--confirm", action="store_true")
@@ -64,18 +58,12 @@ def request(args):
     params = {}
     if hasattr(args, "id") and args.id:
         params["id"] = args.id
-    if hasattr(args, "revision"):
-        params["revision"] = args.revision
-    if action in {"create", "update"}:
-        params["definition"] = read_json(args.file)
     if action == "list":
         params.update(sort=args.sort, descending=args.descending, offset=args.offset, limit=args.limit)
     if action == "history":
         params.update(offset=args.offset, limit=args.limit)
     if action == "preview":
         params["count"] = args.count
-        if args.file:
-            params["rule"] = read_json(args.file)
     if action == "resolve":
         params.update(reason=args.reason, confirm=args.confirm)
     return "task." + action, params, 5

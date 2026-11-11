@@ -72,7 +72,7 @@ class NotificationIngress:
             with self.database_lock:
                 row = self.database.execute("SELECT execution_state,delivery_state,reason FROM notification_receipts WHERE inbox_id=?", (identifier,)).fetchone()
             if row[0] is not None:
-                status = "uncertain" if "uncertain" in {row[0], row[1]} else "completed" if row[0] == "completed" else "failed"
+                status = "uncertain" if "uncertain" in {row[0], row[1]} else "completed" if row[0] == "completed" and row[1] == "confirmed" else "failed"
                 return {"event_id": event["event_id"], "received_at": received, "status": status, "execution": row[0], "delivery": row[1], **({"reason": row[2]} if row[2] else {})}
             if disconnected():
                 raise RpcError("Acompanhamento abandonado; execução aceita continua.", "acceptance_unknown")

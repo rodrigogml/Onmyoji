@@ -203,43 +203,48 @@ def test_invalid_transport_frames_are_logged_without_payload_or_agent(lab):
         stopped.set(); server.close(); receiver.join(2)
 
 
-def test_scheduler_notification_traverses_supervisor_and_shared_gateway(lab):
-    from datetime import timedelta
-    from types import SimpleNamespace
-    from onmyoji_daemon.supervisor import Supervisor
+def test_scheduler_event_traverses_local_http_and_shared_gateway(lab):
     from onmyoji_daemon.task_scheduler.service import TaskScheduler
-    from onmyoji_daemon.task_scheduler.calendar import instant, iso
+    from onmyoji_daemon.task_scheduler.calendar import instant
+    from onmyoji_daemon.agent_notification.http import NotificationHttpServer
     enable(lab)
     gateway = lab.gateway
-    supervisor = Supervisor(gateway.settings.root)
-    service_server = RpcServer("127.0.0.1", 0, "child-fixture", gateway.handle, long_methods=("notification.submit",))
-    managed = supervisor.services["telegram"]
-    managed.process = SimpleNamespace(poll=lambda: None, pid=1)
-    managed.port, managed.token = service_server.port, "child-fixture"
-    supervisor._endpoint()
-    supervisor_thread = threading.Thread(target=supervisor.rpc.serve_forever, args=(supervisor.stop_event,), daemon=True)
-    service_thread = threading.Thread(target=service_server.serve_forever, args=(gateway.stop_event,), daemon=True)
-    supervisor_thread.start(); service_thread.start()
+    http = NotificationHttpServer(0, gateway); http.start()
+    gateway.notification_configuration.configure({"port": http.port})
     now = instant("2026-11-10T12:00:00Z")
     scheduler = TaskScheduler(gateway.settings.root, gateway.settings.root / "configs" / "daemon" / "services" / "task-scheduler", workspace=gateway.settings.project, clock=lambda: now)
     try:
-        envelope = event("reuse"); del envelope["event_id"]
-        definition = {"schema_version": 1, "name": "RPC integrado", "enabled": True, "rule": {"type": "once", "at": iso(now - timedelta(seconds=1))}, "action": {"type": "notification", "event": envelope}}
-        created = scheduler.handle("task.create", {"definition": definition})
+        schedule = scheduler.data_dir / "schedules" / "integrated.toml"
+        schedule.parent.mkdir(parents=True, exist_ok=True)
+        schedule.write_text('''schema_version = 1
+enabled = true
+description = "HTTP integrado"
+created_at = "2026-11-10T00:00:00Z"
+[time]
+type = "once"
+at = "2026-11-10T11:59:59Z"
+[action]
+type = "event"
+[action.event]
+schema_version = 1
+prompt = "Teste integrado"
+thread_policy = "reuse"
+[action.event.response_channel]
+type = "telegram"
+value = "9"
+''', encoding="utf-8")
+        scheduler.repository.reconcile()
         scheduler.changed.clear(); scheduler.tick()
         thread = lab.client.wait_calls("turn/start")[0]["threadId"]
-        assert call("127.0.0.1", supervisor.rpc.port, supervisor.token, "notification.status")["enabled"]
         lab.client.item(thread, "Resposta do fluxo completo"); lab.client.complete(thread)
         assert scheduler.changed.wait(3)
-        history = scheduler.handle("task.history", {"id": created["id"]})["items"]
+        history = scheduler.handle("task.history", {"id": "integrated"})["items"]
         assert len(history) == 1 and history[0]["state"] == "completed"
         assert history[0]["event_id"] == history[0]["result"]["event_id"]
         assert history[0]["result"]["delivery"] == "confirmed"
         assert len(lab.client.wait_calls("turn/start")) == 1
     finally:
-        scheduler.close(); supervisor.stop_event.set(); supervisor.rpc.close()
-        gateway.stop_event.set(); service_server.close()
-        supervisor_thread.join(2); service_thread.join(2)
+        scheduler.close(); http.close()
 
 
 def test_terminal_receipt_and_journal_commit_atomically(lab, monkeypatch):
