@@ -33,6 +33,7 @@ from .telegram_persistence import GatewayStore, GatewayPersistenceError, protect
 from .telegram_process import ProcessRecoveryError
 from .telegram_delivery import GatewayDelivery, DeliveryOwner, DeliveryUncertain, DeliverySuppressed
 from .codex_capabilities import CapabilitySet
+from .codex_usage import format_rate_limits
 from .instructions import InstructionComposer, TelegramTurnContext
 from .instance import identity, telegram_configuration_path
 from .codex_execution import CodexExecutionError, CodexLaunch
@@ -1080,21 +1081,66 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
             self._record_error(f"Transcrição de voz indisponível: {error}"); return None
 
     def _usage(self, conversation_id: str) -> None:
-        """Consulta o uso do Codex para um owner sem expor diagnósticos do processo."""
+        """Consulta a franquia da conta sem iniciar um turno nem expor dados de login."""
+        generation = getattr(self._input_local, "generation", None)
+        if generation is None:
+            generation = self._generation(conversation_id)
+
+        def reply(text: str, *, ephemeral: bool = False) -> None:
+            if generation != self._generation(conversation_id):
+                return
+            telegram_chat_id, topic_values = self._telegram_address(conversation_id)
+            if ephemeral:
+                receipts = [self._ephemeral(conversation_id, text)]
+            else:
+                receipts = self._send_agent_text(telegram_chat_id, text, protect_content=True, **topic_values)
+            if generation != self._generation(conversation_id):
+                for receipt in receipts:
+                    message_id = receipt.get("message_id") if isinstance(receipt, dict) else None
+                    if isinstance(message_id, int) and self.api:
+                        try: self.api.delete(telegram_chat_id, message_id)
+                        except Exception: self._record_error("Não foi possível remover uma consulta de uso encerrada.")
+
+        if generation != self._generation(conversation_id):
+            return
+        if not self.settings.app_server_enabled:
+            reply("A consulta de consumo e franquia exige o App Server habilitado no setup do daemon.", ephemeral=True)
+            return
         try:
-            launch = CodexLaunch.from_system(self.settings.root)
-            completed = subprocess.run([launch.executable, "usage"], cwd=launch.workspace, env=launch.environment(), text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=30, check=False)
-        except (CodexExecutionError, OSError, subprocess.TimeoutExpired) as error:
+            client = self._app_client()
+            try:
+                account_state = client.request("account/read", {"refreshToken": False}, timeout=25)
+            except CodexProtocolError as error:
+                if not error.definitive_rejection or error.rpc_code != -32601:
+                    raise
+                account_state = {}
+            account = account_state.get("account")
+            account_type = account.get("type") if isinstance(account, dict) else None
+            if isinstance(account_type, str) and account_type in {"apiKey", "amazonBedrock"}:
+                mode = "chave de API" if account_type == "apiKey" else "Amazon Bedrock"
+                reply(f"O Codex desta instância usa {mode}. A franquia do plano ChatGPT não está disponível nesse modo.")
+                return
+            if "account" in account_state and account is None:
+                if account_state.get("requiresOpenaiAuth") is True:
+                    reply("Não há uma conta ChatGPT conectada ao Codex desta instância. Faça login no Codex pelo setup e consulte /usage novamente.")
+                    return
+                if account_state.get("requiresOpenaiAuth") is False:
+                    reply("O provedor configurado no Codex não disponibiliza uma franquia ChatGPT por esta consulta.")
+                    return
+            response = client.request("account/rateLimits/read", {}, timeout=25)
+            output = format_rate_limits(response)
+        except CodexProtocolError as error:
             self._record_error(error)
-            self._ephemeral(conversation_id, "Não foi possível consultar o uso do Codex agora. Tente novamente.")
+            if error.definitive_rejection and error.rpc_code in {-32600, -32601}:
+                reply("O Codex instalado não reconheceu a consulta de franquia. Atualize o Codex pelo setup e tente /usage novamente.", ephemeral=True)
+            else:
+                reply("Não foi possível consultar o consumo e a franquia do Codex agora. Tente novamente.", ephemeral=True)
             return
-        output = (completed.stdout or "").strip()
-        if completed.returncode != 0 or not output:
-            self._record_error("A consulta de uso do Codex não retornou um resultado utilizável.")
-            self._ephemeral(conversation_id, "O Codex não retornou informações de uso. Tente novamente.")
+        except (CodexExecutionError, ProcessRecoveryError, OSError) as error:
+            self._record_error(error)
+            reply("Não foi possível consultar o consumo e a franquia do Codex agora. Tente novamente.", ephemeral=True)
             return
-        telegram_chat_id, topic_values = self._telegram_address(conversation_id)
-        self._send_agent_text(telegram_chat_id, output, protect_content=True, **topic_values)
+        reply(output)
 
     def _update(self, update: dict[str, Any]) -> None:
         self._input_local.route = "auto"
@@ -1177,7 +1223,7 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
                 self._ephemeral(conversation_id, "Use /fila <texto> ou /direcionar <texto>, com anexos na mesma mensagem quando necessário."); return
             if command == "/direcionar" and not self.capabilities.supports("steering"):
                 self._ephemeral(conversation_id, "Direcionamento não certificado neste runtime; a solicitação entrará na fila.")
-        if text.startswith("/") and command not in {"/fila", "/direcionar"}: self._ephemeral(conversation_id, "Comando inválido. Use /new, /config, /fila, /direcionar, /cancel, /resolver, /channel ou /totp quando habilitado."); return
+        if text.startswith("/") and command not in {"/fila", "/direcionar"}: self._ephemeral(conversation_id, "Comando inválido. Use /new, /config, /usage, /fila, /direcionar, /cancel, /resolver, /channel ou /totp quando habilitado."); return
         structured: dict[str, Any] = {}
         location_error = ""
         try:

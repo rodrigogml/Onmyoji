@@ -84,6 +84,35 @@ concluir uma ação, o Gateway fecha aquele controle e envia o motivo
 operacional sanitizado, junto com a orientação para abrir `/config` novamente.
 O diagnóstico também registra as etapas de confirmação, renderização e falha.
 
+## Consumo e franquia do Codex
+
+O owner pode enviar `/usage` na conversa privada, inclusive em um tópico privado,
+para consultar a franquia da conta usada pelo Codex da instância. O comando
+permanece disponível durante um turno em andamento e não cria uma thread nem
+inicia geração. A resposta é protegida contra encaminhamento pelo Telegram.
+
+O Gateway consulta a autenticação com `account/read` e os limites com
+`account/rateLimits/read`, usando o App Server da instância. Exibe percentuais
+consumidos e disponíveis, duração e próxima renovação das janelas retornadas,
+além de plano, créditos adicionais e renovações extras quando esses dados forem
+informados. O horário de renovação usa o fuso local do host do daemon e inclui
+o deslocamento UTC. Limites de modelos diferentes permanecem separados.
+
+Campos ausentes são apresentados como não informados. O comando não estima
+quantidades de tokens, valores monetários ou acesso liberado a partir do
+percentual restante, nem consome créditos de renovação. Limites de gastos ou de
+uso indicados pelo servidor continuam visíveis mesmo com percentual restante.
+
+App Server desabilitado, falta de login, autenticação por chave de API ou
+Amazon Bedrock e versão do Codex sem suporte recebem orientações próprias.
+Falhas de comunicação não expõem respostas brutas, e-mails ou credenciais.
+Ao atualizar o Onmyōji, reinicie o Gateway para carregar o novo código e
+sincronizar o catálogo de comandos dos owners. Se `/usage` ainda receber
+literalmente `Comando inválido` na DM do owner, confira a atualização e o
+processo que está atendendo o bot.
+
+Contrato de referência: [Codex App Server — Rate limits](https://learn.chatgpt.com/docs/app-server#6-rate-limits-chatgpt).
+
 ## Paralelismo de respostas
 
 O menu `Gateway Telegram` permite definir de 1 a 16 conversas processadas em

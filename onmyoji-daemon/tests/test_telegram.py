@@ -336,32 +336,35 @@ def test_every_received_command_is_deleted_before_routing(tmp_path):
     assert sent == []
 
 
-def test_usage_command_runs_codex_usage_and_returns_its_output(tmp_path, monkeypatch):
+def test_usage_command_reads_codex_account_limits_without_starting_a_turn(tmp_path, monkeypatch):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
-    gateway = Gateway(Settings.load(tmp_path, data)); gateway.contacts.add_owner({"id": 9, "first_name": "owner"})
-    deleted, sent, received = [], [], {}
+    gateway = Gateway(replace(Settings.load(tmp_path, data), app_server_enabled=True)); gateway.contacts.add_owner({"id": 9, "first_name": "owner"})
+    deleted, sent, received = [], [], []
     gateway.api = type("Api", (), {"delete": lambda _self, chat, message: deleted.append((chat, message)), "send": lambda _self, chat, text, **values: sent.append((chat, text, values)) or {"message_id": 1}})()
 
-    class Launch:
-        executable = "codex"
-        workspace = tmp_path
+    class Client:
+        def request(self, method, params, timeout):
+            received.append((method, params, timeout))
+            if method == "account/read":
+                return {"account": {"type": "chatgpt", "email": "private@example.test", "planType": "pro"}, "requiresOpenaiAuth": True}
+            assert method == "account/rateLimits/read"
+            return {"rateLimits": {"planType": "pro", "primary": {"usedPercent": 25, "windowDurationMins": 300, "resetsAt": None}, "secondary": {"usedPercent": 10, "windowDurationMins": 10080, "resetsAt": None}}}
 
-        @staticmethod
-        def environment(): return {"CODEX_HOME": str(tmp_path)}
+    def unexpected_subprocess(*_args, **_kwargs):
+        raise AssertionError("/usage não deve executar o CLI como um prompt ou subcomando.")
 
-    def run(command, **kwargs):
-        received.update({"command": command, **kwargs})
-        return subprocess.CompletedProcess(command, 0, "Uso atual do Codex", "")
-
-    monkeypatch.setattr("onmyoji_daemon.telegram.CodexLaunch.from_system", lambda _root: Launch())
-    monkeypatch.setattr("onmyoji_daemon.telegram.subprocess.run", run)
-
+    monkeypatch.setattr(gateway, "_app_client", lambda: Client())
+    monkeypatch.setattr("onmyoji_daemon.telegram.subprocess.run", unexpected_subprocess)
     gateway._update({"message": {"message_id": 72, "chat": {"id": 9, "type": "private"}, "from": {"id": 9}, "text": "/usage"}})
 
     assert deleted == [(9, 72)]
-    assert received["command"] == ["codex", "usage"]
-    assert received["cwd"] == tmp_path and received["env"] == {"CODEX_HOME": str(tmp_path)} and received["timeout"] == 30
-    assert sent == [(9, "Uso atual do Codex", {"protect_content": True, "parse_mode": "HTML"})]
+    assert received == [("account/read", {"refreshToken": False}, 25), ("account/rateLimits/read", {}, 25)]
+    assert len(sent) == 1 and sent[0][0] == 9
+    assert "25% consumido" in sent[0][1] and "75% disponível" in sent[0][1]
+    assert "10% consumido" in sent[0][1] and "90% disponível" in sent[0][1]
+    assert "private@example.test" not in sent[0][1]
+    assert sent[0][2] == {"protect_content": True, "parse_mode": "HTML"}
+    assert gateway.database.execute("SELECT COUNT(*) FROM execution_turns").fetchone()[0] == 0
 
 
 def test_usage_is_included_in_the_owner_command_catalog(tmp_path):
