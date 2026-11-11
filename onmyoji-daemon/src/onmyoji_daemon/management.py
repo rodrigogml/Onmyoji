@@ -96,11 +96,11 @@ def pip_invocation(executable: Path, arguments: list[str]) -> list[str]:
     return [str(executable), "-c", wrapper, *arguments]
 
 
-def ensure_runtime(root: Path, show_progress: bool = False, allow_install: bool = True) -> tuple[bool, str]:
+def ensure_runtime(root: Path, show_progress: bool = False, allow_install: bool = True, repair: bool = False) -> tuple[bool, str]:
     """Prepara as dependências do daemon no runtime único da instância."""
     try:
         executable = daemon_python(root)
-        if _runtime_ready(executable):
+        if _runtime_ready(executable) and not repair:
             return True, "Runtime Python do Shikigami está pronto."
         if not allow_install:
             return False, "O runtime Python do Shikigami não possui os componentes necessários. Use a manutenção para instalá-los."

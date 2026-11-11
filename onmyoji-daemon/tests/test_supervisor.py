@@ -144,6 +144,17 @@ def test_runtime_check_rejects_missing_jsonschema(tmp_path, monkeypatch):
     assert "from jsonschema import Draft202012Validator, FormatChecker" in probes[0]
 
 
+def test_explicit_runtime_repair_installs_even_when_probe_succeeds(tmp_path, monkeypatch):
+    monkeypatch.setattr(management, "_runtime_ready", lambda _executable: True)
+    calls = []
+    monkeypatch.setattr(management.shared_runtime, "ensure", lambda *args: calls.append(args) or "reparado")
+
+    ok, message = management.ensure_runtime(tmp_path, repair=True)
+
+    assert ok and message == "reparado"
+    assert calls[0][1] == management.runtime_requirements()
+
+
 def test_windows_service_host_is_prepared_inside_dedicated_environment(tmp_path, monkeypatch):
     scripts = tmp_path / "configs" / "daemon" / "venv" / "Scripts"
     executable = scripts / "python.exe"; executable.parent.mkdir(parents=True); executable.touch()

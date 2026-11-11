@@ -2424,6 +2424,20 @@ def scheduler_menu(root: Path) -> None:
         else: result(False, "Opção inválida.")
 
 
+def test_agent_with_runtime_repair(run_test, repair_runtime) -> bool:
+    """Testa o agente e oferece uma única reparação quando falta um módulo Python."""
+    tested = run_test()
+    detail = (tested.stdout or tested.stderr).strip()
+    result(tested.returncode == 0, detail)
+    if tested.returncode == 0: return True
+    if not re.search(r"No module named ['\"][\w.]+['\"]", detail): return False
+    if prompt("Reparar os componentes do daemon e repetir o teste? [S/n]: ").strip().casefold() not in {"", "s", "sim"}: return False
+    if not repair_runtime(): return False
+    tested = run_test()
+    result(tested.returncode == 0, (tested.stdout or tested.stderr).strip())
+    return tested.returncode == 0
+
+
 def daemon_menu(root: Path) -> None:
     project = root / "onmyoji-daemon"
     script = project / "setupDaemon.py"
@@ -2481,7 +2495,7 @@ def daemon_menu(root: Path) -> None:
         if os.name == "nt": print("    • pywin32 — integração opcional com Serviço do Windows.")
         print("\n  [4/4] Preparando o runtime e os componentes")
         note("O daemon instala automaticamente os componentes necessários no runtime único; a manutenção manual fica em Python e bibliotecas.")
-        completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "install-runtime"], quiet=False)
+        completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "install-runtime", "--repair"], quiet=False)
         result(completed.returncode == 0, "Daemon instalado e runtime Python validado." if completed.returncode == 0 else "A instalação do daemon não foi concluída.")
         return completed.returncode == 0
 
@@ -2594,7 +2608,7 @@ def daemon_menu(root: Path) -> None:
             if not install_daemon(): return
         else:
             print("    " + Ui.text("✓", Ui.bold, Ui.green) + "  Runtime Python do daemon — instalado e validado.")
-            if prompt("  Reinstalar ou validar componentes do daemon agora? [s/N]: ").strip().casefold() in {"s", "sim"}:
+            if prompt("  Reparar e validar componentes do daemon agora? [s/N]: ").strip().casefold() in {"s", "sim"}:
                 if not install_daemon(): return
         print("\n  3. Configuração compartilhada do daemon")
         bootstrapped = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "daemon-bootstrap"], quiet=True)
@@ -2627,9 +2641,7 @@ def daemon_menu(root: Path) -> None:
                 return
             result(False, "Responda S ou N.")
         print("\n  5. Teste controlado do agente Codex")
-        tested = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-agent"], quiet=True)
-        result(tested.returncode == 0, (tested.stdout or tested.stderr).strip())
-        if tested.returncode != 0: return
+        if not test_agent_with_runtime_repair(lambda: command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-agent"], quiet=True), install_daemon): return
         print("\n  6. Início da plataforma")
         if daemon_running():
             restart = prompt("O daemon está em execução. Reiniciar agora para aplicar a configuração? [S/n]: ").strip().casefold()

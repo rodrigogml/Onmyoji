@@ -1292,3 +1292,22 @@ class SystemSetupTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+def test_agent_test_offers_repair_and_retries_missing_module(monkeypatch):
+    from types import SimpleNamespace
+    responses = iter([SimpleNamespace(returncode=1, stdout="Teste falhou: No module named 'jsonschema'", stderr=""), SimpleNamespace(returncode=0, stdout="Agente validado", stderr="")])
+    repairs = []
+    monkeypatch.setattr(MODULE, "prompt", lambda _text: "")
+    assert MODULE.test_agent_with_runtime_repair(lambda: next(responses), lambda: repairs.append(True) or True)
+    assert repairs == [True]
+
+
+def test_agent_test_does_not_repair_unrelated_failure(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(MODULE, "prompt", lambda _text: (_ for _ in ()).throw(AssertionError("Não deve pedir reparação")))
+    assert not MODULE.test_agent_with_runtime_repair(lambda: SimpleNamespace(returncode=1, stdout="Falha de autenticação", stderr=""), lambda: True)
+
+
+def test_agent_test_respects_declined_repair(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(MODULE, "prompt", lambda _text: "n")
+    assert not MODULE.test_agent_with_runtime_repair(lambda: SimpleNamespace(returncode=1, stdout="No module named 'jsonschema'", stderr=""), lambda: (_ for _ in ()).throw(AssertionError("Não deve reparar")))

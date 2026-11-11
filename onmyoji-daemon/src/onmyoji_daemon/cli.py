@@ -47,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="action", required=True); sub.add_parser("run"); sub.add_parser("interactive"); sub.add_parser("list-services")
     from .task_scheduler.cli import register as register_task_cli
     register_task_cli(sub)
-    sub.add_parser("prepare-instance"); sub.add_parser("install-instance"); sub.add_parser("install-runtime"); sub.add_parser("remove-instance")
+    sub.add_parser("prepare-instance"); sub.add_parser("install-instance"); install_runtime = sub.add_parser("install-runtime"); install_runtime.add_argument("--repair", action="store_true"); sub.add_parser("remove-instance")
     sub.add_parser("publication-diagnose", help="Diagnostica Gateway/Tunnel sem iniciar serviços ou alterar arquivos")
     sub.add_parser("process-status"); sub.add_parser("process-start")
     for action in ("process-stop", "process-force-stop"): sub.add_parser(action)
@@ -148,7 +148,7 @@ def main(argv: list[str] | None = None) -> int:
     direct = {
         "prepare-instance": lambda: management.prepare_instance(root),
         "install-instance": lambda: management.install_instance(root, show_progress=True),
-        "install-runtime": lambda: management.ensure_runtime(root, show_progress=True),
+        "install-runtime": lambda: management.ensure_runtime(root, show_progress=True, repair=args.repair),
         "remove-instance": lambda: management.remove_instance(root),
         "enable": lambda: management.set_enabled(root, args.service, True),
         "disable": lambda: management.set_enabled(root, args.service, False),
