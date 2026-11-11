@@ -8,7 +8,7 @@ import pytest
 from onmyoji_daemon.agent_notification.http import NotificationHttpServer
 from onmyoji_daemon.agent_notification.configuration import NotificationConfiguration
 from onmyoji_daemon.rpc import RpcError
-from onmyoji_daemon.task_scheduler.actions import MAX_OUTPUT_BYTES, event_action, script_action
+from onmyoji_daemon.task_scheduler.actions import MAX_OUTPUT_BYTES, email_check_action, event_action, script_action
 from onmyoji_daemon.task_scheduler.calendar import instant, iso, latest_due, next_at, validate_rule
 from onmyoji_daemon.task_scheduler.repository import SORT_FIELDS, TaskRepository
 from onmyoji_daemon.task_scheduler.service import TaskScheduler
@@ -115,6 +115,28 @@ def test_toml_is_source_of_truth_and_mtime_avoids_spurious_revision(repository):
     store.reconcile(force=True)
     assert store.get("daily")["revision"] == first["revision"] + 1
     assert store.get("daily")["action"]["event"]["prompt"] == "Alterado"
+
+
+def test_reserved_email_check_definition_uses_interval_and_account(repository):
+    store, _now, schedules = repository
+    (schedules / "onmyoji-email-default.toml").write_text('''schema_version = 1
+enabled = true
+description = "Checagem automática"
+created_at = "2026-11-10T00:00:00Z"
+managed_by = "onmyoji.email-monitor"
+[time]
+type = "interval"
+anchor_at = "2026-11-10T00:00:00Z"
+every_seconds = 900
+[action]
+type = "email_check"
+account = "default"
+timeout_seconds = 300
+''', encoding="utf-8")
+    store.reconcile()
+    value = store.get("onmyoji-email-default")
+    assert value["status"] == "enabled" and value["action"] == {"type": "email_check", "account": "default", "timeout_seconds": 300}
+    assert value["expression"] == "900s"
 
 
 def test_sort_keeps_missing_values_last_and_id_as_stable_tiebreak(repository):
@@ -310,6 +332,27 @@ def test_event_action_generates_occurrence_uuid_and_calls_local_http(tmp_path):
         server.close()
     assert state == "completed" and reason is None
     assert gateway.events == [({**occurrence["snapshot"]["action"]["event"], "event_id": occurrence["event_id"]}, True)]
+
+
+def test_email_check_action_uses_mcp_runtime_entry_without_agent(tmp_path, monkeypatch):
+    root = tmp_path / "instance"; root.mkdir(); runtime = tmp_path / "mcp-python"; runtime.write_text("", encoding="utf-8")
+    observed = {}
+    class Process:
+        returncode = 0
+        def __init__(self, command, **kwargs): observed.update(command=command, kwargs=kwargs); self.stdout = self.stderr = None
+        def poll(self): return 0
+        def communicate(self, timeout): return b'{"ok":true,"result":{"processed":0}}', b""
+    class Group:
+        def __init__(self, process): pass
+        def close(self): pass
+    monkeypatch.setattr("onmyoji_daemon.task_scheduler.actions.mcp_runtime_python", lambda _root: runtime)
+    monkeypatch.setattr("onmyoji_daemon.task_scheduler.actions.subprocess.Popen", Process)
+    monkeypatch.setattr("onmyoji_daemon.task_scheduler.actions.ServiceProcessGroup", Group)
+    occurrence = {"snapshot": {"action": {"type": "email_check", "account": "default", "timeout_seconds": 300}}}
+    state, result, reason = email_check_action(root, occurrence, threading.Event(), before_dispatch=lambda: True)
+    assert state == "completed" and reason is None and result["result"]["processed"] == 0
+    assert observed["command"][:4] == [str(runtime), "-B", "-m", "onmyoji_daemon.mcp.email.monitor"]
+    assert "agent_notification" not in " ".join(observed["command"])
 
 
 def test_service_is_read_only_and_lists_all_ten_sort_fields(tmp_path):

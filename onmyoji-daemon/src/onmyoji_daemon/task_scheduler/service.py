@@ -9,7 +9,7 @@ import threading
 import time
 import tomllib
 
-from .actions import event_action, script_action
+from .actions import email_check_action, event_action, script_action
 from .repository import TaskRepository
 from ..rpc import RpcError, RpcServer
 
@@ -98,8 +98,11 @@ class TaskScheduler:
             if self.stop_event.is_set():
                 return
             before_dispatch = lambda: self.repository.begin(occurrence["id"])
-            if occurrence["snapshot"]["action"]["type"] == "event":
+            action_type = occurrence["snapshot"]["action"]["type"]
+            if action_type == "event":
                 state, result, reason = event_action(self.root, occurrence, before_dispatch=before_dispatch)
+            elif action_type == "email_check":
+                state, result, reason = email_check_action(self.root, occurrence, self.stop_event, before_dispatch=before_dispatch)
             else:
                 state, result, reason = script_action(self.root, self.workspace, occurrence, self.stop_event, before_dispatch=before_dispatch)
             if reason == "service_stopping_before_action":

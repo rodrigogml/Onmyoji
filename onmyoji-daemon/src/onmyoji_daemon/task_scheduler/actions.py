@@ -13,6 +13,7 @@ import threading
 import time
 
 from ..agent_notification.configuration import NotificationConfiguration
+from ..mcp.runtime import mcp_runtime_python
 from ..supervision.component.process_group import ServiceProcessGroup
 
 MAX_OUTPUT_BYTES = 10 * 1024 * 1024
@@ -41,6 +42,46 @@ def event_action(root, occurrence, *, before_dispatch=None):
             connection.close()
     state = result.get("status") if result.get("status") in {"completed", "failed", "uncertain"} else "uncertain"
     return state, result, result.get("reason")
+
+
+def email_check_action(root: Path, occurrence: dict, stop: threading.Event, *, before_dispatch=None):
+    """Executa a entrada administrativa do MCP sem envolver o agente na varredura."""
+    if stop.is_set():
+        return "failed", None, "service_stopping_before_action"
+    if before_dispatch and not before_dispatch():
+        return "failed", None, "definition_withdrawn"
+    action = occurrence["snapshot"]["action"]
+    temporary = Path(root) / "tmp" / "email-monitor"
+    temporary.mkdir(parents=True, exist_ok=True)
+    environment = dict(os.environ)
+    environment.update(TEMP=str(temporary), TMP=str(temporary), TMPDIR=str(temporary), PYTHONDONTWRITEBYTECODE="1")
+    source_root = str(Path(__file__).resolve().parents[2])
+    environment["PYTHONPATH"] = source_root + (os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else "")
+    command = [str(mcp_runtime_python(Path(root))), "-B", "-m", "onmyoji_daemon.mcp.email.monitor", "--onmyoji-root", str(Path(root).resolve()), "--account", action["account"]]
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    process = None; group = None
+    try:
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=Path(root), env=environment, start_new_session=os.name != "nt", creationflags=flags)
+        group = ServiceProcessGroup(process)
+        deadline = time.monotonic() + action["timeout_seconds"]
+        while process.poll() is None:
+            if stop.wait(0.05):
+                group.close(); return "failed", None, "service_stopping"
+            if time.monotonic() >= deadline:
+                group.close(); return "failed", None, "process_timeout"
+        output, _error = process.communicate(timeout=5)
+        if len(output) > 1_048_576:
+            return "failed", None, "monitor_output_too_large"
+        try:
+            result = json.loads(output.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError):
+            return "failed", None, "invalid_monitor_output"
+        return ("completed", result, None) if process.returncode == 0 and result.get("ok") else ("failed", result, result.get("error", {}).get("code", "monitor_failed"))
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+        return "uncertain" if process is not None else "failed", None, "monitor_interrupted" if process is not None else "monitor_not_started"
+    finally:
+        if group is not None and process is not None and process.poll() is None:
+            group.close()
 
 
 def script_action(root: Path, workspace: Path, occurrence: dict, stop: threading.Event, *, before_dispatch=None):

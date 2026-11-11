@@ -25,6 +25,16 @@ def run_admin(config, ui, name, action, connection="incoming"):
     ui.result(completed.returncode == 0, "Operação de e-mail concluída." if completed.returncode == 0 else "Operação de e-mail não concluída.")
 
 
+def run_monitor_admin(config, ui, name, *, rebaseline=False):
+    """Consulta ou redefine o baseline pelo runtime MCP, fora do processo de setup."""
+    ui.note(ui.ensure_mcp_runtime(config.root))
+    source = str(Path(__file__).resolve().parents[3])
+    environment = {**os.environ, "PYTHONPATH": source, "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1"}
+    command = [str(mcp_runtime_python(config.root)), "-B", "-m", "onmyoji_daemon.mcp.email.monitor", "--onmyoji-root", str(config.root), "--account", name, "--rebaseline" if rebaseline else "--status"]
+    completed = subprocess.run(command, env=environment, check=False)
+    ui.result(completed.returncode == 0, "Estado da checagem consultado." if completed.returncode == 0 else "Não foi possível consultar a checagem.")
+
+
 def edit_endpoint(config, ui, current, kind, account_name, reuse_auth=None):
     value = copy.deepcopy(current or {})
     protocols = {"IMAP": "imap", "POP3": "pop3"} if kind == "incoming" else {"SMTP": "smtp"}
@@ -161,7 +171,7 @@ def manage(config, ui, name):
         data = config.email(); account = data["accounts"].get(name)
         if account is None: return
         ui.profile_screen("MCP · Conta de e-mail", name + " · " + ("ATIVA" if account["enabled"] else "inativa"), account)
-        for key, label in (("1.", "Identidade e descrição"), ("2.", "Recebimento IMAP / POP3"), ("3.", "Envio SMTP"), ("4.", "Pastas e cópia de enviados"), ("5.", "Raízes de anexos e arquivos"), ("6.", "Autorizar OAuth"), ("7.", "Testar conexão"), ("8.", "Desabilitar" if account["enabled"] else "Habilitar"), ("9.", "Remover conta"), ("10.", "Consultar ou cancelar OAuth remoto"), ("11.", "Checagem automática de novas mensagens")):
+        for key, label in (("1.", "Identidade e descrição"), ("2.", "Recebimento IMAP / POP3"), ("3.", "Envio SMTP"), ("4.", "Pastas e cópia de enviados"), ("5.", "Raízes de anexos e arquivos"), ("6.", "Autorizar OAuth"), ("7.", "Testar conexão"), ("8.", "Desabilitar" if account["enabled"] else "Habilitar"), ("9.", "Remover conta"), ("10.", "Consultar ou cancelar OAuth remoto"), ("11.", "Checagem automática de novas mensagens"), ("12.", "Diagnóstico ou rebaseline da checagem")):
             ui.item(key, label)
         ui.item("X.", "Voltar"); choice = ui.prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
@@ -230,6 +240,10 @@ def manage(config, ui, name):
                 monitoring = edit_monitoring(config, ui, name, account)
                 if monitoring is None: continue
                 account["monitoring"] = monitoring
+            elif choice == "12":
+                action = ui.flow_choice("Manutenção da checagem", ["Consultar diagnóstico", "Registrar caixa atual como novo baseline"], "Consultar diagnóstico")
+                if action is None: continue
+                run_monitor_admin(config, ui, name, rebaseline=action == "Registrar caixa atual como novo baseline"); continue
             else: ui.result(False, "Opção inválida."); continue
             config.save_email(data); ui.result(True, "Conta atualizada.")
         except (ValueError, OSError): ui.result(False, "Não foi possível concluir a operação. Confira configuração, cofre e conexão.")

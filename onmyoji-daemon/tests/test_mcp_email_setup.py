@@ -136,3 +136,16 @@ def test_monitoring_setup_refuses_activation_without_incoming(tmp_path):
     config = Mock(root=tmp_path); ui = Mock(); ui.flow_choice.return_value = "Habilitada"
     assert edit_monitoring(config, ui, "default", {}) is None
     ui.result.assert_called_once()
+
+
+def test_monitor_diagnostic_and_rebaseline_use_mcp_runtime(tmp_path, monkeypatch):
+    from onmyoji_daemon.mcp.email.setup import run_monitor_admin
+    from pathlib import Path
+    config = Mock(root=tmp_path); ui = Mock(); ui.ensure_mcp_runtime.return_value = "Pronto"
+    run = Mock(); run.return_value.returncode = 0
+    monkeypatch.setattr("onmyoji_daemon.mcp.email.setup.mcp_runtime_python", lambda root: Path("private-python"))
+    monkeypatch.setattr("onmyoji_daemon.mcp.email.setup.subprocess.run", run)
+    run_monitor_admin(config, ui, "default", rebaseline=True)
+    command = run.call_args.args[0]
+    assert command[:4] == ["private-python", "-B", "-m", "onmyoji_daemon.mcp.email.monitor"]
+    assert command[-1] == "--rebaseline"
