@@ -46,6 +46,8 @@ def validate_definition(value, workspace: Path, now, script_timeout_seconds: int
             raise RpcError("Comando excede o limite do executor de scripts.", "invalid_action")
         action["timeout_seconds"] = timeout
     elif action.get("type") == "email_check":
+        if value.get("managed_by") != "onmyoji.email-monitor":
+            raise RpcError("A checagem de e-mail exige uma definição gerenciada pelo Onmyōji.", "invalid_action")
         if set(action) - {"type", "account", "timeout_seconds"}:
             raise RpcError("Campos da checagem de e-mail são inválidos.", "invalid_action")
         account = action.get("account")
@@ -57,4 +59,6 @@ def validate_definition(value, workspace: Path, now, script_timeout_seconds: int
         action["timeout_seconds"] = timeout
     else:
         raise RpcError("Tipo de ação inválido.", "invalid_action")
+    if value.get("managed_by") == "onmyoji.email-monitor" and action.get("type") != "email_check":
+        raise RpcError("A marca gerenciada é reservada à checagem de e-mail.", "invalid_action")
     return result

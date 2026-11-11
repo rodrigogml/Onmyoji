@@ -139,6 +139,32 @@ timeout_seconds = 300
     assert value["expression"] == "900s"
 
 
+def test_email_check_action_and_managed_marker_are_mutually_reserved(repository):
+    store, _now, schedules = repository
+    email_check = '''schema_version = 1
+enabled = true
+description = "Manual"
+created_at = "2026-11-10T00:00:00Z"
+[time]
+type = "interval"
+anchor_at = "2026-11-10T00:00:00Z"
+every_seconds = 900
+[action]
+type = "email_check"
+account = "default"
+'''
+    (schedules / "manual-email.toml").write_text(email_check, encoding="utf-8")
+    managed_event = event_toml().replace(
+        'created_at = "2026-11-10T00:00:00Z"',
+        'created_at = "2026-11-10T00:00:00Z"\nmanaged_by = "onmyoji.email-monitor"')
+    (schedules / "managed-event.toml").write_text(managed_event, encoding="utf-8")
+
+    store.reconcile()
+
+    assert store.get("manual-email")["status"] == "invalid"
+    assert store.get("managed-event")["status"] == "invalid"
+
+
 def test_sort_keeps_missing_values_last_and_id_as_stable_tiebreak(repository):
     store, _now, schedules = repository
     for identifier in ("zeta", "alpha", "middle"):
