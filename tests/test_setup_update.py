@@ -107,7 +107,7 @@ def test_commit_local_changes_before_merge(setup_module, repos, monkeypatch):
     assert "Salva trabalho local" in git(local, "log", "--format=%s")
 
 
-def test_commit_and_push_origin_before_merge(setup_module, repos, monkeypatch, tmp_path):
+def test_commit_and_push_origin_including_merge_result(setup_module, repos, monkeypatch, tmp_path):
     _, local = repos
     origin = tmp_path / "origin.git"
     git(tmp_path, "init", "--bare", str(origin))
@@ -117,7 +117,8 @@ def test_commit_and_push_origin_before_merge(setup_module, repos, monkeypatch, t
     monkeypatch.setattr(setup_module, "prompt", lambda _label: "Salva trabalho local")
     setup_module.update_upstream(local)
     assert (local / "new.txt").exists()
-    assert git(origin, "log", "-1", "--format=%s", "refs/heads/main") == "Salva trabalho local"
+    assert git(origin, "rev-parse", "refs/heads/main") == git(local, "rev-parse", "HEAD")
+    assert "Salva trabalho local" in git(origin, "log", "--format=%s", "refs/heads/main")
     assert not git(local, "status", "--porcelain")
 
 

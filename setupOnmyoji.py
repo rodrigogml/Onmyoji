@@ -1100,6 +1100,7 @@ def update_upstream(root: Path) -> None:
             index += 1
         origin = bool(_git_remote_url(root, "origin"))
         choice = None
+        publish = False
         if paths:
             alert(f"Há {len(paths)} caminho(s) com alterações locais; escolha como preservá-las antes da atualização.")
             for path in paths: note(path)
@@ -1108,6 +1109,7 @@ def update_upstream(root: Path) -> None:
             options = (["Salvar em commit e publicar no origin"] if origin else []) + ["Salvar apenas em commit", "Guardar temporariamente em stash"]
             choice = flow_choice("Alterações locais", options, "Guardar temporariamente em stash")
             if choice is None: note("Atualização cancelada; alterações locais preservadas."); return
+            publish = "publicar" in choice
         note("Buscando somente a branch main do upstream.")
         _git(root, ["fetch", "--no-tags", "upstream", "+refs/heads/main:refs/remotes/upstream/main"], timeout=180)
         if choice and "commit" in choice.casefold():
@@ -1115,7 +1117,7 @@ def update_upstream(root: Path) -> None:
             if not message or message.casefold() == "x": note("Atualização cancelada; alterações locais preservadas."); return
             _git(root, ["add", "-A"])
             _git(root, ["commit", "-m", message], timeout=180)
-            if "publicar" in choice:
+            if publish:
                 _git(root, ["push", "origin", f"HEAD:refs/heads/{branch}"], timeout=180)
                 result(True, "Commit publicado no origin.")
         elif choice:
@@ -1137,6 +1139,8 @@ def update_upstream(root: Path) -> None:
             restored = _git(root, ["stash", "pop", "--index"], allow_failure=True, timeout=180)
             if restored.returncode:
                 raise GitSetupError((_git_detail(restored) or "Não foi possível restaurar o stash.") + f" Resolva os conflitos; o stash {stash_id} foi preservado.")
+        if publish:
+            _git(root, ["push", "origin", f"HEAD:refs/heads/{branch}"], timeout=180)
         result(True, "Atualização do Onmyōji concluída" + (" e alterações locais restauradas." if stash_id else "."))
         note("Reinicie o setup para carregar a versão atualizada.")
     except GitSetupError as error:
