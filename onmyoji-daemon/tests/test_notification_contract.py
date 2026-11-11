@@ -76,6 +76,21 @@ def test_missing_nested_field_identifies_its_full_path():
     assert str(caught.value) == "Campo obrigatório ausente."
 
 
+def test_email_requires_account_and_subject_and_telegram_forbids_them():
+    value = event()
+    value["response_channel"] = {"type": "email", "value": "destino@example.com", "account": "operations", "subject": "Resultado agendado"}
+    assert validate_event(value) == value
+    for field in ("account", "subject"):
+        invalid = deepcopy(value)
+        del invalid["response_channel"][field]
+        with pytest.raises(RpcError):
+            validate_event(invalid)
+    telegram = event()
+    telegram["response_channel"]["account"] = "operations"
+    with pytest.raises(RpcError):
+        validate_event(telegram)
+
+
 @pytest.mark.parametrize("value", [None, 1, "", "ffffffff-ffff-7fff-0fff-ffffffffffff"])
 def test_uuid7_rejects_non_uuid_and_wrong_variant(value):
     assert not is_uuid7(value)

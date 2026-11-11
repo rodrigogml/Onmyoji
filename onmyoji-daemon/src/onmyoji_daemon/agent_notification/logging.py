@@ -64,7 +64,7 @@ class NotificationLog:
                 rows = self.store.db.execute("SELECT id,at,payload FROM notification_log_journal WHERE flushed=0 ORDER BY id").fetchall()
             entries_by_day = {}
             for identifier, at, payload in rows:
-                path = self.directory / ("notification-" + at[:10] + ".jsonl")
+                path = self.directory / ("agent-gateway-" + at[:10] + ".jsonl")
                 if path not in entries_by_day:
                     entries_by_day[path] = self._recover_entries(path)
                 if identifier not in entries_by_day[path]:
@@ -81,7 +81,7 @@ class NotificationLog:
         cutoff = (now - timedelta(days=20)).date().isoformat()
         if self.directory.is_dir():
             for path in self.directory.iterdir():
-                match = re.fullmatch(r"notification-(\d{4}-\d{2}-\d{2})\.jsonl", path.name)
+                match = re.fullmatch(r"agent-gateway-(\d{4}-\d{2}-\d{2})\.jsonl", path.name)
                 if match and match[1] < cutoff and path.is_file() and not path.is_symlink():
                     path.unlink()
         with self.store.lock, self.store.db:

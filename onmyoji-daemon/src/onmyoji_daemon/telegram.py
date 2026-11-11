@@ -541,6 +541,7 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
                 self._configure_owner_commands()
             self._start_execution_state()
             threading.Thread(target=self._notification_watch, daemon=True).start()
+            self._start_notification_http()
             if receiver:
                 threading.Thread(target=self._poll, daemon=True).start()
             if self.settings.app_server_enabled:

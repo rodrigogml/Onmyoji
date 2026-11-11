@@ -20,15 +20,12 @@ def test_prepare_instance_runs_before_optional_runtime_dependencies_exist(tmp_pa
     assert "Manifesto do daemon preparado" in completed.stdout
 
 
-def test_task_cli_routes_json_stdin_and_expected_revision(monkeypatch, capsys):
-    import io
-    import sys
+def test_task_cli_is_read_only_and_routes_listing(monkeypatch, capsys):
     monkeypatch.setattr(cli, "endpoint", lambda _root: ("127.0.0.1", 1234, "token"))
     received = {}
     monkeypatch.setattr(cli, "call", lambda *args, **kwargs: received.update(method=args[3], params=args[4]) or {"id": "task"})
-    monkeypatch.setattr(sys, "stdin", io.StringIO('{"schema_version": 1}'))
-    assert cli.main(["--onmyoji-root", ".", "task", "update", "task", "--revision", "3", "--file", "-"]) == 0
-    assert received == {"method": "task.update", "params": {"id": "task", "revision": 3, "definition": {"schema_version": 1}}}
+    assert cli.main(["--onmyoji-root", ".", "task", "list", "--sort", "status", "--limit", "20"]) == 0
+    assert received == {"method": "task.list", "params": {"sort": "status", "descending": False, "offset": 0, "limit": 20}}
 
 
 def test_notification_cli_timeout_does_not_suggest_retry(monkeypatch, capsys):

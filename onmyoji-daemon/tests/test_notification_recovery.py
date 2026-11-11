@@ -30,30 +30,64 @@ def test_disconnect_after_acceptance_keeps_execution_owned_by_gateway(lab):
         stopped.set(); server.close(); receiver.join(2)
 
 
-def test_smtp_account_is_captured_at_admission_and_receipts_are_per_reception(lab, monkeypatch):
+def test_email_account_subject_and_receipts_are_captured_per_reception(lab, monkeypatch):
     from onmyoji_daemon.mcp.email.service import EmailService
     enable(lab)
-    configuration = lab.gateway.notification_configuration
-    configuration.configure({"smtp_account": "original"})
     requests = []
     monkeypatch.setattr(EmailService, "account", lambda self, name: ({"smtp": {}}, {}))
     # Conta de teste com SMTP não vazio satisfaz verificação operacional.
     monkeypatch.setattr(EmailService, "account", lambda self, name: ({"smtp": {"host": "test"}}, {}))
     monkeypatch.setattr(EmailService, "invoke", lambda self, name, method, args: requests.append((name, args)) or {"status": "accepted"})
-    value = event(); value["response_channel"] = {"type": "email", "value": "fixture@example.com"}
+    value = event(); value["response_channel"] = {"type": "email", "value": "fixture@example.com", "account": "original", "subject": "Primeiro assunto"}
     with ThreadPoolExecutor() as pool:
         future = pool.submit(lab.gateway.handle, "notification.submit", value)
         first = lab.client.wait_calls("turn/start")[0]["threadId"]
-        configuration.configure({"smtp_account": "changed"})
         lab.client.item(first, "Resposta"); lab.client.complete(first)
         assert future.result(3)["delivery"] == "confirmed"
-        second = pool.submit(lab.gateway.handle, "notification.submit", value)
+        changed = {**value, "response_channel": {**value["response_channel"], "account": "changed", "subject": "Segundo assunto"}}
+        second = pool.submit(lab.gateway.handle, "notification.submit", changed)
         thread = lab.client.wait_calls("turn/start", 2)[1]["threadId"]
         lab.client.item(thread, "Outra resposta"); lab.client.complete(thread)
         assert second.result(3)["delivery"] == "confirmed"
     assert [name for name, args in requests] == ["original", "changed"]
     assert requests[0][1]["request_id"] != requests[1][1]["request_id"]
-    assert requests[0][1]["subject"].endswith(value["event_id"])
+    assert [args["subject"] for name, args in requests] == ["Primeiro assunto", "Segundo assunto"]
+    assert all(args["request_id"].startswith("gateway:") and args["request_id"].endswith(":delivery") for name, args in requests)
+    destinations = [row[0] for row in lab.gateway.database.execute("SELECT chat_id FROM conversations WHERE chat_id LIKE 'email:%' ORDER BY chat_id")]
+    assert len(destinations) == 2 and any('original' in value for value in destinations) and any('changed' in value for value in destinations)
+
+
+def test_unstarted_event_reservation_returns_to_pending_on_recovery(lab):
+    enable(lab, watch=False)
+    gateway = lab.gateway
+    value = event()
+    receipt = {"event_id": value["event_id"], "received_at": "2026-11-10T12:00:00.000Z", "envelope": value}
+    identifier = gateway.store.enqueue("9", gateway._generation("9"), "fixture", [], {"notification": value}, origin="event", receipt=receipt)
+    gateway.notification_log.flush()
+    execution = gateway.store.reserve("9", 0, identifier, 30)
+    gateway.store.recover()
+    row = gateway.database.execute("SELECT state,execution_id FROM inbox_items WHERE id=?", (identifier,)).fetchone()
+    assert row == ("pending", None)
+    assert gateway.database.execute("SELECT state,result FROM execution_turns WHERE execution_id=?", (execution,)).fetchone() == ("terminal", "not_sent")
+    assert gateway.database.execute("SELECT execution_state FROM notification_receipts WHERE inbox_id=?", (identifier,)).fetchone() == (None,)
+    assert "9" in gateway.store.candidates()
+
+
+def test_interrupted_active_event_becomes_uncertain_without_reexecution(lab):
+    enable(lab, watch=False)
+    gateway = lab.gateway
+    value = event()
+    receipt = {"event_id": value["event_id"], "received_at": "2026-11-10T12:00:00.000Z", "envelope": value}
+    identifier = gateway.store.enqueue("9", gateway._generation("9"), "fixture", [], {"notification": value}, origin="event", receipt=receipt)
+    gateway.notification_log.flush()
+    execution = gateway.store.reserve("9", 0, identifier, 30)
+    operation = gateway.store.operation(identifier, execution, "turn/start", None)
+    gateway.store.bind(execution, "epoch", "thread", "turn")
+    gateway.store.operation_result(operation, "accepted")
+    gateway.store.recover(); gateway._notification_sync()
+    assert gateway.database.execute("SELECT state,result FROM execution_turns WHERE execution_id=?", (execution,)).fetchone() == ("uncertain", "gateway_restarted")
+    assert gateway.database.execute("SELECT execution_state,reason FROM notification_receipts WHERE inbox_id=?", (identifier,)).fetchone() == ("uncertain", "gateway_restarted")
+    assert gateway.store.blocked("9") and not lab.client.calls
 
 
 def test_delivery_inflight_on_restart_becomes_uncertain_without_resending(lab):
@@ -89,12 +123,12 @@ def test_incident_failure_does_not_recurse(lab):
     assert attempted.wait(3)
     lab.gateway._notification_sync(); lab.gateway._notification_sync()
     assert len(attempts) == 1
+    assert "log=agent-gateway-" in attempts[0][1]
 
 
 def test_detaching_rpc_during_smtp_releases_waiter_before_delivery_finishes(lab, monkeypatch):
     from onmyoji_daemon.mcp.email.service import EmailService
     enable(lab)
-    lab.gateway.notification_configuration.configure({"smtp_account": "fixture"})
     entered, release, stopped = threading.Event(), threading.Event(), threading.Event()
     monkeypatch.setattr(EmailService, "account", lambda self, name: ({"smtp": {"host": "fixture"}}, {}))
     def send(*args):
@@ -106,7 +140,7 @@ def test_detaching_rpc_during_smtp_releases_waiter_before_delivery_finishes(lab,
     receiver = threading.Thread(target=server.serve_forever, args=(stopped,), daemon=True); receiver.start()
     client = socket.create_connection(("127.0.0.1", server.port), timeout=3)
     try:
-        value = event(); value["response_channel"] = {"type": "email", "value": "fixture@example.com"}
+        value = event(); value["response_channel"] = {"type": "email", "value": "fixture@example.com", "account": "fixture", "subject": "Fixture"}
         client.sendall((json.dumps({"token": "fixture", "method": "notification.submit", "params": value}) + "\n").encode())
         thread = lab.client.wait_calls("turn/start")[0]["threadId"]
         lab.client.item(thread, "Resposta"); lab.client.complete(thread)
@@ -160,7 +194,7 @@ def test_partial_log_append_is_repaired_from_transactional_journal(lab):
     log.record("fixture", event_id="fixture")
     identifier, at = lab.gateway.database.execute("SELECT id,at FROM notification_log_journal").fetchone()
     log.directory.mkdir(parents=True)
-    path = log.directory / ("notification-" + at[:10] + ".jsonl")
+    path = log.directory / ("agent-gateway-" + at[:10] + ".jsonl")
     path.write_bytes(('{"journal_entry": ' + str(identifier) + ', "at": "broken').encode())
     log.flush(); log.flush()
     lines = path.read_text(encoding="utf-8").splitlines()
@@ -205,43 +239,48 @@ def test_invalid_transport_frames_are_logged_without_payload_or_agent(lab):
         stopped.set(); server.close(); receiver.join(2)
 
 
-def test_scheduler_notification_traverses_supervisor_and_shared_gateway(lab):
-    from datetime import timedelta
-    from types import SimpleNamespace
-    from onmyoji_daemon.supervisor import Supervisor
+def test_scheduler_event_traverses_local_http_and_shared_gateway(lab):
     from onmyoji_daemon.task_scheduler.service import TaskScheduler
-    from onmyoji_daemon.task_scheduler.calendar import instant, iso
+    from onmyoji_daemon.task_scheduler.calendar import instant
+    from onmyoji_daemon.agent_notification.http import NotificationHttpServer
     enable(lab)
     gateway = lab.gateway
-    supervisor = Supervisor(gateway.settings.root)
-    service_server = RpcServer("127.0.0.1", 0, "child-fixture", gateway.handle, long_methods=("notification.submit",))
-    managed = supervisor.services["telegram"]
-    managed.process = SimpleNamespace(poll=lambda: None, pid=1)
-    managed.port, managed.token = service_server.port, "child-fixture"
-    supervisor._endpoint()
-    supervisor_thread = threading.Thread(target=supervisor.rpc.serve_forever, args=(supervisor.stop_event,), daemon=True)
-    service_thread = threading.Thread(target=service_server.serve_forever, args=(gateway.stop_event,), daemon=True)
-    supervisor_thread.start(); service_thread.start()
+    http = NotificationHttpServer(0, gateway); http.start()
+    gateway.notification_configuration.configure({"port": http.port})
     now = instant("2026-11-10T12:00:00Z")
     scheduler = TaskScheduler(gateway.settings.root, gateway.settings.root / "configs" / "daemon" / "services" / "task-scheduler", workspace=gateway.settings.project, clock=lambda: now)
     try:
-        envelope = event("reuse"); del envelope["event_id"]
-        definition = {"schema_version": 1, "name": "RPC integrado", "enabled": True, "rule": {"type": "once", "at": iso(now - timedelta(seconds=1))}, "action": {"type": "notification", "event": envelope}}
-        created = scheduler.handle("task.create", {"definition": definition})
+        schedule = scheduler.data_dir / "schedules" / "integrated.toml"
+        schedule.parent.mkdir(parents=True, exist_ok=True)
+        schedule.write_text('''schema_version = 1
+enabled = true
+description = "HTTP integrado"
+created_at = "2026-11-10T00:00:00Z"
+[time]
+type = "once"
+at = "2026-11-10T11:59:59Z"
+[action]
+type = "event"
+[action.event]
+schema_version = 1
+prompt = "Teste integrado"
+thread_policy = "reuse"
+[action.event.response_channel]
+type = "telegram"
+value = "9"
+''', encoding="utf-8")
+        scheduler.repository.reconcile()
         scheduler.changed.clear(); scheduler.tick()
         thread = lab.client.wait_calls("turn/start")[0]["threadId"]
-        assert call("127.0.0.1", supervisor.rpc.port, supervisor.token, "notification.status")["enabled"]
         lab.client.item(thread, "Resposta do fluxo completo"); lab.client.complete(thread)
         assert scheduler.changed.wait(3)
-        history = scheduler.handle("task.history", {"id": created["id"]})["items"]
+        history = scheduler.handle("task.history", {"id": "integrated"})["items"]
         assert len(history) == 1 and history[0]["state"] == "completed"
         assert history[0]["event_id"] == history[0]["result"]["event_id"]
         assert history[0]["result"]["delivery"] == "confirmed"
         assert len(lab.client.wait_calls("turn/start")) == 1
     finally:
-        scheduler.close(); supervisor.stop_event.set(); supervisor.rpc.close()
-        gateway.stop_event.set(); service_server.close()
-        supervisor_thread.join(2); service_thread.join(2)
+        scheduler.close(); http.close()
 
 
 def test_terminal_receipt_and_journal_commit_atomically(lab, monkeypatch):

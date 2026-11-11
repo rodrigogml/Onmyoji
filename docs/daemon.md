@@ -25,11 +25,11 @@ O processo manual é iniciado desacoplado do configurador e responde pelo endpoi
 
 No Windows, a instalação do serviço requer privilégios administrativos e `pywin32` no Python que executará o daemon. No Linux, o mesmo menu gera e habilita uma unit `systemd`, também exigindo privilégios administrativos. O nome padrão é derivado da instância como `Shikigami-<IdentificadorCamelCase>`; a descrição padrão é `Shikigami <Identificador> Daemon`. Os recursos de serviço ficam registrados localmente para que outra instância nunca seja removida por engano.
 
-## Notificações ao agente e agendador
+## Eventos do agente e agendamentos
 
-`D. Daemon → N. Notificações ao agente` configura o ingresso privado/local, a conta SMTP padrão e o canal opcional de incidentes. Eventos entram na mesma inbox e no mesmo App Server do Telegram. O canal de retorno determina instruções, ferramentas e associação de thread: um evento com retorno Telegram segue o mesmo fluxo daquele chat/tópico, com `reuse` ou `new`. O ingresso pode funcionar com a recepção Telegram desligada. Não é publicado endpoint externo.
+`D. Daemon → N. Eventos do agente` configura habilitação, porta do listener loopback, incidente opcional e diagnóstico. Conta e assunto SMTP pertencem ao evento ou ao destino de incidente. Eventos entram na mesma inbox e no mesmo App Server do Telegram. O canal de retorno determina instruções, ferramentas e associação de thread: retorno Telegram segue o fluxo daquele chat/tópico, com `reuse` ou `new`. O ingresso pode funcionar com a recepção Telegram desligada e não é publicado externamente.
 
-`D. Daemon → A. Agendador` consulta e ordena definições existentes. O serviço independente `task-scheduler` executa data única, intervalo e cron, com ações de notificação ou processo local. A administração das definições é feita por CLI/RPC; o setup não as cria nem edita. Novos recursos começam desabilitados.
+`D. Daemon → A. Agendamentos` consulta e ordena definições existentes. O serviço independente `task-scheduler` observa arquivos TOML em `configs/daemon/services/task-scheduler/schedules` e executa data única ou cron, com ações de evento HTTP ou script Python relativo ao workspace. O setup é somente leitura; a administração é feita editando os arquivos. Novos recursos começam desabilitados.
 
 Consulte [contratos, diagrama, comandos e recuperação](eventos-agendamentos.md).
 

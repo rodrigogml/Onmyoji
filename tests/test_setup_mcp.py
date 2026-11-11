@@ -109,7 +109,7 @@ class McpSetupTests(unittest.TestCase):
             auth = MODULE.profile_auth("default", root)
 
         self.assertEqual(auth["linux"]["mode"], "protected_file")
-        self.assertTrue(auth["linux"]["path"].startswith(str(root / "configs" / "mcp" / "secrets")))
+        self.assertTrue(Path(auth["linux"]["path"]).is_relative_to(root.resolve() / "configs" / "mcp" / "secrets"))
 
     def test_new_vault_password_is_reused_without_a_third_prompt(self) -> None:
         auth = {"windows": {"target": "Lavelinha/MCP/KeePass/default"}}

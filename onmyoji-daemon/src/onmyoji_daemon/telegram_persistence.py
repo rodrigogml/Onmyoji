@@ -329,13 +329,16 @@ class GatewayStore:
         with self.lock:
             return self.db.execute(f"SELECT source_key,payload,conversation_id,generation FROM ingress_updates WHERE {where} ORDER BY rowid", (conversation,) if conversation is not None else ()).fetchall()
 
-    def enqueue(self, conversation: str, generation: int, text: str, attachments: list[str], context: dict[str, Any], *, structured_content: dict[str, Any] | None = None, source: str | None = None, route: str = "auto", limit: int = 50, origin: str = "telegram", receipt: dict | None = None) -> str | None:
+    def enqueue(self, conversation: str, generation: int, text: str, attachments: list[str], context: dict[str, Any], *, structured_content: dict[str, Any] | None = None, source: str | None = None, route: str = "auto", limit: int = 50, origin: str = "telegram", receipt: dict | None = None, global_limit: int = 1024) -> str | None:
         with self.lock, self.db:
             if source and self.db.execute("SELECT 1 FROM inbox_items WHERE source_key=?", (source,)).fetchone():
                 return None
             count = self.db.execute("SELECT COUNT(*) FROM inbox_items WHERE chat_id=? AND generation=? AND state IN ('pending','running','accepted','uncertain','uncertain_legacy')", (conversation, generation)).fetchone()[0]
             if count >= limit:
                 raise GatewayPersistenceError("A fila desta conversa atingiu o limite configurado.")
+            total = self.db.execute("SELECT COUNT(*) FROM inbox_items WHERE state IN ('pending','running','accepted','uncertain','uncertain_legacy')").fetchone()[0]
+            if total >= global_limit:
+                raise GatewayPersistenceError("A fila global atingiu o limite configurado.")
             sequence = self.db.execute("SELECT COALESCE(MAX(sequence),0)+1 FROM inbox_items WHERE chat_id=?", (conversation,)).fetchone()[0]
             identifier = secrets.token_urlsafe(18)
             self.db.execute("INSERT INTO inbox_items(id,chat_id,generation,text,attachment_ids,turn_context,structured_content,state,created_at,source_key,sequence,route) VALUES (?,?,?,?,?,?,?,'pending',?,?,?,?)", (identifier, conversation, generation, text, json.dumps(attachments), json.dumps(context, ensure_ascii=False), json.dumps(structured_content or {}, ensure_ascii=False, allow_nan=False), time.time(), source, sequence, route))

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+import os
 
 import pytest
 
@@ -45,6 +46,7 @@ def test_configuration_is_scoped_to_configs_mcp(tmp_path):
     assert mcp_credentials_path(tmp_path) == tmp_path.resolve() / "configs" / "mcp" / "credentials.toml"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Bits de permissão POSIX não são representados por chmod no Windows.")
 def test_linux_resolves_master_password_from_protected_file(tmp_path, monkeypatch):
     secret = tmp_path / "configs" / "mcp" / "secrets" / "profile.secret"
     secret.parent.mkdir(parents=True)
@@ -56,6 +58,7 @@ def test_linux_resolves_master_password_from_protected_file(tmp_path, monkeypatc
     assert resolver._master_password({"auth": {"linux": {"mode": "protected_file", "path": str(secret)}}}) == "master-password"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Bits de permissão POSIX não são representados por chmod no Windows.")
 def test_linux_accepts_protected_password_file_shared_with_the_instance_group(tmp_path, monkeypatch):
     secret = tmp_path / "configs" / "mcp" / "secrets" / "profile.secret"
     secret.parent.mkdir(parents=True)
@@ -64,9 +67,10 @@ def test_linux_accepts_protected_password_file_shared_with_the_instance_group(tm
     resolver = KeePassCredentialResolver(tmp_path)
     monkeypatch.setattr("onmyoji_daemon.mcp.credentials.keepass._platform_name", lambda: "linux")
 
-    assert resolver._master_password({"auth": {"linux": {"mode": "protected_file", "path": str(secret)}}) == "master-password"
+    assert resolver._master_password({"auth": {"linux": {"mode": "protected_file", "path": str(secret)}}}) == "master-password"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Bits de permissão POSIX não são representados por chmod no Windows.")
 def test_linux_rejects_protected_password_file_readable_by_other_users(tmp_path, monkeypatch):
     secret = tmp_path / "configs" / "mcp" / "secrets" / "profile.secret"
     secret.parent.mkdir(parents=True)
@@ -76,7 +80,7 @@ def test_linux_rejects_protected_password_file_readable_by_other_users(tmp_path,
     monkeypatch.setattr("onmyoji_daemon.mcp.credentials.keepass._platform_name", lambda: "linux")
 
     with pytest.raises(CredentialError, match="outros usuários"):
-        resolver._master_password({"auth": {"linux": {"mode": "protected_file", "path": str(secret)}})
+        resolver._master_password({"auth": {"linux": {"mode": "protected_file", "path": str(secret)}}})
 
 
 def test_windows_resolves_secret_without_putting_master_password_in_command(tmp_path, monkeypatch):

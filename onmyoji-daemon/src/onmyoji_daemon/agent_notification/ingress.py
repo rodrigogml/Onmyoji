@@ -17,9 +17,10 @@ from ..rpc import RpcError, disconnected
 class NotificationIngress:
     def _init_notifications(self):
         self.notification_configuration = NotificationConfiguration(self.settings.root)
-        self.notification_log = NotificationLog(self.store, self.settings.data_dir / "notification-logs")
+        self.notification_log = NotificationLog(self.store, self.settings.root / "configs" / "daemon" / "runtime" / "logs" / "agent-gateway")
         self._notification_delivery_lock = threading.Lock()
         self._notification_sync_lock = threading.Lock()
+        self._notification_http = None
 
     def _notification_handle(self, method, params):
         configuration = self.notification_configuration.load()
@@ -33,12 +34,16 @@ class NotificationIngress:
         if method in {"notification.status", "notification.diagnose"}:
             with self.database_lock:
                 counts = dict(self.database.execute("SELECT COALESCE(execution_state,'pending'),COUNT(*) FROM notification_receipts GROUP BY execution_state").fetchall())
-            checks = {"app_server_enabled": self.settings.app_server_enabled, "telegram_available": bool(self.api), "smtp_configured": bool(configuration["smtp_account"])}
+            checks = {"app_server_enabled": self.settings.app_server_enabled, "telegram_available": bool(self.api), "email_account_per_event": True}
             if method == "notification.diagnose":
                 checks.update(self._notification_diagnose(configuration))
             return {"enabled": configuration["enabled"], "configuration": configuration, "counts": counts, "checks": checks, "execution": self.store.summary()}
         if method != "notification.submit":
             raise RpcError("Operação de notificação desconhecida.", "unknown_method")
+        return self._notification_submit(params, wait=True)
+
+    def _notification_submit(self, params, *, wait):
+        configuration = self.notification_configuration.load()
         if not configuration["enabled"] or self.stop_event.is_set():
             raise RpcError("Ingresso de notificações desabilitado.", "ingress_disabled")
         try:
@@ -47,44 +52,57 @@ class NotificationIngress:
             self.notification_log.record("rejected", code=error.code, details=error.details)
             raise
         channel = event["response_channel"]
-        destination = channel["value"] if channel["type"] == "telegram" else "email:" + channel["value"].strip()
+        destination = self._notification_destination_key(channel)
         self._ensure_conversation(destination)
         generation = self._generation(destination)
         received = timestamp()
         receipt = {"event_id": event["event_id"], "received_at": received, "envelope": event}
-        context = {"notification": event, "notification_smtp_account": configuration["smtp_account"], "source_trust": "AUTHORIZED_USER", "has_text": True}
+        context = {"notification": event, "source_trust": "AUTHORIZED_USER", "has_text": True}
         if channel["type"] == "telegram":
             context["conversation_kind"] = self._conversation_kind(destination)
-        identifier = self.store.enqueue(destination, generation, event["prompt"], [], context, origin="event", receipt=receipt, limit=self.settings.max_pending_items)
+        identifier = self.store.enqueue(destination, generation, event["prompt"], [], context, origin="event", receipt=receipt, limit=50, global_limit=1024)
         try:
             self.notification_log.flush()
         except OSError:
             pass  # O journal conserva a recepção; watcher recupera antes do despacho.
         self._wake_worker(destination)
+        if not wait:
+            return {"event_id": event["event_id"], "received_at": received, "accepted": True}
         while True:
             with self.database_lock:
                 row = self.database.execute("SELECT execution_state,delivery_state,reason FROM notification_receipts WHERE inbox_id=?", (identifier,)).fetchone()
             if row[0] is not None:
-                return {"event_id": event["event_id"], "received_at": received, "execution": row[0], "delivery": row[1], **({"reason": row[2]} if row[2] else {})}
+                status = "uncertain" if "uncertain" in {row[0], row[1]} else "completed" if row[0] == "completed" and row[1] == "confirmed" else "failed"
+                return {"event_id": event["event_id"], "received_at": received, "status": status, "result": row[0], "execution": row[0], "delivery": row[1], **({"reason": row[2]} if row[2] else {})}
             if disconnected():
                 raise RpcError("Acompanhamento abandonado; execução aceita continua.", "acceptance_unknown")
             if self.stop_event.wait(0.1):
                 raise RpcError("Gateway encerrando; execução aceita permanece registrada.", "acceptance_unknown")
 
+    @staticmethod
+    def _notification_destination_key(channel):
+        if channel["type"] == "telegram":
+            return channel["value"]
+        return "email:" + json.dumps([channel["account"].strip(), channel["value"].strip()], ensure_ascii=False, separators=(",", ":"))
+
+    def _start_notification_http(self):
+        from .http import NotificationHttpServer
+        configuration = self.notification_configuration.load()
+        self._notification_http = NotificationHttpServer(configuration["port"], self, configuration["max_request_bytes"], configuration["long_limit"])
+        self._notification_http.start()
+
+    def _stop_notification_http(self):
+        server, self._notification_http = self._notification_http, None
+        if server is not None:
+            server.close()
+
     def _notification_diagnose(self, configuration):
         from .contract import SCHEMA, VALIDATOR
         VALIDATOR.check_schema(SCHEMA)
-        checks = {"contract_valid": True, "schema_version": 1, "smtp_available": False, "smtp_reason": "smtp_unconfigured", "incident_available": None}
-        if configuration["smtp_account"]:
-            try:
-                self._notification_destination({"response_channel": {"type": "email", "value": "diagnostic@example.invalid"}}, configuration["smtp_account"])
-            except Exception as error:
-                checks["smtp_reason"] = getattr(error, "code", "smtp_configuration_invalid")
-            else:
-                checks.update(smtp_available=True, smtp_reason=None)
+        checks = {"contract_valid": True, "schema_version": 1, "http_port": configuration["port"], "incident_available": None}
         if configuration["incident"]:
             try:
-                self._notification_destination({"response_channel": configuration["incident"]}, configuration["smtp_account"])
+                self._notification_destination({"response_channel": configuration["incident"]})
             except Exception as error:
                 checks.update(incident_available=False, incident_reason=getattr(error, "code", "destination_unavailable"))
             else:
@@ -116,7 +134,7 @@ class NotificationIngress:
             raise RpcError("Motivo de rejeição inválido.", "invalid_argument")
         self.notification_log.record("transport_rejected", code=code)
 
-    def _notification_destination(self, event, smtp_account=None):
+    def _notification_destination(self, event):
         channel = event["response_channel"]
         if channel["type"] == "telegram":
             if not self.api or not self._channel_registered(channel["value"]):
@@ -125,15 +143,15 @@ class NotificationIngress:
         else:
             if re.fullmatch(r"[^\s<>@]+@[^\s<>@]+", channel["value"]) is None:
                 raise RpcError("Endereço de e-mail inválido.", "destination_unavailable")
-            account = self.notification_configuration.load()["smtp_account"] if smtp_account is None else smtp_account
+            account = channel.get("account")
             if not account:
-                raise RpcError("Selecione a conta SMTP padrão.", "smtp_unconfigured")
+                raise RpcError("Informe a conta SMTP do evento.", "smtp_unconfigured")
             from ..mcp.email.service import EmailService
             configured, _limits = EmailService(self.settings.root).account(account)
             if not configured.get("smtp"):
                 raise RpcError("Conta sem SMTP.", "smtp_unconfigured")
 
-    def _notification_send(self, channel, text, key, event_id, smtp_account=None):
+    def _notification_send(self, channel, text, key, event_id):
         if channel["type"] == "telegram":
             if not self.api or not self._channel_registered(channel["value"]):
                 return "failed"
@@ -146,15 +164,15 @@ class NotificationIngress:
             except Exception as error:
                 return "failed" if getattr(error, "kind", "") == "not_sent" else "uncertain"
         from ..mcp.email.service import EmailService
-        account = self.notification_configuration.load()["smtp_account"] if smtp_account is None else smtp_account
+        account = channel.get("account")
         if not account:
             return "failed"
         try:
-            result = EmailService(self.settings.root).invoke(account, "send_message", {"confirm": True, "request_id": key, "to": [channel["value"]], "subject": "Onmyōji · evento " + event_id, "text": text})
+            result = EmailService(self.settings.root).invoke(account, "send_message", {"confirm": True, "request_id": key, "to": [channel["value"]], "subject": channel["subject"], "text": text})
             return {"accepted": "confirmed", "rejected": "failed"}.get(result.get("status"), "uncertain")
         except Exception as error:
             # Falha em persistir o recibo pode acontecer após aceite SMTP.
-            return "failed" if getattr(error, "code", "") in {"account_unavailable", "operation_unavailable", "sender_not_allowed", "invalid_argument", "recipient_required"} else "uncertain"
+            return "failed" if getattr(error, "code", "") in {"account_unavailable", "operation_unavailable", "sender_not_allowed", "invalid_argument", "recipient_required", "smtputf8_unavailable"} else "uncertain"
 
     def _notification_deliver(self, execution, event, text):
         with self._notification_delivery_lock:
@@ -164,7 +182,6 @@ class NotificationIngress:
                     return
                 self.database.execute("UPDATE notification_receipts SET delivery_state='sending' WHERE inbox_id=?", (row[0],))
                 self.database.execute("UPDATE execution_turns SET delivery_state='sending' WHERE execution_id=?", (execution,))
-            account = json.loads(row[2]).get("notification_smtp_account")
             if event["response_channel"]["type"] == "telegram":
                 from ..telegram import AppServerTurn
                 from ..telegram_delivery import DeliverySuppressed, DeliveryUncertain
@@ -189,7 +206,7 @@ class NotificationIngress:
                 except Exception:
                     state = "uncertain"
             else:
-                state = self._notification_send(event["response_channel"], text, "notification:" + row[0], event["event_id"], account)
+                state = self._notification_send(event["response_channel"], text, "gateway:" + row[0] + ":delivery", event["event_id"])
             with self.database_lock, self.database:
                 self.database.execute("UPDATE notification_receipts SET delivery_state=? WHERE inbox_id=?", (state, row[0]))
                 self.database.execute("UPDATE execution_turns SET delivery_state=? WHERE execution_id=?", ("done" if state == "confirmed" else state, execution))
@@ -213,8 +230,9 @@ class NotificationIngress:
             if execution_state not in {"terminal", "uncertain"} and input_state not in {"failed", "cancelled", "uncertain", "uncertain_legacy"}:
                 continue
             event = json.loads(raw)
-            state = "uncertain" if execution_state == "uncertain" or input_state in {"uncertain", "uncertain_legacy"} else "completed" if result == "completed" else "not_started" if result in {None, "not_started", "not_sent"} else "failed"
-            if execution_state == "terminal" and result == "completed" and thread:
+            empty_result = execution_state == "terminal" and result == "completed" and not text
+            state = "uncertain" if execution_state == "uncertain" or input_state in {"uncertain", "uncertain_legacy"} else "failed" if empty_result else "completed" if result == "completed" else "not_started" if result in {None, "not_started", "not_sent"} else "failed"
+            if execution_state == "terminal" and result == "completed" and text and thread:
                 with self.database_lock, self.database:
                     self.database.execute("UPDATE conversations SET codex_thread_id=?,instruction_baseline_hash=? WHERE chat_id=(SELECT chat_id FROM inbox_items WHERE id=?) AND generation=(SELECT generation FROM inbox_items WHERE id=?)", (thread, revision, inbox, inbox))
             if text and execution_state == "terminal" and delivery == "not_attempted":
@@ -223,7 +241,7 @@ class NotificationIngress:
                 current = self.database.execute("SELECT delivery_state FROM notification_receipts WHERE inbox_id=?", (inbox,)).fetchone()[0]
                 if current == "sending":
                     continue
-                reason = (None if current == "confirmed" else "delivery_" + current) if state == "completed" else failure_reason or result or input_state
+                reason = (None if current == "confirmed" else "delivery_" + current) if state == "completed" else "empty_agent_result" if empty_result else failure_reason or result or input_state
                 changed = self.database.execute("UPDATE notification_receipts SET execution_state=?,reason=? WHERE inbox_id=? AND (execution_state IS NULL OR execution_state!=?)", (state, reason, inbox, state)).rowcount
                 if changed:
                     self.notification_log.record("terminal", transaction=self.database, event_id=event_id, execution=state, delivery=current, output=text, reason=reason)
@@ -239,7 +257,9 @@ class NotificationIngress:
             changed = self.database.execute("UPDATE notification_receipts SET incident_state='attempted' WHERE inbox_id=? AND incident_state='pending'", (inbox,)).rowcount
         channel = self.notification_configuration.load()["incident"]
         if changed and channel and (state != "completed" or delivery != "confirmed"):
-            summary = f"Onmyōji · {event_id} · {timestamp()} · execução={state} · entrega={delivery} · motivo={reason}"
+            at = timestamp()
+            log_ref = "agent-gateway-" + at[:10] + ".jsonl"
+            summary = f"Onmyōji · {event_id} · {at} · execução={state} · entrega={delivery} · motivo={reason} · log={log_ref}"
             result = self._notification_send(channel, summary, "incident:" + inbox, event_id)
             self.notification_log.record("incident", event_id=event_id, state=result)
 
@@ -249,7 +269,7 @@ class NotificationIngress:
             try:
                 self.notification_log.flush()
                 self._notification_sync()
-                if time.monotonic() - last_purge >= 3600:
+                if time.monotonic() - last_purge >= 86400:
                     self.notification_log.purge()
                     last_purge = time.monotonic()
                 if self.store.candidates():

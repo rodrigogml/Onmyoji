@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import ExitStack
 import json
+import http.client
 import os
 from pathlib import Path
 import subprocess
@@ -11,45 +12,55 @@ import tempfile
 import threading
 import time
 
-from ..rpc import RpcError, call
+from ..agent_notification.configuration import NotificationConfiguration
 from ..supervision.component.process_group import ServiceProcessGroup
-from ..supervisor import endpoint
 
 MAX_OUTPUT_BYTES = 10 * 1024 * 1024
 
 
-def notification_action(root, occurrence, *, before_dispatch=None):
+def event_action(root, occurrence, *, before_dispatch=None):
     event = {**occurrence["snapshot"]["action"]["event"], "event_id": occurrence["event_id"]}
-    try:
-        address = endpoint(root)
-    except (OSError, ValueError, KeyError):
-        return "failed", None, "daemon_unavailable"
     if before_dispatch and not before_dispatch():
         return "failed", None, "definition_withdrawn"
+    connection = None
     try:
-        result = call(*address, "notification.submit", event, timeout=None)
-    except RpcError as error:
-        return ("uncertain" if error.code == "acceptance_unknown" else "failed"), None, error.code or "submission_failed"
-    except (OSError, ValueError):
+        port = NotificationConfiguration(Path(root)).load()["port"]
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=None)
+        body = json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        connection.request("POST", "/v1/events", body=body, headers={"Content-Type": "application/json", "Content-Length": str(len(body))})
+        response = connection.getresponse()
+        result = json.loads(response.read().decode("utf-8"))
+        if response.status != 200:
+            return "failed", result, result.get("error", {}).get("code", "submission_rejected")
+    except ConnectionRefusedError:
+        return "failed", None, "daemon_unavailable"
+    except (OSError, ValueError, json.JSONDecodeError):
         return "uncertain", None, "acceptance_unknown"
-    execution, delivery = result.get("execution"), result.get("delivery")
-    state = "completed" if execution == "completed" and delivery == "confirmed" else "uncertain" if "uncertain" in {execution, delivery} else "failed"
+    finally:
+        if connection is not None:
+            connection.close()
+    state = result.get("status") if result.get("status") in {"completed", "failed", "uncertain"} else "uncertain"
     return state, result, result.get("reason")
 
 
-def process_action(root: Path, workspace: Path, occurrence: dict, stop: threading.Event, *, before_dispatch=None):
+def script_action(root: Path, workspace: Path, occurrence: dict, stop: threading.Event, *, before_dispatch=None):
     boundary = {"dispatched": False}
     try:
-        return _process_action(root, workspace, occurrence, stop, boundary, before_dispatch)
+        return _script_action(root, workspace, occurrence, stop, boundary, before_dispatch)
     except (OSError, ValueError, subprocess.SubprocessError):
         return ("uncertain" if boundary["dispatched"] else "failed"), None, "process_interrupted" if boundary["dispatched"] else "process_preparation_failed"
 
 
-def _process_action(root: Path, workspace: Path, occurrence: dict, stop: threading.Event, boundary: dict, before_dispatch):
+def _script_action(root: Path, workspace: Path, occurrence: dict, stop: threading.Event, boundary: dict, before_dispatch):
     action = occurrence["snapshot"]["action"]
-    cwd = Path(action["cwd"]).resolve(strict=True)
-    if not cwd.is_relative_to(workspace.resolve()) or not cwd.is_dir() or not Path(action["executable"]).is_file():
-        return "failed", None, "invalid_process_path"
+    cwd = workspace.resolve(strict=True)
+    script = (cwd / action["path"]).resolve(strict=True)
+    if not script.is_relative_to(cwd) or not script.is_file() or script.suffix.casefold() != ".py":
+        return "failed", None, "invalid_script_path"
+    if stop.is_set():
+        return "failed", None, "service_stopping_before_action"
+    if before_dispatch and not before_dispatch():
+        return "failed", None, "definition_withdrawn"
     output = workspace / ".onmyoji" / "task-scheduler" / occurrence["id"]
     if not output.resolve().is_relative_to(workspace.resolve()):
         return "failed", None, "invalid_output_path"
@@ -95,11 +106,9 @@ def _process_action(root: Path, workspace: Path, occurrence: dict, stop: threadi
                 thread = threading.Thread(target=drain, args=(source, name, outputs[name]), daemon=True)
                 readers.append(thread); thread.start()
             if stop.is_set():
-                return "failed", None, "service_stopping_before_action"
-            if before_dispatch and not before_dispatch():
-                return "failed", None, "definition_withdrawn"
+                return "failed", None, "service_stopping"
             boundary["dispatched"] = True
-            process.stdin.write((json.dumps([action["executable"], *action["arguments"]]) + "\n").encode("utf-8"))
+            process.stdin.write((json.dumps([sys.executable, "-B", str(script), *action["args"]]) + "\n").encode("utf-8"))
             process.stdin.close()
             deadline = time.monotonic() + action["timeout_seconds"]
             reason = None

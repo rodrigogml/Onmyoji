@@ -9,8 +9,7 @@ import threading
 import time
 import tomllib
 
-from .actions import notification_action, process_action
-from .calendar import iso, next_at, validate_rule
+from .actions import event_action, script_action
 from .repository import TaskRepository
 from ..rpc import RpcError, RpcServer
 
@@ -29,12 +28,16 @@ class TaskScheduler:
         self.parallel = options.get("max_parallel_actions", 4)
         if type(self.parallel) is not int or not 1 <= self.parallel <= 64:
             raise RpcError("Limite de ações deve ser de 1 a 64.", "invalid_config")
-        self.repository = TaskRepository(self.data_dir / "state" / "scheduler.sqlite3", self.workspace, clock)
+        self.script_timeout_seconds = options.get("script_timeout_seconds", 900)
+        if type(self.script_timeout_seconds) is not int or not 1 <= self.script_timeout_seconds <= 604800:
+            raise RpcError("Timeout padrão de scripts inválido.", "invalid_config")
+        self.repository = TaskRepository(self.data_dir / "state" / "scheduler.sqlite3", self.workspace, clock, self.data_dir / "schedules", self.script_timeout_seconds)
         self.stop_event, self.changed = threading.Event(), threading.Event()
         self.lock = threading.Lock()
         self.active = {}
         self.last_error = None
         self.thread = None
+        self._last_reconcile = float("-inf")
 
     def handle(self, method, params):
         if method == "ping":
@@ -51,36 +54,23 @@ class TaskScheduler:
         if action == "status":
             with self.lock:
                 active = len(self.active)
-            return {"state": "running", "max_parallel_actions": self.parallel, "active": active, "counts": repository.summary(), "last_error": self.last_error}
-        if action == "create":
-            result = repository.create(params.get("definition"))
-        elif action == "get":
+            return {"state": "running", "max_parallel_actions": self.parallel, "script_timeout_seconds": self.script_timeout_seconds, "active": active, "counts": repository.summary(), "last_error": self.last_error}
+        if action == "get":
             return repository.get(params.get("id"))
         elif action == "list":
             return repository.list(**params)
-        elif action == "update":
-            result = repository.update(params.get("id"), params.get("revision"), params.get("definition"))
-        elif action in {"enable", "disable"}:
-            result = repository.set_enabled(params.get("id"), params.get("revision"), action == "enable")
-        elif action == "delete":
-            result = repository.delete(params.get("id"), params.get("revision"))
         elif action == "history":
             return repository.history(params.get("id"), params.get("offset", 0), params.get("limit", 20))
         elif action == "resolve":
             result = repository.resolve(params.get("id"), params.get("reason"), params.get("confirm"))
         elif action == "preview":
-            now = repository.clock()
-            rule = validate_rule(params.get("rule") or repository.get(params.get("id"))["rule"], now)
             count = params.get("count", 5)
             if type(count) is not int or not 1 <= count <= 100:
                 raise RpcError("Quantidade de preview deve ser de 1 a 100.", "invalid_argument")
-            instants = []
-            for _ in range(count):
-                at = next_at(rule, now)
-                if at is None:
-                    break
-                instants.append(iso(at)); now = at
-            return {"instants": instants, "timezone": rule.get("timezone", "America/Sao_Paulo")}
+            rule = params.get("time") or repository.get(params.get("id"))["time"]
+            return repository.preview(rule, count)
+        elif action in {"create", "update", "enable", "disable", "delete"}:
+            raise RpcError("Edite o arquivo TOML do agendamento; autoria remota não integra a versão 1.", "authoring_unsupported")
         else:
             raise RpcError("Operação do agendador desconhecida.", "unknown_method")
         self.changed.set()
@@ -108,10 +98,10 @@ class TaskScheduler:
             if self.stop_event.is_set():
                 return
             before_dispatch = lambda: self.repository.begin(occurrence["id"])
-            if occurrence["snapshot"]["action"]["type"] == "notification":
-                state, result, reason = notification_action(self.root, occurrence, before_dispatch=before_dispatch)
+            if occurrence["snapshot"]["action"]["type"] == "event":
+                state, result, reason = event_action(self.root, occurrence, before_dispatch=before_dispatch)
             else:
-                state, result, reason = process_action(self.root, self.workspace, occurrence, self.stop_event, before_dispatch=before_dispatch)
+                state, result, reason = script_action(self.root, self.workspace, occurrence, self.stop_event, before_dispatch=before_dispatch)
             if reason == "service_stopping_before_action":
                 return  # Reserva comprovadamente não enviada retoma no próximo startup.
             self.repository.finish(occurrence["id"], state, result, reason)
@@ -127,6 +117,7 @@ class TaskScheduler:
         while not self.stop_event.is_set():
             self.changed.clear()
             try:
+                self._reconcile_if_due()
                 self.tick()
                 if time.monotonic() - last_purge >= 86400:
                     self.repository.purge(); last_purge = time.monotonic()
@@ -134,7 +125,17 @@ class TaskScheduler:
                 self.last_error = "Falha de manutenção do agendador; consulte estado e histórico."
             self.changed.wait(1)
 
+    def _reconcile_if_due(self):
+        now = time.monotonic()
+        if now - self._last_reconcile < 5:
+            return False
+        self.repository.reconcile()
+        self._last_reconcile = now
+        return True
+
     def start(self):
+        self.repository.reconcile()
+        self._last_reconcile = time.monotonic()
         self.thread = threading.Thread(target=self._watch, daemon=True, name="task-scheduler")
         self.thread.start()
 

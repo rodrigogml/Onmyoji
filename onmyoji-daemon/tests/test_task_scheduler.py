@@ -1,42 +1,84 @@
-from datetime import datetime, timedelta, timezone
-import json
+from datetime import timedelta
 from pathlib import Path
 import sys
 import threading
 
 import pytest
 
+from onmyoji_daemon.agent_notification.http import NotificationHttpServer
+from onmyoji_daemon.agent_notification.configuration import NotificationConfiguration
 from onmyoji_daemon.rpc import RpcError
+from onmyoji_daemon.task_scheduler.actions import MAX_OUTPUT_BYTES, event_action, script_action
 from onmyoji_daemon.task_scheduler.calendar import instant, iso, latest_due, next_at, validate_rule
-from onmyoji_daemon.task_scheduler.repository import TaskRepository
+from onmyoji_daemon.task_scheduler.repository import SORT_FIELDS, TaskRepository
 from onmyoji_daemon.task_scheduler.service import TaskScheduler
-from onmyoji_daemon.task_scheduler.actions import process_action
 
 
-def definition(rule=None, enabled=True):
-    return {"schema_version": 1, "name": "Laboratório", "enabled": enabled, "rule": rule or {"type": "interval", "anchor_at": "2026-11-10T00:00:00Z", "every_seconds": 60}, "action": {"type": "notification", "event": {"schema_version": 1, "prompt": "Teste", "response_channel": {"type": "telegram", "value": "9"}, "thread_policy": "reuse"}}}
+def event_toml(*, enabled=True, time=None, prompt="Teste"):
+    time = time or 'type = "cron"\nexpression = "* * * * *"\ntimezone = "UTC"'
+    return f'''schema_version = 1
+enabled = {str(enabled).lower()}
+description = "Laboratório"
+created_at = "2026-11-10T00:00:00Z"
+
+[time]
+{time}
+
+[action]
+type = "event"
+
+[action.event]
+schema_version = 1
+prompt = "{prompt}"
+thread_policy = "reuse"
+
+[action.event.response_channel]
+type = "telegram"
+value = "9"
+'''
+
+
+def script_toml(path="job.py", *, enabled=True, time=None, timeout=900):
+    time = time or 'type = "once"\nat = "2026-11-10T00:00:00Z"'
+    timeout_line = f"timeout_seconds = {timeout}\n" if timeout is not None else ""
+    return f'''schema_version = 1
+enabled = {str(enabled).lower()}
+description = "Script"
+created_at = "2026-11-10T00:00:00Z"
+
+[time]
+{time}
+
+[action]
+type = "script"
+path = "{path}"
+args = []
+{timeout_line}
+'''
 
 
 @pytest.fixture
 def repository(tmp_path):
     workspace = tmp_path / "workspace"; workspace.mkdir()
+    schedules = tmp_path / "instance" / "schedules"; schedules.mkdir(parents=True)
     now = [instant("2026-11-10T00:00:00Z")]
-    repository = TaskRepository(tmp_path / "instance" / "state" / "scheduler.sqlite3", workspace, lambda: now[0])
-    yield repository, now
-    repository.close()
+    store = TaskRepository(tmp_path / "instance" / "state" / "scheduler.sqlite3", workspace, lambda: now[0], schedules)
+    yield store, now, schedules
+    store.close()
 
 
-def test_once_interval_and_cron_calendar():
+def test_calendar_accepts_only_once_and_five_field_cron():
     now = instant("2026-11-10T00:00:00Z")
-    interval = definition()["rule"]
-    assert next_at(interval, now + timedelta(seconds=85)) == now + timedelta(seconds=120)
-    assert latest_due(interval, now + timedelta(seconds=185)) == now + timedelta(seconds=180)
-    cron = validate_rule({"type": "cron", "expression": "0 9 * * 1-5"}, now)
+    once = validate_rule({"type": "once", "at": "2026-11-10T10:00:00+09:00"}, now)
+    assert once == {"type": "once", "at": "2026-11-10T01:00:00.000Z"}
+    cron = validate_rule({"type": "cron", "expression": "0 9 * * 1-5", "timezone": "America/Sao_Paulo"}, now)
     assert iso(next_at(cron, now)) == "2026-11-10T12:00:00.000Z"
-    assert next_at({"type": "once", "at": iso(now)}, now) is None
+    for invalid in ({"type": "interval", "anchor_at": iso(now), "every_seconds": 60}, {"type": "cron", "expression": "0 * * * *"}, {"type": "cron", "expression": "0 0 * * * *", "timezone": "UTC"}, {"type": "once", "at": "2026-01-01"}):
+        with pytest.raises(RpcError):
+            validate_rule(invalid, now)
 
 
-def test_cron_dst_nonexistent_skipped_and_repeated_only_first():
+def test_cron_dst_nonexistent_is_skipped_and_duplicate_uses_first():
     rule = {"type": "cron", "expression": "30 2 * * *", "timezone": "America/New_York"}
     assert iso(next_at(rule, instant("2026-03-08T05:00:00Z"))) == "2026-03-09T06:30:00.000Z"
     rule["expression"] = "30 1 * * *"
@@ -45,395 +87,229 @@ def test_cron_dst_nonexistent_skipped_and_repeated_only_first():
     assert iso(latest_due(rule, instant("2026-11-01T06:10:00Z"))) == "2026-11-01T05:30:00.000Z"
 
 
-def test_cron_can_skip_a_whole_nonexistent_calendar_day():
-    rule = {"type": "cron", "expression": "* * * * *", "timezone": "Pacific/Apia"}
-    # A mudança de linha de data em 2011 removeu 30 de dezembro local.
-    assert iso(next_at(rule, instant("2011-12-30T09:59:00Z"))) == "2011-12-30T10:00:00.000Z"
+def test_toml_is_source_of_truth_and_mtime_avoids_spurious_revision(repository):
+    store, _now, schedules = repository
+    path = schedules / "daily.toml"
+    path.write_text(event_toml(enabled=False), encoding="utf-8")
+    store.reconcile()
+    first = store.get("daily")
+    assert first["description"] == "Laboratório" and first["status"] == "disabled"
+    store.reconcile()
+    assert store.get("daily")["revision"] == first["revision"]
+    path.write_text(event_toml(enabled=True, prompt="Alterado"), encoding="utf-8")
+    store.reconcile(force=True)
+    assert store.get("daily")["revision"] == first["revision"] + 1
+    assert store.get("daily")["action"]["event"]["prompt"] == "Alterado"
 
 
-@pytest.mark.parametrize("rule", [{"type": "once", "at": "2026-11-10T10:00:00+09:00"}, {"type": "interval", "anchor_at": "2026-11-10T10:00:00+09:00", "every_seconds": 60}])
-def test_every_schedule_retains_its_display_timezone_without_changing_instants(repository, rule):
-    store, now = repository
-    default = validate_rule(rule, now[0])
-    assert default["timezone"] == "America/Sao_Paulo"
-    custom = store.create(definition({**rule, "timezone": "Asia/Tokyo"}))["rule"]
-    assert custom["timezone"] == "Asia/Tokyo"
-    assert next_at(default, now[0]) == next_at(custom, now[0])
-    with pytest.raises(RpcError) as caught:
-        store.create(definition({**rule, "timezone": "not/a/zone"}))
-    assert caught.value.code == "invalid_schedule"
+def test_sort_keeps_missing_values_last_and_id_as_stable_tiebreak(repository):
+    store, _now, schedules = repository
+    for identifier in ("zeta", "alpha", "middle"):
+        (schedules / f"{identifier}.toml").write_text(event_toml(enabled=False), encoding="utf-8")
+    store.reconcile()
+    assert [item["id"] for item in store.list(descending=True, limit=20)["items"]] == ["alpha", "middle", "zeta"]
+    assert [item["id"] for item in store.list(sort="expression", descending=True, limit=20)["items"]] == ["alpha", "middle", "zeta"]
 
 
-@pytest.mark.parametrize("rule", [{"type": "once", "at": "2026-01-01"}, {"type": "interval", "anchor_at": "2026-01-01T00:00:00Z", "every_seconds": True}, {"type": "cron", "expression": "@daily"}, {"type": "cron", "expression": "0 0 31 2 *"}, {"type": "cron", "expression": "* * * * *", "timezone": "not/a/zone"}, {"type": "cron", "expression": "0 * * * * *"}])
-def test_invalid_rules(rule):
-    with pytest.raises(RpcError):
-        validate_rule(rule, instant("2026-11-10T00:00:00Z"))
+def test_invalid_file_pauses_definition_and_fix_restores_it(repository):
+    store, _now, schedules = repository
+    path = schedules / "broken.toml"
+    path.write_text("schema_version = [", encoding="utf-8")
+    store.reconcile()
+    invalid = store.get("broken")
+    assert invalid["status"] == "invalid" and invalid["diagnosis"] == "invalid_toml"
+    path.write_text(event_toml(enabled=True), encoding="utf-8")
+    store.reconcile(force=True)
+    assert store.get("broken")["status"] == "enabled"
 
 
-@pytest.mark.parametrize("rule", [{"type": "once", "at": "2037-11-10T00:00:00Z"}, {"type": "interval", "anchor_at": "2037-11-10T00:00:00Z", "every_seconds": 1}, {"type": "interval", "anchor_at": "2026-11-10T00:00:00Z", "every_seconds": 11 * 365 * 86400}])
-def test_ten_year_horizon_also_applies_to_once_and_interval(rule):
-    with pytest.raises(RpcError) as caught:
-        validate_rule(rule, instant("2026-11-10T00:00:00Z"))
-    assert caught.value.code == "invalid_schedule"
-    assert validate_rule({"type": "once", "at": "2026-01-01T00:00:00Z"}, instant("2026-11-10T00:00:00Z"))["at"] == "2026-01-01T00:00:00.000Z"
-
-
-def test_revisions_coalescing_and_immutable_action(repository):
-    store, now = repository
-    created = store.create(definition())
-    now[0] += timedelta(minutes=10, seconds=5)
+def test_late_runs_coalesce_and_overlap_keeps_one_pending(repository):
+    store, now, schedules = repository
+    (schedules / "coalesce.toml").write_text(event_toml(), encoding="utf-8")
+    store.reconcile()
+    now[0] += timedelta(minutes=10, seconds=20)
     store.materialize()
-    first = store.history()["items"][0]
+    first = store.claim()
     assert first["scheduled_at"] == "2026-11-10T00:10:00.000Z"
-    assert first["window_start"] == "2026-11-10T00:01:00.000Z"
-    changed = definition(); changed["action"]["event"]["prompt"] = "Novo"
-    store.update(created["id"], created["revision"], changed)
-    now[0] += timedelta(minutes=2)
-    store.materialize()
-    assert store.history()["total"] == 1
-    assert store.history()["items"][0]["snapshot"]["action"]["event"]["prompt"] == "Teste"
-    assert store.history()["items"][0]["scheduled_at"] == first["scheduled_at"]
-    active = store.claim()
-    now[0] += timedelta(minutes=3)
-    store.materialize()
-    assert store.history()["total"] == 2 and store.claim() is None
-    store.finish(active["id"], "completed")
-    assert store.claim()["snapshot"]["action"]["event"]["prompt"] == "Novo"
-    with pytest.raises(RpcError) as caught:
-        store.update(created["id"], 1, changed)
-    assert caught.value.code == "revision_conflict"
-
-
-def test_restart_blocks_only_uncertain_definition_and_resolve_requires_reason(repository):
-    store, now = repository
-    first = store.create(definition())
-    now[0] += timedelta(minutes=1)
-    store.materialize(); active = store.claim()
-    store.finish(active["id"], "uncertain", reason="transport_lost")
-    second = store.create(definition())
-    now[0] += timedelta(minutes=1)
-    store.materialize()
-    other = store.claim()
-    assert other["definition_id"] == second["id"] and store.claim() is None
-    with pytest.raises(RpcError):
-        store.delete(first["id"], first["revision"])
-    with pytest.raises(RpcError):
-        store.resolve(active["id"], "", True)
-    store.resolve(active["id"], "Efeitos conferidos pelo operador", True)
-    assert store.claim()["definition_id"] == first["id"]
-
-
-def test_disable_discards_pending_and_reenable_does_not_replay(repository):
-    store, now = repository
-    created = store.create(definition())
+    assert store.begin(first["id"])
     now[0] += timedelta(minutes=5)
     store.materialize()
-    disabled = store.set_enabled(created["id"], 1, False)
-    assert store.history()["items"][0]["state"] == "discarded"
-    now[0] += timedelta(days=2)
-    enabled = store.set_enabled(created["id"], disabled["revision"], True)
-    assert instant(enabled["next_run_at"]) > now[0]
-    assert store.claim() is None
-
-
-def test_clock_backward_does_not_repeat_and_expiration_preserves_uncertainty(repository):
-    store, now = repository
-    created = store.create(definition({"type": "once", "at": iso(now[0] - timedelta(seconds=2))}))
+    now[0] += timedelta(minutes=5)
     store.materialize()
-    run = store.claim(); store.finish(run["id"], "uncertain")
-    now[0] -= timedelta(hours=2)
-    store.materialize()
-    assert store.history()["total"] == 1
-    now[0] += timedelta(days=100)
-    store.purge()
-    assert store.history()["total"] == 1
+    assert store.summary() == {"pending": 1, "running": 1}
+    pending = store.history()["items"][0]
+    assert pending["scheduled_at"] == "2026-11-10T00:20:00.000Z"
 
 
-def test_process_action_runs_without_gateway_and_captures_exit(tmp_path):
-    root, workspace = tmp_path / "instance", tmp_path / "workspace"
-    root.mkdir(); workspace.mkdir()
-    occurrence = {"id": "fixture", "snapshot": {"action": {"type": "process", "executable": sys.executable, "arguments": ["-B", "-c", "print('scheduler process fixture')"], "cwd": str(workspace), "timeout_seconds": 5}}}
-    state, result, reason = process_action(root, workspace, occurrence, threading.Event())
-    assert state == "completed" and reason is None
-    assert Path(result["stdout"]["path"]).read_text().strip() == "scheduler process fixture"
+def test_change_during_run_only_changes_next_snapshot(repository):
+    store, now, schedules = repository
+    path = schedules / "changing.toml"
+    path.write_text(event_toml(prompt="Antigo"), encoding="utf-8")
+    store.reconcile(); now[0] += timedelta(minutes=1); store.materialize()
+    active = store.claim(); assert store.begin(active["id"])
+    now[0] += timedelta(minutes=1); store.materialize()
+    assert store.summary() == {"pending": 1, "running": 1}
+    path.write_text(event_toml(prompt="Novo"), encoding="utf-8")
+    store.reconcile(force=True)
+    assert store.summary() == {"discarded": 1, "running": 1}
+    now[0] += timedelta(minutes=1); store.materialize()
+    store.finish(active["id"], "completed")
+    following = store.claim()
+    assert active["snapshot"]["action"]["event"]["prompt"] == "Antigo"
+    assert following["snapshot"]["action"]["event"]["prompt"] == "Novo"
+    assert following["event_id"] != active["event_id"]
 
 
-def test_process_timeout_terminates_tree(tmp_path):
-    root, workspace = tmp_path / "instance", tmp_path / "workspace"
-    root.mkdir(); workspace.mkdir()
-    occurrence = {"id": "timeout", "snapshot": {"action": {"type": "process", "executable": sys.executable, "arguments": ["-B", "-c", "import time; time.sleep(30)"], "cwd": str(workspace), "timeout_seconds": 1}}}
-    state, result, reason = process_action(root, workspace, occurrence, threading.Event())
-    assert state == "failed" and reason == "process_timeout"
+def test_deletion_prevents_next_and_history_expires_after_twenty_days(repository):
+    store, now, schedules = repository
+    path = schedules / "removed.toml"
+    path.write_text(event_toml(), encoding="utf-8")
+    store.reconcile(); now[0] += timedelta(minutes=1); store.materialize()
+    path.unlink(); store.reconcile(force=True)
+    assert store.claim() is None and store.history("removed")["items"][0]["state"] == "discarded"
+    now[0] += timedelta(days=19); store.purge()
+    assert store.history("removed")["total"] == 1
+    now[0] += timedelta(days=2); store.purge()
+    assert store.history("removed")["total"] == 0
 
 
-def test_process_requires_explicit_shell_interpreter(repository):
-    store, _now = repository
-    value = definition()
-    value["action"] = {"type": "process", "executable": str(store.workspace / "routine.cmd"), "cwd": str(store.workspace)}
-    with pytest.raises(RpcError) as caught:
-        store.create(value)
-    assert caught.value.code == "invalid_action"
-
-
-def test_process_output_is_capped_while_both_streams_are_drained(tmp_path):
-    from onmyoji_daemon.task_scheduler.actions import MAX_OUTPUT_BYTES
-    root, workspace = tmp_path / "instance", tmp_path / "workspace"
-    root.mkdir(); workspace.mkdir()
-    count = MAX_OUTPUT_BYTES + 65536
-    code = f"import sys; sys.stdout.buffer.write(b'x'*{count}); sys.stderr.buffer.write(b'y'*{count})"
-    occurrence = {"id": "output", "snapshot": {"action": {"type": "process", "executable": sys.executable, "arguments": ["-B", "-c", code], "cwd": str(workspace), "timeout_seconds": 10}}}
-    state, result, reason = process_action(root, workspace, occurrence, threading.Event())
-    assert state == "completed" and reason is None
-    for name in ("stdout", "stderr"):
-        assert result[name]["bytes"] == count and result[name]["truncated"]
-        assert Path(result[name]["path"]).stat().st_size == MAX_OUTPUT_BYTES
-
-
-def test_containment_failure_cannot_release_the_user_command(tmp_path, monkeypatch):
-    from onmyoji_daemon.task_scheduler import actions
-    root, workspace = tmp_path / "instance", tmp_path / "workspace"
-    root.mkdir(); workspace.mkdir()
-    marker = workspace / "must-not-exist.txt"
-    code = "from pathlib import Path; Path('must-not-exist.txt').write_text('executed')"
-    occurrence = {"id": "containment", "snapshot": {"action": {"type": "process", "executable": sys.executable, "arguments": ["-B", "-c", code], "cwd": str(workspace), "timeout_seconds": 5}}}
-    def refuse(process):
-        raise OSError("fixture containment failure")
-    monkeypatch.setattr(actions, "ServiceProcessGroup", refuse)
-    state, result, reason = process_action(root, workspace, occurrence, threading.Event())
-    assert state == "failed" and reason == "process_preparation_failed"
-    assert not marker.exists()
-
-
-@pytest.mark.parametrize("interruption", ["timeout", "stop"])
-def test_interruption_terminates_grandchild_process_as_well(tmp_path, interruption):
-    from concurrent.futures import ThreadPoolExecutor
-    import os
-    import socket
-    root, workspace = tmp_path / "instance", tmp_path / "workspace"
-    root.mkdir(); workspace.mkdir()
-    stop = threading.Event()
-    with socket.socket() as ready, ThreadPoolExecutor() as pool:
-        ready.bind(("127.0.0.1", 0)); ready.listen(); ready.settimeout(20)
-        port = ready.getsockname()[1]
-        code = ("import socket,subprocess,sys,time; "
-                "child=subprocess.Popen([sys.executable,'-B','-c','import time; time.sleep(60)']); "
-                "print(child.pid,flush=True); "
-                f"ready=socket.create_connection(('127.0.0.1',{port})); "
-                "ready.sendall((str(child.pid)+'\\n').encode()); ready.close(); time.sleep(60)")
-        occurrence = {"id": "grandchild", "snapshot": {"action": {"type": "process", "executable": sys.executable, "arguments": ["-B", "-c", code], "cwd": str(workspace), "timeout_seconds": 30}}}
-        future = pool.submit(process_action, root, workspace, occurrence, stop)
-        try:
-            with ready.accept()[0] as child_ready:
-                with child_ready.makefile("rb") as signal:
-                    child_pid = int(signal.readline())
-            if interruption == "stop":
-                stop.set()
-            state, result, reason = future.result(45)
-        finally:
-            stop.set()
-    assert state == "failed" and reason == ("process_timeout" if interruption == "timeout" else "service_stopping")
-    pid = int(Path(result["stdout"]["path"]).read_text().strip())
-    assert pid == child_pid
-    if os.name == "nt":
-        import _winapi
-        try:
-            handle = _winapi.OpenProcess(0x100000, False, pid)
-        except OSError:
-            return
-        try:
-            assert _winapi.WaitForSingleObject(handle, 0) == 0
-        finally:
-            _winapi.CloseHandle(handle)
-    else:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return
-        # Zombies não executam; podem aguardar reap pelo PID 1 do laboratório.
-        assert Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()[0] == "Z"
-
-
-def test_service_rpc_listing_preview_and_defaults(tmp_path):
-    root, workspace = tmp_path / "instance", tmp_path / "workspace"
-    root.mkdir(); workspace.mkdir()
-    scheduler = TaskScheduler(root, root / "data", workspace=workspace)
-    try:
-        value = scheduler.handle("task.create", {"definition": definition(enabled=False)})
-        assert scheduler.handle("task.status", {})["max_parallel_actions"] == 4
-        assert scheduler.handle("task.list", {})["items"][0]["id"] == value["id"]
-        assert len(scheduler.handle("task.preview", {"id": value["id"], "count": 3})["instants"]) == 3
-        with pytest.raises(RpcError):
-            scheduler.handle("task.list", {"sort": "DROP TABLE definitions"})
-    finally:
-        scheduler.close()
-
-
-def test_global_four_slots_and_per_definition_overlap(tmp_path, monkeypatch):
-    from onmyoji_daemon.task_scheduler import service
-    from concurrent.futures import ThreadPoolExecutor
-    root, workspace = tmp_path / "instance", tmp_path / "workspace"
-    root.mkdir(); workspace.mkdir()
-    now = [instant("2026-11-10T00:00:00Z")]
-    scheduler = TaskScheduler(root, root / "data", workspace=workspace, clock=lambda: now[0])
-    entered = threading.Condition()
-    release = threading.Event()
-    calls = []
-    def action(root, occurrence, *, before_dispatch=None):
-        assert before_dispatch()
-        with entered:
-            calls.append(occurrence["definition_id"]); entered.notify_all()
-        assert release.wait(5)
-        return "completed", {}, None
-    monkeypatch.setattr(service, "notification_action", action)
-    try:
-        for _ in range(6):
-            scheduler.repository.create(definition())
-        now[0] += timedelta(minutes=1)
-        scheduler.tick()
-        with entered:
-            assert entered.wait_for(lambda: len(calls) == 4, timeout=3)
-        now[0] += timedelta(minutes=10)
-        scheduler.tick()
-        assert len(calls) == 4
-        assert scheduler.repository.summary()["pending"] == 6
-        release.set()
-    finally:
-        release.set(); scheduler.close()
-
-
-def test_supervised_scheduler_starts_only_after_containment(tmp_path, monkeypatch):
-    from onmyoji_daemon.supervisor import Supervisor
-    from onmyoji_daemon.rpc import call
-    root, workspace = tmp_path / "instance", tmp_path / "workspace"
-    (root / "configs").mkdir(parents=True); workspace.mkdir()
-    (root / "configs" / "onmyoji-system.toml").write_text('[codex]\nproject_directory=' + json.dumps(workspace.as_posix()), encoding="utf-8")
-    # Tokens URL-safe podem começar por hífen: argparse deve recebê-los como
-    # valor explícito, sem tentar interpretá-los como uma segunda opção.
-    monkeypatch.setattr("onmyoji_daemon.supervisor.secrets.token_urlsafe", lambda _size: "-fixture-token")
-    supervisor = Supervisor(root)
-    try:
-        status = supervisor.start("task-scheduler")
-        assert status["state"] == "running", status
-        assert supervisor.handle("task.status", {})["max_parallel_actions"] == 4
-        value = definition({"type": "once", "at": "2026-01-01T00:00:00Z"})
-        value["action"] = {"type": "process", "executable": sys.executable, "arguments": ["-B", "-c", "print('supervised fixture')"], "cwd": str(workspace), "timeout_seconds": 5}
-        created = supervisor.handle("task.create", {"definition": value})
-        service = supervisor.services["task-scheduler"]
-        # A chamada longa de controle não é usada; aguardar o arquivo é uma
-        # barreira observável da execução real do processo de laboratório.
-        import time
-        deadline = time.monotonic() + 5
-        tick = threading.Event()
-        while time.monotonic() < deadline:
-            history = supervisor.handle("task.history", {"id": created["id"]})
-            if history["items"] and history["items"][0]["state"] == "completed":
-                break
-            tick.wait(0.02)
-        assert history["items"][0]["state"] == "completed", history
-    finally:
-        supervisor.stop("task-scheduler"); supervisor.rpc.close()
-
-
-def test_restart_resumes_reserved_but_never_replays_started_action(tmp_path):
+def test_restart_resumes_reserved_and_marks_started_uncertain(tmp_path):
     workspace = tmp_path / "workspace"; workspace.mkdir()
-    path = tmp_path / "state" / "scheduler.sqlite3"
+    schedules = tmp_path / "data" / "schedules"; schedules.mkdir(parents=True)
+    for name in ("one", "two"):
+        (schedules / f"{name}.toml").write_text(event_toml(time='type = "once"\nat = "2026-11-09T00:00:00Z"'), encoding="utf-8")
+    path = tmp_path / "data" / "state" / "scheduler.sqlite3"
     now = [instant("2026-11-10T00:00:00Z")]
-    store = TaskRepository(path, workspace, lambda: now[0])
-    first = store.create(definition())
-    second = store.create(definition())
-    now[0] += timedelta(minutes=1)
-    store.materialize()
+    store = TaskRepository(path, workspace, lambda: now[0], schedules)
+    store.reconcile(); store.materialize()
     reserved, started = store.claim(), store.claim()
-    assert store.claim() is None
     assert store.begin(started["id"])
     store.close()
-    reopened = TaskRepository(path, workspace, lambda: now[0])
+    reopened = TaskRepository(path, workspace, lambda: now[0], schedules)
     try:
         assert reopened.summary() == {"reserved": 1, "uncertain": 1}
-        resumed = reopened.claim()
-        assert resumed["id"] == reserved["id"] and resumed["event_id"] == reserved["event_id"]
-        assert reopened.claim() is None
-        assert reopened.begin(resumed["id"])
-        reopened.finish(resumed["id"], "completed")
-        assert reopened.claim() is None
+        assert reopened.claim()["id"] == reserved["id"]
     finally:
         reopened.close()
 
 
-def test_disable_withdraws_a_reservation_before_its_external_boundary(repository):
-    store, now = repository
-    created = store.create(definition())
-    now[0] += timedelta(minutes=1)
-    store.materialize(); reserved = store.claim()
-    store.set_enabled(created["id"], 1, False)
-    assert not store.begin(reserved["id"])
-    assert store.history()["items"][0]["state"] == "discarded"
+def test_script_uses_daemon_python_workspace_path_and_captures_output(tmp_path):
+    root, workspace = tmp_path / "instance", tmp_path / "workspace"
+    root.mkdir(); workspace.mkdir()
+    script = workspace / "job.py"
+    script.write_text("import sys; print(sys.executable); print('ok')", encoding="utf-8")
+    occurrence = {"id": "script-run", "snapshot": {"action": {"type": "script", "path": "job.py", "args": [], "timeout_seconds": 5}}}
+    state, result, reason = script_action(root, workspace, occurrence, threading.Event(), before_dispatch=lambda: True)
+    output = Path(result["stdout"]["path"]).read_text(encoding="utf-8")
+    assert state == "completed" and reason is None
+    assert str(Path(sys.executable)) in output and output.rstrip().endswith("ok")
 
 
-def test_schema_one_is_backed_up_and_newer_runtime_schema_is_rejected(tmp_path):
-    import sqlite3
-    workspace = tmp_path / "workspace"; workspace.mkdir()
-    path = tmp_path / "state" / "scheduler.sqlite3"
-    store = TaskRepository(path, workspace)
-    created = store.create(definition(enabled=False))
-    with store.db:
-        store.db.execute("PRAGMA user_version=1")
-    store.close()
-    migrated = TaskRepository(path, workspace)
+def test_script_timeout_and_output_limits_are_enforced(tmp_path):
+    root, workspace = tmp_path / "instance", tmp_path / "workspace"
+    root.mkdir(); workspace.mkdir()
+    (workspace / "slow.py").write_text("import time; time.sleep(30)", encoding="utf-8")
+    timeout = {"id": "script-timeout", "snapshot": {"action": {"type": "script", "path": "slow.py", "args": [], "timeout_seconds": 1}}}
+    state, _result, reason = script_action(root, workspace, timeout, threading.Event(), before_dispatch=lambda: True)
+    assert state == "failed" and reason == "process_timeout"
+    count = MAX_OUTPUT_BYTES + 1024
+    (workspace / "output.py").write_text(f"import sys; sys.stdout.buffer.write(b'x'*{count}); sys.stderr.buffer.write(b'y'*{count})", encoding="utf-8")
+    output = {"id": "script-output", "snapshot": {"action": {"type": "script", "path": "output.py", "args": [], "timeout_seconds": 10}}}
+    state, result, reason = script_action(root, workspace, output, threading.Event(), before_dispatch=lambda: True)
+    assert state == "completed" and reason is None
+    for stream in ("stdout", "stderr"):
+        assert result[stream]["bytes"] == count and result[stream]["truncated"]
+        assert Path(result[stream]["path"]).stat().st_size == MAX_OUTPUT_BYTES
+
+
+def test_script_stopped_before_boundary_leaves_reservation_resumable(tmp_path):
+    root, workspace = tmp_path / "instance", tmp_path / "workspace"
+    root.mkdir(); workspace.mkdir()
+    (workspace / "job.py").write_text("print('resumed')", encoding="utf-8")
+    occurrence = {"id": "script-resume", "snapshot": {"action": {"type": "script", "path": "job.py", "args": [], "timeout_seconds": 5}}}
+    stop = threading.Event(); stop.set()
+    begins = []
+    state, result, reason = script_action(root, workspace, occurrence, stop, before_dispatch=lambda: begins.append(True) or True)
+    assert (state, result, reason) == ("failed", None, "service_stopping_before_action")
+    assert not begins and not (workspace / ".onmyoji" / "task-scheduler" / occurrence["id"]).exists()
+    state, result, reason = script_action(root, workspace, occurrence, threading.Event(), before_dispatch=lambda: True)
+    assert state == "completed" and reason is None
+    assert Path(result["stdout"]["path"]).read_text(encoding="utf-8").strip() == "resumed"
+
+
+def test_configurable_script_default_and_workspace_boundary(tmp_path):
+    root, workspace = tmp_path / "instance", tmp_path / "workspace"
+    root.mkdir(); workspace.mkdir()
+    data = root / "data"; (data / "schedules").mkdir(parents=True)
+    (data / "config.toml").write_text("script_timeout_seconds = 7\n", encoding="utf-8")
+    (workspace / "job.py").write_text("print('ok')", encoding="utf-8")
+    (data / "schedules" / "script.toml").write_text(script_toml(timeout=None), encoding="utf-8")
+    scheduler = TaskScheduler(root, data, workspace=workspace)
     try:
-        assert migrated.db.execute("PRAGMA user_version").fetchone()[0] == 2
-        assert migrated.get(created["id"])["name"] == "Laboratório"
-        with sqlite3.connect(path.with_name("scheduler-before-dispatch-v1.sqlite3")) as backup:
-            assert backup.execute("PRAGMA user_version").fetchone()[0] == 1
-        with migrated.db:
-            migrated.db.execute("PRAGMA user_version=999")
+        scheduler.repository.reconcile()
+        assert scheduler.repository.get("script")["action"]["timeout_seconds"] == 7
+        outside = tmp_path / "outside.py"; outside.write_text("print('outside')", encoding="utf-8")
+        (data / "schedules" / "escape.toml").write_text(script_toml("../outside.py", timeout=None), encoding="utf-8")
+        scheduler.repository.reconcile(force=True)
+        assert scheduler.repository.get("escape")["status"] == "invalid"
     finally:
-        migrated.close()
-    with pytest.raises(RpcError) as caught:
-        TaskRepository(path, workspace)
-    assert caught.value.code == "schema_newer"
+        scheduler.close()
 
 
-@pytest.mark.parametrize("field", ["name", "state", "next_run_at", "created_at", "action", "channel", "destination", "thread_policy"])
-@pytest.mark.parametrize("descending", [False, True])
-def test_all_displayed_columns_sort_with_nulls_last_and_stable_ids(repository, field, descending):
-    store, now = repository
-    for index in range(25):
-        value = definition(enabled=index % 3 != 0)
-        value["name"] = "Nome " + str(index % 5)
-        if index % 4 == 0:
-            value["action"] = {"type": "process", "executable": sys.executable, "cwd": str(store.workspace)}
-        else:
-            value["action"]["event"]["thread_policy"] = "new" if index % 2 else "reuse"
-            value["action"]["event"]["response_channel"]["value"] = str(index)
-        store.create(value)
-        now[0] += timedelta(seconds=1)
-    listed = store.list(sort=field, descending=descending, limit=100)["items"]
-    key = "action_type" if field == "action" else field
-    present = [row[key] for row in listed if row[key] is not None]
-    assert present == sorted(present, reverse=descending)
-    if any(row[key] is None for row in listed):
-        first_null = next(index for index, row in enumerate(listed) if row[key] is None)
-        assert all(row[key] is None for row in listed[first_null:])
-    for value in set(present):
-        ids = [row["id"] for row in listed if row[key] == value]
-        assert ids == sorted(ids)
-    page_one, page_two = store.list(limit=20), store.list(offset=20, limit=20)
-    assert len(page_one["items"]) == 20 and len(page_two["items"]) == 5
-    assert len({row["id"] for row in [*page_one["items"], *page_two["items"]]}) == 25
+def test_definition_mtimes_are_rechecked_at_five_second_intervals(tmp_path, monkeypatch):
+    from onmyoji_daemon.task_scheduler import service
+    root, workspace = tmp_path / "instance", tmp_path / "workspace"
+    root.mkdir(); workspace.mkdir()
+    scheduler = TaskScheduler(root, root / "data", workspace=workspace)
+    moments = [104.999]
+    calls = []
+    scheduler._last_reconcile = 100.0
+    monkeypatch.setattr(service.time, "monotonic", lambda: moments[0])
+    monkeypatch.setattr(scheduler.repository, "reconcile", lambda: calls.append(moments[0]))
+    try:
+        assert not scheduler._reconcile_if_due() and not calls
+        moments[0] = 105.0
+        assert scheduler._reconcile_if_due() and calls == [105.0]
+        moments[0] = 109.999
+        assert not scheduler._reconcile_if_due() and calls == [105.0]
+        moments[0] = 110.0
+        assert scheduler._reconcile_if_due() and calls == [105.0, 110.0]
+    finally:
+        scheduler.close()
 
 
-def test_history_expiration_preserves_all_nonterminal_work_and_definitions(repository):
-    store, now = repository
-    for _ in range(3):
-        store.create(definition())
-    now[0] += timedelta(minutes=1)
-    store.materialize()
-    completed, uncertain = store.claim(), store.claim()
-    store.finish(completed["id"], "completed")
-    assert store.begin(uncertain["id"])
-    store.finish(uncertain["id"], "uncertain")
-    now[0] += timedelta(days=91)
-    store.purge()
-    assert store.summary() == {"pending": 1, "uncertain": 1}
-    assert store.list()["total"] == 3
+def test_event_action_generates_occurrence_uuid_and_calls_local_http(tmp_path):
+    class Gateway:
+        def __init__(self):
+            self.events = []
+        def _notification_submit(self, value, *, wait):
+            self.events.append((value, wait))
+            return {"event_id": value["event_id"], "received_at": "2026-11-10T00:00:00.000Z", "status": "completed", "execution": "completed", "delivery": "confirmed"}
+    root = tmp_path / "instance"; root.mkdir()
+    gateway = Gateway(); server = NotificationHttpServer(0, gateway); server.start()
+    NotificationConfiguration(root).configure({"enabled": True, "port": server.port})
+    occurrence = {"event_id": "019a6a2e-7820-7000-8000-000000000001", "snapshot": {"action": {"type": "event", "event": {"schema_version": 1, "prompt": "Teste", "response_channel": {"type": "telegram", "value": "9"}, "thread_policy": "reuse"}}}}
+    try:
+        state, result, reason = event_action(root, occurrence, before_dispatch=lambda: True)
+    finally:
+        server.close()
+    assert state == "completed" and reason is None
+    assert gateway.events == [({**occurrence["snapshot"]["action"]["event"], "event_id": occurrence["event_id"]}, True)]
+
+
+def test_service_is_read_only_and_lists_all_ten_sort_fields(tmp_path):
+    root, workspace = tmp_path / "instance", tmp_path / "workspace"
+    root.mkdir(); workspace.mkdir()
+    data = root / "data"; (data / "schedules").mkdir(parents=True)
+    (data / "schedules" / "disabled.toml").write_text(event_toml(enabled=False), encoding="utf-8")
+    scheduler = TaskScheduler(root, data, workspace=workspace)
+    try:
+        scheduler.start()
+        assert scheduler.handle("task.list", {})["items"][0]["id"] == "disabled"
+        for field in SORT_FIELDS:
+            assert scheduler.handle("task.list", {"sort": field})["sort"] == field
+        with pytest.raises(RpcError) as caught:
+            scheduler.handle("task.create", {"definition": {}})
+        assert caught.value.code == "authoring_unsupported"
+    finally:
+        scheduler.close()

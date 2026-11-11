@@ -1,32 +1,30 @@
 # Validação de eventos e agendamentos
 
-Auditoria da implementação em 2026-11-10. O contrato e os procedimentos de uso estão em [eventos e agendamentos](eventos-agendamentos.md). Esta matriz relaciona os critérios de entrega ao código e às verificações executáveis; os checklists do rascunho antigo são históricos.
+Auditoria da implementação atualizada em 2026-11-11. O contrato e os procedimentos de uso estão em [eventos e agendamentos](eventos-agendamentos.md). Esta matriz relaciona os critérios de entrega ao código e às verificações executáveis; os checklists do rascunho antigo são históricos.
 
 Evidências da versão consolidada:
 
-- Windows, suíte completa: 3.245 testes e 301 subtestes aprovados, 40 ignorados, zero falhas; 458,15 segundos. Dois avisos existentes dizem respeito a `record_property` no formato JUnit xunit2. Relatório local: `tmp/events-acceptance.xml`.
-- Linux nativo, baseline `b84d522`: 75 testes aprovados, zero falhas, erros ou ignorados; 118,95 segundos. JUnit preservado localmente em `tmp/events-posix-vm/linux-release.xml`.
-- Validador do evento: 100% das instruções e dos ramos cobertos, com 28 testes de contrato aprovados; a rodada conjunta com a CLI aprovou 35 testes.
-- Retenção: sete testes focados aprovados e verificação dos dois watchers com relógio monotônico em 0,5 segundo, confirmando limpeza já na primeira iteração.
-- Publicação de skills: 24 testes focados aprovados após corrigir um bloqueio transitório Windows detectado pela suíte completa. O materializador usa a publicação atômica com tolerância limitada já existente no projeto; teste de injeção comprova recuperação de `WinError 5` durante reparo da pasta gerenciada.
-- Agendador após o ajuste final do horizonte: todos os 48 testes do módulo aprovados em 41,30 segundos, incluindo ações e Supervisor, rejeição de `once` e intervalos sem ocorrência nos próximos dez anos e preservação de datas únicas vencidas para recuperação. Relatório local: `tmp/events-scheduler-current.xml`.
-- Wheel construído e importado diretamente do arquivo: schema carregado por `importlib.resources` e evento validado; 228 arquivos Python/JSON comparados à fonte. SHA-256: `bc7b001acba9263014691fb2d6e4c2a0dfc054957aa18c8f41d7df7ad173907e`.
+- Windows, suíte completa executada depois da integração na `main`: 3.278 testes e 301 subtestes aprovados, 46 ignorados, zero falhas; 164,60 segundos. Dois avisos existentes dizem respeito a `record_property` no formato JUnit xunit2. Relatório local: `tmp/main-merge.xml`.
+- A evidência Linux do baseline anterior não foi repetida nesta atualização; os testes de permissões POSIX permanecem explicitamente restritos ao sistema compatível.
+- Matriz focada de setup, contrato, gateway HTTP, prioridade, recuperação, logs, incidentes, agendador, CLI e credenciais: 126 testes aprovados e três ignorados antes da rodada integral.
+- Validador do evento: 29 testes aprovados e 100% das instruções e ramos cobertos.
 
 ## Critérios verificados
 
-| Etapa | Entrega e evidência |
+| Requisito | Entrega e evidência |
 | --- | --- |
-| 1. Contrato | Schema v1 fechado incluído no wheel; validador comum para CLI emissora, ingresso e ação do agendador. `test_notification_contract.py` cobre tipos, campos ausentes/adicionais, versão, UUIDv7 e erros com caminho completo, sem eco do prompt. |
-| 2. Núcleo | `execution_gateway/execution.py` contém o ciclo compartilhado; o módulo antigo mantém compatibilidade de importação. Regressões `test_telegram_execution.py`, `test_telegram_gateway_async.py`, controles, gerações, delegação, recursos e entregas permanecem na suíte integrada. |
-| 3. Multiorigem | Banco, lease, inbox e App Server únicos; sequência global durável; Telegram prioritário e destinos ocupados pulados. `test_notification_gateway.py` e `test_notification_recovery.py` verificam seleção, exclusão por destino, sequência após limpeza e bloqueio durante entrega recuperada. |
-| 4. RPC e lifecycle | Via longa nos dois servidores, limite de acompanhamentos, controles serializados separados, desligamento com graça do turno. `test_rpc_concurrent.py`, `test_supervisor_telegram_timeout.py` e as regressões de shutdown verificam saturação, desconexão e controles. Bind público é recusado. |
-| 5. Telegram | Evento destinado a Telegram entra antes da seleção de contexto e usa as mesmas ferramentas, instruções, preferências e associação do chat/tópico. Testes com `reuse` e `new` cobrem continuação cruzada entre mensagem e evento, repetição do mesmo UUID, falha do turno, falha da entrega e preferência de áudio. |
-| 6. Entregas e recuperação | Conta SMTP capturada por recebimento, chave privada por recepção, estados de confirmação/falha/incerteza e incidente sem recursão. Testes injetam desconexão durante envio, reinício em `sending`, falha entre journal e JSONL, append truncado, falha transacional e recuperação de incidente pendente. Retenção recusa diretório redirecionado e preserva arquivos alheios. |
-| 7. Configuração | Notificações e receptor Telegram são independentes; diagnóstico valida contrato e disponibilidade das configurações de SMTP/incidente sem envio. Testes cobrem conta removida, receptor desligado com TOTP antigo e escolhas do setup em fluxo. |
-| 8. Administração | SQLite independente, revisão esperada, CLI/RPC e setup de consulta. `test_task_scheduler.py` verifica CRUD, conflito de revisão, snapshots, resolução manual, backup e recusa de versão mais nova; testa as oito ordenações nas duas direções, nulos ao final, desempate e páginas. `tests/test_setup_scheduler.py` verifica navegação, `X`, ausência de escrita de definições e apresentação no timezone escolhido. |
-| 9. Calendário e dispatcher | `once`, intervalo ancorado e cron numérico de cinco campos; timezone configurável nas três regras. Testes com relógio controlado cobrem atraso consolidado, sobreposição, quatro slots globais, uma ação por definição, relógio retrocedendo, DST, salto de dia civil completo, calendário impossível e retenção sem eliminar incertezas. |
-| 10. Ações | Processo sem shell implícito, barreira antes do comando, contenção, temporários próprios e dois fluxos limitados a 10 MiB. Testes nativos verificam sucesso, timeout, parada, encerramento de neto, saída truncada e recusa da contenção antes de qualquer comando. A ação local funciona sem gateway. O teste TCP integrado percorre agendador → Supervisor → gateway compartilhado → App Server/canal falsos. |
-| 11. Integração | Migração, recuperação, shutdown, empacotamento e execução nativa são verificados pelos comandos abaixo. Recursos novos permanecem desabilitados por padrão; testes usam destinos e processos de laboratório. |
+| Contrato JSON v1 | Schema fechado, inteiro 1, UUIDv7 canônico, prompt não vazio, canais condicionais e campos extras recusados. `test_notification_contract.py` tem 100% de instruções e ramos. |
+| Núcleo e escalonamento compartilhados | Processo `telegram`, inbox, SQLite, App Server, semáforo e timeout permanecem únicos. `test_notification_gateway.py` comprova prioridade estrita do Telegram, FIFO por classe, não preempção, salto de destino ocupado e limites 50/1.024; as regressões do gateway comprovam o teto `max_parallel_conversations` e proteção de timeout/incerteza. |
+| Destinos e threads | Chaves Telegram e `(email,account,value)` ficam isoladas. Testes cobrem `reuse`, `new`, UUID repetido, associação publicada somente após sucesso, falha de entrega sem rollback e resultado vazio `empty_agent_result`. |
+| Listener HTTP | Bind fixo em loopback, 1 MiB, `wait=true|false`, limite de 32 acompanhamentos por padrão, persistência antes do 202, desconexão sem cancelamento e somente 400/413/429/503 antes do aceite. Testes cobrem ainda HTTP 200 com `result=completed` e `delivery=failed`. |
+| Entregas | Telegram reutiliza o catálogo vigente. E-mail captura conta/assunto por evento, usa o MCP existente, SMTPUTF8 e `gateway:<inbox-id>:delivery`; não existe retry automático. |
+| Recuperação do gateway | Reserva sem operação retorna a `pending`; execução interrompida vira `uncertain`, bloqueia o destino e não reinicia o agente; entrega `sending` vira incerta sem reenvio. Migrações são aditivas e recusam downgrade. |
+| Logs e incidentes | JSONL diário confinado, journal transacional, retenção 20 dias, limpeza inicial/diária, input/output/erro/UUID/UTC e ausência de headers/tokens. Incidente usa o mesmo modelo de destino, inclui referência ao log e tenta uma vez sem recursão. |
+| Arquivos de agendamento | Um TOML v1 por ID em `schedules/`; mtime revalidado a cada cinco segundos. Inválido pausa com diagnóstico, alteração afeta somente a próxima ocorrência e exclusão impede novo início preservando histórico por 20 dias. |
+| Cron e concorrência | Apenas `once` com offset e cron de cinco campos com timezone IANA, `croniter>=7,<8`, DST inexistente pulado e duplicado executado na primeira ocorrência. Atrasos coalescem uma vez; cada definição mantém no máximo uma ativa e uma pendente. |
+| Ações do agendador | `event` persiste UUIDv7 por ocorrência e usa HTTP local. `script` usa o Python do daemon, caminho relativo ao workspace, args sem shell, timeout padrão configurável e stdout/stderr limitados. Parada anterior à fronteira deixa retomada limpa; queda posterior nunca repete cegamente. |
+| Setup | Menus separados “Eventos do agente” e “Agendamentos”. Eventos configura habilitação, porta, incidente e diagnóstico. A lista somente leitura tem 20 itens, P/N/X, dez colunas 1–0, inversão por repetição, nulos por último e ID como desempate. |
+| Validação integrada | A suíte completa acima foi executada depois da última correção funcional. Recursos permanecem desabilitados por padrão e todos os canais/processos dos testes são de laboratório. |
 
 Os testes citados sem caminho completo pertencem a `onmyoji-daemon/tests/`. A suíte usa `tmp_path`, relógios controlados, canais/App Server falsos e sinais observáveis de prontidão. O teste de descendentes confirma por socket que o neto foi criado antes de validar timeout ou parada.
 
@@ -35,8 +33,8 @@ Os testes citados sem caminho completo pertencem a `onmyoji-daemon/tests/`. A su
 Windows, na raiz do repositório, com o Python e as dependências do projeto:
 
 ```text
-python -B -m pytest -q --tb=short --basetemp=tmp/pytest-events-acceptance --junitxml=tmp/events-acceptance.xml
-python -B -m pytest onmyoji-daemon/tests/test_task_scheduler.py -q --tb=short --basetemp=tmp/pytest-events-scheduler-current --junitxml=tmp/events-scheduler-current.xml
+python -B -m pytest -q --tb=short --basetemp=tmp/pytest-main-merge --junitxml=tmp/main-merge.xml
+python -B -m pytest onmyoji-daemon/tests/test_task_scheduler.py -q --tb=short --basetemp=tmp/pytest-task-scheduler
 ```
 
 Cobertura do validador, incluindo ramos:
@@ -52,12 +50,12 @@ Linux nativo, em uma VM Alpine 3.22 x86_64 com kernel 6.12.31 e Python 3.12.16:
 python3 -B -m pytest onmyoji-daemon/tests/test_task_scheduler.py onmyoji-daemon/tests/test_notification_contract.py onmyoji-daemon/tests/test_rpc_concurrent.py -q --tb=short --junitxml=tmp/linux-release.xml
 ```
 
-A VM é transitória: imagem, código, dependências e resultados ficam em `tmp/` no host. A execução ocorre no kernel Linux, incluindo grupos de processos e descendentes; não é uma simulação das chamadas POSIX. A preparação habilita `lo` e instala `croniter` da série 6.2, `tzdata`, `jsonschema` e `pytest`. A validação nativa descrita cobre Windows e Linux; não certifica macOS ou outros sistemas POSIX.
+A VM usada no baseline anterior era transitória e executava no kernel Linux real. O comando acima é o roteiro para repetir essa verificação com `croniter` 7; ele não foi executado nesta auditoria e, portanto, a evidência atual certifica somente Windows. macOS e outros sistemas POSIX também não estão certificados.
 
-O wheel é construído a partir de uma cópia de staging em `tmp/`, sem artefatos de build na fonte. A inspeção verifica o schema distribuído, os três pacotes e a igualdade dos arquivos Python/JSON com a árvore de código validada.
+O wheel `onmyoji_daemon-0.1.0-py3-none-any.whl` foi construído em staging isolado a partir do commit publicado. A inspeção confirmou o schema distribuído e igualdade SHA-256 dos 18 arquivos Python/JSON de `agent_notification`, `execution_gateway` e `task_scheduler` com a árvore validada, sem divergências.
 
 ## Fronteiras operacionais
 
 Antes de migrações são mantidos backups SQLite consistentes junto ao estado persistente. O agendador distingue reserva durável de início de ação: reserva interrompida pode retomar; ação iniciada sem resultado torna-se incerta. O gateway conserva submissões possivelmente enviadas e entregas em andamento sem repetição automática.
 
-A ativação operacional é uma ação explícita posterior: configurar destinos, selecionar conta SMTP, habilitar o serviço e cadastrar definições. Nenhum envio a destinatário real nem processo operacional integra estes testes. Não restaurar banco antigo após aceitar trabalho novo; desabilitar a capacidade afetada e aplicar correção progressiva.
+A ativação operacional é uma ação explícita posterior: configurar destinos, informar conta SMTP por evento/incidente, habilitar os serviços e criar os TOMLs. Nenhum envio a destinatário real nem processo operacional integra estes testes. O listener não possui TLS/autenticação por decisão de contrato e deve permanecer em loopback. Não restaurar banco antigo após aceitar trabalho novo; desabilitar a capacidade afetada e aplicar correção progressiva.
