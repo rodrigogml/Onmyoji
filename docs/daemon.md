@@ -2,7 +2,7 @@
 
 O `onmyoji-daemon` é o único processo residente de uma instância Shikigami. Ele atende somente o workspace configurado localmente em `configs/onmyoji-system.toml`.
 
-Os serviços são registrados pelo código, iniciados como subprocessos locais e administrados por RPC autenticado em loopback. O endpoint, o token efêmero, o estado de habilitação, logs, banco SQLite e contatos ficam em `configs/daemon/`. Arquivos de atividade do agente nunca ficam no `CODEX_HOME`: o gateway usa `<workspace>/.onmyoji/telegram/` e as saídas de processos agendados usam `<workspace>/.onmyoji/task-scheduler/`.
+Os serviços são registrados pelo código, iniciados como subprocessos locais e administrados por RPC autenticado em loopback. O endpoint, o token efêmero, o estado de habilitação, logs, banco SQLite e contatos ficam em `configs/daemon/`. Arquivos de atividade do agente nunca ficam no `CODEX_HOME`: o gateway usa `<workspace>/.onmyoji/telegram/`, as saídas de processos agendados usam `<workspace>/.onmyoji/task-scheduler/` e os anexos da checagem automática ficam em `<workspace>/.onmyoji/email-monitor/`.
 
 O menu **Daemon > Publicação externa** administra os serviços `gateway` e
 `cloudflare-tunnel`, independentes de Mini Apps. Consulte a documentação de
@@ -29,7 +29,7 @@ No Windows, a instalação do serviço requer privilégios administrativos e `py
 
 `D. Daemon → N. Eventos do agente` configura habilitação, porta do listener loopback, incidente opcional e diagnóstico. Conta e assunto SMTP pertencem ao evento ou ao destino de incidente. Eventos entram na mesma inbox e no mesmo App Server do Telegram. O canal de retorno determina instruções, ferramentas e associação de thread: retorno Telegram segue o fluxo daquele chat/tópico, com `reuse` ou `new`. O ingresso pode funcionar com a recepção Telegram desligada e não é publicado externamente.
 
-`D. Daemon → A. Agendamentos` consulta e ordena definições existentes. O serviço independente `task-scheduler` observa arquivos TOML em `configs/daemon/services/task-scheduler/schedules` e executa data única ou cron, com ações de evento HTTP ou script Python relativo ao workspace. O setup é somente leitura; a administração é feita editando os arquivos. Novos recursos começam desabilitados.
+`D. Daemon → A. Agendamentos` consulta e ordena definições existentes. O serviço independente `task-scheduler` observa arquivos TOML em `configs/daemon/services/task-scheduler/schedules` e executa data única, cron ou intervalo ancorado, com ações de evento HTTP, script Python relativo ao workspace ou checagem interna de e-mail. O setup é somente leitura para definições comuns; os agendamentos reservados de e-mail são administrados pela própria conta em `MCP > E-mail`. Novos recursos começam desabilitados.
 
 Consulte [contratos, diagrama, comandos e recuperação](eventos-agendamentos.md).
 

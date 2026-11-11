@@ -1,12 +1,42 @@
 # E-mail por protocolos comuns
 
-O módulo `email` conecta contas IMAP ou POP3 para recebimento e SMTP para envio. Funciona sob demanda no MCP stdio, em Windows e Linux, sem monitoramento periódico. É independente de `google.gmail.*` e da administração `forward_email.*`.
+O módulo `email` conecta contas IMAP ou POP3 para recebimento e SMTP para envio. As ferramentas funcionam sob demanda no MCP stdio, em Windows e Linux; cada conta de recebimento também pode habilitar uma checagem automática que transforma somente novas mensagens da `INBOX` em eventos do agente. O módulo é independente de `google.gmail.*` e da administração `forward_email.*`.
 
 ## Configuração
 
 Use `MCP > E-mail`. Crie uma conta com nome interno único, endereço, nome exibido do remetente e descrição do contexto. O nome exibido é usado no cabeçalho `From` dos e-mails enviados; ele é independente do identificador interno do perfil. Configure recebimento, envio ou ambos. Credenciais são referências de entradas de vault MCP; o roteiro permite reutilizar valores existentes ou substituí-los pelos helpers comuns. A configuração efetiva fica em `configs/mcp/email.toml`.
 
 O menu de gestão permite mudar identidade, conexões, pastas, raízes de arquivos, habilitação e autenticação. Remover uma conta preserva seu vault e o registro de submissões. Sem contas habilitadas, nenhuma ferramenta de e-mail é publicada. Com uma conta a seleção é implícita; com várias, `email.list_accounts` apresenta seus contextos e as chamadas exigem `account`.
+
+## Checagem automática de novas mensagens
+
+Em `MCP > E-mail > Gerenciar conta`, a opção **Checagem automática de novas mensagens** configura, por conta, o intervalo, as instruções confiáveis, o canal de resposta e a política de thread. O intervalo é um inteiro seguido de `M` ou `H`, de `1M` até um ano. A opção **Diagnóstico ou rebaseline da checagem** mostra o estado persistido ou, após confirmação, registra a caixa atual como a nova linha de base.
+
+Habilitar a checagem grava a seção `monitoring` em `configs/mcp/email.toml` e publica o agendamento reservado `onmyoji-email-<conta>.toml`. A âncora UTC é criada na ativação, permanece estável em edições e é renovada depois de desabilitar e habilitar novamente. O TOML gerenciado usa `managed_by = "onmyoji.email-monitor"`; não o edite nem reutilize esse nome. Se já existir um arquivo não gerenciado no caminho reservado, a configuração é recusada. Falha ao publicar o agendamento restaura a configuração anterior.
+
+```toml
+[accounts.operacional.monitoring]
+enabled = true
+interval = "15M"
+instructions = "Classifique a mensagem e avise somente quando houver ação necessária."
+thread_policy = "reuse"
+activated_at = "2026-11-11T15:00:00.000Z"
+
+[accounts.operacional.monitoring.response_channel]
+type = "telegram"
+value = "group:-1001234567890:42"
+```
+
+A primeira execução cria um baseline da `INBOX` sem emitir eventos. Depois disso, IMAP identifica novas mensagens por `UIDVALIDITY` e UID; POP3 exige UIDL. A consulta é somente leitura e não altera a flag de mensagem lida. Mudança de `UIDVALIDITY`, vínculo da conexão ou indisponibilidade de UIDL pausa a descoberta com diagnóstico e exige rebaseline explícito, evitando reproduzir a caixa inteira.
+
+Cada mensagem nova recebe um UUID persistente e uma tentativa independente. O estado operacional fica em `configs/mcp/state/email-monitor.sqlite3`; não edite esse banco. Rejeições anteriores ao aceite podem ser tentadas novamente. Se a conexão cair quando o aceite já pode ter ocorrido, a tentativa fica marcada como incerta e reutiliza o mesmo UUID; o diagnóstico informa o risco de duplicidade porque o contrato do gateway executa recebimentos repetidos. Uma falha individual não bloqueia as demais mensagens do lote.
+
+As instruções configuradas e os dados da mensagem são separados no prompt. Cabeçalhos, corpo e nomes de anexos são identificados como dados externos não confiáveis e não concedem autorização. Anexos aceitos ficam em `<workspace>/.onmyoji/email-monitor/<conta>/<referência-opaca>/`, com nomes saneados, criação exclusiva, limites gerais do MCP e teto de 100 arquivos por evento. Falhas e omissões aparecem nos dados do evento; somente caminhos regulares existentes são expostos. O staging de mensagens com mais de 20 dias é removido automaticamente.
+
+> [!IMPORTANT]
+> A checagem usa o Python do runtime MCP e o `task-scheduler`; ela não abre um agente para consultar a caixa. O agente só é iniciado pelo gateway quando uma mensagem nova é transformada em evento. Mantenha o listener de eventos e o agendador habilitados para operação automática.
+
+O canal de resposta é obrigatório, mas um evento pode terminar com sucesso sem envio quando o agente chama explicitamente `onmyoji_gateway.complete_silently`. Uma resposta final vazia sem essa chamada continua sendo falha `empty_agent_result`.
 
 TLS direto usa, por padrão, 993/IMAP, 995/POP3 e 465/SMTP. STARTTLS obrigatório usa 143/IMAP, 110/POP3 e 587/SMTP. A validação do certificado permanece ativa e a conexão não regride para autenticação sem TLS.
 

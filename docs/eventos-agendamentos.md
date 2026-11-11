@@ -2,7 +2,7 @@
 
 Especificação aprovada em 2026-11-10. A disponibilidade operacional depende das etapas implementadas e validadas, não da publicação deste contrato.
 
-Implementação atualizada em 2026-11-11: contrato distribuível, núcleo multiorigem, listener HTTP local, entregas Telegram/e-mail, logs e incidentes, agendador TOML, ações, CLI e setup. A suíte completa no Windows aprovou 3.278 testes e 301 subtestes, com 46 testes ignorados. Resultados, limites e comandos estão no [registro de validação](validacao-eventos-agendamentos.md). Nenhum destino real foi acionado e nenhum serviço operacional foi habilitado durante o desenvolvimento.
+Implementação atualizada em 2026-11-11: contrato distribuível, núcleo multiorigem, listener HTTP local, entregas Telegram/e-mail, conclusão silenciosa explícita, logs e incidentes, agendador TOML, intervalos ancorados, checagem automática de e-mail, ações, CLI e setup. A suíte completa no Windows aprovou 3.317 testes e 301 subtestes, com 47 testes ignorados. Resultados, limites e comandos estão no [registro de validação](validacao-eventos-agendamentos.md). Nenhum destino real foi acionado e nenhum serviço operacional foi habilitado durante o desenvolvimento.
 
 ## Eventos do agente
 
@@ -37,7 +37,7 @@ Telegram tem prioridade sem preempção. Destinos ocupados são pulados, sem blo
 
 `reuse` continua a associação vigente ou cria uma thread quando não existe. `new` troca o vínculo após o primeiro turno concluído com sucesso, antes da entrega. Falha do turno conserva associação anterior; falha da entrega não desfaz troca concluída. Ausência conclusiva da thread permite substituição; erro transitório não elimina vínculo.
 
-Sem retry automático de execução ou entrega. Pendentes comprovadamente não enviados retomam; submissões e envios possivelmente iniciados são reconciliados, nunca repetidos cegamente. O acompanhamento aceito retorna estado terminal `completed`, `failed` ou `uncertain`, além do UUID, recepção UTC, `result`, seu alias compatível `execution` e `delivery`. Um resultado concluído cuja entrega falhou continua retornando HTTP 200, com `status=failed`, `result=completed` e `delivery=failed`. Resposta textual vazia falha com `empty_agent_result` e não é entregue. Confirmação SMTP significa aceitação pelo servidor.
+Sem retry automático de execução ou entrega. Pendentes comprovadamente não enviados retomam; submissões e envios possivelmente iniciados são reconciliados, nunca repetidos cegamente. O acompanhamento aceito retorna estado terminal `completed`, `failed` ou `uncertain`, além do UUID, recepção UTC, `result`, seu alias compatível `execution` e `delivery`. Um resultado concluído cuja entrega falhou continua retornando HTTP 200, com `status=failed`, `result=completed` e `delivery=failed`. Resposta textual vazia falha com `empty_agent_result` e não é entregue. Em um evento, a ferramenta dinâmica `onmyoji_gateway.complete_silently` permite concluir com sucesso e registrar a entrega como suprimida; ela não é autorizada para uma conversa comum. Confirmação SMTP significa aceitação pelo servidor.
 
 A conta SMTP e o assunto pertencem ao próprio evento; o remetente vem da conta selecionada. A chave idempotente é `gateway:<inbox-id>:delivery` e o transporte existente aplica SMTPUTF8 quando necessário. Incidente global opcional usa o mesmo modelo de destino, com resumo, referência ao log e uma tentativa sem agente nem recursão.
 
@@ -47,11 +47,13 @@ Timestamp UTC RFC3339 com milissegundos. JSONL diário em `configs/daemon/runtim
 
 Serviço independente `task-scheduler`, namespace `task.`, com SQLite próprio apenas para ocorrências e histórico. A fonte de verdade é um TOML versionado por agendamento em `configs/daemon/services/task-scheduler/schedules/<id>.toml`. O serviço verifica mtimes a cada cinco segundos; arquivo inválido pausa aquela definição e expõe diagnóstico. Alterações não mudam o snapshot de uma execução em curso e exclusão impede o próximo início.
 
-Regras fechadas: `once` recebe instante ISO8601 com offset; `cron` recebe expressão de cinco campos e timezone IANA obrigatório. O runtime usa `croniter>=7,<8`. Cron aceita números, listas, intervalos e passos, sem macros. Horário civil inexistente por DST é pulado e horário duplicado executa somente na primeira ocorrência.
+Regras fechadas: `once` recebe instante ISO8601 com offset; `cron` recebe expressão de cinco campos e timezone IANA obrigatório; `interval` recebe `anchor_at` ISO8601 com offset e `every_seconds` inteiro entre 60 e 31.536.000. Intervalos são calculados sempre a partir da âncora, sem derivar a próxima ocorrência do horário em que a execução anterior terminou. O runtime usa `croniter>=7,<8`. Cron aceita números, listas, intervalos e passos, sem macros. Horário civil inexistente por DST é pulado e horário duplicado executa somente na primeira ocorrência.
 
 Disparos vencidos consolidam uma ocorrência na data mais recente. Cada definição admite no máximo uma ação ativa e uma pendência consolidada; não há retry. O limite global padrão continua em quatro ações. Desabilitar, invalidar ou excluir um TOML descarta o que ainda não cruzou a fronteira externa, sem interromper a ação em curso.
 
 Ação `event` guarda o envelope sem UUID; cada ocorrência gera um UUIDv7 novo e chama o listener HTTP local. Perda de confirmação gera incerteza, sem reenvio. Ação `script` informa caminho `.py` relativo ao workspace e lista de argumentos. Ela usa o Python do runtime do daemon, sem shell, com timeout padrão de 900 s configurável, contenção de árvore e captura limitada de stdout/stderr. Um script que queira emitir evento chama explicitamente o listener; o agendador não interpreta sua saída como evento.
+
+A ação interna `email_check` pertence aos arquivos com `managed_by = "onmyoji.email-monitor"`. Ela chama diretamente o monitor pelo Python do runtime MCP, sem iniciar agente, e aceita conta e timeout de 30 a 3.600 segundos. Os arquivos `onmyoji-email-<conta>.toml` são materializados pela configuração de e-mail; colisões com definições comuns são recusadas e remoção/desabilitação apaga somente arquivos cuja propriedade foi confirmada.
 
 Reinício retoma pendentes comprovadamente não iniciados; ativos sem resultado ficam incertos e não são repetidos. O histórico terminal é mantido por 20 dias, inclusive depois da exclusão do TOML; pendências e incertezas não expiram.
 
@@ -59,7 +61,7 @@ Reinício retoma pendentes comprovadamente não iniciados; ativos sem resultado 
 
 ### Uso local
 
-Instale/valide o runtime pelo setup para incluir `croniter` e `tzdata`. Configure o workspace e habilite o App Server na plataforma antes de usar eventos. Para e-mail, configure uma conta SMTP existente e informe seu nome em cada evento ou incidente. Em `Daemon > N. Eventos do agente` configure habilitação, porta, incidente e diagnóstico. Para Telegram, cadastre o destino no catálogo pelo fluxo `/channel` existente.
+Instale/valide o runtime pelo setup para incluir `croniter` e `tzdata`. Configure o workspace e habilite o App Server na plataforma antes de usar eventos. Para entrega por e-mail, configure uma conta SMTP existente e informe seu nome em cada evento ou incidente. Para checagem automática, configure o recebimento IMAP/POP3 e as opções 11 e 12 da conta em `MCP > E-mail`; veja [E-mail por protocolos comuns](../onmyoji-daemon/docs/mcp-email.md). Em `Daemon > N. Eventos do agente` configure habilitação, porta, incidente e diagnóstico. Para Telegram, cadastre o destino no catálogo pelo fluxo `/channel` existente.
 
 Os exemplos abaixo usam o executável `onmyoji-daemon`; também é possível chamar o mesmo módulo com o Python configurado: `python -B -m onmyoji_daemon.cli`. Substitua `C:/instancias/Shikigami` pela raiz da instância.
 
