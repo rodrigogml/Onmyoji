@@ -17,6 +17,7 @@ O runtime do daemon inclui `jsonschema` para validar contratos de notificações
 No wizard, a reparação verifica e instala os componentes mesmo quando o runtime já parecia válido. Se o teste controlado informar um módulo Python ausente, o wizard oferece reparar os componentes e repetir o teste uma vez; outras falhas são apresentadas para diagnóstico.
 
 O teste controlado usa o Python do runtime da instância e, com isolamento Linux, executa sob a conta dedicada do Shikigami.
+O teste de conexão Telegram usa o mesmo runtime e a mesma conta, tanto no wizard quanto no menu de credenciais.
 
 Ao iniciar ou reiniciar um serviço systemd de sistema pelos assistentes, o setup solicita a confirmação para usar `sudo`; a autenticação é feita pelo próprio sistema.
 

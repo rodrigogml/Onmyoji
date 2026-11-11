@@ -3241,7 +3241,7 @@ def daemon_menu(root: Path) -> None:
                         offer_restart("A nova credencial do bot")
                         break
             elif choice == "3":
-                tested = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-telegram"], quiet=True)
+                tested = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-telegram"], quiet=True, use_runtime=True)
                 result(tested.returncode == 0, (tested.stdout or tested.stderr).strip())
             elif choice == "4":
                 request = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "telegram", "pair-request"], quiet=True)
@@ -3376,7 +3376,7 @@ def daemon_menu(root: Path) -> None:
             if action is None: return False
             if action.startswith("Substituir") and not replace_token(): return False
         while True:
-            tested = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-telegram"], quiet=True)
+            tested = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-telegram"], quiet=True, use_runtime=True)
             result(tested.returncode == 0, (tested.stdout or tested.stderr).strip())
             if tested.returncode == 0: return True
             if prompt("Substituir o token do bot e testar novamente? [S/n]: ").strip().casefold() not in {"", "s", "sim"}: return False

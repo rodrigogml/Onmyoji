@@ -601,9 +601,9 @@ def daemon_validation(root: Path) -> list[dict[str, str]]:
 
 
 def test_telegram(root: Path) -> tuple[bool, str]:
-    from onmyoji_daemon.telegram import McpVault, Settings, TelegramApi
     marker = root / "configs" / "daemon" / "runtime" / "telegram-test.json"
     try:
+        from onmyoji_daemon.telegram import McpVault, Settings, TelegramApi
         settings = Settings.load(root.resolve(), target(root).parent)
         account = TelegramApi(McpVault(settings).read(settings.token_entry)).call("getMe")
         marker.parent.mkdir(parents=True, exist_ok=True)

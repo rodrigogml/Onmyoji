@@ -327,3 +327,18 @@ def test_failed_agent_test_replaces_previous_success_marker(tmp_path):
 
     assert not ok
     assert json.loads(marker.read_text(encoding="utf-8"))["ok"] is False
+def test_telegram_import_failure_is_reported_without_traceback(tmp_path, monkeypatch):
+    import builtins
+    module = setup_module()
+    original_import = builtins.__import__
+    def failing_import(name, *args, **kwargs):
+        if name == "onmyoji_daemon.telegram":
+            raise ModuleNotFoundError("No module named 'jsonschema'")
+        return original_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, "__import__", failing_import)
+
+    ok, detail = module.test_telegram(tmp_path)
+
+    assert not ok
+    assert "jsonschema" in detail
+    assert "Traceback" not in detail
