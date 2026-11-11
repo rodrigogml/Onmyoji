@@ -24,23 +24,35 @@ cancelar uma remoção mantém o operador no perfil; remover volta à sua listag
 
 ## Contratos e operações
 
-Os nomes publicados anteriormente são preservados, por exemplo
-`omie.customers_list`, `omie.payables_update` e
-`omie.inbound_nfe_receipts_update_completed`. As 46 escritas exigem o booleano
-`confirm: true`. Isso integra o contrato da operação; o servidor já é
-pré-aprovado na configuração do Codex.
+Os cadastros e NF-e preservam nomes como `omie.customers_list` e
+`omie.inbound_nfe_receipts_update_completed`. O módulo financeiro foi
+deliberadamente substituído por `omie.financeiro.*`: ele publica ferramentas
+por finalidade, por exemplo `omie.financeiro.lancamentos_conta.listar_por_pagamento`
+e `omie.financeiro.contas_pagar.registrar_pagamento`. Clientes devem renovar
+`tools/list`; os nomes financeiros anteriores não são aliases.
 
-Cada tool publica somente `params` ou `body`, conforme a operação, com seus
-campos aceitos. A validação e normalização também são executadas pelo serviço
-antes de ler credenciais ou fazer HTTP. Nenhuma operação aceita endpoint,
-método Omie ou credenciais fornecidos pelo agente.
+As escritas financeiras exigem `confirmar: true`. Isso integra o contrato da
+operação; o servidor já é pré-aprovado na configuração do Codex.
+
+As tools financeiras usam `filtros` nas leituras e `dados` nas escritas. Cada
+consulta por período aceita exclusivamente `data_inicial` e `data_final` para
+sua finalidade; não use nomes internos da Omie como `dtPagInicial`. Listagens
+recebem `pagina` e `tamanho_pagina` (máximo 50) e retornam `paginacao` com
+`proxima_pagina`. Defina `incluir_dados_omie: true` apenas quando os campos
+nativos forem indispensáveis para auditoria.
+
+A validação e normalização são executadas antes de ler credenciais ou fazer
+HTTP. Erros retornam `error.code`, mensagem e detalhes sanitizados, incluindo
+o campo e sugestão quando aplicável. Escritas nunca sofrem retry automático;
+um resultado `outcome_unknown` exige consulta antes de repetir. Nenhuma
+operação aceita endpoint, método Omie ou credenciais fornecidos pelo agente.
 
 | Família | Comportamento preservado |
 | --- | --- |
 | Clientes e fornecedores | Cadastro compartilhado; filtros em `clientesFiltro`, detalhe por identificador, páginas de até 50 registros. |
 | Tipos de documento | Catálogo sem paginação; consulta por código de até cinco caracteres. |
 | Departamentos, projetos, categorias e contas | Campos permitidos, limites e identificadores de cada ação. Paginação de cadastros aceita nomes simplificados ou nativos. |
-| Lançamentos e transferências | Converte campos simplificados para `cabecalho`, `detalhes` e `transferencia`; origem e destino diferentes. `account_transfers_create` exige a categoria de saída, fixa `cTipo` como `TRA` e cria uma única transferência por `IncluirLancCC`. |
+| Lançamentos e transferências | A fachada `omie.financeiro` converte campos semânticos para `cabecalho`, `detalhes` e `transferencia`; origem e destino diferentes. `transferencias.criar` exige a categoria de saída, fixa `cTipo` como `TRA` e cria uma única transferência por `IncluirLancCC`. |
 | Contas a pagar/receber | Preserva tipos de documento, baixas, conciliação, distribuição e lotes. Linha digitável somente em contas a pagar, texto não vazio de até 70 caracteres sem reformatação. |
 | Recebimentos e NF-e | Converte identificadores, etapa, itens e informações financeiras para os envelopes específicos da Omie. |
 
@@ -48,8 +60,8 @@ Exemplos com um único perfil habilitado:
 
 ```json
 {"tool":"omie.customers_list","arguments":{"params":{"page":1,"page_size":50,"clientesFiltro":{"cnpj_cpf":"012.345.678-90"}}}}
-{"tool":"omie.payables_update","arguments":{"confirm":true,"body":{"codigo_lancamento_omie":123,"codigo_tipo_documento":"FAT"}}}
-{"tool":"omie.account_transfers_create","arguments":{"confirm":true,"body":{"integration_id":"TR-20261111-001","source_account_id":123,"destination_account_id":456,"date":"11/11/2026","amount":100.00,"category_code":"0.01.02","note":"Transferência entre contas da empresa"}}}
+{"tool":"omie.financeiro.lancamentos_conta.listar_por_pagamento","arguments":{"filtros":{"data_inicial":"01/11/2026","data_final":"30/11/2026"},"pagina":1,"tamanho_pagina":50}}
+{"tool":"omie.financeiro.transferencias.criar","arguments":{"confirmar":true,"dados":{"codigo_integracao":"TR-20261111-001","conta_origem_id":123,"conta_destino_id":456,"data":"11/11/2026","valor":100.00,"categoria_codigo":"0.01.02","observacao":"Transferência entre contas da empresa"}}}
 ```
 
 Na transferência, `category_code` é convertido para `detalhes.cCodCateg`, o

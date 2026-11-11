@@ -8,6 +8,8 @@ import pytest
 from onmyoji_daemon.mcp.omie.contracts import OPERATION_NAMES, build_params
 from onmyoji_daemon.mcp.omie.service import OPERATIONS, OmieError, OmieService
 from onmyoji_daemon.mcp.omie.tools import OmieToolRegistry
+from onmyoji_daemon.mcp.omie.finance import SPECS
+from onmyoji_daemon.mcp.omie.tools import FINANCE_LEGACY_OPERATIONS
 
 
 def operation_cases():
@@ -101,23 +103,23 @@ class Configuration:
 def test_publication_selects_one_profile_and_publishes_context():
     assert OmieToolRegistry(Configuration([])).definitions() == []
     tools = OmieToolRegistry(Configuration([{"name": "empresa", "description": "ERP da empresa"}])).definitions()
-    assert len(tools) == 72
+    assert len(tools) == len([name for name in OPERATIONS if name not in FINANCE_LEGACY_OPERATIONS]) + len(SPECS)
     for tool in tools:
         assert "profile" not in tool["input_schema"]["properties"]
         assert "ERP da empresa" in tool["description"]
     creation = next(tool for tool in tools if tool["name"] == "omie.customers_create")
     assert creation["input_schema"]["properties"]["body"]["required"] == ["cnpj_cpf", "razao_social"]
     assert "duplicados/inativos" in creation["description"]
-    transfer = next(tool for tool in tools if tool["name"] == "omie.account_transfers_create")
-    assert "category_code" in transfer["input_schema"]["properties"]["body"]["required"]
-    assert "detalhes.cCodCateg" in transfer["description"]
+    transfer = next(tool for tool in tools if tool["name"] == "omie.financeiro.transferencias.criar")
+    assert "dados" in transfer["input_schema"]["properties"]
+    assert "omie.account_transfers_create" not in {tool["name"] for tool in tools}
 
 
 def test_multiple_profiles_require_selection_and_expose_context():
     profiles = [{"name": "a", "description": "ERP A"}, {"name": "b", "description": "ERP B"}]
     registry = OmieToolRegistry(Configuration(profiles))
     tools = registry.definitions()
-    assert len(tools) == 73
+    assert len(tools) == len([name for name in OPERATIONS if name not in FINANCE_LEGACY_OPERATIONS]) + len(SPECS) + 1
     assert registry.call("omie.list_profiles", {}) == {"profiles": profiles}
     for tool in tools[1:]:
         assert "profile" in tool["input_schema"]["required"]
@@ -125,7 +127,7 @@ def test_multiple_profiles_require_selection_and_expose_context():
         registry.call("omie.projects_get", {"params": {"codInt": "P1"}})
 
 
-@pytest.mark.parametrize("operation", sorted(CASES))
+@pytest.mark.parametrize("operation", sorted(set(CASES) - FINANCE_LEGACY_OPERATIONS))
 def test_each_published_schema_accepts_its_valid_example(operation):
     from jsonschema import Draft202012Validator
     registry = OmieToolRegistry(Configuration([{"name": "empresa", "description": "ERP"}]))

@@ -41,6 +41,7 @@ from .excel.exception import ExcelExceptions
 from .document_processing.contracts import DocumentError
 from .mercado.exception import MercadoError
 from .mercado.tools import MercadoToolRegistry
+from .omie import OmieError
 
 
 class McpApplication:
@@ -157,6 +158,9 @@ def create_server(root: Path):
             return CallToolResult(content=[TextContent(type="text", text=text)], structured_content=data)
         except Exception as error:
             # Erros de domínio já são sanitizados; nunca serialize exceções ou tracebacks.
+            if isinstance(error, OmieError):
+                data = {"error": error.as_dict()}
+                return CallToolResult(content=[TextContent(type="text", text=json.dumps(data, ensure_ascii=False))], structured_content=data, is_error=True)
             if params.name.startswith("excel.") and isinstance(error, DocumentError):
                 data = {"error": {"code": error.code, "message": str(error)}}
                 return CallToolResult(content=[TextContent(type="text", text=json.dumps(data, ensure_ascii=False))], structured_content=data, is_error=True)

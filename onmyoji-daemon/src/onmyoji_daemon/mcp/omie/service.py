@@ -72,6 +72,21 @@ class OmieService:
             return {"data": create_customer(parameters, request)}
         return {"data": self._request(profile, defaults, endpoint, method, parameters)}
 
+    def invoke_financial(self, profile_name: str, operation: str, arguments: Mapping[str, Any], *, writes: bool) -> dict[str, Any]:
+        """Executa o contrato financeiro já normalizado pela fachada pública."""
+        spec = OPERATIONS.get(operation)
+        if spec is None:
+            raise OmieError("unsupported_operation", "Operação financeira Omie não suportada.")
+        endpoint, method, _ = spec
+        parameters = build_params(operation, arguments)
+        profile, defaults = self._profile(profile_name)
+        try:
+            return self._request(profile, defaults, endpoint, method, parameters, retries=0 if writes else None)
+        except OmieError as error:
+            if writes and error.code in {"omie_http_error", "network_error"}:
+                raise OmieError("outcome_unknown", "A escrita pode ter sido recebida pela Omie; consulte antes de repetir.", {"operation": operation, "retryable": False}) from error
+            raise
+
     def _profile(self, profile_name: str) -> tuple[dict[str, Any], dict[str, Any]]:
         try:
             document = tomllib.loads(self.path.read_text(encoding="utf-8"))
@@ -112,8 +127,10 @@ class OmieService:
                 with urlopen(request, timeout=timeout) as response:
                     result = json.loads(response.read())
             except HTTPError as error:
-                if error.code not in {429, 500, 502, 503, 504} or attempt == retries:
-                    raise OmieError("omie_http_error", f"A API Omie retornou HTTP {error.code}.") from error
+                # HTTP 500 da Omie também é usado para contratos inválidos; não oculte
+                # esse diagnóstico atrás de tentativas que não podem corrigir a entrada.
+                if error.code not in {429, 502, 503, 504} or attempt == retries:
+                    raise OmieError("omie_http_error", f"A API Omie retornou HTTP {error.code}.", {"http_status": error.code, "retryable": False}) from error
             except (URLError, TimeoutError) as error:
                 if attempt == retries:
                     raise OmieError("network_error", "Não foi possível consultar a API Omie.") from error
