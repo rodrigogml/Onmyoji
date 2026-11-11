@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 from pathlib import Path
 
 
@@ -51,8 +52,23 @@ def _read_version(root: Path) -> dict:
 
 def _active(root: Path) -> bool:
     for path in (root / "configs" / "daemon" / "runtime" / "supervisor.lock", daemon_runtime_path(root) / "supervisor.lock"):
-        if path.exists():
-            return True
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            pid = int(value.get("pid", 0))
+        except (OSError, ValueError, TypeError):
+            continue
+        if pid <= 0 or str(value.get("root")) != str(root):
+            continue
+        if os.name == "nt":
+            probe = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], text=True, capture_output=True, check=False)
+            if probe.returncode or str(pid) not in probe.stdout or "No tasks" in probe.stdout:
+                continue
+        else:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                continue
+        return True
     return False
 
 

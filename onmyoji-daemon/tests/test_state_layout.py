@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -30,7 +31,7 @@ def test_migrate_moves_legacy_operational_state_without_leaving_legacy_files(tmp
 def test_migrate_refuses_active_supervisor_and_conflicting_destination(tmp_path: Path):
     lock = tmp_path / "configs/daemon/runtime/supervisor.lock"
     lock.parent.mkdir(parents=True)
-    lock.write_text("{}", encoding="utf-8")
+    lock.write_text(json.dumps({"pid": os.getpid(), "root": str(tmp_path.resolve())}), encoding="utf-8")
     with pytest.raises(StateLayoutError, match="Pare o daemon"):
         migrate(tmp_path)
 
@@ -43,3 +44,13 @@ def test_migrate_refuses_active_supervisor_and_conflicting_destination(tmp_path:
     destination.write_text("new", encoding="utf-8")
     with pytest.raises(StateLayoutError, match="não pode escolher"):
         migrate(tmp_path)
+
+
+def test_migrate_accepts_orphaned_lock(tmp_path: Path):
+    lock = tmp_path / "configs/daemon/runtime/supervisor.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("incompleto", encoding="utf-8")
+
+    migrate(tmp_path)
+
+    assert (tmp_path / "state/daemon/runtime/supervisor.lock").exists()
