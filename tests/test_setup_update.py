@@ -121,7 +121,7 @@ def test_commit_and_push_origin_before_merge(setup_module, repos, monkeypatch, t
     assert not git(local, "status", "--porcelain")
 
 
-def test_sensitive_configuration_remains_local_and_update_continues(setup_module, repos, monkeypatch, capsys):
+def test_configuration_is_stashed_and_restored_without_path_classification(setup_module, repos, monkeypatch):
     _, local = repos
     (local / "configs").mkdir()
     (local / "configs" / "secret").write_text("segredo", encoding="utf-8")
@@ -130,10 +130,9 @@ def test_sensitive_configuration_remains_local_and_update_continues(setup_module
     assert (local / "new.txt").exists()
     assert (local / "configs" / "secret").read_text(encoding="utf-8") == "segredo"
     assert not git(local, "stash", "list")
-    assert "sensíveis" in capsys.readouterr().out
 
 
-def test_stash_preserves_local_sensitive_and_restores_other_changes(setup_module, repos, monkeypatch):
+def test_stash_preserves_configuration_and_restores_other_changes(setup_module, repos, monkeypatch):
     _, local = repos
     (local / "configs").mkdir()
     (local / "configs" / "secret").write_text("segredo", encoding="utf-8")
@@ -169,7 +168,7 @@ def test_merge_keeps_modified_tracked_config_when_upstream_does_not_touch_it(set
     assert not git(local, "stash", "list")
 
 
-def test_commit_does_not_include_staged_sensitive_files(setup_module, repos, monkeypatch):
+def test_commit_includes_every_pending_path(setup_module, repos, monkeypatch):
     _, local = repos
     (local / "configs").mkdir()
     (local / "configs" / "secret").write_text("segredo", encoding="utf-8")
@@ -178,12 +177,13 @@ def test_commit_does_not_include_staged_sensitive_files(setup_module, repos, mon
     monkeypatch.setattr(setup_module, "flow_choice", lambda *_args: "Salvar apenas em commit")
     monkeypatch.setattr(setup_module, "prompt", lambda _label: "Salva trabalho")
     setup_module.update_upstream(local)
-    assert not (local / "new.txt").exists()
-    assert git(local, "diff", "--cached", "--name-only") == "configs/secret"
-    assert "configs/secret" not in git(local, "show", "--format=", "--name-only", "HEAD")
+    assert (local / "new.txt").exists()
+    assert not git(local, "status", "--porcelain")
+    committed = git(local, "show", "--format=", "--name-only", "HEAD~1")
+    assert set(committed.splitlines()) == {"configs/secret", "local.txt"}
 
 
-def test_stash_refuses_sensitive_staged_index_without_mutating_it(setup_module, repos, monkeypatch, capsys):
+def test_stash_restores_staged_configuration_and_other_changes(setup_module, repos, monkeypatch):
     _, local = repos
     (local / "configs").mkdir()
     (local / "configs" / "secret").write_text("segredo", encoding="utf-8")
@@ -191,7 +191,7 @@ def test_stash_refuses_sensitive_staged_index_without_mutating_it(setup_module, 
     (local / "base.txt").write_text("local", encoding="utf-8")
     monkeypatch.setattr(setup_module, "flow_choice", lambda *_args: "Guardar temporariamente em stash")
     setup_module.update_upstream(local)
-    assert "área de preparação" in capsys.readouterr().out
+    assert (local / "new.txt").exists()
     assert git(local, "diff", "--cached", "--name-only") == "configs/secret"
     assert (local / "base.txt").read_text(encoding="utf-8") == "local"
     assert not git(local, "stash", "list")
