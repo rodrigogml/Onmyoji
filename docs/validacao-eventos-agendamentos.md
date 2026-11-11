@@ -52,7 +52,7 @@ python3 -B -m pytest onmyoji-daemon/tests/test_task_scheduler.py onmyoji-daemon/
 
 A VM usada no baseline anterior era transitória e executava no kernel Linux real. O comando acima é o roteiro para repetir essa verificação com `croniter` 7; ele não foi executado nesta auditoria e, portanto, a evidência atual certifica somente Windows. macOS e outros sistemas POSIX também não estão certificados.
 
-O schema continua declarado como package data, mas o wheel não foi reconstruído nesta auditoria; a evidência atual cobre importação direta da árvore de fontes.
+O wheel `onmyoji_daemon-0.1.0-py3-none-any.whl` foi construído em staging isolado a partir do commit publicado. A inspeção confirmou o schema distribuído e igualdade SHA-256 dos 18 arquivos Python/JSON de `agent_notification`, `execution_gateway` e `task_scheduler` com a árvore validada, sem divergências.
 
 ## Fronteiras operacionais
 
