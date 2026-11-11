@@ -355,7 +355,7 @@ class TelegramApi:
             raise TelegramMediaUploadError(f"Telegram API recusou {method}: {detail[:300]}", kind="not_sent")
         return payload.get("result") if isinstance(payload.get("result"), dict) else {}
     def set_owner_commands(self, owner_id: int, totp_enabled: bool) -> bool:
-        commands = [{"command": "new", "description": "Iniciar uma nova conversa"}, {"command": "config", "description": "Configurar esta conversa"}, {"command": "channel", "description": "Gerenciar canal de envio"}]
+        commands = [{"command": "new", "description": "Iniciar uma nova conversa"}, {"command": "config", "description": "Configurar esta conversa"}, {"command": "channel", "description": "Gerenciar canal de envio"}, {"command": "usage", "description": "Consultar consumo e franquia do Codex"}]
         if totp_enabled: commands.append({"command": "totp", "description": "Obter código de autenticação"})
         scope = {"type": "chat", "chat_id": owner_id}
         self.call("setMyCommands", {"commands": commands, "scope": scope})
@@ -518,7 +518,7 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
                 if self.api.set_owner_commands(owner, self._totp_enabled()): verified += 1
                 else: failed += 1; self._record_error("Telegram não confirmou os comandos privados do owner.")
             except Exception as error: failed += 1; self._record_error(error)
-        summary = {"updated_at": time.time(), "owners": len(owners), "verified": verified, "failed": failed, "expected": ["new", "config", "channel", *( ["totp"] if self._totp_enabled() else [])]}
+        summary = {"updated_at": time.time(), "owners": len(owners), "verified": verified, "failed": failed, "expected": ["new", "config", "channel", "usage", *( ["totp"] if self._totp_enabled() else [])]}
         state = json_file(self.settings.state_dir / "gateway-status.json", {}); state["commands"] = summary; write_json(self.settings.state_dir / "gateway-status.json", state)
         return summary
     def start(self) -> None:
@@ -1079,6 +1079,23 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
         except Exception as error:
             self._record_error(f"Transcrição de voz indisponível: {error}"); return None
 
+    def _usage(self, conversation_id: str) -> None:
+        """Consulta o uso do Codex para um owner sem expor diagnósticos do processo."""
+        try:
+            launch = CodexLaunch.from_system(self.settings.root)
+            completed = subprocess.run([launch.executable, "usage"], cwd=launch.workspace, env=launch.environment(), text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=30, check=False)
+        except (CodexExecutionError, OSError, subprocess.TimeoutExpired) as error:
+            self._record_error(error)
+            self._ephemeral(conversation_id, "Não foi possível consultar o uso do Codex agora. Tente novamente.")
+            return
+        output = (completed.stdout or "").strip()
+        if completed.returncode != 0 or not output:
+            self._record_error("A consulta de uso do Codex não retornou um resultado utilizável.")
+            self._ephemeral(conversation_id, "O Codex não retornou informações de uso. Tente novamente.")
+            return
+        telegram_chat_id, topic_values = self._telegram_address(conversation_id)
+        self._send_agent_text(telegram_chat_id, output, protect_content=True, **topic_values)
+
     def _update(self, update: dict[str, Any]) -> None:
         self._input_local.route = "auto"
         if update.get("callback_query"): self._callback(update["callback_query"]); return
@@ -1140,6 +1157,8 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
             self._ephemeral(conversation_id, "Cancelamento solicitado; a fila foi preservada." if cancelled else "Não há turno ativo para cancelar."); return
         if command == "/resolver":
             self._recovery_control(conversation_id, text[len(text.split(maxsplit=1)[0]):].strip().casefold()); return
+        if command == "/usage":
+            self._usage(conversation_id); return
         if conversation_id in self.totp_sessions:
             if text.startswith("/"):
                 self._clear_totp_session(conversation_id); self._ephemeral(conversation_id, "Fluxo TOTP cancelado por um novo comando.")

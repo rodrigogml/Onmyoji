@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import io
+import subprocess
 import threading
 import time
 from urllib.error import HTTPError
@@ -333,6 +334,44 @@ def test_every_received_command_is_deleted_before_routing(tmp_path):
     gateway._update({"message": {"message_id": 70, "chat": {"id": 9, "type": "private"}, "from": {"id": 9}, "text": "/comando-invalido"}})
     assert deleted == [(9, 70)]
     assert sent == []
+
+
+def test_usage_command_runs_codex_usage_and_returns_its_output(tmp_path, monkeypatch):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data)); gateway.contacts.add_owner({"id": 9, "first_name": "owner"})
+    deleted, sent, received = [], [], {}
+    gateway.api = type("Api", (), {"delete": lambda _self, chat, message: deleted.append((chat, message)), "send": lambda _self, chat, text, **values: sent.append((chat, text, values)) or {"message_id": 1}})()
+
+    class Launch:
+        executable = "codex"
+        workspace = tmp_path
+
+        @staticmethod
+        def environment(): return {"CODEX_HOME": str(tmp_path)}
+
+    def run(command, **kwargs):
+        received.update({"command": command, **kwargs})
+        return subprocess.CompletedProcess(command, 0, "Uso atual do Codex", "")
+
+    monkeypatch.setattr("onmyoji_daemon.telegram.CodexLaunch.from_system", lambda _root: Launch())
+    monkeypatch.setattr("onmyoji_daemon.telegram.subprocess.run", run)
+
+    gateway._update({"message": {"message_id": 72, "chat": {"id": 9, "type": "private"}, "from": {"id": 9}, "text": "/usage"}})
+
+    assert deleted == [(9, 72)]
+    assert received["command"] == ["codex", "usage"]
+    assert received["cwd"] == tmp_path and received["env"] == {"CODEX_HOME": str(tmp_path)} and received["timeout"] == 30
+    assert sent == [(9, "Uso atual do Codex", {"protect_content": True, "parse_mode": "HTML"})]
+
+
+def test_usage_is_included_in_the_owner_command_catalog(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data)); gateway.contacts.add_owner({"id": 9, "first_name": "owner"})
+    gateway.api = type("Api", (), {"set_owner_commands": lambda _self, _owner, _totp: True})()
+
+    summary = gateway._configure_owner_commands()
+
+    assert summary["expected"] == ["new", "config", "channel", "usage"]
 
 
 def test_new_command_is_deleted_once_and_still_resets_conversation(tmp_path):

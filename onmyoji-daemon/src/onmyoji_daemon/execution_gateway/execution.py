@@ -82,7 +82,7 @@ class ExecutionGateway:
             prompt = None
         command = text.split(maxsplit=1)[0].split("@", 1)[0].casefold() if text else ""
         protected_password = (session and session.get("phase") == "password") or prompt
-        controls = {"/new", "/cancel", "/resolver", "/config", "/channel", "/totp", "/pair", "/fila", "/direcionar"}
+        controls = {"/new", "/cancel", "/resolver", "/config", "/channel", "/totp", "/pair", "/usage", "/fila", "/direcionar"}
         private_control = ("totp_password" if protected_password and command not in controls else "pair_pin" if command == "/pair" else None) if is_message else None
         token = session.get("token") if session else None
         token_hash = hashlib.sha256(token.encode()).hexdigest() if isinstance(token, str) else prompt.get("token_hash") if prompt else None
@@ -117,7 +117,7 @@ class ExecutionGateway:
         message = update.get("message") or update.get("edited_message") or {}
         text = str(message.get("text") or message.get("caption") or "")
         command = text.split(maxsplit=1)[0].split("@", 1)[0].casefold() if text else ""
-        return bool(update.get("private_control")) or bool(update.get("callback_query")) or command in {"/new", "/cancel", "/resolver", "/config", "/channel", "/totp", "/pair"}
+        return bool(update.get("private_control")) or bool(update.get("callback_query")) or command in {"/new", "/cancel", "/resolver", "/config", "/channel", "/totp", "/pair", "/usage"}
 
     def _ingress_watch(self) -> None:
         ticks = 0
