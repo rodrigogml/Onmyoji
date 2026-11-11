@@ -203,7 +203,7 @@ def test_gateway_records_the_instant_of_a_credential_error(tmp_path, monkeypatch
 
     gateway._record_error("O cofre MCP não disponibilizou a credencial solicitada.")
 
-    status = json.loads((data / "state" / "gateway-status.json").read_text(encoding="utf-8"))
+    status = json.loads((gateway.settings.state_dir / "gateway-status.json").read_text(encoding="utf-8"))
     assert status["last_error_at"] == 123.0 and status["updated_at"] == 123.0
 
 
@@ -214,7 +214,7 @@ def test_gateway_records_process_recovery_code_without_exception_text(tmp_path):
     gateway = Gateway(Settings.load(tmp_path, data))
     gateway._record_error(ProcessRecoveryError("process_identity_unavailable"))
 
-    status = json.loads((data / "state" / "gateway-status.json").read_text(encoding="utf-8"))
+    status = json.loads((gateway.settings.state_dir / "gateway-status.json").read_text(encoding="utf-8"))
     assert status["last_error_code"] == "process_identity_unavailable"
     assert "Reconciliação" not in json.dumps(status)
 
@@ -233,7 +233,7 @@ def test_gateway_reports_process_failure_stage_without_private_error(tmp_path):
 
     gateway._turn_serial(9, "conteúdo privado", [])
 
-    status = json.loads((data / "state" / "gateway-status.json").read_text(encoding="utf-8"))
+    status = json.loads((gateway.settings.state_dir / "gateway-status.json").read_text(encoding="utf-8"))
     assert status["last_error_code"] == "process_identity_unavailable"
     assert status["diagnostics"][-1]["stage"] == "app_server"
     assert status["diagnostics"][-1]["reason"] == "process_identity_unavailable"
@@ -704,7 +704,7 @@ def test_agent_receives_a_structured_media_upload_failure(tmp_path):
 
     payload = json.loads(response["contentItems"][0]["text"])
     assert response["success"] is True and payload == {"sent": False, "uncertain": False, "retry_safe": False, "stage": "telegram_api", "error": "Falha operacional registrada; confira a etapa e o código de diagnóstico."}
-    state = json.loads((data / "state" / "gateway-status.json").read_text(encoding="utf-8"))
+    state = json.loads((gateway.settings.state_dir / "gateway-status.json").read_text(encoding="utf-8"))
     assert state["diagnostics"][-1]["event"] == "media.send_failed"
 
 

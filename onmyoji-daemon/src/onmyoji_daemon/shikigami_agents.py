@@ -28,7 +28,7 @@ from .instance import shikigami_agents_path
 STATE_SCHEMA_VERSION = 1
 RUNTIME_SCHEMA_VERSION = 1
 AGENTS_STATE_PATH = Path("configs/shikigami/agents.toml")
-RUNTIME_STATE_PATH = Path("configs/shikigami/agents-runtime.json")
+RUNTIME_STATE_PATH = Path("state/shikigami/agents-runtime.json")
 MAX_PROFILE_BYTES = 64 * 1024
 _IDENTIFIER = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
 _HASH = re.compile(r"[0-9a-f]{64}\Z")

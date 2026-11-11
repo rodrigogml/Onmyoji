@@ -223,7 +223,7 @@ def test_legacy_history_migrates_idempotently_and_ignores_invalid_location(gatew
 def test_fixed_point_roundtrip_survives_restart_and_generation_isolation(gateway):
     gateway._channel_register("9", "Destino", 9)
     gateway._outbound_send_location({"channel": "9", "latitude": 0, "longitude": 0})
-    path = gateway.settings.data_dir / "state" / "gateway.sqlite3"
+    path = gateway.settings.state_dir / "gateway.sqlite3"
     with sqlite3.connect(path) as database:
         structured = json.loads(database.execute("SELECT structured_content FROM telegram_external_messages").fetchone()[0])
     assert structured == {"location": {"kind": "static", "latitude": 0, "longitude": 0}}

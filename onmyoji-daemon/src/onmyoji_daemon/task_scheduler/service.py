@@ -31,7 +31,7 @@ class TaskScheduler:
         self.script_timeout_seconds = options.get("script_timeout_seconds", 900)
         if type(self.script_timeout_seconds) is not int or not 1 <= self.script_timeout_seconds <= 604800:
             raise RpcError("Timeout padrão de scripts inválido.", "invalid_config")
-        self.repository = TaskRepository(self.data_dir / "state" / "scheduler.sqlite3", self.workspace, clock, self.data_dir / "schedules", self.script_timeout_seconds)
+        self.repository = TaskRepository(self.root / "state" / "daemon" / "services" / "task-scheduler" / "scheduler.sqlite3", self.workspace, clock, self.data_dir / "schedules", self.script_timeout_seconds)
         self.stop_event, self.changed = threading.Event(), threading.Event()
         self.lock = threading.Lock()
         self.active = {}

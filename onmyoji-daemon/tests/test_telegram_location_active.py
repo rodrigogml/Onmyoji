@@ -222,7 +222,7 @@ def test_transport_failure_and_diagnostics_never_echo_geodata_or_api_errors(gate
     result = tool_call(gateway, active, "send_location", {"latitude": -23.55052, "longitude": -46.633308})
     assert result["sent"] is False and result["stage"] == "telegram_api"
     assert "pode ter ocorrido" in result["error"]
-    state = (gateway.settings.data_dir / "state" / "gateway-status.json").read_text(encoding="utf-8")
+    state = (gateway.settings.state_dir / "gateway-status.json").read_text(encoding="utf-8")
     recorded = json.dumps(result) + state
     assert all(value not in recorded for value in ("23.55052", "46.633308", "private-token"))
 

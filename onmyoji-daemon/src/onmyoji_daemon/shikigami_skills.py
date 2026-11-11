@@ -18,7 +18,7 @@ from .instance import shikigami_skills_path
 STATE_SCHEMA_VERSION = 1
 RUNTIME_SCHEMA_VERSION = 1
 SKILLS_STATE_PATH = Path("configs/shikigami/skills.toml")
-RUNTIME_STATE_PATH = Path("configs/shikigami/skills-runtime.json")
+RUNTIME_STATE_PATH = Path("state/shikigami/skills-runtime.json")
 
 
 class ShikigamiSkillMaterializationError(RuntimeError):

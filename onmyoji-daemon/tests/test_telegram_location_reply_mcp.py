@@ -168,7 +168,7 @@ def test_resumed_thread_reply_flows_from_existing_state_tool_through_mcp(gateway
     assert gateway._channels_list() == []
     assert gateway.database.execute("SELECT codex_thread_id FROM conversations WHERE chat_id=?", (conversation,)).fetchone()[0] == thread
     assert gateway.database.execute("SELECT COUNT(*) FROM telegram_external_messages").fetchone()[0] == 0
-    diagnostics = (gateway.settings.data_dir / "state" / "gateway-status.json").read_text(encoding="utf-8")
+    diagnostics = (gateway.settings.state_dir / "gateway-status.json").read_text(encoding="utf-8")
     assert token not in diagnostics
 
 

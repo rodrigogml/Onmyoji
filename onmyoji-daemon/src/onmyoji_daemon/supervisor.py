@@ -18,6 +18,7 @@ from .registry import SERVICES, ServiceSpec
 from .rpc import RpcError, RpcServer, call, disconnected
 from .supervision.component.process_group import ServiceProcessGroup
 from .supervision.publication import PublicationCoordinator
+from .state_layout import daemon_runtime_path
 
 
 def free_port() -> int:
@@ -46,8 +47,8 @@ class ManagedService:
 class Supervisor:
     def __init__(self, onmyoji_root: Path):
         self.onmyoji_root = onmyoji_root.resolve()
-        self.root = self.onmyoji_root / "configs" / "daemon"
-        self.runtime = self.root / "runtime"; self.runtime.mkdir(parents=True, exist_ok=True)
+        self.root = self.onmyoji_root / "configs" / "daemon"; self.root.mkdir(parents=True, exist_ok=True)
+        self.runtime = daemon_runtime_path(self.onmyoji_root); self.runtime.mkdir(parents=True, exist_ok=True)
         self.endpoint_file = self.runtime / "endpoint.json"
         self.process_file = self.runtime / "process.json"
         self.lock_file = self.runtime / "supervisor.lock"
@@ -318,5 +319,5 @@ class Supervisor:
 
 
 def endpoint(onmyoji_root: Path) -> tuple[str, int, str]:
-    values = json.loads((onmyoji_root / "configs" / "daemon" / "runtime" / "endpoint.json").read_text(encoding="utf-8"))
+    values = json.loads((daemon_runtime_path(onmyoji_root) / "endpoint.json").read_text(encoding="utf-8"))
     return str(values["host"]), int(values["port"]), str(values["token"])

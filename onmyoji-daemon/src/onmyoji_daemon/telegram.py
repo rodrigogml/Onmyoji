@@ -126,6 +126,11 @@ class Settings:
     interrupt_grace_seconds: float = 15.0
     post_turn_results: bool = False
 
+    @property
+    def state_dir(self) -> Path:
+        """Retorna a área durável, separada da configuração do Gateway."""
+        return self.root / "state" / "daemon" / "services" / "telegram"
+
     @classmethod
     def load(cls, root: Path, data_dir: Path) -> "Settings":
         path = telegram_configuration_path(root)
@@ -390,7 +395,7 @@ def under(path: Path, root: Path) -> bool:
 
 class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
     def __init__(self, settings: Settings):
-        lease = GatewayStore.open_lease(settings.data_dir / "state" / "gateway-writer.lock")
+        lease = GatewayStore.open_lease(settings.state_dir / "gateway-writer.lock")
         try:
             self._initialize_persistence(settings)
         except Exception:
@@ -421,7 +426,7 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
         self.identity = identity(settings.root); self.instructions = InstructionComposer(settings.root, settings.data_dir, settings.instructions_file, settings.instructions_enabled)
         self.activity_root = settings.project / ".onmyoji" / "telegram"; self.archive_root = self.activity_root / "attachments"; self.staging_root = self.activity_root / "staging"
         self.archive_root.mkdir(parents=True, exist_ok=True); self.staging_root.mkdir(parents=True, exist_ok=True)
-        self.api: TelegramApi | None = None; self.bot_id: int | None = None; self.pair: tuple[str, float] | None = None; self.offset = 0; self.work = threading.BoundedSemaphore(settings.parallel); self.totp_sessions: dict[int, dict[str, Any]] = {}; self.config_sessions: dict[str, dict[str, Any]] = {}; self.config_lock = threading.RLock(); self.menu_sessions: dict[str, MenuSession] = {}; self.channel_identify_sessions: dict[str, dict[str, Any]] = {}; self.menu_lock = threading.RLock(); self.last_error: str | None = None; self.cleanup_path = settings.data_dir / "state" / "totp-cleanup.json"; self.pending_deletions = json_file(self.cleanup_path, {}); self.app_server: CodexAppServer | None = None; self.app_server_lock = threading.RLock(); self.app_turns: dict[str, AppServerTurn] = {}; self.last_app_activity = time.monotonic(); self.turn_locks: dict[str, threading.Lock] = {}; self.turn_locks_lock = threading.Lock(); self.workers: set[str] = set(); self.workers_lock = threading.Lock()
+        self.api: TelegramApi | None = None; self.bot_id: int | None = None; self.pair: tuple[str, float] | None = None; self.offset = 0; self.work = threading.BoundedSemaphore(settings.parallel); self.totp_sessions: dict[int, dict[str, Any]] = {}; self.config_sessions: dict[str, dict[str, Any]] = {}; self.config_lock = threading.RLock(); self.menu_sessions: dict[str, MenuSession] = {}; self.channel_identify_sessions: dict[str, dict[str, Any]] = {}; self.menu_lock = threading.RLock(); self.last_error: str | None = None; self.cleanup_path = settings.state_dir / "totp-cleanup.json"; self.pending_deletions = json_file(self.cleanup_path, {}); self.app_server: CodexAppServer | None = None; self.app_server_lock = threading.RLock(); self.app_turns: dict[str, AppServerTurn] = {}; self.last_app_activity = time.monotonic(); self.turn_locks: dict[str, threading.Lock] = {}; self.turn_locks_lock = threading.Lock(); self.workers: set[str] = set(); self.workers_lock = threading.Lock()
         self.workers_changed = threading.Condition(self.workers_lock)
         self.related_work = RelatedWorkMonitor(self.store, lambda: self.capabilities, lambda: self.app_server, self._generation, self._enqueue_related_result, enabled=settings.post_turn_results, timeout_seconds=settings.turn_timeout, diagnostic=self._diagnostic)
         self._init_notifications()
@@ -429,7 +434,7 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
     def _initialize_persistence(self, settings: Settings) -> None:
         """Migra sob posse exclusiva; nenhum cliente externo foi aberto ainda."""
         self.settings, self.stop_event = settings, threading.Event(); self.contacts = Contacts(settings.data_dir / "contacts.json")
-        (settings.data_dir / "state").mkdir(parents=True, exist_ok=True); self.database = sqlite3.connect(settings.data_dir / "state" / "gateway.sqlite3", check_same_thread=False); self.database_lock = threading.RLock()
+        settings.state_dir.mkdir(parents=True, exist_ok=True); self.database = sqlite3.connect(settings.state_dir / "gateway.sqlite3", check_same_thread=False); self.database_lock = threading.RLock()
         GatewayStore.validate_schema(self.database)
         protect_legacy_gateway(settings.root, telegram_configuration_path(settings.root))
         self.database.execute("CREATE TABLE IF NOT EXISTS conversations(chat_id TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL, share_thoughts INTEGER NOT NULL DEFAULT 1, delete_thoughts INTEGER NOT NULL DEFAULT 1, codex_thread_id TEXT, instruction_baseline_hash TEXT)")
@@ -489,10 +494,10 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
         code = kind if isinstance(kind, str) and re.fullmatch(r"[a-z_]{1,64}", kind) else "operational_failure"
         self.last_error = "Falha operacional registrada; confira a etapa e o código de diagnóstico."
         with self._status_lock:
-            state = json_file(self.settings.data_dir / "state" / "gateway-status.json", {})
+            state = json_file(self.settings.state_dir / "gateway-status.json", {})
             now = time.time()
             state.update({"last_error": self.last_error, "last_error_code": code, "last_error_at": now, "updated_at": now})
-            write_json(self.settings.data_dir / "state" / "gateway-status.json", state)
+            write_json(self.settings.state_dir / "gateway-status.json", state)
 
     def _stickers(self):
         """Lê o catálogo atual sem manter caminhos ou IDs remotos em cache."""
@@ -504,14 +509,14 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
             safe["conversation_hash"] = hashlib.sha256(str(values["conversation"]).encode()).hexdigest()[:20]
         event = event if re.fullmatch(r"[a-z_.]{1,96}", event) else "gateway.event"
         with self._status_lock:
-            state = json_file(self.settings.data_dir / "state" / "gateway-status.json", {})
+            state = json_file(self.settings.state_dir / "gateway-status.json", {})
             entries = state.get("diagnostics")
             entries = entries if isinstance(entries, list) else []
             entries.append({"at": time.time(), "event": event, **safe})
             state["diagnostics"] = entries[-100:]
             counters = state.setdefault("counters", {})
             counters[event] = int(counters.get(event, 0)) + 1
-            write_json(self.settings.data_dir / "state" / "gateway-status.json", state)
+            write_json(self.settings.state_dir / "gateway-status.json", state)
 
     def _configure_owner_commands(self) -> dict[str, int]:
         if not self.api: return
@@ -522,10 +527,10 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
                 else: failed += 1; self._record_error("Telegram não confirmou os comandos privados do owner.")
             except Exception as error: failed += 1; self._record_error(error)
         summary = {"updated_at": time.time(), "owners": len(owners), "verified": verified, "failed": failed, "expected": ["new", "config", "channel", *( ["totp"] if self._totp_enabled() else [])]}
-        state = json_file(self.settings.data_dir / "state" / "gateway-status.json", {}); state["commands"] = summary; write_json(self.settings.data_dir / "state" / "gateway-status.json", state)
+        state = json_file(self.settings.state_dir / "gateway-status.json", {}); state["commands"] = summary; write_json(self.settings.state_dir / "gateway-status.json", state)
         return summary
     def start(self) -> None:
-        self.store.acquire_lease(self.settings.data_dir / "state" / "gateway-writer.lock")
+        self.store.acquire_lease(self.settings.state_dir / "gateway-writer.lock")
         try:
             receiver = self.notification_configuration.load()["telegram_receiver_enabled"]
             if self.settings.vault_profile and self.settings.token_entry:
@@ -1818,7 +1823,7 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
         if method.startswith("notification."):
             return self._notification_handle(method, params)
         if method == "ping": return {"service": "telegram", "state": "running"}
-        if method == "telegram.status": return {"owners": len(self.contacts.owners()), "listener": "running", "totp_enabled": self._totp_enabled(), "last_error": self.last_error, "commands": json_file(self.settings.data_dir / "state" / "gateway-status.json", {}).get("commands"), "execution_mode": "app-server" if self.settings.app_server_enabled else "unavailable", "busy_input_policy": self.settings.busy_input_policy, "steering_available": self.capabilities.supports("steering"), "steering_reason": self.capabilities.reason("steering"), "post_turn_results": self.settings.post_turn_results and self.capabilities.supports("post_turn"), "execution": self.store.summary(), "app_server_running": bool(self.app_server and self.app_server.running()), "app_server_idle_timeout_seconds": self.settings.app_server_idle_seconds}
+        if method == "telegram.status": return {"owners": len(self.contacts.owners()), "listener": "running", "totp_enabled": self._totp_enabled(), "last_error": self.last_error, "commands": json_file(self.settings.state_dir / "gateway-status.json", {}).get("commands"), "execution_mode": "app-server" if self.settings.app_server_enabled else "unavailable", "busy_input_policy": self.settings.busy_input_policy, "steering_available": self.capabilities.supports("steering"), "steering_reason": self.capabilities.reason("steering"), "post_turn_results": self.settings.post_turn_results and self.capabilities.supports("post_turn"), "execution": self.store.summary(), "app_server_running": bool(self.app_server and self.app_server.running()), "app_server_idle_timeout_seconds": self.settings.app_server_idle_seconds}
         if method == "telegram.sync-commands": return self._configure_owner_commands()
         if method == "telegram.pair-request":
             self.pair = (f"{secrets.randbelow(1_000_000):06d}", time.time() + min(600, max(60, int(params.get("ttl_seconds", 300)))))

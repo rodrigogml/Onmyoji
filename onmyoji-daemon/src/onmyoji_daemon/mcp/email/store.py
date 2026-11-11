@@ -12,7 +12,7 @@ from .contracts import require, text
 
 class SubmissionStore:
     def __init__(self, root: Path):
-        self.path = root / "configs" / "mcp" / "email" / "submissions.sqlite3"
+        self.path = root / "state" / "mcp" / "email" / "submissions.sqlite3"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as con:
             con.execute("CREATE TABLE IF NOT EXISTS submission (account TEXT, request_id TEXT, binding TEXT, digest TEXT, status TEXT, result TEXT, created REAL, PRIMARY KEY(account,request_id))")

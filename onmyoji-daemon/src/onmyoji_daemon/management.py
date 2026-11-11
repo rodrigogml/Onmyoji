@@ -26,12 +26,13 @@ from .registry import SERVICES
 from .instance import identity
 from .supervisor import endpoint
 from . import runtime as shared_runtime
+from .state_layout import daemon_runtime_path
 from .linux_service import ServiceLimits, load_execution_profile, provision_account, recommended_limits, repair_permissions as repair_linux_permissions
 
 
 def daemon_root(root: Path) -> Path: return root.resolve() / "configs" / "daemon"
 def manifest_path(root: Path) -> Path: return daemon_root(root) / "daemon.toml"
-def runtime_path(root: Path) -> Path: return daemon_root(root) / "runtime"
+def runtime_path(root: Path) -> Path: return daemon_runtime_path(root)
 def process_path(root: Path) -> Path: return runtime_path(root) / "process.json"
 def service_path(root: Path) -> Path: return daemon_root(root) / "service.json"
 def runtime_configuration(root: Path) -> dict[str, str]:

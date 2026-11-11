@@ -163,7 +163,7 @@ def test_schema_two_upgrade_preserves_pending_content_and_keeps_backup(factory, 
     row = gateway.database.execute("SELECT text,structured_content,state FROM inbox_items WHERE id=?", (item["id"],)).fetchone()
     assert row[0] == "texto legado" and row[2] == "pending"
     assert json.loads(row[1]) == (STRUCTURED if already_has_location_column else {})
-    backup = gateway.settings.data_dir / "state" / "gateway-before-delegation-v2.sqlite3"
+    backup = gateway.settings.state_dir / "gateway-before-delegation-v2.sqlite3"
     with sqlite3.connect(backup) as before:
         assert before.execute("SELECT MAX(version) FROM gateway_schema_migrations").fetchone() == (2,)
         assert before.execute("SELECT text,state FROM inbox_items WHERE id=?", (item["id"],)).fetchone() == ("texto legado", "pending")
@@ -269,7 +269,7 @@ def test_same_location_rpc_reuses_receipt_or_blocks_unknown_delivery(factory, un
     assert len(gateway.api.calls) == 1
     rows = gateway.database.execute("SELECT conversation_id,generation,execution_id,thread_id,turn_id,state FROM gateway_deliveries WHERE kind='media'").fetchall()
     assert rows == [("9", 0, active.execution_id, "thread-fixed", "turn-fixed", "uncertain" if uncertain else "sent")]
-    public = json.dumps([first, second]) + (gateway.settings.data_dir / "state" / "gateway-status.json").read_text(encoding="utf-8")
+    public = json.dumps([first, second]) + (gateway.settings.state_dir / "gateway-status.json").read_text(encoding="utf-8")
     assert all(value not in public for value in ("23.55052", "46.633308", "secret=private"))
 
 

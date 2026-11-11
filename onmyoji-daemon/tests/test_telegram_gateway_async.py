@@ -691,7 +691,7 @@ def test_shutdown_keeps_writer_lease_while_an_http_job_can_still_write(lab):
     entered, release = threading.Event(), threading.Event()
     # O laboratório substitui start() para não abrir credenciais ou Telegram;
     # conserva aqui a reserva operacional que start() normalmente adquire.
-    lab.gateway.store.acquire_lease(lab.gateway.settings.data_dir / "state" / "gateway-writer.lock")
+    lab.gateway.store.acquire_lease(lab.gateway.settings.state_dir / "gateway-writer.lock")
 
     def http_job():
         entered.set()

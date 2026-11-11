@@ -21,7 +21,7 @@ class NotificationIngress:
 
     def _init_notifications(self):
         self.notification_configuration = NotificationConfiguration(self.settings.root)
-        self.notification_log = NotificationLog(self.store, self.settings.root / "configs" / "daemon" / "runtime" / "logs" / "agent-gateway")
+        self.notification_log = NotificationLog(self.store, self.settings.root / "state" / "daemon" / "runtime" / "logs" / "agent-gateway")
         self._notification_delivery_lock = threading.Lock()
         self._notification_sync_lock = threading.Lock()
         self._notification_http = None

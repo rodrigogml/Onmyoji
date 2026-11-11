@@ -43,6 +43,7 @@ from onmyoji_daemon.publication_diagnostics import diagnose as diagnose_publicat
 from onmyoji_daemon.cloudflare_tunnel.installer import inspect_cloudflared_directory
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime, mcp_runtime_python, mcp_runtime_ready
 from onmyoji_daemon.mcp.ocr.runtime import DocumentError, install_runtime as install_document_runtime
+from onmyoji_daemon.state_layout import LAYOUT_VERSION, SETUP_VERSION, StateLayoutError, migrate as migrate_state_layout, version_path as state_version_path
 SYSTEM_BEGIN = "# BEGIN ONMYOJI MANAGED CODEX SETTINGS"
 SYSTEM_END = "# END ONMYOJI MANAGED CODEX SETTINGS"
 INSTANCE_SKILLS_DIRECTORY = "shikigami-skills"
@@ -179,6 +180,18 @@ def discover(root: Path = ROOT) -> list[Skill]:
 def config_path(root: Path) -> Path: return root / "config.toml"
 def system_path(root: Path) -> Path: return root / "configs" / "onmyoji-system.toml"
 def skill_state_path(root: Path) -> Path: return root / SHIKIGAMI_SKILLS_STATE
+
+
+def verify_state_layout(root: Path) -> tuple[bool, str]:
+    """Aplica migrações de layout antes de qualquer serviço usar arquivos locais."""
+    try:
+        moved = migrate_state_layout(root)
+    except StateLayoutError as error:
+        return False, str(error)
+    marker = state_version_path(root)
+    if moved:
+        return True, "Estado operacional migrado para state/: " + ", ".join(moved) + "."
+    return True, f"Layout de estado v{LAYOUT_VERSION} confirmado pelo setup {SETUP_VERSION} ({marker.relative_to(root)})."
 
 
 def instance_identity(root: Path) -> str:
@@ -1074,6 +1087,7 @@ def update_upstream(root: Path) -> None:
     """Atualiza somente upstream/main e preserva alterações locais escolhidas pelo operador."""
     flow_heading("Atualizar Onmyōji", "Incorpora a main do upstream à branch atual")
     stash_id = ""
+    restart_daemon = False
     try:
         if not _git_remote_url(root, "upstream"):
             raise GitSetupError("O remoto upstream não está configurado. Configure-o em Git e sincronização.")
@@ -1142,7 +1156,19 @@ def update_upstream(root: Path) -> None:
         if publish:
             _git(root, ["push", "origin", f"HEAD:refs/heads/{branch}"], timeout=180)
         result(True, "Atualização do Onmyōji concluída" + (" e alterações locais restauradas." if stash_id else "."))
-        note("Reinicie o setup para carregar a versão atualizada.")
+        if root.resolve() == ROOT.resolve() and daemon_management.running_process(root):
+            ok, message = daemon_management.stop_background(root)
+            if not ok:
+                raise GitSetupError("A atualização foi baixada, mas o daemon não pôde ser parado para migrar o estado: " + message)
+            restart_daemon = True
+            note("Daemon local encerrado para a migração de estado; ele será retomado após o novo setup.")
+        if root.resolve() == ROOT.resolve():
+            note("Reiniciando o setup atualizado para verificar versões e concluir migrações.")
+            arguments = [sys.executable, str(ROOT / "setupOnmyoji.py"), "--resume-after-update"]
+            if restart_daemon:
+                arguments.append("--restart-daemon-after-update")
+            os.execv(sys.executable, arguments)
+        note("Execute a versão atualizada do setup para concluir a verificação de layout.")
     except GitSetupError as error:
         result(False, str(error))
         if stash_id:
@@ -4373,8 +4399,18 @@ def menu(skills: list[Skill], root: Path) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--action", choices=["menu", "list", "enable", "disable", "configure", "status"], default="menu"); parser.add_argument("--skill"); parser.add_argument("--json", action="store_true"); parser.add_argument("--dedicated-phase", action="store_true", help=argparse.SUPPRESS); parser.add_argument("--dedicated-menu", choices=["diagnostics", "git", "python", "codex", "mcp"], help=argparse.SUPPRESS); parser.add_argument("--dedicated-checks", action="store_true", help=argparse.SUPPRESS); args = parser.parse_args()
-    if args.action == "menu" and not (args.dedicated_phase or args.dedicated_menu or args.dedicated_checks): opening_logo()
+    parser = argparse.ArgumentParser(); parser.add_argument("--action", choices=["menu", "list", "enable", "disable", "configure", "status"], default="menu"); parser.add_argument("--skill"); parser.add_argument("--json", action="store_true"); parser.add_argument("--dedicated-phase", action="store_true", help=argparse.SUPPRESS); parser.add_argument("--dedicated-menu", choices=["diagnostics", "git", "python", "codex", "mcp"], help=argparse.SUPPRESS); parser.add_argument("--dedicated-checks", action="store_true", help=argparse.SUPPRESS); parser.add_argument("--resume-after-update", action="store_true", help=argparse.SUPPRESS); parser.add_argument("--restart-daemon-after-update", action="store_true", help=argparse.SUPPRESS); args = parser.parse_args()
+    if args.action == "menu" and not (args.dedicated_phase or args.dedicated_menu or args.dedicated_checks or args.resume_after_update): opening_logo()
+    migrated, migration_message = verify_state_layout(ROOT)
+    if not migrated:
+        if args.json: print(json.dumps({"ok": False, "error": {"code": "state_migration_failed", "message": migration_message}}, ensure_ascii=False))
+        else: result(False, migration_message)
+        return 2
+    if args.resume_after_update:
+        note(migration_message)
+    if args.restart_daemon_after_update:
+        ok, message = daemon_management.start_background(ROOT)
+        result(ok, "Daemon reiniciado após a atualização." if ok else "A migração foi concluída, mas o daemon não foi reiniciado: " + message)
     system, message = ensure_shikigami_configuration(ROOT)
     if system is None:
         if args.json: print(json.dumps({"ok": False, "error": {"code": "system_configuration_failed", "message": message}}, ensure_ascii=False))

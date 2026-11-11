@@ -57,7 +57,7 @@ class EmailMonitor:
         self.connections_factory = connections_factory
         self.http_factory = http_factory
         self.clock = clock
-        state = self.root / "configs" / "mcp" / "state" / "email-monitor.sqlite3"
+        state = self.root / "state" / "mcp" / "email-monitor.sqlite3"
         state.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(state, timeout=30)
         self.db.row_factory = sqlite3.Row

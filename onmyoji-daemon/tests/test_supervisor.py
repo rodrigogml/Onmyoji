@@ -40,7 +40,7 @@ def test_supervisor_persists_enablement_and_local_rpc(tmp_path):
     supervisor = Supervisor(tmp_path)
     thread = threading.Thread(target=supervisor.run_forever, daemon=True); thread.start()
     for _ in range(100):
-        if (tmp_path / "configs" / "daemon" / "runtime" / "endpoint.json").exists(): break
+        if (tmp_path / "state" / "daemon" / "runtime" / "endpoint.json").exists(): break
         time.sleep(0.02)
     host, port, token = endpoint(tmp_path)
     assert call(host, port, token, "ping")["service"] == "onmyoji-daemon"
@@ -94,7 +94,7 @@ def test_configuration_revision_requires_the_running_process_to_match(tmp_path, 
     manifest = tmp_path / "configs" / "daemon" / "daemon.toml"; manifest.parent.mkdir(parents=True)
     manifest.write_text('schema_version = 1\ninstance_id = "test"\n', encoding="utf-8")
     revision = management.configuration_revision(tmp_path)
-    process = tmp_path / "configs" / "daemon" / "runtime" / "process.json"; process.parent.mkdir(parents=True)
+    process = tmp_path / "state" / "daemon" / "runtime" / "process.json"; process.parent.mkdir(parents=True)
     process.write_text('{"pid": 123, "root": "' + str(tmp_path.resolve()).replace("\\", "\\\\") + '", "configuration_revision": "' + revision + '"}', encoding="utf-8")
     monkeypatch.setattr(management, "_pid_alive", lambda _pid: True)
 

@@ -326,7 +326,7 @@ def test_corrupted_stored_location_is_discarded_without_exposing_payload(gateway
     assert gateway.database.execute("SELECT state FROM inbox_items WHERE id='old'").fetchone() == ("done",)
     consume_queued(gateway)
     assert len(requests) == 1
-    state = json.loads((gateway.settings.data_dir / "state" / "gateway-status.json").read_text(encoding="utf-8"))
+    state = json.loads((gateway.settings.state_dir / "gateway-status.json").read_text(encoding="utf-8"))
     diagnostic = state["diagnostics"][-1]
     assert diagnostic["event"] == "location.content_discarded"
     assert "latitude" not in json.dumps(diagnostic) and "NaN" not in json.dumps(diagnostic)
@@ -334,7 +334,7 @@ def test_corrupted_stored_location_is_discarded_without_exposing_payload(gateway
 
 def test_old_database_migrates_idempotently_and_legacy_queue_stays_readable(tmp_path):
     data = write_settings(tmp_path)
-    state = data / "state"
+    state = gateway.settings.state_dir
     state.mkdir()
     with sqlite3.connect(state / "gateway.sqlite3") as database:
         database.execute("CREATE TABLE inbox_items(id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, generation INTEGER NOT NULL, text TEXT NOT NULL, attachment_ids TEXT NOT NULL, turn_context TEXT NOT NULL DEFAULT '{}', state TEXT NOT NULL, created_at REAL NOT NULL)")
