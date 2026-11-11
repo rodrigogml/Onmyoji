@@ -24,6 +24,7 @@ from .service import EmailService
 
 
 RETENTION_SECONDS = 20 * 86400
+MAX_EVENT_ATTACHMENTS = 100
 
 
 def _workspace(root: Path) -> Path:
@@ -158,7 +159,8 @@ class EmailMonitor:
     def _attachments(self, account: str, reference: str, message, limits: dict) -> tuple[list[dict], list[dict]]:
         directory = self._message_directory(account, reference)
         retained, failures, total = [], [], 0
-        for index, part in enumerate(attachment_parts(message), 1):
+        parts = attachment_parts(message)
+        for index, part in enumerate(parts[:MAX_EVENT_ATTACHMENTS], 1):
             name = _safe_name(part.get_filename(), index)
             try:
                 data = part_bytes(part); total += len(data)
@@ -182,6 +184,8 @@ class EmailMonitor:
                     retained.append({"filename": name, "content_type": part.get_content_type(), "bytes": len(data), "path": str(path)})
             except (OSError, EmailError) as error:
                 failures.append({"filename": name, "reason": getattr(error, "code", "attachment_write_failed")})
+        if len(parts) > MAX_EVENT_ATTACHMENTS:
+            failures.append({"filename": "", "reason": "attachment_count_limit", "omitted": len(parts) - MAX_EVENT_ATTACHMENTS})
         return retained, failures
 
     def _event(self, account: str, monitoring: dict, reference: str, event_id: str, raw: bytes, limits: dict) -> tuple[dict, dict]:

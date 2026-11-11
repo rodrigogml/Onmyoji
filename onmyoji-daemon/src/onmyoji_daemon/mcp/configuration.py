@@ -248,7 +248,16 @@ class McpConfiguration:
         try:
             reconcile_email_schedules(self.root, previous, candidate)
         except (OSError, ValueError) as error:
-            raise McpConfigurationError("Configuração salva, mas o agendamento de e-mail não pôde ser reconciliado.") from error
+            try:
+                self._save(self.email_path, render_email(previous))
+                reconcile_email_schedules(self.root, candidate, previous)
+            except (OSError, ValueError) as rollback_error:
+                raise McpConfigurationError(
+                    "O agendamento de e-mail falhou e a configuração anterior não pôde ser restaurada."
+                ) from rollback_error
+            raise McpConfigurationError(
+                "O agendamento de e-mail falhou; a configuração anterior foi restaurada."
+            ) from error
         data.clear(); data.update(copy.deepcopy(candidate))
         McpReconciliation(self.root).mark_pending()
 

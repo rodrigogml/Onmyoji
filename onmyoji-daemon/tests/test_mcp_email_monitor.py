@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from onmyoji_daemon.mcp.email.monitor import EmailMonitor, RETENTION_SECONDS
+from onmyoji_daemon.mcp.email.monitor import EmailMonitor, MAX_EVENT_ATTACHMENTS, RETENTION_SECONDS
 from onmyoji_daemon.mcp.email.mailbox import Mailbox
 from onmyoji_daemon.mcp.configuration import McpConfiguration
 from .test_mcp_email import account, configure
@@ -159,6 +159,21 @@ def test_attachments_use_safe_exclusive_paths_limits_and_twenty_day_cleanup(tmp_
         directory = Path(external["attachments"][0]["path"]).parent
         os.utime(directory, (now[0] - RETENTION_SECONDS - 1,) * 2)
         assert worker.purge() == 1 and not directory.exists()
+    finally: worker.close()
+
+
+def test_attachment_count_is_bounded_and_omissions_are_reported(tmp_path):
+    root, workspace = roots(tmp_path); configured(root, workspace)
+    client = Imap(); http = HttpFactory(); worker = monitor(root, client, http)
+    try:
+        worker.run("default")
+        attachments = tuple((f"item-{index}.txt", b"x") for index in range(MAX_EVENT_ATTACHMENTS + 3))
+        client.messages[2] = raw_message("Muitos anexos", attachments=attachments)
+        worker.run("default")
+        external = json.loads(http.events[0]["prompt"].split("\n", 3)[-1])
+        assert len(external["attachments"]) == MAX_EVENT_ATTACHMENTS
+        assert external["attachment_failures"][-1] == {
+            "filename": "", "reason": "attachment_count_limit", "omitted": 3}
     finally: worker.close()
 
 

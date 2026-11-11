@@ -140,6 +140,26 @@ def test_email_save_reconciles_reserved_schedule_without_overwriting_other_defin
     assert schedule.read_text(encoding="utf-8") == "schema_version = 1\n"
 
 
+def test_email_save_restores_previous_configuration_when_schedule_publication_fails(tmp_path, monkeypatch):
+    config = configure(tmp_path, {})
+    previous = config.email()
+    document = config.email(); configured = account(); configured["monitoring"] = {
+        "enabled": True, "interval": "15M", "instructions": "Analise novas mensagens.",
+        "response_channel": {"type": "telegram", "value": "9"}, "thread_policy": "reuse"}
+    document["accounts"]["default"] = configured
+
+    def fail_publication(*_args, **_kwargs):
+        raise OSError("indisponível")
+
+    monkeypatch.setattr("onmyoji_daemon.mcp.email.scheduling.publish_file", fail_publication)
+    with pytest.raises(McpConfigurationError, match="configuração anterior foi restaurada"):
+        config.save_email(document)
+
+    schedule = tmp_path / "configs" / "daemon" / "services" / "task-scheduler" / "schedules" / "onmyoji-email-default.toml"
+    assert config.email() == previous
+    assert not schedule.exists()
+
+
 def test_reading_and_pagination_preserve_flags_and_validate_uidvalidity(tmp_path):
     value = account(); client = FakeImap(); connections = FakeConnections(client)
     box = Mailbox("default", value, empty_configuration()["defaults"], connections)
