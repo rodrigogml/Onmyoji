@@ -20,7 +20,7 @@ if hasattr(sys.stderr, "reconfigure"):
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from setupOnmyoji import Ui, flow_choice, flow_heading, install_linux_packages, instance_identity, item as render_item, note, prompt, result, screen as render_screen, vault_entry_path
+from setupOnmyoji import Ui, alert, flow_choice, flow_heading, install_linux_packages, instance_identity, item as render_item, note, prompt, result, screen as render_screen, vault_entry_path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
@@ -372,6 +372,7 @@ def select_keepassxc_command() -> list[str] | None:
         result(False, "keepassxc-cli não encontrado ou não executável.")
         return None
     options = []
+    alert("KeePassXC CLI não encontrado; escolha uma forma de disponibilizá-lo.")
     if shutil.which("flatpak"):
         options.append("Instalar KeePassXC somente para esta conta (Flatpak)")
     options.extend(["Instalar KeePassXC pelo gerenciador do sistema", "Informar outro executável"])
@@ -543,7 +544,7 @@ def manage_vault_profile(config: McpConfiguration, name: str) -> None:
                 continue
             return
         else:
-            result(False, "Opção inválida.")
+            alert("Opção inválida. Escolha uma das alternativas ou cancele.")
             continue
         try:
             config.save_credentials(data)
@@ -791,7 +792,7 @@ def manage_todoist_profile(config: McpConfiguration, name: str) -> None:
                 continue
             return
         else:
-            result(False, "Opção inválida.")
+            alert("Opção inválida. Escolha uma das alternativas ou cancele.")
             continue
         try:
             config.save_todoist(data)
@@ -822,7 +823,7 @@ def todoist_menu(config: McpConfiguration) -> None:
             data["profiles"][name] = {"enabled": True, "description": description, "credential_profile": vault, "credential_entry_path": entry, "credential_field": field}
         elif choice == "2": manage_selected_profile(config, "MCP · Gerenciar perfil Todoist", names, manage_todoist_profile)
         else:
-            result(False, "Opção inválida.")
+            alert("Opção inválida. Escolha uma das alternativas ou cancele.")
             continue
         if choice == "1":
             try: config.save_todoist(data); result(True, "Perfil Todoist atualizado.")
@@ -892,7 +893,7 @@ def manage_omie_profile(config: McpConfiguration, name: str) -> None:
                 continue
             return
         else:
-            result(False, "Opção inválida.")
+            alert("Opção inválida. Escolha uma das alternativas ou cancele.")
             continue
         try:
             config.save_omie(data)
@@ -934,7 +935,7 @@ def omie_menu(config: McpConfiguration) -> None:
             except McpConfigurationError as error: result(False, str(error))
         elif choice == "2": manage_selected_profile(config, "MCP · Gerenciar perfil Omie", names, manage_omie_profile)
         else:
-            result(False, "Opção inválida.")
+            alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def manage_cloudflare_profile(config: McpConfiguration, name: str) -> None:
@@ -1008,7 +1009,7 @@ def manage_cloudflare_profile(config: McpConfiguration, name: str) -> None:
                 continue
             return
         else:
-            result(False, "Opção inválida.")
+            alert("Opção inválida. Escolha uma das alternativas ou cancele.")
             continue
         try:
             config.save_cloudflare(data)
@@ -1056,7 +1057,7 @@ def cloudflare_menu(config: McpConfiguration) -> None:
                 result(False, str(error))
         elif choice == "2": manage_selected_profile(config, "MCP · Gerenciar perfil Cloudflare", names, manage_cloudflare_profile)
         else:
-            result(False, "Opção inválida.")
+            alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def manage_forward_email_profile(config: McpConfiguration, name: str) -> None:
@@ -1130,7 +1131,7 @@ def manage_forward_email_profile(config: McpConfiguration, name: str) -> None:
                 continue
             return
         else:
-            result(False, "Opção inválida.")
+            alert("Opção inválida. Escolha uma das alternativas ou cancele.")
             continue
         try:
             config.save_forward_email(data)
@@ -1178,7 +1179,7 @@ def forward_email_menu(config: McpConfiguration) -> None:
                 result(False, str(error))
         elif choice == "2": manage_selected_profile(config, "MCP · Gerenciar perfil Forward Email", names, manage_forward_email_profile)
         else:
-            result(False, "Opção inválida.")
+            alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def manage_notion_profile(config: McpConfiguration, name: str) -> None:
@@ -1252,7 +1253,7 @@ def manage_notion_profile(config: McpConfiguration, name: str) -> None:
                 continue
             return
         else:
-            result(False, "Opção inválida.")
+            alert("Opção inválida. Escolha uma das alternativas ou cancele.")
             continue
         try:
             config.save_notion(data)
@@ -1300,7 +1301,7 @@ def notion_menu(config: McpConfiguration) -> None:
                 result(False, str(error))
         elif choice == "2": manage_selected_profile(config, "MCP · Gerenciar perfil Notion", names, manage_notion_profile)
         else:
-            result(False, "Opção inválida.")
+            alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def aws_credentials(config: McpConfiguration, vault: str, entry: str, access_field: str = "username", secret_field: str = "password") -> tuple[str, dict[str, str]] | None:
@@ -1366,7 +1367,7 @@ def manage_aws_profile(config: McpConfiguration, name: str) -> None:
             try: config.save_aws(data); result(True, "Perfil AWS removido. A entrada KeePass foi preservada.")
             except McpConfigurationError as error: result(False, f"Perfil AWS não removido: {error}"); continue
             return
-        else: result(False, "Opção inválida."); continue
+        else: alert("Opção inválida. Escolha uma das alternativas ou cancele."); continue
         try: config.save_aws(data); result(True, "Perfil AWS atualizado.")
         except McpConfigurationError as error: result(False, str(error))
 
@@ -1395,7 +1396,7 @@ def aws_menu(config: McpConfiguration) -> None:
             try: config.save_aws(data); result(True, "Perfil AWS atualizado.")
             except McpConfigurationError as error: result(False, str(error))
         elif choice == "2": manage_selected_profile(config, "MCP · Gerenciar perfil AWS", names, manage_aws_profile)
-        else: result(False, "Opção inválida.")
+        else: alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def mysql_credentials(config: McpConfiguration, vault: str, entry: str, username_field: str = "username", password_field: str = "password") -> tuple[str, dict[str, str]] | None:
@@ -1452,7 +1453,7 @@ def manage_mysql_profile(config: McpConfiguration, name: str) -> None:
             try: config.save_mysql(data); result(True, "Perfil MySQL removido. A entrada KeePass foi preservada.")
             except McpConfigurationError as error: result(False, f"Perfil MySQL não removido: {error}"); continue
             return
-        else: result(False, "Opção inválida."); continue
+        else: alert("Opção inválida. Escolha uma das alternativas ou cancele."); continue
         try: config.save_mysql(data); result(True, "Perfil MySQL atualizado.")
         except McpConfigurationError as error: result(False, str(error))
 
@@ -1476,7 +1477,7 @@ def mysql_menu(config: McpConfiguration) -> None:
             try: config.save_mysql(data); result(True, "Perfil MySQL atualizado.")
             except McpConfigurationError as error: result(False, str(error))
         elif choice == "2": manage_selected_profile(config, "MCP · Gerenciar perfil MySQL", names, manage_mysql_profile)
-        else: result(False, "Opção inválida.")
+        else: alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def trust_ssh_host(host: str, port: int, known_hosts: str) -> bool:
@@ -1558,7 +1559,7 @@ def manage_ssh_profile(config: McpConfiguration, name: str) -> None:
             try: config.save_ssh(data); result(True, "Perfil SSH removido. Credenciais e known_hosts foram preservados.")
             except McpConfigurationError as error: result(False, f"Perfil SSH não removido: {error}"); continue
             return
-        else: result(False, "Opção inválida."); continue
+        else: alert("Opção inválida. Escolha uma das alternativas ou cancele."); continue
         try: config.save_ssh(data); result(True, "Perfil SSH atualizado.")
         except McpConfigurationError as error: result(False, str(error))
 
@@ -1588,7 +1589,7 @@ def ssh_menu(config: McpConfiguration) -> None:
             try: config.save_ssh(data); result(True, "Perfil SSH atualizado.")
             except McpConfigurationError as error: result(False, str(error))
         elif choice == "2": manage_selected_profile(config, "MCP · Gerenciar perfil SSH", names, manage_ssh_profile)
-        else: result(False, "Opção inválida.")
+        else: alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def bis2cmd_credentials(config: McpConfiguration, vault: str, entry: str, username_field: str = "username", password_field: str = "password") -> tuple[str, dict[str, str]] | None:
@@ -1656,7 +1657,7 @@ def manage_bis2cmd_profile(config: McpConfiguration, name: str) -> None:
             try: config.save_bis2cmd(data); result(True, "Perfil BIS2CMD renomeado. A entrada KeePass foi preservada.")
             except McpConfigurationError as error: result(False, f"Perfil BIS2CMD não renomeado: {error}"); continue
             return
-        else: result(False, "Opção inválida."); continue
+        else: alert("Opção inválida. Escolha uma das alternativas ou cancele."); continue
         try: config.save_bis2cmd(data); result(True, "Perfil BIS2CMD atualizado.")
         except McpConfigurationError as error: result(False, str(error))
 
@@ -1680,7 +1681,7 @@ def bis2cmd_menu(config: McpConfiguration) -> None:
             try: config.save_bis2cmd(data); result(True, "Perfil BIS2CMD atualizado.")
             except McpConfigurationError as error: result(False, str(error))
         elif choice == "2": manage_selected_profile(config, "MCP · Gerenciar perfil BIS2CMD", names, manage_bis2cmd_profile)
-        else: result(False, "Opção inválida.")
+        else: alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def bis10cmd_credentials(config: McpConfiguration, vault: str, entry: str, kind: str, username_field: str = "username", password_field: str = "password") -> tuple[str, dict[str, str]] | None:
@@ -1734,7 +1735,7 @@ def manage_bis10cmd_profile(config: McpConfiguration, name: str) -> None:
             try: config.save_bis10cmd(data); result(True, "Perfil BIS10CMD removido. As entradas KeePass foram preservadas.")
             except McpConfigurationError as error: result(False, f"Perfil BIS10CMD não removido: {error}"); continue
             return
-        else: result(False, "Opção inválida."); continue
+        else: alert("Opção inválida. Escolha uma das alternativas ou cancele."); continue
         try: config.save_bis10cmd(data); result(True, "Perfil BIS10CMD atualizado.")
         except McpConfigurationError as error: result(False, str(error))
 
@@ -1766,7 +1767,7 @@ def bis10cmd_menu(config: McpConfiguration) -> None:
             try: config.save_bis10cmd(data); result(True, "Perfil BIS10CMD atualizado.")
             except McpConfigurationError as error: result(False, str(error))
         elif choice == "2": manage_selected_profile(config, "MCP · Gerenciar perfil BIS10CMD", names, manage_bis10cmd_profile)
-        else: result(False, "Opção inválida.")
+        else: alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def btg_credentials(config: McpConfiguration, vault: str, entry: str) -> tuple[str, dict[str, str]] | None:
@@ -1840,7 +1841,7 @@ def btg_payment_settings(config: McpConfiguration, name: str) -> None:
                 result(False, str(error))
             continue
         else:
-            result(False, "Opção inválida.")
+            alert("Opção inválida. Escolha uma das alternativas ou cancele.")
             continue
         try:
             config.save_btg(data)
@@ -1966,7 +1967,7 @@ def manage_btg_profile(config: McpConfiguration, name: str) -> None:
                 result(False, str(error))
             continue
         else:
-            result(False, "Opção inválida.")
+            alert("Opção inválida. Escolha uma das alternativas ou cancele.")
             continue
         try:
             config.save_btg(data)
@@ -1991,7 +1992,7 @@ def btg_menu(config: McpConfiguration) -> None:
                 manage_btg_profile(config, name)
             continue
         if choice != "1":
-            result(False, "Opção inválida.")
+            alert("Opção inválida. Escolha uma das alternativas ou cancele.")
             continue
         name = ask_new_profile_name("Nome do perfil BTG", data["profiles"])
         if not name or name in data["profiles"]:
@@ -2094,7 +2095,7 @@ def manage_eccovox_profile(config: McpConfiguration, name: str) -> None:
             try: config.save_eccovox(data); result(True, "Perfil EccoVox removido.")
             except McpConfigurationError as error: result(False, f"Perfil EccoVox não removido: {error}"); continue
             return
-        else: result(False, "Opção inválida."); continue
+        else: alert("Opção inválida. Escolha uma das alternativas ou cancele."); continue
         try: config.save_eccovox(data); result(True, "Perfil EccoVox atualizado.")
         except (McpConfigurationError, ValueError) as error: result(False, str(error))
 
@@ -2133,7 +2134,7 @@ def eccovox_menu(config: McpConfiguration) -> None:
             except (McpConfigurationError, ValueError) as error: result(False, str(error))
         elif choice == "2": manage_selected_profile(config, "MCP · Gerenciar perfil EccoVox", names, manage_eccovox_profile)
         else:
-            result(False, "Opção inválida.")
+            alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def google_credentials(config: McpConfiguration, vault: str, entry: str, client_id_field: str = "username", client_secret_field: str = "password") -> tuple[str, dict[str, str]] | None:
@@ -2194,7 +2195,7 @@ def manage_google_profile(config: McpConfiguration, name: str) -> None:
             try: config.save_google(data); result(True, "Perfil Google removido. A entrada KeePass e seus tokens foram preservados.")
             except McpConfigurationError as error: result(False, f"Perfil Google não removido: {error}"); continue
             return
-        else: result(False, "Opção inválida."); continue
+        else: alert("Opção inválida. Escolha uma das alternativas ou cancele."); continue
         try: config.save_google(data); result(True, "Perfil Google atualizado.")
         except McpConfigurationError as error: result(False, str(error))
 
@@ -2218,7 +2219,7 @@ def google_menu(config: McpConfiguration) -> None:
             try: config.save_google(data); result(True, "Perfil Google salvo. Use Gerenciar perfil > Autorizar conta no Google para concluir o OAuth.")
             except McpConfigurationError as error: result(False, str(error))
         elif choice == "2": manage_selected_profile(config, "MCP · Gerenciar perfil Google", names, manage_google_profile)
-        else: result(False, "Opção inválida.")
+        else: alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def spotify_credentials(config: McpConfiguration, vault: str, entry: str, client_id_field: str = "username") -> tuple[str, dict[str, str]] | None:
@@ -2272,7 +2273,7 @@ def manage_spotify_profile(config: McpConfiguration, name: str) -> None:
             try: config.save_spotify(data); result(True, "Perfil Spotify removido. A entrada KeePass e seu token foram preservados.")
             except McpConfigurationError as error: result(False, f"Perfil Spotify não removido: {error}"); continue
             return
-        else: result(False, "Opção inválida."); continue
+        else: alert("Opção inválida. Escolha uma das alternativas ou cancele."); continue
         try: config.save_spotify(data); result(True, "Perfil Spotify atualizado.")
         except McpConfigurationError as error: result(False, str(error))
 
@@ -2296,7 +2297,7 @@ def spotify_menu(config: McpConfiguration) -> None:
             try: config.save_spotify(data); result(True, "Perfil Spotify salvo. Cadastre a Redirect URI exibida e use Gerenciar perfil > Autorizar conta no Spotify.")
             except McpConfigurationError as error: result(False, str(error))
         elif choice == "2": manage_selected_profile(config, "MCP · Gerenciar perfil Spotify", names, manage_spotify_profile)
-        else: result(False, "Opção inválida.")
+        else: alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def manage_memory_instruction(config: McpConfiguration, identifier: str) -> None:
@@ -2314,7 +2315,7 @@ def manage_memory_instruction(config: McpConfiguration, identifier: str) -> None
             if confirmation is None or confirmation.casefold() != "remover": result(False, "Instrução não removida."); continue
             try: service.invoke("delete_instruction", {"id": identifier, "confirm": True}); result(True, "Instrução removida definitivamente."); return
             except MemoryError as error: result(False, str(error)); continue
-        if choice not in {"1", "2", "3"}: result(False, "Opção inválida."); continue
+        if choice not in {"1", "2", "3"}: alert("Opção inválida. Escolha uma das alternativas ou cancele."); continue
         applies_when, instruction, keywords = str(entry["applies_when"]), str(entry["instruction"]), list(entry["keywords"])
         if choice == "1":
             value = ask("Nova condição de aplicação", applies_when, True)
@@ -2343,7 +2344,7 @@ def memory_instructions_menu(config: McpConfiguration) -> None:
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
         if choice.isdigit() and 1 <= int(choice) <= len(entries): manage_memory_instruction(config, str(entries[int(choice) - 1]["id"]))
-        else: result(False, "Opção inválida.")
+        else: alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def memory_menu(config: McpConfiguration) -> None:
@@ -2367,7 +2368,7 @@ def memory_menu(config: McpConfiguration) -> None:
             try: config.save_memory(data); result(True, "Limite de busca atualizado.")
             except McpConfigurationError as error: result(False, str(error))
         elif choice == "3": memory_instructions_menu(config)
-        else: result(False, "Opção inválida.")
+        else: alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def data_tables_menu(config: McpConfiguration) -> None:
@@ -2386,7 +2387,7 @@ def data_tables_menu(config: McpConfiguration) -> None:
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
-        if choice not in {"1", "2", "3", "4", "5"}: result(False, "Opção inválida."); continue
+        if choice not in {"1", "2", "3", "4", "5"}: alert("Opção inválida. Escolha uma das alternativas ou cancele."); continue
         if choice == "5":
             state["schema_authoring_enabled"] = not state["schema_authoring_enabled"]
             try: config.save_data_tables(state); result(True, "Autoria de schemas habilitada." if state["schema_authoring_enabled"] else "Autoria de schemas desabilitada.")
@@ -2507,7 +2508,7 @@ def integrations_menu(config: McpConfiguration) -> None:
         elif choice == "20":
             excel_menu(config, sys.modules[__name__])
         else:
-            result(False, "Opção inválida.")
+            alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def menu(root: Path) -> int:

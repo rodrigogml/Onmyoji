@@ -45,7 +45,7 @@ Não use o texto descritivo de uma alternativa enumerada como valor padrão. Par
 
 ## Resultados e falhas
 
-Use `note()` para contexto, `result(True, ...)` para conclusão e `result(False, ...)` para falha recuperável. Scripts chamados pelo setup devem capturar exceções e retornar uma mensagem operacional sanitizada; tracebacks não fazem parte da interface do operador.
+Use `note()` para contexto, `result(True, ...)` para conclusão, `alert()` em amarelo para uma pendência com alternativas oferecidas pelo roteiro e `result(False, ...)` para falha que interrompe a operação. Scripts chamados pelo setup devem capturar exceções e retornar uma mensagem operacional sanitizada; tracebacks não fazem parte da interface do operador.
 
 ## Implementação
 

@@ -137,6 +137,11 @@ def result(ok: bool, message: str) -> None:
     print("\n    " + Ui.text(label, Ui.bold, color) + "  " + Ui.text(message, color))
 
 
+def alert(message: str) -> None:
+    """Sinaliza uma pendência que o roteiro permite resolver ou contornar."""
+    print("\n    " + Ui.text("! ALERTA", Ui.bold, Ui.amber) + "  " + Ui.text(message, Ui.amber))
+
+
 def note(message: str) -> None:
     print("    " + Ui.text("›", Ui.cyan, Ui.bold) + "  " + Ui.text(message, Ui.slate))
 
@@ -729,7 +734,7 @@ def choose_sandbox(root: Path, workspace: Path, current: str, flow: bool = False
         if choice in {"x", "\x1b"}: return None
         if not choice: return SANDBOXES[default_index - 1]
         if choice.isdigit() and 1 <= int(choice) <= len(SANDBOXES): return SANDBOXES[int(choice) - 1]
-        result(False, "Opção inválida.")
+        alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def choose_approval_policy(root: Path, workspace: Path, sandbox: str, current: str, flow: bool = False) -> str | None:
@@ -756,7 +761,7 @@ def choose_approval_policy(root: Path, workspace: Path, sandbox: str, current: s
         if choice in {"x", "\x1b"}: return None
         if not choice: return APPROVALS[default_index - 1]
         if choice.isdigit() and 1 <= int(choice) <= len(APPROVALS): return APPROVALS[int(choice) - 1]
-        result(False, "Opção inválida.")
+        alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def configure_initial_codex(root: Path, data: dict[str, object]) -> dict[str, object] | None:
@@ -1060,6 +1065,89 @@ def sync_git_remote(root: Path, remote: str) -> tuple[bool, str]:
         return False, str(error)
 
 
+def _update_sensitive_path(path: str) -> bool:
+    parts = path.replace("\\", "/").casefold().split("/")
+    return parts[0] in {"configs", "sessions", "state", "log", "tmp", "skills", "venv"} or parts[-1] == ".env" or parts[-1].startswith(".env.") or parts[-1].endswith((".kdbx", ".key", ".p12", ".pfx"))
+
+
+def update_upstream(root: Path) -> None:
+    """Atualiza somente upstream/main e preserva alterações locais escolhidas pelo operador."""
+    flow_heading("Atualizar Onmyōji", "Incorpora a main do upstream à branch atual")
+    stash_id = ""
+    try:
+        if not _git_remote_url(root, "upstream"):
+            raise GitSetupError("O remoto upstream não está configurado. Configure-o em Git e sincronização.")
+        branch = _git_output(root, ["branch", "--show-current"])
+        if not branch: raise GitSetupError("Selecione uma branch antes de atualizar.")
+        if _git_output(root, ["diff", "--name-only", "--diff-filter=U"]):
+            raise GitSetupError("Há conflitos Git pendentes. Resolva-os antes de atualizar.")
+        for ref in ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"):
+            if _git(root, ["rev-parse", "--verify", "-q", ref], allow_failure=True).returncode == 0:
+                raise GitSetupError("Existe uma operação Git em andamento. Conclua ou aborte-a antes de atualizar.")
+        for name in ("rebase-merge", "rebase-apply"):
+            path = Path(_git_output(root, ["rev-parse", "--git-path", name]))
+            if (path if path.is_absolute() else root / path).exists():
+                raise GitSetupError("Existe um rebase em andamento. Conclua ou aborte-o antes de atualizar.")
+        status = _git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]).stdout
+        records = status.split("\0")
+        paths = []
+        index = 0
+        while index < len(records) and records[index]:
+            entry = records[index]; paths.append(entry[3:])
+            if "R" in entry[:2] or "C" in entry[:2]:
+                index += 1
+                if index < len(records): paths.append(records[index])
+            index += 1
+        if any(_update_sensitive_path(path) for path in paths):
+            raise GitSetupError("Há arquivos operacionais ou sensíveis entre as alterações Git. Eles não podem ser incluídos em commit ou stash. Corrija o rastreamento e preserve esses arquivos antes de atualizar.")
+        origin = bool(_git_remote_url(root, "origin"))
+        choice = None
+        if paths:
+            alert(f"Há {len(paths)} caminho(s) com alterações locais; escolha como preservá-las antes da atualização.")
+            for path in paths: note(path)
+            options = (["Salvar em commit e publicar no origin"] if origin else []) + ["Salvar apenas em commit", "Guardar temporariamente em stash"]
+            choice = flow_choice("Alterações locais", options, "Guardar temporariamente em stash")
+            if choice is None: note("Atualização cancelada; alterações locais preservadas."); return
+        note("Buscando somente a branch main do upstream.")
+        _git(root, ["fetch", "--no-tags", "upstream", "+refs/heads/main:refs/remotes/upstream/main"], timeout=180)
+        if choice and "commit" in choice.casefold():
+            message = prompt("Mensagem do commit [X = cancelar]: ").strip()
+            if not message or message.casefold() == "x": note("Atualização cancelada; alterações locais preservadas."); return
+            _git(root, ["add", "-A"])
+            staged = _git(root, ["diff", "--cached", "--name-only", "-z"]).stdout.split("\0")
+            if any(_update_sensitive_path(path) for path in staged if path):
+                raise GitSetupError("Arquivos operacionais ou sensíveis entraram na área de preparação. Nenhum commit foi criado; revise a área de preparação.")
+            _git(root, ["commit", "-m", message], timeout=180)
+            if "publicar" in choice:
+                _git(root, ["push", "origin", f"HEAD:refs/heads/{branch}"], timeout=180)
+                result(True, "Commit publicado no origin.")
+        elif choice:
+            previous = _git(root, ["rev-parse", "--verify", "refs/stash"], allow_failure=True).stdout.strip()
+            _git(root, ["stash", "push", "--include-untracked", "--message", "onmyoji-update-temporario"], timeout=180)
+            stash_id = _git_output(root, ["rev-parse", "--verify", "refs/stash"])
+            if stash_id == previous:
+                raise GitSetupError("O Git não criou um novo stash; as alterações locais permanecem no lugar.")
+            if _git(root, ["status", "--porcelain=v1", "--untracked-files=all"]).stdout:
+                raise GitSetupError(f"Há alterações que não puderam ser guardadas, possivelmente em submódulos. O stash {stash_id} foi preservado; restaure-o manualmente antes de continuar.")
+        note("Mesclando upstream/main na branch atual.")
+        merged = _git(root, ["merge", "--no-edit", "upstream/main"], allow_failure=True, timeout=180)
+        if merged.returncode:
+            detail = _git_detail(merged) or "O merge não foi concluído."
+            raise GitSetupError(detail + " Resolva ou aborte o merge pelo Git." + (" O stash temporário foi preservado; restaure-o após concluir o merge." if stash_id else ""))
+        if stash_id:
+            if _git_output(root, ["rev-parse", "--verify", "refs/stash"]) != stash_id:
+                raise GitSetupError(f"O stash temporário {stash_id} foi preservado; a pilha mudou e sua restauração deve ser feita manualmente.")
+            restored = _git(root, ["stash", "pop", "--index"], allow_failure=True, timeout=180)
+            if restored.returncode:
+                raise GitSetupError((_git_detail(restored) or "Não foi possível restaurar o stash.") + f" Resolva os conflitos; o stash {stash_id} foi preservado.")
+        result(True, "Atualização do Onmyōji concluída" + (" e alterações locais restauradas." if stash_id else "."))
+        note("Reinicie o setup para carregar a versão atualizada.")
+    except GitSetupError as error:
+        result(False, str(error))
+        if stash_id:
+            note(f"Stash temporário: {stash_id}. Confira seu estado antes de restaurá-lo ou removê-lo.")
+
+
 def push_git_origin(root: Path) -> tuple[bool, str]:
     try:
         if not _git_remote_url(root, "origin"): return False, "O remoto origin não está configurado."
@@ -1100,7 +1188,7 @@ def git_menu(root: Path) -> None:
         elif choice == "5":
             try: _configure_git_merge_rules(root); result(True, "Regras locais de merge e proteção reaplicadas.")
             except GitSetupError as error: result(False, str(error))
-        else: result(False, "Opção inválida.")
+        else: alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def validate_dedicated_environment(root: Path, data: dict[str, object]) -> bool:
@@ -1525,7 +1613,7 @@ def choose(label: str, values: list[str], current: str) -> str | None:
         if choice in {"x", "\x1b"}: return None
         if not choice: return values[default_index - 1]
         if choice.isdigit() and 1 <= int(choice) <= len(values): return values[int(choice) - 1]
-        result(False, "Opção inválida.")
+        alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def flow_choice(label: str, values: list[str], current: str = "", cancel_label: str = "Cancelar") -> str | None:
@@ -1546,7 +1634,7 @@ def flow_choice(label: str, values: list[str], current: str = "", cancel_label: 
         if choice in {"x", "\x1b"}: return None
         if not choice: return values[default_index - 1]
         if choice.isdigit() and 1 <= int(choice) <= len(values): return values[int(choice) - 1]
-        result(False, "Opção inválida.")
+        alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def choose_eccovox_tts_capability(root: Path, profile: str, key: str, title: str, current: str = "") -> str | None:
@@ -1757,7 +1845,7 @@ def manage_writable_directories(root: Path, data: dict[str, object]) -> dict[str
             confirmation = prompt("Digite REMOVER para apagar toda a lista: ").strip()
             if confirmation == "REMOVER": data = update_system(root, data, "additional_writable_directories", [])
             else: result(False, "Operação cancelada.")
-        else: result(False, "Opção inválida.")
+        else: alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def configure_codex_login(root: Path, data: dict[str, object], device_auth: bool | None = None, flow: bool = False) -> bool:
@@ -2091,7 +2179,7 @@ def python_menu(root: Path) -> None:
             except (DocumentError, McpRuntimeError, OSError, ValueError, python_runtime.RuntimeError) as error:
                 result(False, str(error))
         else:
-            result(False, "Opção inválida.")
+            alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def agent_profiles_menu(root: Path) -> None:
@@ -2122,7 +2210,7 @@ def agent_profiles_menu(root: Path) -> None:
         selected = prompt("Opção: ").strip().casefold()
         if selected in {"x", "\x1b"}: return
         if not selected.isdigit() or not 1 <= int(selected) <= len(identifiers):
-            result(False, "Opção inválida."); continue
+            alert("Opção inválida. Escolha uma das alternativas ou cancele."); continue
         identifier = identifiers[int(selected) - 1]
         enable = configured.get(identifier, {}).get("enabled") is not True
         if enable and capability.get("supported") is not True:
@@ -2266,7 +2354,7 @@ def codex_menu(root: Path) -> None:
         elif choice == "9": agent_profiles_menu(root)
         elif choice == "c": launch_codex(root, data)
         elif choice == "i": launch_onmyoji_interactive(root, data)
-        else: result(False, "Opção inválida.")
+        else: alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def local_daemon_rpc(root: Path, method: str, params: dict | None = None):
@@ -2358,7 +2446,7 @@ def notification_menu(root: Path) -> None:
                         continue
                     changes = {"incident": {"type": "telegram" if kind == "Telegram" else "email", "value": destination}}
             else:
-                result(False, "Opção inválida."); continue
+                alert("Opção inválida. Escolha uma das alternativas ou cancele."); continue
             saved = save_notification_configuration(root, changes)
             result(True, "Configuração salva.")
             if saved.get("restart_required"):
@@ -2421,7 +2509,7 @@ def scheduler_menu(root: Path) -> None:
                         result(started.get("state") == "running", "Serviço em execução." if started.get("state") == "running" else str(started.get("last_error") or "Falha ao iniciar."))
             except (OSError, ValueError, RpcError) as error:
                 result(False, str(error))
-        else: result(False, "Opção inválida.")
+        else: alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def test_agent_with_runtime_repair(run_test, repair_runtime) -> bool:
@@ -2687,7 +2775,7 @@ def daemon_menu(root: Path) -> None:
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
             action = {"1": "process-status", "2": "process-start", "3": "process-stop", "4": "process-force-stop"}.get(choice)
-            if not action: result(False, "Opção inválida."); continue
+            if not action: alert("Opção inválida. Escolha uma das alternativas ou cancele."); continue
             if action == "process-status":
                 status = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), action], quiet=True)
                 try:
@@ -2781,7 +2869,7 @@ def daemon_menu(root: Path) -> None:
                 item("X.", "Voltar")
                 choice = prompt("Opção: ").strip().casefold()
                 if choice in {"x", "\x1b"}: return
-                if choice != "1": result(False, "Opção inválida."); continue
+                if choice != "1": alert("Opção inválida. Escolha uma das alternativas ou cancele."); continue
                 default_name = daemon_management.default_service_name(root)
                 visible = instance_identity(root)
                 name = prompt(f"Nome do serviço [{default_name}]: ").strip() or default_name
@@ -2875,7 +2963,7 @@ def daemon_menu(root: Path) -> None:
                 privileged_service_action("repair-service-permissions")
             elif choice == "8" and os.name != "nt":
                 privileged_service_action("service-security")
-            else: result(False, "Opção inválida.")
+            else: alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
     def operation_menu() -> None:
         """Separa a execução temporária do gerenciamento persistente pelo SO."""
@@ -2888,7 +2976,7 @@ def daemon_menu(root: Path) -> None:
             if choice in {"x", "\x1b"}: return
             if choice == "1": process_menu()
             elif choice == "2": service_menu()
-            else: result(False, "Opção inválida.")
+            else: alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
     def configure_voice_replies() -> None:
         """Configura áudio do Telegram diretamente, sem um submenu de opção única."""
@@ -2988,7 +3076,7 @@ def daemon_menu(root: Path) -> None:
                 item("X.", "Voltar")
                 if prompt("Opção: ").strip().casefold() in {"x", "\x1b", ""}:
                     return
-                result(False, "Opção inválida.")
+                alert("Opção inválida. Escolha uma das alternativas ou cancele.")
                 continue
             for index, source in enumerate(sources, 1):
                 item(f"{index}.", source.name, f"{source.stat().st_size / 1024:.1f} KiB")
@@ -3003,7 +3091,7 @@ def daemon_menu(root: Path) -> None:
             elif choice.isdigit() and 1 <= int(choice) <= len(sources):
                 selected = [sources[int(choice) - 1]]
             else:
-                result(False, "Opção inválida.")
+                alert("Opção inválida. Escolha uma das alternativas ou cancele.")
                 continue
             for source in selected:
                 note(f"Convertendo {source.name}; criando uma cópia WebP 512×512.")
@@ -3110,7 +3198,7 @@ def daemon_menu(root: Path) -> None:
                 except OSError as error:
                     result(False, f"Não foi possível abrir a pasta: {error}")
             else:
-                result(False, "Opção inválida.")
+                alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
     def telegram_section_menu(section: str) -> None:
         while True:
@@ -3181,7 +3269,7 @@ def daemon_menu(root: Path) -> None:
                 "media": {"1": "14"},
             }[section]
             if choice not in actions:
-                result(False, "Opção inválida."); continue
+                alert("Opção inválida. Escolha uma das alternativas ou cancele."); continue
             choice = actions[choice]
             if choice == "1":
                 if enabled:
@@ -3227,7 +3315,7 @@ def daemon_menu(root: Path) -> None:
                         if action.startswith("Reinformar"):
                             continue
                     else:
-                        result(False, f"A entrada não foi encontrada ou não pôde ser lida: {detail}")
+                        alert(f"A entrada não foi encontrada ou não pôde ser lida: {detail}")
                         action = flow_choice("Credencial do bot", ["Criar o token nesta entrada", "Reinformar a entrada KeePass", "Configurar a referência e incluir o token depois"], "Configurar a referência e incluir o token depois")
                         if action is None or action.startswith("Reinformar"):
                             continue
@@ -3327,7 +3415,7 @@ def daemon_menu(root: Path) -> None:
                 arguments = [sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-agent-outbound-media"] + (["--enabled"] if enabled_media == "s" else ["--disabled"])
                 changed = command(arguments, quiet=True); result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
                 if changed.returncode == 0: offer_restart()
-            else: result(False, "Opção inválida.")
+            else: alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
     def configure_wizard_telegram_credential() -> bool:
         """Configura a credencial com os valores existentes, sem desviar ao menu manual."""
@@ -3505,7 +3593,7 @@ def daemon_menu(root: Path) -> None:
             elif choice == "10": configure_parallel_responses()
             elif choice == "11":
                 if configure_gateway_execution(root): offer_restart()
-            else: result(False, "Opção inválida.")
+            else: alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
     def miniapps_command(*arguments: str) -> subprocess.CompletedProcess[str]:
         return command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "mini-apps", *arguments], quiet=True)
@@ -3569,7 +3657,7 @@ def daemon_menu(root: Path) -> None:
             elif choice == "3":
                 if prompt("Instalar a CA no computador? [s/N]: ").strip().casefold() not in {"s", "sim"}: result(False, "Cancelado."); continue
                 completed = miniapps_command("tls", "install-trust", "--confirm")
-            else: result(False, "Opção inválida."); continue
+            else: alert("Opção inválida. Escolha uma das alternativas ou cancele."); continue
             result(completed.returncode == 0, (completed.stdout or completed.stderr).strip())
 
     def publication_command(*arguments: str, quiet: bool = True, read_result: bool = False) -> subprocess.CompletedProcess[str]:
@@ -4017,7 +4105,7 @@ def daemon_menu(root: Path) -> None:
             elif choice == "7": configure_publication_gateway()
             elif choice == "8": publication_migration()
             elif choice == "9": restore_publication()
-            else: result(False, "Opção inválida.")
+            else: alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
     def miniapps_publications() -> None:
         if not require_miniapps_running(): return
@@ -4077,7 +4165,7 @@ def daemon_menu(root: Path) -> None:
             elif choice == "3": miniapps_local_menu()
             elif choice == "4": miniapps_publications()
             elif choice == "5": publication_menu()
-            else: result(False, "Opção inválida.")
+            else: alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
     def uninstall_instance() -> None:
         """Confirma a remoção sem abrir um submenu de opção única."""
@@ -4123,7 +4211,7 @@ def daemon_menu(root: Path) -> None:
             elif choice == "n": notification_menu(root)
             elif choice == "a": scheduler_menu(root)
             else: publication_menu()
-        else: result(False, "Opção inválida.")
+        else: alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def skill_menu(skill: Skill, root: Path, skills: list[Skill]) -> None:
@@ -4151,13 +4239,14 @@ def skill_menu(skill: Skill, root: Path, skills: list[Skill]) -> None:
         elif choice == "2" and skill.setup_script is not None:
             ok, message = invoke(skill, root)
             result(ok, message)
-        else: result(False, "Opção inválida.")
+        else: alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def menu(skills: list[Skill], root: Path) -> int:
     while True:
         screen("Central de configuração", "Onmyōji · integrações do Shikigami")
         item("!.", "Diagnóstico", "Valida nome, executável e modelo do Codex-CLI")
+        item("U.", "Atualizar Onmyōji", "Incorpora upstream/main preservando alterações locais")
         print()
         item("G.", "Git e sincronização", "Origin da instância, upstream do Onmyōji e regras de merge")
         item("P.", "Python e bibliotecas", "Runtime único e componentes compartilhados")
@@ -4181,6 +4270,9 @@ def menu(skills: list[Skill], root: Path) -> int:
         if choice == "!":
             if not run_dedicated_menu(root, "diagnostics"): diagnostics_menu(root)
             continue
+        if choice == "u":
+            update_upstream(root)
+            continue
         if choice == "g":
             if not run_dedicated_menu(root, "git"): git_menu(root)
             continue
@@ -4195,7 +4287,7 @@ def menu(skills: list[Skill], root: Path) -> int:
             if not run_dedicated_menu(root, "mcp"): launch_mcp_menu(root)
             continue
         if choice.isdigit() and 1 <= int(choice) <= len(skills): skill_menu(skills[int(choice) - 1], root, skills)
-        else: result(False, "Opção inválida.")
+        else: alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def main() -> int:
