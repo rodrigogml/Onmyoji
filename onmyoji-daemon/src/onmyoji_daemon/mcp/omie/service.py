@@ -130,7 +130,18 @@ class OmieService:
                 # HTTP 500 da Omie também é usado para contratos inválidos; não oculte
                 # esse diagnóstico atrás de tentativas que não podem corrigir a entrada.
                 if error.code not in {425, 429, 502, 503, 504} or attempt == retries:
-                    raise OmieError("omie_http_error", f"A API Omie retornou HTTP {error.code}.", {"http_status": error.code, "retryable": False}) from error
+                    details: dict[str, Any] = {"http_status": error.code, "retryable": False}
+                    try:
+                        body = json.loads(error.read().decode("utf-8", errors="replace"))
+                        if isinstance(body, Mapping):
+                            description = body.get("description") or body.get("faultstring")
+                            if isinstance(description, str) and description.strip():
+                                details["remote_description"] = description.strip()[:300]
+                            code = body.get("code") or body.get("faultcode")
+                            if isinstance(code, (str, int)) and not isinstance(code, bool): details["remote_code"] = code
+                    except (OSError, ValueError, UnicodeError):
+                        pass
+                    raise OmieError("omie_http_error", f"A API Omie retornou HTTP {error.code}.", details) from error
             except (URLError, TimeoutError) as error:
                 if attempt == retries:
                     raise OmieError("network_error", "Não foi possível consultar a API Omie.") from error
