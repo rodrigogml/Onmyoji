@@ -9,7 +9,7 @@ import tempfile
 import tomllib
 from typing import Any
 
-from ..config_publication import publish_file
+from ..config_publication import publish_instance_file
 from .credentials import mcp_credentials_path
 from .reconciliation import McpReconciliation
 from .todoist import todoist_config_path
@@ -623,15 +623,14 @@ class McpConfiguration:
         merged.update(data)
         return merged
 
-    @staticmethod
-    def _save(path: Path, content: str) -> None:
+    def _save(self, path: Path, content: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent, text=True)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as target:
                 target.write(content)
             tomllib.loads(Path(temporary).read_text(encoding="utf-8"))
-            publish_file(Path(temporary), path, mode=0o660)
+            publish_instance_file(self.root, Path(temporary), path)
         except Exception:
             Path(temporary).unlink(missing_ok=True)
             raise

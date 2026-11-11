@@ -45,6 +45,7 @@ from onmyoji_daemon.cloudflare_tunnel.installer import inspect_cloudflared_direc
 from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime, mcp_runtime_python, mcp_runtime_ready
 from onmyoji_daemon.mcp.ocr.runtime import DocumentError, install_runtime as install_document_runtime
 from onmyoji_daemon.state_layout import LAYOUT_VERSION, SETUP_VERSION, StateLayoutError, migrate as migrate_state_layout, version_path as state_version_path
+from onmyoji_daemon.config_publication import write_instance_text
 SYSTEM_BEGIN = "# BEGIN ONMYOJI MANAGED CODEX SETTINGS"
 SYSTEM_END = "# END ONMYOJI MANAGED CODEX SETTINGS"
 INSTANCE_SKILLS_DIRECTORY = "shikigami-skills"
@@ -666,18 +667,17 @@ def save_system(root: Path, data: dict[str, object], validate: bool = True) -> t
     old_system = system.read_text(encoding="utf-8") if system.exists() else None
     old_codex = codex.read_text(encoding="utf-8") if codex.exists() else None
     try:
-        system.parent.mkdir(parents=True, exist_ok=True)
-        system.write_text(render_system(data), encoding="utf-8", newline="\n")
-        codex.write_text(replace_block(old_codex or "", SYSTEM_BEGIN, SYSTEM_END, render_codex_system(data)), encoding="utf-8", newline="\n")
+        write_instance_text(root, system, render_system(data))
+        write_instance_text(root, codex, replace_block(old_codex or "", SYSTEM_BEGIN, SYSTEM_END, render_codex_system(data)))
         tomllib.loads(system.read_text(encoding="utf-8")); tomllib.loads(codex.read_text(encoding="utf-8"))
         # O arquivo de configuração do Codex também armazena a seção MCP.
         # Qualquer regravação precisa solicitar uma reconciliação posterior.
         McpReconciliation(root).mark_pending()
     except (OSError, tomllib.TOMLDecodeError, McpReconciliationError) as error:
         if old_system is None: system.unlink(missing_ok=True)
-        else: system.write_text(old_system, encoding="utf-8", newline="\n")
+        else: write_instance_text(root, system, old_system)
         if old_codex is None: codex.unlink(missing_ok=True)
-        else: codex.write_text(old_codex, encoding="utf-8", newline="\n")
+        else: write_instance_text(root, codex, old_codex)
         return False, f"Falha ao salvar; alteração desfeita: {error}"
     return True, message if valid else "Configuração inicial salva."
 

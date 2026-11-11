@@ -21,7 +21,7 @@ import tomllib
 from typing import Any, Iterator, Mapping
 import uuid
 
-from .config_publication import publish_file
+from .config_publication import publish_file, publish_instance_file
 from .instance import shikigami_agents_path
 
 
@@ -196,7 +196,7 @@ class ShikigamiAgentMaterializer:
             try:
                 with os.fdopen(descriptor, "wb") as output:
                     output.write("\n".join(lines).encode("utf-8")); output.flush(); os.fsync(output.fileno())
-                publish_file(Path(name), self.agents_state_path, mode=0o660)
+                publish_instance_file(self.root, Path(name), self.agents_state_path)
             finally:
                 Path(name).unlink(missing_ok=True)
 

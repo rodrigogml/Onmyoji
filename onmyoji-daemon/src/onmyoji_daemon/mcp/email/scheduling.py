@@ -10,7 +10,7 @@ import re
 import tempfile
 import tomllib
 
-from ...config_publication import publish_file
+from ...config_publication import publish_instance_file
 from .contracts import EmailError, require
 
 
@@ -114,7 +114,7 @@ def reconcile_email_schedules(root: Path, previous: dict, current: dict) -> None
             with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
                 stream.write(_render(account, monitoring))
             tomllib.loads(Path(temporary).read_text(encoding="utf-8"))
-            publish_file(Path(temporary), target, mode=0o660)
+            publish_instance_file(root, Path(temporary), target)
         except Exception:
             Path(temporary).unlink(missing_ok=True)
             raise

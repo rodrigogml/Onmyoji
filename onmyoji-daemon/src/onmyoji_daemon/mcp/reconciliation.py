@@ -9,6 +9,8 @@ import re
 import time
 from typing import Iterator, Protocol
 
+from ..config_publication import write_instance_text
+
 
 REGISTRATION_SCHEMA_VERSION = 2
 
@@ -89,21 +91,9 @@ class McpReconciliation:
             return True
 
     def _write(self, pending: bool) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(".tmp")
         try:
-            temporary.write_text(json.dumps({"schema_version": REGISTRATION_SCHEMA_VERSION, "pending": pending}, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
-            for attempt in range(6):
-                try:
-                    os.replace(temporary, self.path)
-                    break
-                except PermissionError as error:
-                    # Leitores/antivírus no Windows podem bloquear brevemente a troca.
-                    if getattr(error, "winerror", None) not in {5, 32} or attempt == 5:
-                        raise
-                    time.sleep(0.05 * (attempt + 1))
+            write_instance_text(self.root, self.path, json.dumps({"schema_version": REGISTRATION_SCHEMA_VERSION, "pending": pending}, ensure_ascii=False) + "\n")
         except OSError as error:
-            temporary.unlink(missing_ok=True)
             raise McpReconciliationError("Não foi possível atualizar o estado MCP local.") from error
 
     @contextmanager

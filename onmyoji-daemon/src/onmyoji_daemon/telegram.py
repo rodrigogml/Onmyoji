@@ -22,7 +22,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from .config_publication import publish_file
+from .config_publication import write_instance_text
 from .rpc import RpcServer
 from .telegram_channels import TelegramChannels
 from .telegram_location import OMITTED, LocationValidationError, UnsupportedLocationError, normalize_location, normalize_stored_location, parse_message_location
@@ -64,16 +64,8 @@ def json_file(path: Path, default: dict[str, Any]) -> dict[str, Any]:
 def write_json(path: Path, value: dict[str, Any]) -> None:
     """Publica metadados sem staging em configs nem disputa entre escritores."""
     with _JSON_IO_LOCK:
-        path.parent.mkdir(parents=True, exist_ok=True)
         instance = next((parent.parent for parent in path.parents if parent.name == "configs"), Path(__file__).resolve().parents[3])
-        temporary_root = instance / "tmp"
-        temporary_root.mkdir(parents=True, exist_ok=True)
-        temporary = temporary_root / ("telegram-state-" + secrets.token_hex(12) + ".json")
-        try:
-            temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
-            publish_file(temporary, path)
-        finally:
-            temporary.unlink(missing_ok=True)
+        write_instance_text(instance, path, json.dumps(value, ensure_ascii=False, indent=2))
 
 
 @dataclass(frozen=True)

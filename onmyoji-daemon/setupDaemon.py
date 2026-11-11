@@ -25,6 +25,7 @@ from onmyoji_daemon.management import applied_configuration_revision, configurat
 from onmyoji_daemon.instance import identity, instructions_path, telegram_configuration_path
 from onmyoji_daemon.mcp.configuration import McpConfiguration
 from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialResolver
+from onmyoji_daemon.config_publication import copy_instance_file, write_instance_text
 
 ROOT = PROJECT.parent
 MODEL = PROJECT / "configs" / "telegram.toml.model"
@@ -77,7 +78,7 @@ def save_daemon_data(root: Path, data: dict) -> None:
         for key, item in values.items():
             if isinstance(item, dict): section([*prefix, str(key)], item)
     section([], data)
-    daemon_target(root).write_text("\n".join(lines).lstrip("\n") + "\n", encoding="utf-8", newline="\n")
+    write_instance_text(root, daemon_target(root), "\n".join(lines).lstrip("\n") + "\n")
 
 
 def bootstrap_daemon(root: Path) -> Path:
@@ -96,7 +97,7 @@ def bootstrap_daemon(root: Path) -> Path:
 def bootstrap(root: Path) -> Path:
     if daemon_target(root).is_file(): bootstrap_daemon(root)
     path = target(root)
-    if not path.exists(): path.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(MODEL, path)
+    if not path.exists(): copy_instance_file(root, MODEL, path)
     return path
 
 
@@ -143,12 +144,12 @@ def save_telegram(root: Path, profile: str, entry: str, data: dict | None = None
     lines[agent_end:agent_end] = [f"busy_input_policy = {json.dumps(policy if isinstance(policy, str) and policy in {'queue', 'steer'} else 'queue')}", f"interrupt_grace_seconds = {int(agent.get('interrupt_grace_seconds', 15))}", f"post_turn_results = {str(agent.get('post_turn_results') is True).lower()}"]
     limits_end = lines.index("", lines.index("[limits]") + 1)
     lines[limits_end:limits_end] = [f"preparation_workers = {int(limits.get('preparation_workers', 4))}"]
-    target(root).write_text("\n".join(lines), encoding="utf-8", newline="\n")
+    write_instance_text(root, target(root), "\n".join(lines))
     path = target(root)
     rendered = path.read_text(encoding="utf-8")
     marker = f"max_outbound_media_per_turn = {int(limits.get('max_outbound_media_per_turn', 3))}"
     context = f"context_max_messages = {int(limits.get('context_max_messages', 100))}\ncontext_max_age_seconds = {int(limits.get('context_max_age_seconds', 604800))}\ncontext_max_bytes = {int(limits.get('context_max_bytes', 512 * 1024))}\ncontext_compaction_message_interval = {int(limits.get('context_compaction_message_interval', 16))}"
-    path.write_text(rendered.replace(marker, marker + "\n" + context), encoding="utf-8", newline="\n")
+    write_instance_text(root, path, rendered.replace(marker, marker + "\n" + context))
 
 
 def entry_exists(root: Path, profile: str, entry: str) -> tuple[bool, str]:
@@ -214,7 +215,7 @@ def save_runtime(root: Path, mode: str, executable: str, base_python: str = "") 
             lines.append(f"[{section}]")
             lines.extend(f"{key} = {json.dumps(value, ensure_ascii=False)}" for key, value in values.items())
             lines.append("")
-    system.parent.mkdir(parents=True, exist_ok=True); system.write_text("\n".join(lines), encoding="utf-8", newline="\n")
+    write_instance_text(root, system, "\n".join(lines))
 
 
 def save_owner_execution_preferences(root: Path, enabled: bool, models: str, efforts: str) -> None:
@@ -312,14 +313,13 @@ def save_system(root: Path, data: dict) -> None:
             before, remainder = old_codex.split(begin, 1); _, after = remainder.split(end, 1)
             rendered_codex = before.rstrip() + "\n\n" + managed + after
         else: rendered_codex = old_codex.rstrip() + ("\n\n" if old_codex.strip() else "") + managed + "\n"
-        system_path.parent.mkdir(parents=True, exist_ok=True)
-        system_path.write_text(system_text, encoding="utf-8", newline="\n")
-        codex_path.write_text(rendered_codex, encoding="utf-8", newline="\n")
+        write_instance_text(root, system_path, system_text)
+        write_instance_text(root, codex_path, rendered_codex)
         tomllib.loads(system_path.read_text(encoding="utf-8")); tomllib.loads(codex_path.read_text(encoding="utf-8"))
     except Exception:
         if old_system is None: system_path.unlink(missing_ok=True)
-        else: system_path.write_text(old_system, encoding="utf-8", newline="\n")
-        codex_path.write_text(old_codex, encoding="utf-8", newline="\n")
+        else: write_instance_text(root, system_path, old_system)
+        write_instance_text(root, codex_path, old_codex)
         raise
 
 

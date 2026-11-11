@@ -28,6 +28,7 @@ from .supervisor import endpoint
 from . import runtime as shared_runtime
 from .state_layout import daemon_runtime_path
 from .linux_service import ServiceLimits, load_execution_profile, provision_account, recommended_limits, repair_permissions as repair_linux_permissions
+from .config_publication import write_instance_text
 
 
 def daemon_root(root: Path) -> Path: return root.resolve() / "configs" / "daemon"
@@ -111,11 +112,8 @@ def ensure_runtime(root: Path, show_progress: bool = False, allow_install: bool 
         return False, str(error)
 
 
-def _write_json(path: Path, value: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(path)
+def _write_json(root: Path, path: Path, value: dict) -> None:
+    write_instance_text(root, path, json.dumps(value, ensure_ascii=False, indent=2) + "\n")
 
 
 def _read_json(path: Path) -> dict:
@@ -146,9 +144,8 @@ def prepare_instance(root: Path) -> tuple[bool, str]:
     path = manifest_path(root)
     created = not path.exists()
     if created:
-        path.parent.mkdir(parents=True, exist_ok=True)
         instance_id = uuid.uuid4().hex
-        path.write_text("\n".join([
+        write_instance_text(root, path, "\n".join([
             "schema_version = 1",
             f"instance_id = {json.dumps(instance_id)}",
             f"instance_name = {json.dumps(instance_label(root), ensure_ascii=False)}",
@@ -161,7 +158,7 @@ def prepare_instance(root: Path) -> tuple[bool, str]:
             "enabled = true",
             'shikigami_file = "instructions.md"',
             "",
-        ]) , encoding="utf-8", newline="\n")
+        ]))
     return True, "Manifesto do daemon preparado." if created else "Manifesto do daemon já existe."
 
 
@@ -198,7 +195,7 @@ def set_enabled(root: Path, service: str, enabled: bool) -> tuple[bool, str]:
         if not ready: return False, message
     path = daemon_root(root) / "services.json"; values = _read_json(path)
     values.setdefault(service, {})["enabled"] = enabled
-    _write_json(path, values)
+    _write_json(root, path, values)
     if daemon_reachable(root):
         try:
             host, port, token = endpoint(root); call(host, port, token, "enable" if enabled else "disable", {"service": service})
@@ -408,7 +405,7 @@ def configure_windows_service_account(root: Path, account: str, password: str = 
     except Exception as error:
         return False, f"Não foi possível alterar a conta do Serviço do Windows: {error}"
     info["run_as_user"] = "LocalSystem" if local_system else selected
-    _write_json(service_path(root), info)
+    _write_json(root, service_path(root), info)
     return True, f"Conta do serviço atualizada para {info['run_as_user']}. Reinicie o serviço para aplicar a alteração."
 
 
@@ -441,7 +438,7 @@ def install_service(root: Path, name: str, description: str, scope: str = "syste
         if progress: progress("Registrando a configuração local do serviço.")
         if windows_account and windows_account.casefold() != "localsystem":
             if progress: progress("Configurando a conta Windows selecionada; a senha não será exibida nem armazenada.")
-            _write_json(service_path(root), {"name": name, "root": str(root.resolve())})
+            _write_json(root, service_path(root), {"name": name, "root": str(root.resolve())})
             configured, detail = configure_windows_service_account(root, windows_account, windows_password)
             if not configured:
                 subprocess.run([executable, "-m", "onmyoji_daemon.windows_service", "--service-name", name, "--onmyoji-root", str(root.resolve()), "remove"], text=True, capture_output=True, env=environment, check=False)
@@ -504,7 +501,7 @@ def install_service(root: Path, name: str, description: str, scope: str = "syste
         owned = subprocess.run(["sudo", "chown", f"{run_as_user}:{run_as_group}", str(service_path(root))], text=True, capture_output=True, check=False)
         if owned.returncode != 0: return False, (owned.stderr or owned.stdout).strip() or "Não foi possível atribuir o registro à conta isolada."
     else:
-        _write_json(service_path(root), service_state)
+        _write_json(root, service_path(root), service_state)
     return True, f"Serviço {name} instalado."
 
 
@@ -538,7 +535,7 @@ def configure_service_resources(root: Path, values: dict[str, object], use_sudo:
         except OSError as error: return False, f"Não foi possível gravar {path}: {error}"
     reloaded = subprocess.run([*prefix, *_systemctl(scope, "daemon-reload")], text=True, capture_output=True, check=False)
     if reloaded.returncode != 0: return False, (reloaded.stderr or reloaded.stdout).strip()
-    info["resource_limits"] = limits.mapping(); _write_json(service_path(root), info)
+    info["resource_limits"] = limits.mapping(); _write_json(root, service_path(root), info)
     return True, "Limites atualizados; reinicie o serviço para aplicá-los aos processos em execução."
 
 

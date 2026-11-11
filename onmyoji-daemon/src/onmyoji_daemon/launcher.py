@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import threading
 import tomllib
 from pathlib import Path
@@ -11,14 +10,14 @@ from pathlib import Path
 from .instance import telegram_configuration_path
 from .telegram import CodexAppServer, CodexProtocolError, Settings
 from .codex_execution import CodexLaunch
+from .config_publication import copy_instance_file
 
 
 def _bootstrap(root: Path, data_dir: Path) -> None:
     """Permite iniciar a sessão local antes de configurar o Telegram."""
     config = telegram_configuration_path(root)
     if not config.exists():
-        config.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(Path(__file__).resolve().parents[2] / "configs" / "telegram.toml.model", config)
+        copy_instance_file(root, Path(__file__).resolve().parents[2] / "configs" / "telegram.toml.model", config)
 
 
 def _approval_policy(settings: Settings) -> str:

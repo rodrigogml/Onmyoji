@@ -57,13 +57,32 @@ def test_private_publication_applies_owner_and_group_mode_before_replace(tmp_pat
 
 @pytest.mark.skipif(os.name == "nt", reason="Modos POSIX são validados no Linux.")
 def test_shared_file_mode_restores_the_acl_mask_bits_requested_by_restrictive_creators(tmp_path):
-    path = tmp_path / "vault.kdbx"
+    profile = tmp_path / "configs" / "shikigami" / "linux-execution.json"
+    profile.parent.mkdir(parents=True)
+    profile.write_text('{"schema_version": 1, "mode": "dedicated", "installer_access": true}', encoding="utf-8")
+    path = tmp_path / "configs" / "mcp" / "vault.kdbx"
+    path.parent.mkdir()
     path.write_bytes(b"encrypted")
     path.chmod(0o600)
 
     config_publication.apply_shared_file_mode(path)
 
     assert path.stat().st_mode & 0o777 == 0o660
+
+
+def test_operational_mode_is_shared_only_for_dedicated_profile_with_installer_access(tmp_path, monkeypatch):
+    profile = tmp_path / "configs" / "shikigami" / "linux-execution.json"
+    profile.parent.mkdir(parents=True)
+    monkeypatch.setattr(config_publication.os, "name", "posix")
+
+    profile.write_text('{"schema_version": 1, "mode": "current"}', encoding="utf-8")
+    assert config_publication.operational_file_mode(tmp_path) is None
+
+    profile.write_text('{"schema_version": 1, "mode": "dedicated", "installer_access": false}', encoding="utf-8")
+    assert config_publication.operational_file_mode(tmp_path) is None
+
+    profile.write_text('{"schema_version": 1, "mode": "dedicated", "installer_access": true}', encoding="utf-8")
+    assert config_publication.operational_file_mode(tmp_path) == 0o660
 
 
 def test_fifth_windows_failure_propagates_same_error_and_preserves_both_files(tmp_path, monkeypatch):
@@ -109,7 +128,7 @@ def test_configuration_publishers_retry_then_clean_staging_without_changing_back
     calls = []
     def publish(source, target):
         calls.append((source, target))
-        assert source.parent == tmp_path / "tmp"
+        assert source.parent == destination.parent
         if len(calls) == 1:
             assert destination.read_bytes() == original
             raise windows_error(5)
@@ -123,5 +142,6 @@ def test_configuration_publishers_retry_then_clean_staging_without_changing_back
         protect_legacy_gateway(tmp_path, destination)
         assert destination.read_bytes() == original.replace(b"schema_version=1", b"schema_version=2", 1)
         assert destination.with_name("config-before-delegation-v1.toml").read_bytes() == original
-    assert len(calls) == 2 and list((tmp_path / "tmp").iterdir()) == []
+    assert len(calls) == (2 if publisher == "json" else 3)
+    assert not (tmp_path / "tmp").exists()
     assert not destination.read_bytes().startswith(b"\xef\xbb\xbf")

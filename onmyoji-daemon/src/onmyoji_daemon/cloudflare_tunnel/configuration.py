@@ -12,7 +12,7 @@ import tomllib
 from typing import Any
 from urllib.parse import urlsplit
 
-from ..config_publication import publish_file
+from ..config_publication import publish_instance_file
 from ..mcp.credentials import CredentialError, KeePassCredentialResolver
 from .exception import TunnelError
 
@@ -71,7 +71,7 @@ def atomic_text(root: Path, path: Path, content: str) -> None:
             output.write(content)
             output.flush()
             os.fsync(output.fileno())
-        publish_file(Path(temporary), path, mode=0o660)
+        publish_instance_file(root, Path(temporary), path)
     finally:
         Path(temporary).unlink(missing_ok=True)
 

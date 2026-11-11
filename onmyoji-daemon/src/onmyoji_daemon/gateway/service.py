@@ -18,6 +18,7 @@ from .component.publication_test import PublicationTest
 from .component.tls import ensure_material, server_context
 from .exception import GatewayError
 from .repository import ListenerRegistry
+from ..config_publication import write_instance_text
 
 
 class PublicGateway:
@@ -68,14 +69,7 @@ class PublicGateway:
         port = params.get("http_port")
         if type(port) is not int or not 1 <= port <= 65535:
             raise GatewayError("invalid_config", "Porta HTTPS inválida.")
-        temporary_dir = self.root / "tmp"
-        temporary_dir.mkdir(parents=True, exist_ok=True)
-        temporary = temporary_dir / ("gateway-config-" + uuid.uuid4().hex + ".toml")
-        try:
-            temporary.write_text(f"schema_version = 1\nhttp_port = {port}\n", encoding="utf-8")
-            os.replace(temporary, self.config_path)
-        finally:
-            temporary.unlink(missing_ok=True)
+        write_instance_text(self.root, self.config_path, f"schema_version = 1\nhttp_port = {port}\n")
         return {"http_port": port, "restart_required": port != self.http_port}
 
     def _origin(self) -> str | None:

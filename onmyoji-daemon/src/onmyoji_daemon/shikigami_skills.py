@@ -11,7 +11,7 @@ import tempfile
 import tomllib
 from typing import Any
 
-from .config_publication import publish_file
+from .config_publication import publish_file, publish_instance_file
 from .instance import shikigami_skills_path
 
 
@@ -117,7 +117,7 @@ class ShikigamiSkillMaterializer:
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as output:
                 output.write(content)
-            publish_file(Path(temporary), self.runtime_state_path, mode=0o660)
+            publish_instance_file(self.root, Path(temporary), self.runtime_state_path)
         except Exception:
             Path(temporary).unlink(missing_ok=True)
             raise

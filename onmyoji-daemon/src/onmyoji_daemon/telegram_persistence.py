@@ -17,7 +17,7 @@ import re
 import tomllib
 from typing import Any
 
-from .config_publication import publish_file
+from .config_publication import write_instance_bytes, write_instance_text
 
 
 SCHEMA_VERSION = 4
@@ -48,17 +48,8 @@ def protect_legacy_gateway(root: Path, configuration: Path) -> None:
         raise GatewayPersistenceError("Não foi possível preservar a configuração ao atualizar seu esquema.")
     backup = configuration.with_name("config-before-delegation-v1.toml")
     if not backup.exists():
-        with backup.open("xb") as stream:
-            stream.write(raw); stream.flush(); os.fsync(stream.fileno())
-    temporary_root = root / "tmp"
-    temporary_root.mkdir(parents=True, exist_ok=True)
-    temporary = temporary_root / ("gateway-config-" + secrets.token_hex(12) + ".toml")
-    try:
-        with temporary.open("xb") as stream:
-            stream.write(updated.encode("utf-8")); stream.flush(); os.fsync(stream.fileno())
-        publish_file(temporary, configuration)
-    finally:
-        temporary.unlink(missing_ok=True)
+        write_instance_bytes(root, backup, raw)
+    write_instance_text(root, configuration, updated)
 
 
 class GatewayStore:
