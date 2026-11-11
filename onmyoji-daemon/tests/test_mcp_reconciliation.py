@@ -18,23 +18,28 @@ class Registration:
         return "ready"
 
 
+def configured(root):
+    (root / "config.toml").write_text("[mcp_servers.onmyoji]\ncommand = 'python'\n", encoding="utf-8")
+
+
 def test_pending_state_is_consumed_only_after_successful_reconciliation(tmp_path):
     state = McpReconciliation(tmp_path)
     registration = Registration()
+    configured(tmp_path)
 
     assert mcp_reconciliation_pending(tmp_path) is True
     assert state.reconcile_if_pending(registration) is True
     assert registration.calls == 1 and mcp_reconciliation_pending(tmp_path) is False
     assert state.reconcile_if_pending(registration) is False
-    assert registration.calls == 2
+    assert registration.calls == 1
 
 
-def test_synchronized_marker_does_not_skip_real_registration_check(tmp_path):
+def test_missing_mcp_section_makes_synchronized_marker_pending(tmp_path):
     state = McpReconciliation(tmp_path)
     state.mark_synchronized()
     registration = Registration()
 
-    assert state.reconcile_if_pending(registration) is False
+    assert state.reconcile_if_pending(registration) is True
     assert registration.calls == 1
 
 
@@ -49,6 +54,7 @@ def test_failed_reconciliation_keeps_state_pending_for_the_next_gateway_call(tmp
 
 def test_configuration_change_marks_a_previously_synchronized_state_pending(tmp_path):
     state = McpReconciliation(tmp_path)
+    configured(tmp_path)
     state.mark_synchronized()
     assert mcp_reconciliation_pending(tmp_path) is False
 

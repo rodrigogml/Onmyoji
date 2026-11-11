@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
+import re
 import time
 from typing import Iterator, Protocol
 
@@ -33,6 +34,7 @@ def mcp_reconciliation_pending(root: Path) -> bool:
     Instalações anteriores não possuem o arquivo de estado. Elas são tratadas
     como pendentes uma única vez para migrar naturalmente ao fluxo automático.
     """
+    root = root.resolve()
     path = mcp_reconciliation_path(root)
     if not path.exists():
         return True
@@ -40,11 +42,20 @@ def mcp_reconciliation_pending(root: Path) -> bool:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return True
-    return (
+    state_pending = (
         not isinstance(value, dict)
         or value.get("schema_version") != REGISTRATION_SCHEMA_VERSION
         or value.get("pending") is not False
     )
+    if state_pending:
+        return True
+    # O marcador local não é suficiente: atualizações ou restaurações podem
+    # regravar config.toml sem sua seção MCP. Esta checagem não inicia o Codex.
+    try:
+        config = (root / "config.toml").read_text(encoding="utf-8")
+    except OSError:
+        return True
+    return re.search(r"(?m)^\[mcp_servers\.onmyoji\]\s*$", config) is None
 
 
 class McpReconciliation:
@@ -66,20 +77,16 @@ class McpReconciliation:
             self._write(False)
 
     def reconcile_if_pending(self, registration: ReconciliableRegistration) -> bool:
-        """Confere o registro real a cada abertura e preserva a pendência em falhas.
-
-        O marcador reduz apenas escrita de estado: não é prova de que um
-        atualizador ou restauração não removeu a seção MCP do ``config.toml``.
-        """
+        """Reconcilia somente quando estado ou configuração local indicarem pendência."""
         with self._lock():
-            pending = mcp_reconciliation_pending(self.root)
+            if not mcp_reconciliation_pending(self.root):
+                return False
             try:
                 registration.reconcile()
             except Exception as error:
                 raise McpReconciliationError("Não foi possível reconciliar o registro MCP do Codex CLI.") from error
-            if pending:
-                self._write(False)
-            return pending
+            self._write(False)
+            return True
 
     def _write(self, pending: bool) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
