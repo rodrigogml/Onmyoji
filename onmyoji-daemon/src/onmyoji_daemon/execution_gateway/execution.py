@@ -749,6 +749,7 @@ class ExecutionGateway:
                     raise CodexProtocolError("Interrupção sem terminalidade confirmada.", kind="uncertain")
             if active.status == "completed":
                 self._mark_external(conversation, external_ids)
+                self._schedule_context_compaction(conversation, thread, client)
             if slot:
                 self.store.terminal(slot.identifier, "completed_silent" if active.status == "completed" and active.silent_completion else active.status)
             if active.suppressed:
@@ -798,6 +799,32 @@ class ExecutionGateway:
 
     def _app_notification(self, method: str, params: dict[str, Any]) -> None:
         self._app_event(method, params, None)
+
+    def _schedule_context_compaction(self, conversation: str, thread: str, client: CodexAppServer) -> None:
+        """Agenda compactação nativa após progresso suficiente sem atrasar a resposta.
+
+        A compactação é uma operação interna do App Server; uma recusa não
+        invalida o turno que já foi concluído. O contador é persistido para que
+        reinicializações não causem compactações repetidas da mesma janela.
+        """
+        interval = self.settings.context_compaction_message_interval
+        if not interval:
+            return
+        with self.database_lock:
+            row = self.database.execute("SELECT (SELECT COUNT(*) FROM conversation_messages WHERE chat_id=? AND generation=conversations.generation), context_compaction_message_count FROM conversations WHERE chat_id=?", (conversation, conversation)).fetchone()
+        if not row:
+            return
+        count, compacted = int(row[0]), int(row[1] or 0)
+        if count - compacted < interval:
+            return
+        try:
+            client.request("thread/compact/start", {"threadId": thread}, timeout=min(30, self.settings.interrupt_grace_seconds + 15))
+        except CodexProtocolError as error:
+            self._diagnostic("context.compaction_failed", conversation=conversation, reason=error.kind)
+            return
+        with self.database_lock, self.database:
+            self.database.execute("UPDATE conversations SET context_compaction_message_count=?, updated_at=? WHERE chat_id=? AND codex_thread_id=?", (count, time.time(), conversation, thread))
+        self._diagnostic("context.compaction_scheduled", conversation=conversation, messages=count)
 
     def _correlate(self, params: dict[str, Any], event: dict[str, Any] | None = None) -> Any:
         thread = params.get("threadId")
@@ -1192,7 +1219,7 @@ class ExecutionGateway:
             with self.database:
                 self.store.reset(conversation, generation, getattr(self._input_local, "source", None))
                 self.database.execute("DELETE FROM telegram_external_messages WHERE conversation_id=?", (conversation,))
-                self.database.execute("UPDATE conversations SET generation=generation+1,codex_thread_id=NULL,instruction_baseline_hash=NULL,owner_model=NULL,owner_effort=NULL,share_thoughts=?,delete_thoughts=?,updated_at=? WHERE chat_id=?", (self.settings.default_share_thoughts, self.settings.default_delete_thoughts, time.time(), conversation))
+                self.database.execute("UPDATE conversations SET generation=generation+1,codex_thread_id=NULL,instruction_baseline_hash=NULL,owner_model=NULL,owner_effort=NULL,context_compaction_message_count=0,share_thoughts=?,delete_thoughts=?,updated_at=? WHERE chat_id=?", (self.settings.default_share_thoughts, self.settings.default_delete_thoughts, time.time(), conversation))
         if old or conversation in self._slots:
             self._generation_cleanup.add((conversation, generation))
         else:

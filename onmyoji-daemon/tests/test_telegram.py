@@ -501,6 +501,39 @@ def test_context_window_reports_locally_dropped_messages(tmp_path):
     assert '"dropped_messages": 2' in snapshot and '"max_messages"' in snapshot and attachments == [] and summary == {"contains_untrusted_context": True}
 
 
+def test_context_window_enforces_utf8_budget_before_app_server_frame(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(replace(Settings.load(tmp_path, data), context_max_bytes=64 * 1024, context_max_age_seconds=0))
+    channel, sender = "group:-1001:12", {"id": 7, "first_name": "other"}
+    for index in range(3):
+        gateway._cache_message(channel, {"message_id": index + 1, "date": 100 + index}, sender, "á" * 14_000, [])
+
+    snapshot, attachments, summary = gateway._context_snapshot(channel)
+    context = json.loads(snapshot)["conversation_context"]
+
+    assert len(snapshot.encode("utf-8")) <= gateway.settings.context_max_bytes
+    assert context["context_window"]["included_messages"] == 2
+    assert "max_bytes" in context["context_window"]["cutoff_reasons"]
+    assert attachments == [] and summary == {"contains_untrusted_context": True}
+
+
+def test_completed_conversation_schedules_native_compaction_once_per_interval(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(replace(Settings.load(tmp_path, data), context_compaction_message_interval=2))
+    channel, sender = "9", {"id": 9, "first_name": "owner"}
+    for index in range(2):
+        gateway._cache_message(channel, {"message_id": index + 1}, sender, f"m{index}", [])
+    gateway.database.execute("UPDATE conversations SET codex_thread_id='thread-1' WHERE chat_id=?", (channel,)); gateway.database.commit()
+    requests = []
+    client = type("Client", (), {"request": lambda _self, method, params, timeout: requests.append((method, params, timeout)) or {}})()
+
+    gateway._schedule_context_compaction(channel, "thread-1", client)
+    gateway._schedule_context_compaction(channel, "thread-1", client)
+
+    assert [method for method, _params, _timeout in requests] == ["thread/compact/start"]
+    assert gateway.database.execute("SELECT context_compaction_message_count FROM conversations WHERE chat_id=?", (channel,)).fetchone() == (2,)
+
+
 def test_telegram_html_renderer_escapes_input_and_splits_without_losing_text():
     source = "<script> & **destaque** *ênfase* [site](https://example.test/?a=1&b=2)\n" + ("palavra " * 1000)
     rendered = render_html(source)

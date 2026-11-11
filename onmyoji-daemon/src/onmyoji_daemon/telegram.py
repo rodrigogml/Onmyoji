@@ -106,6 +106,8 @@ class Settings:
     max_outbound_media_per_turn: int
     context_max_messages: int
     context_max_age_seconds: int
+    context_max_bytes: int
+    context_compaction_message_interval: int
     voice_enabled: bool
     voice_profile: str
     voice_language: str
@@ -153,7 +155,8 @@ class Settings:
         if not 1 <= per_file <= batch <= retained: raise ValueError("Telegram attachment limits are invalid")
         output_bytes, output_count = int(limits.get("max_outbound_media_bytes") or 20 * 1024 * 1024), max(1, int(limits.get("max_outbound_media_per_turn") or 3))
         context_messages, context_age = int(limits.get("context_max_messages", 100)), int(limits.get("context_max_age_seconds", 7 * 24 * 3600))
-        if context_messages < 0 or context_age < 0: raise ValueError("Telegram context window limits are invalid")
+        context_bytes, compact_interval = int(limits.get("context_max_bytes", 512 * 1024)), int(limits.get("context_compaction_message_interval", 16))
+        if context_messages < 0 or context_age < 0 or not 64 * 1024 <= context_bytes < 4 * 1024 * 1024 or compact_interval < 0: raise ValueError("Telegram context window limits are invalid")
         permitted_models = tuple(dict.fromkeys(str(value).strip() for value in agent.get("owner_allowed_models", []) if isinstance(value, str) and value.strip())) or (str(system.get("model") or ""),)
         permitted_efforts = tuple(dict.fromkeys(str(value).strip() for value in agent.get("owner_allowed_reasoning_efforts", []) if isinstance(value, str) and value.strip())) or (str(system.get("model_reasoning_effort") or "medium"),)
         enabled, voice_profile = bool(voice.get("enabled", False)), str(voice.get("eccovox_profile") or "")
@@ -175,7 +178,7 @@ class Settings:
                         raise ValueError("TOTP habilitado exige senhas real e falsa existentes no vault MCP.")
             except CredentialError as error:
                 raise ValueError("Não foi possível validar as senhas TOTP no vault MCP.") from error
-        value = cls(root, data_dir, profile, entry, project, str(system.get("executable") or "codex"), str(system.get("model") or ""), str(system.get("model_reasoning_effort") or "medium"), str(system.get("sandbox_mode") or "workspace-write"), str(system.get("approval_policy") or "never"), int(telegram.get("poll_timeout_seconds") or 30), int(agent.get("turn_timeout_seconds") or 900), max(1, int(agent.get("max_parallel_conversations") or 1)), str(instructions.get("shikigami_file") or "instructions.md"), bool(instructions.get("enabled", True)), bool(agent.get("owner_execution_preferences", True)), permitted_models, permitted_efforts, bool(app_server.get("enabled", False)), idle, per_file, batch, max(1, pending), retained, output_bytes, output_count, context_messages, context_age, enabled, voice_profile, str(voice.get("language") or ""), str(voice.get("voice") or ""), float(voice.get("speed") or 1.0), voice_format, voice_text, auto_off, bool(voice.get("fallback_to_text", True)), outbound_media, bool(totp.get("enabled", False)), bool(telegram.get("default_share_thoughts", True)), bool(telegram.get("default_delete_thoughts", True)))
+        value = cls(root, data_dir, profile, entry, project, str(system.get("executable") or "codex"), str(system.get("model") or ""), str(system.get("model_reasoning_effort") or "medium"), str(system.get("sandbox_mode") or "workspace-write"), str(system.get("approval_policy") or "never"), int(telegram.get("poll_timeout_seconds") or 30), int(agent.get("turn_timeout_seconds") or 900), max(1, int(agent.get("max_parallel_conversations") or 1)), str(instructions.get("shikigami_file") or "instructions.md"), bool(instructions.get("enabled", True)), bool(agent.get("owner_execution_preferences", True)), permitted_models, permitted_efforts, bool(app_server.get("enabled", False)), idle, per_file, batch, max(1, pending), retained, output_bytes, output_count, context_messages, context_age, context_bytes, compact_interval, enabled, voice_profile, str(voice.get("language") or ""), str(voice.get("voice") or ""), float(voice.get("speed") or 1.0), voice_format, voice_text, auto_off, bool(voice.get("fallback_to_text", True)), outbound_media, bool(totp.get("enabled", False)), bool(telegram.get("default_share_thoughts", True)), bool(telegram.get("default_delete_thoughts", True)))
         policy = str(agent.get("busy_input_policy") or "queue")
         return replace(value, busy_input_policy=policy if policy in {"queue", "steer"} else "queue", preparation_workers=max(1, min(16, int(limits.get("preparation_workers") or 4))), interrupt_grace_seconds=max(0.1, min(60.0, float(agent.get("interrupt_grace_seconds", 15)))), post_turn_results=bool(agent.get("post_turn_results", False)))
 
@@ -430,7 +433,7 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
         GatewayStore.validate_schema(self.database)
         protect_legacy_gateway(settings.root, telegram_configuration_path(settings.root))
         self.database.execute("CREATE TABLE IF NOT EXISTS conversations(chat_id TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL, share_thoughts INTEGER NOT NULL DEFAULT 1, delete_thoughts INTEGER NOT NULL DEFAULT 1, codex_thread_id TEXT, instruction_baseline_hash TEXT)")
-        for column, definition in (("share_thoughts", "INTEGER NOT NULL DEFAULT 1"), ("delete_thoughts", "INTEGER NOT NULL DEFAULT 1"), ("codex_thread_id", "TEXT"), ("instruction_baseline_hash", "TEXT"), ("reply_mode", "TEXT NOT NULL DEFAULT 'text'"), ("voice_expires_at", "REAL"), ("last_interaction_at", "REAL NOT NULL DEFAULT 0"), ("settings_revision", "INTEGER NOT NULL DEFAULT 0"), ("owner_model", "TEXT"), ("owner_effort", "TEXT"), ("conversation_uuid", "TEXT"), ("context_max_messages", "INTEGER"), ("context_max_age_seconds", "INTEGER")):
+        for column, definition in (("share_thoughts", "INTEGER NOT NULL DEFAULT 1"), ("delete_thoughts", "INTEGER NOT NULL DEFAULT 1"), ("codex_thread_id", "TEXT"), ("instruction_baseline_hash", "TEXT"), ("reply_mode", "TEXT NOT NULL DEFAULT 'text'"), ("voice_expires_at", "REAL"), ("last_interaction_at", "REAL NOT NULL DEFAULT 0"), ("settings_revision", "INTEGER NOT NULL DEFAULT 0"), ("owner_model", "TEXT"), ("owner_effort", "TEXT"), ("conversation_uuid", "TEXT"), ("context_max_messages", "INTEGER"), ("context_max_age_seconds", "INTEGER"), ("context_compaction_message_count", "INTEGER NOT NULL DEFAULT 0")):
             try: self.database.execute(f"ALTER TABLE conversations ADD COLUMN {column} {definition}")
             except sqlite3.OperationalError: pass
         self.database.execute("CREATE TABLE IF NOT EXISTS conversation_attachments(id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, generation INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, mime_type TEXT, size INTEGER NOT NULL, archive_path TEXT NOT NULL, created_at REAL NOT NULL)")
@@ -734,11 +737,23 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
             all_rows = self.database.execute("SELECT telegram_message_id, sender_name, trust, text, attachment_ids, created_at, structured_content FROM conversation_messages WHERE chat_id=? AND generation=? ORDER BY created_at, rowid", (conversation_id, generation)).fetchall()
         filtered = [row for row in all_rows if not age or float(row[5]) >= now - age]
         selected = filtered[-maximum:] if maximum else filtered
-        dropped = len(all_rows) - len(selected)
-        payload = {"conversation_context": {"included_messages": [{"message_id": row[0], "sender": row[1], "trust": row[2], "text": row[3], "attachment_ids": json.loads(str(row[4])), "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(row[5])))} for row in selected], "context_window": {"included_messages": len(selected), "dropped_messages": dropped, "cutoff_reasons": ([name for name, enabled in (("max_age", bool(age and any(float(row[5]) < now - age for row in all_rows))), ("max_messages", bool(maximum and len(filtered) > maximum))) if enabled])}}}
-        for item, row in zip(payload["conversation_context"]["included_messages"], selected):
+        def item_for(row: tuple[Any, ...]) -> dict[str, Any]:
+            item = {"message_id": row[0], "sender": row[1], "trust": row[2], "text": row[3], "attachment_ids": json.loads(str(row[4])), "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(row[5])))}
             structured = self._structured_location_content(row[6])
             if "location" in structured: item["location"] = structured["location"]
+            return item
+        bounded_rows: list[tuple[Any, ...]] = []
+        bounded_items: list[dict[str, Any]] = []
+        for row in reversed(selected):
+            candidate = item_for(row)
+            projected = {"conversation_context": {"included_messages": [candidate, *bounded_items]}}
+            if len(json.dumps(projected, ensure_ascii=False, allow_nan=False).encode("utf-8")) > self.settings.context_max_bytes:
+                continue
+            bounded_rows.insert(0, row); bounded_items.insert(0, candidate)
+        selected = bounded_rows
+        dropped = len(all_rows) - len(selected)
+        reasons = [name for name, enabled in (("max_age", bool(age and any(float(row[5]) < now - age for row in all_rows))), ("max_messages", bool(maximum and len(filtered) > maximum)), ("max_bytes", len(selected) < len(filtered[-maximum:] if maximum else filtered))) if enabled]
+        payload = {"conversation_context": {"included_messages": bounded_items, "context_window": {"included_messages": len(selected), "dropped_messages": dropped, "cutoff_reasons": reasons}}}
         attachments = {item["id"]: item for item in self._attachment_rows(conversation_id, 50)}
         wanted = [attachment_id for row in selected for attachment_id in json.loads(str(row[4]))]
         summary = {"contains_untrusted_context": any(str(row[2]) != "OWNER" for row in selected)}

@@ -32,6 +32,12 @@ max_outbound_media_bytes = 20971520
 max_outbound_media_per_turn = 3
 context_max_messages = 100
 context_max_age_seconds = 604800
+# Máximo UTF-8 do histórico serializado em cada entrada do Codex. Deve ficar
+# abaixo do limite de frame de 4 MiB do App Server.
+context_max_bytes = 524288
+# Compacta a thread do Codex após este número de novas mensagens recebidas.
+# Zero desabilita a compactação preventiva.
+context_compaction_message_interval = 16
 
 [voice_reply]
 # Disponibiliza voz local ao gateway; a escolha texto/áudio é persistida por conversa.
