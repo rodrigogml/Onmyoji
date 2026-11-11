@@ -929,6 +929,11 @@ def _git_display_url(value: str) -> str:
     return re.sub(r"(?i)(https?://)[^/@\s]+@", r"\1[credencial]@", value)
 
 
+def _github_ssh_public_key_denied(origin: str, detail: str) -> bool:
+    """Identifica a recusa de uma chave SSH ao acessar um repositório do GitHub."""
+    return _git_location(origin).startswith("github.com/") and bool(re.search(r"(?i)permission denied \([^)]*publickey[^)]*\)", detail))
+
+
 def _git(root: Path, arguments: list[str], *, allow_failure: bool = False, timeout: int = 60) -> subprocess.CompletedProcess[str]:
     if not shutil.which("git"):
         raise GitSetupError("Git não está disponível nesta conta.")
@@ -1156,11 +1161,37 @@ def update_upstream(root: Path) -> None:
 
 def push_git_origin(root: Path) -> tuple[bool, str]:
     try:
-        if not _git_remote_url(root, "origin"): return False, "O remoto origin não está configurado."
+        origin = _git_remote_url(root, "origin")
+        if not origin: return False, "O remoto origin não está configurado."
         branch = _git_output(root, ["branch", "--show-current"])
         if not branch: return False, "Selecione uma branch antes de publicar."
-        pushed = _git(root, ["push", "--set-upstream", "origin", branch], timeout=180)
-        return True, _git_detail(pushed) or f"Branch {branch} publicada no origin."
+        while True:
+            pushed = _git(root, ["push", "--set-upstream", "origin", branch], allow_failure=True, timeout=180)
+            detail = _git_detail(pushed)
+            if pushed.returncode == 0:
+                return True, detail or f"Branch {branch} publicada no origin."
+            if not _github_ssh_public_key_denied(origin, detail):
+                return False, detail or f"Git terminou com código {pushed.returncode}."
+            account = linux_current_user() if os.name != "nt" else getpass.getuser()
+            alert("O GitHub recusou a autenticação SSH por chave pública.")
+            note(f"Conta em execução: {account}")
+            note("Para publicar por SSH, a chave pública dessa conta precisa estar cadastrada em uma conta GitHub com acesso ao repositório.")
+            note("Cadastre a chave em https://github.com/settings/keys e valide, nessa mesma conta, com: ssh -T git@github.com")
+            action = flow_choice(
+                "Como deseja prosseguir?",
+                ["Tentar publicar novamente após cadastrar a chave", "Informar outra URL para o origin"],
+                "Tentar publicar novamente após cadastrar a chave",
+                "Voltar sem publicar",
+            )
+            if action is None:
+                return False, "Publicação não realizada; o origin e a branch foram preservados."
+            if action.startswith("Tentar"):
+                continue
+            informed = prompt(f"Nova URL do origin [{_git_display_url(origin)}]: ").strip()
+            if informed.casefold() in {"x", "\x1b"}:
+                return False, "Alteração do origin cancelada; a publicação não foi realizada."
+            origin = _valid_git_url(informed or origin)
+            _git(root, ["remote", "set-url", "origin", origin])
     except GitSetupError as error:
         return False, str(error)
 
