@@ -133,6 +133,8 @@ TITLE_FIELDS = {"codigo_lancamento_omie", "codigo_lancamento_integracao", "codig
 TITLE_KEYS = {"codigo_lancamento_omie", "codigo_lancamento_integracao", "chave_lancamento"}
 PAYMENT_FIELDS = {"codigo_lancamento", "codigo_lancamento_integracao", "codigo_baixa", "codigo_baixa_integracao", "codigo_conta_corrente", "valor", "desconto", "juros", "multa", "data", "observacao", "conciliar_documento"}
 LIST_FIELDS = {"pagina", "registros_por_pagina", "apenas_importado_api", "ordenar_por", "ordem_descrescente", "filtrar_por_data_de", "filtrar_por_data_ate", "filtrar_apenas_inclusao", "filtrar_apenas_alteracao", "filtrar_por_emissao_de", "filtrar_por_emissao_ate", "filtrar_por_registro_de", "filtrar_por_registro_ate", "filtrar_conta_corrente", "filtrar_cliente", "filtrar_por_cpf_cnpj", "filtrar_por_status", "filtrar_por_projeto", "exibir_obs"}
+FINANCIAL_MOVEMENT_LIST_FIELDS = {"nPagina", "nRegPorPagina", "cOrdenarPor", "cOrdemDecrescente", "dDtIncDe", "dDtIncAte", "dDtAltDe", "dDtAltAte", "nCodCC", "cStatus", "cNatureza", "cTipo", "dDtVencDe", "dDtVencAte", "dDtPagtoDe", "dDtPagtoAte", "dDtPrevDe", "dDtPrevAte", "lDadosCad"}
+ACCOUNT_TRANSACTION_LIST_FIELDS = {"nPagina", "nRegPorPagina", "cOrdenarPor", "cOrdemDecrescente", "cOrigem", "dDtIncDe", "dDtIncAte", "dDtAltDe", "dDtAltAte", "dtPagInicial", "dtPagFinal"}
 
 
 def title_body(operation: str, body: Mapping[str, Any]) -> dict[str, Any]:
@@ -419,9 +421,12 @@ def _build_params(operation: str, request: Mapping[str, Any]) -> dict[str, Any]:
         if not account:
             fail("missing_parameter", "nCodCC ou cCodCCInt é obrigatório.")
         return account
-    if operation in {"financial-movements.list", "account-transactions.list"}:
-        allowed = {"nPagina", "nRegPorPagina", "cOrdenarPor", "cOrdemDecrescente", "cOrigem", "dDtIncDe", "dDtIncAte", "dDtAltDe", "dDtAltAte", "dtPagInicial", "dtPagFinal", "nCodCC", "cStatus", "cNatureza", "cTipo", "dDtVencDe", "dDtVencAte", "dDtPagtoDe", "dDtPagtoAte", "dDtPrevDe", "dDtPrevAte", "lDadosCad"}
-        return copy_fields(params, allowed)
+    if operation == "financial-movements.list":
+        return copy_fields(params, FINANCIAL_MOVEMENT_LIST_FIELDS)
+    if operation == "account-transactions.list":
+        # Contrato lanccListarRequest: nCodCC pertence ao cabeçalho do retorno,
+        # não aos filtros aceitos por ListarLancCC.
+        return copy_fields(params, ACCOUNT_TRANSACTION_LIST_FIELDS)
     if operation == "account-transactions.get" or operation == "account-transactions.delete":
         transaction = copy_fields(params, {"nCodLanc", "cCodIntLanc"})
         if not transaction:

@@ -127,9 +127,9 @@ class OmieService:
                 with urlopen(request, timeout=timeout) as response:
                     result = json.loads(response.read())
             except HTTPError as error:
-                # HTTP 500 da Omie também é usado para contratos inválidos; não oculte
-                # esse diagnóstico atrás de tentativas que não podem corrigir a entrada.
-                if error.code not in {425, 429, 502, 503, 504} or attempt == retries:
+                # HTTP 500 também indica contratos inválidos; HTTP 425 indica bloqueio
+                # temporário. Nenhum deles deve provocar novas tentativas imediatas.
+                if error.code not in {429, 502, 503, 504} or attempt == retries:
                     details: dict[str, Any] = {"http_status": error.code, "retryable": False}
                     try:
                         body = json.loads(error.read().decode("utf-8", errors="replace"))
@@ -141,7 +141,10 @@ class OmieService:
                             if isinstance(code, (str, int)) and not isinstance(code, bool): details["remote_code"] = code
                     except (OSError, ValueError, UnicodeError):
                         pass
-                    raise OmieError("omie_http_error", f"A API Omie retornou HTTP {error.code}.", details) from error
+                    message = f"A API Omie retornou HTTP {error.code}."
+                    if error.code == 425:
+                        message += " Aguarde o fim do bloqueio temporário e revise os parâmetros antes de tentar novamente."
+                    raise OmieError("omie_http_error", message, details) from error
             except (URLError, TimeoutError) as error:
                 if attempt == retries:
                     raise OmieError("network_error", "Não foi possível consultar a API Omie.") from error

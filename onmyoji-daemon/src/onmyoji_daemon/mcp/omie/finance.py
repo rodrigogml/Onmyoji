@@ -46,7 +46,7 @@ def _list_specs(resource: str, legacy: str, label: str) -> list[FinanceSpec]:
     return [FinanceSpec(
         f"omie.financeiro.{resource}.listar_por_{period}", legacy,
         f"Lista {label} exclusivamente pelo período de {text}.{reconciliation_note}", period=period,
-    ) for period, (_, _, text) in PERIODS.items()]
+    ) for period, (_, _, text) in PERIODS.items() if period != "periodo"]
 
 
 SPECS: list[FinanceSpec] = [
@@ -65,7 +65,7 @@ SPECS += [
     FinanceSpec("omie.financeiro.lancamentos_conta.listar_por_inclusao", "account_transactions_list", "Lista lançamentos de conta corrente pela data de inclusão.", period="inclusao"),
     FinanceSpec("omie.financeiro.lancamentos_conta.listar_por_alteracao", "account_transactions_list", "Lista lançamentos de conta corrente pela data de alteração.", period="alteracao"),
     FinanceSpec("omie.financeiro.lancamentos_conta.listar_por_periodo", "account_transactions_list", "Lista lançamentos brutos de conta corrente pelo período do extrato.", period="periodo"),
-    FinanceSpec("omie.financeiro.movimentos.listar_para_conciliacao", "financial_movements_list", "Consulta completa para conciliar um extrato bancário: exige conta e período, coleta todas as páginas e informa o estado de conciliação.", period="pagamento", account_required=True, collect_pages=True),
+    FinanceSpec("omie.financeiro.movimentos.listar_para_conciliacao", "financial_movements_list", "Consulta movimentos para apoiar a conciliação: exige conta e período de pagamento, coleta todas as páginas retornadas e informa o estado de conciliação.", period="pagamento", account_required=True, collect_pages=True),
 ]
 
 for resource, legacy, label in (("contas_pagar", "payables", "contas a pagar"), ("contas_receber", "receivables", "contas a receber")):
@@ -159,7 +159,12 @@ def _schema(spec: FinanceSpec, profiles: list[dict[str, str]]) -> dict[str, Any]
         if spec.period:
             filters = {"data_inicial": date, "data_final": date}
             if spec.legacy in {"financial_movements_list", "account_transactions_list"}:
-                filters["conta_corrente_id"] = {"type": "integer", "minimum": 1, "description": "Conta corrente Omie; restrinja a consulta quando conhecida."}
+                account_description = "ID da conta corrente Omie, obtido em omie.financeiro.contas_correntes.listar."
+                if spec.legacy == "account_transactions_list":
+                    account_description += " O MCP filtra a conta após consultar todas as páginas do período e pagina apenas os lançamentos dessa conta."
+                else:
+                    account_description += " Restringe a consulta à conta informada."
+                filters["conta_corrente_id"] = {"type": "integer", "minimum": 1, "description": account_description}
             required = ["filtros"]
         elif spec.kind == "get":
             filters = {"id": {"type": "integer", "minimum": 1}, "codigo_integracao": {"type": "string", "minLength": 1}, "codigo": {"type": "string", "minLength": 1}}
@@ -187,17 +192,28 @@ class OmieFinanceFacade:
     def __init__(self, configuration: Any): self.configuration = configuration
 
     def definitions(self, profiles: list[dict[str, str]]) -> list[dict[str, Any]]:
-        return [{"name": spec.name, "description": spec.description + " Não use parâmetros técnicos da Omie.", "input_schema": _schema(spec, profiles)} for spec in SPECS]
+        tools = []
+        for spec in SPECS:
+            description = spec.description
+            if spec.legacy == "account_transactions_list":
+                description += " Aceita conta_corrente_id; o MCP consulta todas as páginas do período, filtra a conta e só então aplica pagina e tamanho_pagina (máximo 50)."
+            tools.append({"name": spec.name, "description": description + " Não use parâmetros técnicos da Omie.", "input_schema": _schema(spec, profiles)})
+        return tools
 
     def call(self, name: str, arguments: Mapping[str, Any], profile: str) -> dict[str, Any]:
         spec = BY_NAME.get(name)
         if spec is None: raise ValueError("Tool financeira Omie indisponível.")
         if not isinstance(arguments, Mapping): raise OmieError("invalid_parameter", "Os argumentos devem ser um objeto JSON.")
         legacy = self._legacy_arguments(spec, arguments)
+        account = _object(arguments, "filtros").get("conta_corrente_id") if spec.legacy == "account_transactions_list" else None
+        if spec.collect_pages or account is not None:
+            legacy = {"params": {**legacy["params"], "nPagina": 1, "nRegPorPagina": 50}}
         service = OmieService(self.configuration.root)
         response = service.invoke_financial(profile, spec.legacy, legacy, writes=spec.writes)
-        if spec.collect_pages:
+        if spec.collect_pages or account is not None:
             response = self._collect_pages(service, profile, spec, legacy, response)
+        if account is not None:
+            response = self._filter_account_transactions(response, account, arguments)
         return self._normalize(spec, response, arguments.get("incluir_dados_omie") is True)
 
     def _legacy_arguments(self, spec: FinanceSpec, arguments: Mapping[str, Any]) -> dict[str, Any]:
@@ -230,15 +246,22 @@ class OmieFinanceFacade:
         native = spec.legacy in {"financial_movements_list", "account_transactions_list"}
         params = _page(arguments, native=native)
         if spec.period:
-            expected = {"data_inicial", "data_final", "conta_corrente_id"}
-            if not {"data_inicial", "data_final"} <= set(filters) or not set(filters) <= expected: _invalid("filtros", "exige data_inicial, data_final e, opcionalmente, conta_corrente_id.")
+            expected = {"data_inicial", "data_final"}
+            if native:
+                expected.add("conta_corrente_id")
+            if not {"data_inicial", "data_final"} <= set(filters) or not set(filters) <= expected:
+                _invalid("filtros", "informe data_inicial, data_final e somente os filtros publicados para esta operação.")
+            if spec.account_required and "conta_corrente_id" not in filters:
+                _invalid("filtros.conta_corrente_id", "é obrigatório nesta consulta.")
+            if "conta_corrente_id" in filters and (type(filters["conta_corrente_id"]) is not int or filters["conta_corrente_id"] < 1):
+                _invalid("filtros.conta_corrente_id", "deve ser um inteiro positivo.")
             start, end = _date(filters["data_inicial"], "filtros.data_inicial"), _date(filters["data_final"], "filtros.data_final")
             if datetime.strptime(start, "%d/%m/%Y") > datetime.strptime(end, "%d/%m/%Y"): _invalid("filtros", "data_inicial não pode ser posterior a data_final.")
             if spec.legacy in {"payables_list", "receivables_list"}:
                 params.update({"filtrar_por_data_de": start, "filtrar_por_data_ate": end})
             else:
                 prefix, suffix, _ = PERIODS[spec.period]; params.update({prefix: start, suffix: end})
-            if "conta_corrente_id" in filters:
+            if spec.legacy == "financial_movements_list" and "conta_corrente_id" in filters:
                 params["nCodCC"] = filters["conta_corrente_id"]
         elif spec.kind == "get":
             if set(filters) != {next(iter(filters))} if filters else True: _invalid("filtros", "informe exatamente um identificador.")
@@ -260,7 +283,8 @@ class OmieFinanceFacade:
     def _normalize(spec: FinanceSpec, response: Any, include_native: bool) -> dict[str, Any]:
         if not isinstance(response, Mapping): return {"dados": response}
         metadata = {"pagina", "total_de_paginas", "total_de_registros", "registros_por_pagina", "nPagina", "nTotPaginas", "nRegistros", "nTotRegistros"}
-        rows = next((value for key, value in response.items() if key not in metadata and isinstance(value, list)), None)
+        row_key = {"account_transactions_list": "listaLancamentos", "financial_movements_list": "movimentos"}.get(spec.legacy)
+        rows = response.get(row_key) if row_key else next((value for key, value in response.items() if key not in metadata and isinstance(value, list)), None)
         if spec.legacy == "financial_movements_list" and isinstance(rows, list):
             rows = [OmieFinanceFacade._with_reconciliation_status(row) for row in rows]
         result: dict[str, Any] = {"dados": rows if rows is not None else [dict(response)]}
@@ -271,21 +295,88 @@ class OmieFinanceFacade:
         return result
 
     @staticmethod
-    def _collect_pages(service: OmieService, profile: str, spec: FinanceSpec, legacy: dict[str, Any], first: Any) -> Any:
-        if not isinstance(first, Mapping): return first
-        total = first.get("nTotPaginas")
-        current = first.get("nPagina")
-        rows = first.get("movimentos")
-        if not isinstance(total, int) or not isinstance(current, int) or not isinstance(rows, list): return first
-        merged = dict(first); merged["movimentos"] = list(rows)
-        while current < total:
-            current += 1
-            params = dict(legacy["params"]); params["nPagina"] = current
-            page = service.invoke_financial(profile, spec.legacy, {"params": params}, writes=False)
-            if not isinstance(page, Mapping) or not isinstance(page.get("movimentos"), list): break
-            merged["movimentos"].extend(page["movimentos"])
-        merged["nPagina"] = 1; merged["nTotPaginas"] = 1; merged["nRegistros"] = len(merged["movimentos"]); merged["nTotRegistros"] = len(merged["movimentos"])
-        return merged
+    def _invalid_response(field: str) -> None:
+        raise OmieError(
+            "invalid_response", "A Omie retornou uma listagem incompleta ou inconsistente; nenhum resultado parcial foi entregue.",
+            {"field": field, "retryable": False},
+        )
+
+    @classmethod
+    def _financial_page(cls, response: Any, row_key: str, expected_page: int) -> tuple[list[Mapping[str, Any]], int, int]:
+        if not isinstance(response, Mapping):
+            cls._invalid_response("response")
+        rows = response.get(row_key)
+        if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
+            cls._invalid_response(row_key)
+        for field in ("nPagina", "nTotPaginas", "nRegistros", "nTotRegistros"):
+            if type(response.get(field)) is not int or response[field] < 0:
+                cls._invalid_response(field)
+        if response["nPagina"] != expected_page:
+            cls._invalid_response("nPagina")
+        total_pages, total_records = response["nTotPaginas"], response["nTotRegistros"]
+        if response["nRegistros"] != len(rows) or len(rows) > 50:
+            cls._invalid_response("nRegistros")
+        if total_records == 0:
+            if expected_page != 1 or total_pages not in (0, 1) or rows:
+                cls._invalid_response("nTotRegistros")
+        elif total_pages < expected_page or not rows or len(rows) > total_records:
+            cls._invalid_response("nTotPaginas")
+        return rows, total_pages, total_records
+
+    @classmethod
+    def _row_account(cls, row: Mapping[str, Any], group: str) -> int:
+        fields = row.get(group)
+        account = fields.get("nCodCC") if isinstance(fields, Mapping) else None
+        if type(account) is not int or account < 1:
+            cls._invalid_response(group + ".nCodCC")
+        return account
+
+    @classmethod
+    def _collect_pages(cls, service: OmieService, profile: str, spec: FinanceSpec, legacy: dict[str, Any], first: Any) -> dict[str, Any]:
+        transactions = spec.legacy == "account_transactions_list"
+        row_key = "listaLancamentos" if transactions else "movimentos"
+        group = "cabecalho" if transactions else "detalhes"
+        first_rows, total_pages, total_records = cls._financial_page(first, row_key, 1)
+        rows: list[Mapping[str, Any]] = []
+        transaction_ids: set[int] = set()
+        page_rows = first_rows
+        for current in range(1, max(1, total_pages) + 1):
+            if current > 1:
+                params = {**legacy["params"], "nPagina": current}
+                page = service.invoke_financial(profile, spec.legacy, {"params": params}, writes=False)
+                page_rows, page_total, page_count = cls._financial_page(page, row_key, current)
+                if page_total != total_pages or page_count != total_records:
+                    cls._invalid_response("paginacao")
+            for row in page_rows:
+                account = cls._row_account(row, group)
+                if transactions:
+                    identifier = row.get("nCodLanc")
+                    if type(identifier) is not int or identifier < 1 or identifier in transaction_ids:
+                        cls._invalid_response("nCodLanc")
+                    transaction_ids.add(identifier)
+                if not transactions and account != legacy["params"].get("nCodCC"):
+                    cls._invalid_response("detalhes.nCodCC")
+            rows.extend(page_rows)
+            if len(rows) > total_records:
+                cls._invalid_response("nTotRegistros")
+        if len(rows) != total_records:
+            cls._invalid_response("nTotRegistros")
+        return {row_key: rows, "nPagina": 1, "nTotPaginas": 1, "nRegistros": len(rows), "nTotRegistros": len(rows)}
+
+    @staticmethod
+    def _filter_account_transactions(response: Mapping[str, Any], account: int, arguments: Mapping[str, Any]) -> dict[str, Any]:
+        # ListarLancCC não possui filtro de conta. Preserve a população desse
+        # endpoint e aplique a página pública somente após o filtro local.
+        rows = [row for row in response["listaLancamentos"] if row["cabecalho"]["nCodCC"] == account]
+        pagination = _page(arguments, native=True)
+        current, size = pagination["nPagina"], pagination["nRegPorPagina"]
+        start = (current - 1) * size
+        selected = rows[start:start + size]
+        return {
+            "listaLancamentos": selected, "nPagina": current,
+            "nTotPaginas": max(1, (len(rows) + size - 1) // size),
+            "nRegistros": len(selected), "nTotRegistros": len(rows),
+        }
 
     @staticmethod
     def _with_reconciliation_status(row: Any) -> Any:

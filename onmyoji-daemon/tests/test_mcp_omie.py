@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 
@@ -152,11 +153,31 @@ def test_http_500_is_not_retried(tmp_path, monkeypatch):
     assert len(calls) == 1
 
 
-def test_http_425_is_retried_for_reads(tmp_path, monkeypatch):
+def test_http_425_stops_without_retry_or_sleep_and_preserves_diagnostic(tmp_path, monkeypatch):
     calls = []
     def request(*_args, **_kwargs):
         calls.append(True)
-        if len(calls) == 1: raise HTTPError("https://app.omie.com.br/", 425, "too early", {}, None)
+        body = BytesIO(b'{"code": "blocked", "description": "API bloqueada temporariamente"}')
+        raise HTTPError("https://app.omie.com.br/", 425, "sensitive", {}, body)
+    def sleep(_seconds):
+        pytest.fail("HTTP 425 não deve aguardar para repetir a chamada")
+    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.urlopen", request)
+    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.time.sleep", sleep)
+    with pytest.raises(OmieError) as error:
+        OmieService(tmp_path, Credentials())._request({"credential_profile": "vault", "credential_entry_path": "APIs/Omie", "app_key_field": "username", "app_secret_field": "password"}, {"max_retries": 2}, "account_transactions", "ListarLancCC", {})
+    assert error.value.code == "omie_http_error"
+    assert error.value.details == {"http_status": 425, "retryable": False, "remote_code": "blocked", "remote_description": "API bloqueada temporariamente"}
+    assert "bloqueio temporário" in str(error.value)
+    assert "sensitive" not in str(error.value)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("status", [429, 502, 503, 504])
+def test_transient_http_errors_remain_retryable_for_reads(tmp_path, monkeypatch, status):
+    calls = []
+    def request(*_args, **_kwargs):
+        calls.append(True)
+        if len(calls) == 1: raise HTTPError("https://app.omie.com.br/", status, "temporary", {}, None)
         return Response()
     monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.urlopen", request)
     monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.time.sleep", lambda _seconds: None)

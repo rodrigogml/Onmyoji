@@ -27,7 +27,7 @@ cancelar uma remoção mantém o operador no perfil; remover volta à sua listag
 Os cadastros e NF-e preservam nomes como `omie.customers_list` e
 `omie.inbound_nfe_receipts_update_completed`. O módulo financeiro foi
 deliberadamente substituído por `omie.financeiro.*`: ele publica ferramentas
-por finalidade, por exemplo `omie.financeiro.lancamentos_conta.listar_por_pagamento`
+por finalidade, por exemplo `omie.financeiro.lancamentos_conta.listar_por_periodo`
 e `omie.financeiro.contas_pagar.registrar_pagamento`. Clientes devem renovar
 `tools/list`; os nomes financeiros anteriores não são aliases.
 
@@ -41,6 +41,52 @@ recebem `pagina` e `tamanho_pagina` (máximo 50) e retornam `paginacao` com
 `proxima_pagina`. Defina `incluir_dados_omie: true` apenas quando os campos
 nativos forem indispensáveis para auditoria.
 
+### Conta corrente e período
+
+Use `omie.financeiro.lancamentos_conta.listar_por_periodo` para consultar os
+lançamentos de uma conta no período do extrato. Informe `conta_corrente_id`,
+`data_inicial` e `data_final` dentro de `filtros`; obtenha o ID da conta em
+`omie.financeiro.contas_correntes.listar`. As datas usam `dd/mm/aaaa` e o ID é
+um inteiro positivo. O filtro de conta também está disponível nas consultas
+de lançamentos por inclusão e alteração.
+
+A operação Omie `ListarLancCC` aceita o período, mas **não aceita `nCodCC`
+como filtro da requisição**. A conta aparece em
+`listaLancamentos[].cabecalho.nCodCC` no retorno. Quando o agente informa
+`conta_corrente_id`, o MCP consulta todas as páginas do período, filtra essa
+conta e só depois aplica `pagina` e `tamanho_pagina`. Os totais e
+`proxima_pagina` correspondem apenas à conta escolhida. Mesmo com
+`incluir_dados_omie: true`, a resposta contém somente os lançamentos da conta
+e da página solicitadas; os campos nativos são preservados, com a paginação
+recalculada. Sem filtro de conta, cada chamada continua consultando somente
+uma página da Omie.
+
+Essa filtragem exige percorrer o período a cada página pública solicitada;
+use o período necessário à tarefa. Uma página remota sem lançamentos da conta
+não encerra a busca. Se houver erro, conta ausente em um registro ou paginação
+inconsistente, o MCP falha explicitamente em vez de apresentar uma consulta
+parcial como completa.
+
+`omie.financeiro.movimentos.listar_por_pagamento` consulta outra operação,
+`ListarMovimentos`, que aceita o filtro de conta diretamente. Já
+`omie.financeiro.movimentos.listar_para_conciliacao` exige conta e período de
+pagamento, reúne todas as páginas retornadas e não recebe `pagina` nem
+`tamanho_pagina`. Esses métodos preservam a população de movimentos da Omie;
+não substituem automaticamente a consulta de lançamentos do extrato. A Omie
+documenta uma janela padrão de emissão de 30 dias para MovimentosFinanceiros
+quando os filtros de emissão são omitidos; não presuma cobertura temporal
+idêntica entre os dois endpoints.
+
+Os nomes `omie.financeiro.lancamentos_conta.listar_por_pagamento` e
+`omie.financeiro.movimentos.listar_por_periodo` não são publicados. Para
+lançamentos do extrato use `lancamentos_conta.listar_por_periodo`; para
+movimentos por pagamento use `movimentos.listar_por_pagamento`.
+
+Contratos de referência:
+[ListarLancCC](https://api.omie.com.br/docs/apis/financas/contacorrentelancamentos),
+[ListarMovimentos](https://api.omie.com.br/docs/apis/financas/mf) e
+[limites e regras de consulta da Omie](https://ajuda.omie.com.br/pt-BR/articles/8112984-limites-de-consumo-da-api-do-omie).
+
 As consultas `omie.financeiro.movimentos.listar_por_*` retornam, em cada item,
 `conciliacao.conciliado`. O valor é `true` quando a Omie informa a data de
 conciliação e `false` quando não a informa; não use o status financeiro do
@@ -52,6 +98,11 @@ HTTP. Erros retornam `error.code`, mensagem e detalhes sanitizados, incluindo
 o campo e sugestão quando aplicável. Escritas nunca sofrem retry automático;
 um resultado `outcome_unknown` exige consulta antes de repetir. Nenhuma
 operação aceita endpoint, método Omie ou credenciais fornecidos pelo agente.
+
+Erros de contrato HTTP 500 não recebem retry automático. HTTP 425 também
+interrompe as tentativas: a Omie documenta bloqueio temporário após requisições
+incorretas repetidas. Revise os parâmetros e aguarde o fim do bloqueio antes de
+repetir; reduzir o intervalo de datas não corrige um campo rejeitado.
 
 | Família | Comportamento preservado |
 | --- | --- |
@@ -66,7 +117,7 @@ Exemplos com um único perfil habilitado:
 
 ```json
 {"tool":"omie.customers_list","arguments":{"params":{"page":1,"page_size":50,"clientesFiltro":{"cnpj_cpf":"012.345.678-90"}}}}
-{"tool":"omie.financeiro.lancamentos_conta.listar_por_pagamento","arguments":{"filtros":{"data_inicial":"01/11/2026","data_final":"30/11/2026"},"pagina":1,"tamanho_pagina":50}}
+{"tool":"omie.financeiro.lancamentos_conta.listar_por_periodo","arguments":{"filtros":{"conta_corrente_id":123,"data_inicial":"01/11/2026","data_final":"30/11/2026"},"pagina":1,"tamanho_pagina":50}}
 {"tool":"omie.financeiro.transferencias.criar","arguments":{"confirmar":true,"dados":{"codigo_integracao":"TR-20261111-001","conta_origem_id":123,"conta_destino_id":456,"data":"11/11/2026","valor":100.00,"categoria_codigo":"0.01.02","observacao":"Transferência entre contas da empresa"}}}
 ```
 
@@ -77,8 +128,11 @@ na empresa; consulte o cadastro de categorias quando não houver certeza. A Omie
 gera os reflexos de débito e crédito a partir dessa única inclusão, portanto o
 agente não deve criar dois lançamentos manuais.
 
-As listagens retornam uma página por chamada em `data`, preservando os campos e
-metadados nativos. O agente deve percorrer as demais páginas quando necessário.
+As listagens financeiras paginadas retornam a página solicitada em `dados` e
+indicam a seguinte em `paginacao.proxima_pagina`; a consulta de conciliação
+retorna todos os movimentos coletados. As demais listagens retornam uma página
+por chamada em `data`, preservando os campos e metadados nativos. O agente deve
+percorrer as demais páginas quando necessário.
 CPF/CNPJ e nomes pertencem à listagem de clientes; a consulta individual aceita
 somente IDs. Busca parcial de nome exige comparação local das páginas, sem
 presumir suporte a curingas pela API.

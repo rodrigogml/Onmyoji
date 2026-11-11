@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from .contracts import (
+    ACCOUNT_TRANSACTION_LIST_FIELDS, FINANCIAL_MOVEMENT_LIST_FIELDS,
     CUSTOMER_FILTER_FIELDS, CUSTOMER_LIST_FIELDS, DIRECT_DOCUMENT_TYPES,
     LIST_FIELDS, PAYMENT_FIELDS, TITLE_FIELDS, TITLE_KEYS,
 )
@@ -82,8 +83,10 @@ def input_contract(operation: str) -> tuple[str, dict[str, Any]]:
         return "params", pagination({"apenas_importado_api", "ordenar_por", "ordem_descrescente"})
     if operation == "bank_accounts_get":
         return "params", identifiers({"nCodCC", "cCodCCInt"})
-    if operation in {"financial_movements_list", "account_transactions_list"}:
-        return "params", obj({"nPagina", "nRegPorPagina", "cOrdenarPor", "cOrdemDecrescente", "cOrigem", "dDtIncDe", "dDtIncAte", "dDtAltDe", "dDtAltAte", "dtPagInicial", "dtPagFinal", "nCodCC", "cStatus", "cNatureza", "cTipo", "dDtVencDe", "dDtVencAte", "dDtPagtoDe", "dDtPagtoAte", "dDtPrevDe", "dDtPrevAte", "lDadosCad"})
+    if operation == "financial_movements_list":
+        return "params", obj(FINANCIAL_MOVEMENT_LIST_FIELDS)
+    if operation == "account_transactions_list":
+        return "params", obj(ACCOUNT_TRANSACTION_LIST_FIELDS)
     if operation in {"account_transactions_get", "account_transactions_delete"}:
         return "params", identifiers({"nCodLanc", "cCodIntLanc"})
     if operation in {"account_transactions_create", "account_transactions_update"}:
