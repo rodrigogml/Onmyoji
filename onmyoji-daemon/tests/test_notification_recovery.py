@@ -30,30 +30,29 @@ def test_disconnect_after_acceptance_keeps_execution_owned_by_gateway(lab):
         stopped.set(); server.close(); receiver.join(2)
 
 
-def test_smtp_account_is_captured_at_admission_and_receipts_are_per_reception(lab, monkeypatch):
+def test_email_account_subject_and_receipts_are_captured_per_reception(lab, monkeypatch):
     from onmyoji_daemon.mcp.email.service import EmailService
     enable(lab)
-    configuration = lab.gateway.notification_configuration
-    configuration.configure({"smtp_account": "original"})
     requests = []
     monkeypatch.setattr(EmailService, "account", lambda self, name: ({"smtp": {}}, {}))
     # Conta de teste com SMTP não vazio satisfaz verificação operacional.
     monkeypatch.setattr(EmailService, "account", lambda self, name: ({"smtp": {"host": "test"}}, {}))
     monkeypatch.setattr(EmailService, "invoke", lambda self, name, method, args: requests.append((name, args)) or {"status": "accepted"})
-    value = event(); value["response_channel"] = {"type": "email", "value": "fixture@example.com"}
+    value = event(); value["response_channel"] = {"type": "email", "value": "fixture@example.com", "account": "original", "subject": "Primeiro assunto"}
     with ThreadPoolExecutor() as pool:
         future = pool.submit(lab.gateway.handle, "notification.submit", value)
         first = lab.client.wait_calls("turn/start")[0]["threadId"]
-        configuration.configure({"smtp_account": "changed"})
         lab.client.item(first, "Resposta"); lab.client.complete(first)
         assert future.result(3)["delivery"] == "confirmed"
-        second = pool.submit(lab.gateway.handle, "notification.submit", value)
+        changed = {**value, "response_channel": {**value["response_channel"], "account": "changed", "subject": "Segundo assunto"}}
+        second = pool.submit(lab.gateway.handle, "notification.submit", changed)
         thread = lab.client.wait_calls("turn/start", 2)[1]["threadId"]
         lab.client.item(thread, "Outra resposta"); lab.client.complete(thread)
         assert second.result(3)["delivery"] == "confirmed"
     assert [name for name, args in requests] == ["original", "changed"]
     assert requests[0][1]["request_id"] != requests[1][1]["request_id"]
-    assert requests[0][1]["subject"].endswith(value["event_id"])
+    assert [args["subject"] for name, args in requests] == ["Primeiro assunto", "Segundo assunto"]
+    assert all(args["request_id"].startswith("gateway:") and args["request_id"].endswith(":delivery") for name, args in requests)
 
 
 def test_delivery_inflight_on_restart_becomes_uncertain_without_resending(lab):
@@ -94,7 +93,6 @@ def test_incident_failure_does_not_recurse(lab):
 def test_detaching_rpc_during_smtp_releases_waiter_before_delivery_finishes(lab, monkeypatch):
     from onmyoji_daemon.mcp.email.service import EmailService
     enable(lab)
-    lab.gateway.notification_configuration.configure({"smtp_account": "fixture"})
     entered, release, stopped = threading.Event(), threading.Event(), threading.Event()
     monkeypatch.setattr(EmailService, "account", lambda self, name: ({"smtp": {"host": "fixture"}}, {}))
     def send(*args):
@@ -106,7 +104,7 @@ def test_detaching_rpc_during_smtp_releases_waiter_before_delivery_finishes(lab,
     receiver = threading.Thread(target=server.serve_forever, args=(stopped,), daemon=True); receiver.start()
     client = socket.create_connection(("127.0.0.1", server.port), timeout=3)
     try:
-        value = event(); value["response_channel"] = {"type": "email", "value": "fixture@example.com"}
+        value = event(); value["response_channel"] = {"type": "email", "value": "fixture@example.com", "account": "fixture", "subject": "Fixture"}
         client.sendall((json.dumps({"token": "fixture", "method": "notification.submit", "params": value}) + "\n").encode())
         thread = lab.client.wait_calls("turn/start")[0]["threadId"]
         lab.client.item(thread, "Resposta"); lab.client.complete(thread)
@@ -160,7 +158,7 @@ def test_partial_log_append_is_repaired_from_transactional_journal(lab):
     log.record("fixture", event_id="fixture")
     identifier, at = lab.gateway.database.execute("SELECT id,at FROM notification_log_journal").fetchone()
     log.directory.mkdir(parents=True)
-    path = log.directory / ("notification-" + at[:10] + ".jsonl")
+    path = log.directory / ("agent-gateway-" + at[:10] + ".jsonl")
     path.write_bytes(('{"journal_entry": ' + str(identifier) + ', "at": "broken').encode())
     log.flush(); log.flush()
     lines = path.read_text(encoding="utf-8").splitlines()

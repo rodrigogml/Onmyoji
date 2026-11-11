@@ -13,8 +13,22 @@
       "required": ["type", "value"],
       "properties": {
         "type": {"enum": ["telegram", "email"]},
-        "value": {"type": "string", "pattern": "\\S"}
-      }
+        "value": {"type": "string", "pattern": "\\S"},
+        "account": {"type": "string", "pattern": "\\S"},
+        "subject": {"type": "string", "pattern": "\\S"}
+      },
+      "allOf": [{
+        "if": {"properties": {"type": {"const": "email"}}, "required": ["type"]},
+        "then": {"required": ["account", "subject"]},
+        "else": {
+          "not": {
+            "anyOf": [
+              {"required": ["account"]},
+              {"required": ["subject"]}
+            ]
+          }
+        }
+      }]
     },
     "thread_policy": {"enum": ["new", "reuse"]}
   }

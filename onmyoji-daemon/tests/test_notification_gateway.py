@@ -95,6 +95,7 @@ def test_priority_and_busy_destination_do_not_block_other_destinations(lab):
         assert lab.gateway._slots["10"].active.thread_id == first
         lab.client.complete(first)
         second = lab.client.wait_calls("turn/start", 2)[1]["threadId"]
+        lab.client.item(second, "Resposta do evento")
         lab.client.complete(second)
         assert future.result(3)["execution"] == "completed"
 
@@ -115,15 +116,14 @@ def test_diagnosis_checks_selected_accounts_without_sending(lab, monkeypatch):
     enable(lab)
     from onmyoji_daemon.mcp.email.service import EmailService
     from onmyoji_daemon.mcp.email.contracts import EmailError
-    lab.gateway.notification_configuration.configure({"smtp_account": "removed", "incident": {"type": "telegram", "value": "missing"}})
+    lab.gateway.notification_configuration.configure({"incident": {"type": "email", "value": "incident@example.com", "account": "removed", "subject": "Incidente"}})
     def unavailable(*args):
         raise EmailError("account_unavailable", "fixture")
     monkeypatch.setattr(EmailService, "account", unavailable)
     monkeypatch.setattr(EmailService, "invoke", lambda *args: pytest.fail("diagnosis must not send"))
     checks = lab.gateway.handle("notification.diagnose", {})["checks"]
-    assert checks["contract_valid"] and checks["smtp_configured"]
-    assert not checks["smtp_available"] and checks["smtp_reason"] == "account_unavailable"
-    assert not checks["incident_available"] and checks["incident_reason"] == "destination_unavailable"
+    assert checks["contract_valid"] and checks["http_port"] == 39392
+    assert not checks["incident_available"] and checks["incident_reason"] == "account_unavailable"
     assert not lab.client.calls
 
 
@@ -133,7 +133,7 @@ def test_log_recovery_is_idempotent_and_retention_is_confined(lab):
     log.flush(); log.flush()
     files = list(log.directory.glob("*.jsonl"))
     assert len(files) == 1 and len(files[0].read_text(encoding="utf-8").splitlines()) == 1
-    old = log.directory / "notification-2000-01-01.jsonl"
+    old = log.directory / "agent-gateway-2000-01-01.jsonl"
     unrelated = log.directory / "keep.jsonl"
     old.write_text("{}", encoding="utf-8"); unrelated.write_text("{}", encoding="utf-8")
     log.purge()
@@ -188,3 +188,19 @@ def test_event_honors_channel_audio_preference(lab):
         lab.client.item(thread, "Resposta em áudio"); lab.client.complete(thread)
         assert future.result(3)["delivery"] == "confirmed"
     assert len(lab.api.files) == 1 and lab.api.files[0]["method"] == "sendVoice"
+
+
+def test_empty_agent_result_fails_without_delivery_or_thread_replacement(lab):
+    enable(lab)
+    lab.gateway._generation("9")
+    with lab.gateway.database:
+        lab.gateway.database.execute("UPDATE conversations SET codex_thread_id='old' WHERE chat_id='9'")
+    with ThreadPoolExecutor() as pool:
+        future = pool.submit(lab.gateway.handle, "notification.submit", event())
+        thread = lab.client.wait_calls("turn/start")[0]["threadId"]
+        lab.client.complete(thread)
+        result = future.result(3)
+    assert result["status"] == "failed" and result["reason"] == "empty_agent_result"
+    assert result["delivery"] == "not_attempted"
+    assert lab.gateway.database.execute("SELECT codex_thread_id FROM conversations WHERE chat_id='9'").fetchone() == ("old",)
+    assert not lab.api.sent

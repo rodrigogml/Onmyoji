@@ -365,7 +365,7 @@ class ExecutionGateway:
         try:
             attachments, context = self._load_input(slot.conversation_id, slot.inbox)
             if slot.inbox.get("notification"):
-                self._notification_destination(context["notification"], context.get("notification_smtp_account"))
+                self._notification_destination(context["notification"])
             if slot.generation != self._generation(slot.conversation_id):
                 self.store.fail_input(slot.inbox["id"], "generation_reset")
                 self.store.terminal(slot.identifier, "cancelled")
@@ -539,6 +539,8 @@ class ExecutionGateway:
         if active.user_cancelled:
             return "O turno foi cancelado. As mensagens ainda na fila foram preservadas. Efeitos externos já iniciados podem exigir conferência."
         if active.status == "completed":
+            if getattr(active, "origin", "telegram") == "event":
+                return active.final_text or None
             return active.final_text or "O agente concluiu o turno sem uma resposta textual."
         if active.final_text:
             return "Resposta parcial; o turno foi interrompido ou falhou.\n\n" + active.final_text
@@ -1314,9 +1316,9 @@ class ExecutionGateway:
                     final_item = next((item for item in reversed(turn.get("items", [])) if isinstance(item, dict) and item.get("type") == "agentMessage" and item.get("phase") in {None, "final_answer"} and isinstance(item.get("text"), str)), {})
                     final = final_item.get("text", "")
                     with self.database_lock, self.database:
-                        owner = self.database.execute("SELECT generation,reply_mode,final_item_id,user_cancelled FROM execution_turns WHERE execution_id=?", (execution,)).fetchone()
+                        owner = self.database.execute("SELECT e.generation,e.reply_mode,e.final_item_id,e.user_cancelled,COALESCE(i.origin,'telegram') FROM execution_turns e LEFT JOIN inbox_items i ON i.execution_id=e.execution_id WHERE e.execution_id=? LIMIT 1", (execution,)).fetchone()
                         self.database.execute("UPDATE execution_turns SET turn_id=? WHERE execution_id=?", (turn.get("id"), execution))
-                    answer = final or "O agente concluiu o turno sem uma resposta textual." if turn["status"] == "completed" else "Resposta parcial; o turno foi interrompido ou falhou.\n\n" + final if final else "O agente não conseguiu concluir esta solicitação."
+                    answer = (final or (None if owner and owner[4] == "event" else "O agente concluiu o turno sem uma resposta textual.")) if turn["status"] == "completed" else "Resposta parcial; o turno foi interrompido ou falhou.\n\n" + final if final else "O agente não conseguiu concluir esta solicitação."
                     if owner and owner[3]:
                         answer = "O turno foi cancelado. As mensagens ainda na fila foram preservadas. Efeitos externos já iniciados podem exigir conferência."
                     text = answer if owner and owner[0] == self._generation(conversation) else None
@@ -1333,6 +1335,7 @@ class ExecutionGateway:
         preparadores ou callbacks ainda podem terminar depois deste método.
         ``release_lease`` explícito exige drenagem controlada do chamador.
         """
+        self._stop_notification_http()
         self.stop_event.set()
         with self.app_server_lock:
             for slot in self._slots.values():
