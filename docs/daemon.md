@@ -2,7 +2,7 @@
 
 O `onmyoji-daemon` é o único processo residente de uma instância Shikigami. Ele atende somente o workspace configurado localmente em `configs/onmyoji-system.toml`.
 
-Os serviços são registrados pelo código, iniciados como subprocessos locais e administrados por RPC autenticado em loopback. O endpoint, o token efêmero, o estado de habilitação, logs, banco SQLite e contatos ficam em `configs/daemon/`. Arquivos de atividade do agente nunca ficam no `CODEX_HOME`: o gateway usa `<workspace>/.onmyoji/telegram/`, as saídas de processos agendados usam `<workspace>/.onmyoji/task-scheduler/` e os anexos da checagem automática ficam em `<workspace>/.onmyoji/email-monitor/`.
+Os serviços são registrados pelo código, iniciados como subprocessos locais e administrados por RPC autenticado em loopback. A configuração declarativa — inclusive habilitação desejada — fica em `configs/daemon/`. Endpoint, token efêmero, locks, logs, bancos SQLite, checkpoints e contatos operacionais ficam em `state/daemon/`. O setup versiona esse layout e move o estado legado de modo conservador, sem sobrescrever destinos. Arquivos de atividade do agente nunca ficam no `CODEX_HOME`: o gateway usa `<workspace>/.onmyoji/telegram/`, as saídas de processos agendados usam `<workspace>/.onmyoji/task-scheduler/` e os anexos da checagem automática ficam em `<workspace>/.onmyoji/email-monitor/`.
 
 O menu **Daemon > Publicação externa** administra os serviços `gateway` e
 `cloudflare-tunnel`, independentes de Mini Apps. Consulte a documentação de
@@ -21,7 +21,7 @@ O teste de conexão Telegram usa o mesmo runtime e a mesma conta, tanto no wizar
 
 Ao iniciar ou reiniciar um serviço systemd de sistema pelos assistentes, o setup solicita a confirmação para usar `sudo`; a autenticação é feita pelo próprio sistema.
 
-O processo manual é iniciado desacoplado do configurador e responde pelo endpoint RPC antes de o menu informar sucesso. Um lock e um registro com PID, raiz da instância e identificador efêmero impedem supervisores duplicados. A remoção da instância exige a confirmação literal `desinstalar`, para o processo, remove o serviço eventualmente administrado e então apaga apenas `configs/daemon/` daquela instância.
+O processo manual é iniciado desacoplado do configurador e responde pelo endpoint RPC antes de o menu informar sucesso. Um lock e um registro com PID, raiz da instância e identificador efêmero em `state/daemon/runtime/` impedem supervisores duplicados. A remoção da instância exige a confirmação literal `desinstalar`, para o processo, remove o serviço eventualmente administrado e então apaga a configuração e o estado locais daquela instância.
 
 No Windows, a instalação do serviço requer privilégios administrativos e `pywin32` no Python que executará o daemon. No Linux, o mesmo menu gera e habilita uma unit `systemd`, também exigindo privilégios administrativos. O nome padrão é derivado da instância como `Shikigami-<IdentificadorCamelCase>`; a descrição padrão é `Shikigami <Identificador> Daemon`. Os recursos de serviço ficam registrados localmente para que outra instância nunca seja removida por engano.
 
