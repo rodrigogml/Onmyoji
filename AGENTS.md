@@ -20,6 +20,8 @@ GitHub é exclusivamente o repositório remoto de versionamento. Não crie nem m
 
 Após concluir e validar cada alteração, faça imediatamente o commit e o push para o remoto deste repositório (`origin`), sem aguardar nova solicitação do usuário. O commit deve conter somente os arquivos da alteração validada.
 
+Antes de cada commit, incremente `SETUP_VERSION` em `onmyoji-daemon/src/onmyoji_daemon/state_layout.py`. A versão segue o formato `AAAA.MM.DD.N`: incremente `N` a cada commit na mesma data e reinicie-o em `0` quando `AAAA.MM.DD` mudar. Ao comunicar uma publicação ao usuário, informe a versão publicada; não informe o código do commit.
+
 Arquivos `.proposed` fazem parte do fluxo versionado: não devem ser ignorados nem excluídos do commit enquanto aguardam avaliação. Ao criar ou atualizar uma proposta, faça o commit e o push do arquivo `.proposed` para o `origin`. A proposta só deve ser incorporada ao arquivo original após a aprovação do usuário. Depois da incorporação aprovada, exclua o arquivo `.proposed` e inclua no mesmo commit tanto a alteração do arquivo original quanto a exclusão da proposta; em seguida, faça o push desse commit.
 
 ## Interface dos scripts de setup
