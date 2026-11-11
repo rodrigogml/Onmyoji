@@ -9,6 +9,7 @@ import subprocess
 import tomllib
 
 from .contracts import EmailError
+from .scheduling import interval_seconds
 from .oauth import EmailOAuth
 from ..runtime import mcp_runtime_python
 from setupOnmyoji import vault_entry_path
@@ -104,12 +105,63 @@ def edit_roots(config, ui, account):
     return True
 
 
+def edit_monitoring(config, ui, name, account):
+    """Coleta a checagem automática sem misturar dados externos às instruções."""
+    current = copy.deepcopy(account.get("monitoring") or {"enabled": False})
+    choice = ui.flow_choice("Checagem automática", ["Desabilitada", "Habilitada"], "Habilitada" if current.get("enabled") else "Desabilitada")
+    if choice is None:
+        return None
+    if choice == "Desabilitada":
+        current["enabled"] = False
+        return current
+    if not account.get("incoming"):
+        ui.result(False, "Configure recebimento IMAP ou POP3 antes de habilitar a checagem automática.")
+        return None
+    interval = ui.ask("Intervalo (inteiro seguido de M ou H)", current.get("interval", "15M"), True)
+    if interval is None:
+        return None
+    interval = interval.strip().upper()
+    interval_seconds(interval)
+    ui.note("As instruções são confiáveis; conteúdo e metadados das mensagens serão entregues separadamente como dados externos não confiáveis.")
+    instructions = ui.ask("Instruções para cada mensagem nova", current.get("instructions", ""), True)
+    if instructions is None:
+        return None
+    channel_kind = ui.flow_choice("Canal de resposta", ["Telegram", "E-mail"], "E-mail" if current.get("response_channel", {}).get("type") == "email" else "Telegram")
+    if channel_kind is None:
+        return None
+    previous = current.get("response_channel", {})
+    if channel_kind == "Telegram":
+        destination = ui.ask("Canal/tópico Telegram", previous.get("value", ""), True)
+        if destination is None:
+            return None
+        channel = {"type": "telegram", "value": destination}
+    else:
+        destination = ui.ask("Destinatário de resposta", previous.get("value", ""), True)
+        if destination is None:
+            return None
+        accounts = config.email().get("accounts", {})
+        smtp_accounts = sorted(account_name for account_name, value in accounts.items() if value.get("enabled") and value.get("smtp"))
+        selected = ui.select("Conta SMTP de resposta", smtp_accounts, previous.get("account", name)) if smtp_accounts else None
+        if not selected:
+            ui.result(False, "Configure uma conta SMTP habilitada para usar resposta por e-mail.")
+            return None
+        subject = ui.ask("Assunto da resposta", previous.get("subject", "Nova mensagem recebida"), True)
+        if subject is None:
+            return None
+        channel = {"type": "email", "value": destination, "account": selected, "subject": subject}
+    policy_label = ui.flow_choice("Política de thread", ["Reutilizar thread", "Nova thread"], "Nova thread" if current.get("thread_policy") == "new" else "Reutilizar thread")
+    if policy_label is None:
+        return None
+    return {"enabled": True, "interval": interval, "instructions": instructions,
+            "response_channel": channel, "thread_policy": "new" if policy_label == "Nova thread" else "reuse"}
+
+
 def manage(config, ui, name):
     while True:
         data = config.email(); account = data["accounts"].get(name)
         if account is None: return
         ui.profile_screen("MCP · Conta de e-mail", name + " · " + ("ATIVA" if account["enabled"] else "inativa"), account)
-        for key, label in (("1.", "Identidade e descrição"), ("2.", "Recebimento IMAP / POP3"), ("3.", "Envio SMTP"), ("4.", "Pastas e cópia de enviados"), ("5.", "Raízes de anexos e arquivos"), ("6.", "Autorizar OAuth"), ("7.", "Testar conexão"), ("8.", "Desabilitar" if account["enabled"] else "Habilitar"), ("9.", "Remover conta"), ("10.", "Consultar ou cancelar OAuth remoto")):
+        for key, label in (("1.", "Identidade e descrição"), ("2.", "Recebimento IMAP / POP3"), ("3.", "Envio SMTP"), ("4.", "Pastas e cópia de enviados"), ("5.", "Raízes de anexos e arquivos"), ("6.", "Autorizar OAuth"), ("7.", "Testar conexão"), ("8.", "Desabilitar" if account["enabled"] else "Habilitar"), ("9.", "Remover conta"), ("10.", "Consultar ou cancelar OAuth remoto"), ("11.", "Checagem automática de novas mensagens")):
             ui.item(key, label)
         ui.item("X.", "Voltar"); choice = ui.prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}: return
@@ -174,6 +226,10 @@ def manage(config, ui, name):
                 answer = ui.ask("Digite REMOVER para confirmar", required=True)
                 if not answer or answer.casefold() != "remover": ui.result(False, "Conta não removida."); continue
                 del data["accounts"][name]; config.save_email(data); ui.result(True, "Conta removida. Credenciais e registro de submissões preservados."); return
+            elif choice == "11":
+                monitoring = edit_monitoring(config, ui, name, account)
+                if monitoring is None: continue
+                account["monitoring"] = monitoring
             else: ui.result(False, "Opção inválida."); continue
             config.save_email(data); ui.result(True, "Conta atualizada.")
         except (ValueError, OSError): ui.result(False, "Não foi possível concluir a operação. Confira configuração, cofre e conexão.")
@@ -198,7 +254,7 @@ def email_menu(config, ui):
                 if not address: continue
                 display_name = ui.ask("Nome exibido do remetente", required=True)
                 if not display_name: continue
-                account = {"enabled": True, "address": address, "display_name": display_name, "description": "", "allowed_senders": [], "readable_roots": [], "writable_roots": [], "sent_copy": "server", "folders": {"inbox": "INBOX", "sent": "", "drafts": "", "trash": "", "archive": ""}}
+                account = {"enabled": True, "address": address, "display_name": display_name, "description": "", "allowed_senders": [], "readable_roots": [], "writable_roots": [], "sent_copy": "server", "folders": {"inbox": "INBOX", "sent": "", "drafts": "", "trash": "", "archive": ""}, "monitoring": {"enabled": False}}
                 mode = ui.flow_choice("Conexões", ["Recebimento e envio", "Somente recebimento", "Somente envio"], "Recebimento e envio")
                 if not mode: continue
                 cancelled = False

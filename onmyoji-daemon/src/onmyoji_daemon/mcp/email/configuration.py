@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 import tomllib
 from urllib.parse import urlsplit
 
 from .contracts import identifier, require, text
+from .scheduling import interval_seconds
 
 
 DEFAULTS = {"timeout_seconds": 30, "page_size": 50, "max_message_bytes": 52428800,
@@ -27,7 +29,7 @@ def validate_configuration(data: dict) -> None:
     for name, account in data["accounts"].items():
         identifier(name)
         require(isinstance(account, dict) and type(account.get("enabled")) is bool, "invalid_config", "Estado de conta inválido.")
-        require(set(account) <= {"enabled", "description", "address", "display_name", "allowed_senders", "readable_roots", "writable_roots", "sent_copy", "folders", "incoming", "smtp"}, "invalid_config", "Campos desconhecidos na conta de e-mail.")
+        require(set(account) <= {"enabled", "description", "address", "display_name", "allowed_senders", "readable_roots", "writable_roots", "sent_copy", "folders", "incoming", "smtp", "monitoring"}, "invalid_config", "Campos desconhecidos na conta de e-mail.")
         text(account.get("description"), "Descrição", 240)
         address = text(account.get("address"), "Endereço", 254)
         require(re.fullmatch(r"[^\s<>@]+@[^\s<>@]+", address) is not None, "invalid_config", "Endereço de e-mail inválido.")
@@ -73,6 +75,26 @@ def validate_configuration(data: dict) -> None:
                 text(folder, "Pasta")
         if account.get("sent_copy") == "append":
             require(account.get("incoming", {}).get("protocol") == "imap" and bool(account["folders"].get("sent")), "invalid_config", "Cópia APPEND exige IMAP e pasta de enviados.")
+        monitoring = account.get("monitoring")
+        if monitoring is not None:
+            require(isinstance(monitoring, dict) and set(monitoring) <= {"enabled", "interval", "instructions", "response_channel", "thread_policy", "activated_at"} and type(monitoring.get("enabled")) is bool, "invalid_config", "Checagem automática inválida.")
+            if monitoring["enabled"]:
+                require(bool(account.get("incoming")), "incoming_required", "Checagem automática exige recebimento IMAP ou POP3.")
+                interval_seconds(monitoring.get("interval"))
+                instructions = text(monitoring.get("instructions"), "Instruções da checagem", 10000)
+                require(monitoring.get("thread_policy") in {"new", "reuse"}, "invalid_config", "Política de thread inválida.")
+                from ...agent_notification.contract import uuid7, validate_event
+                from ...rpc import RpcError
+                try:
+                    validate_event({"schema_version": 1, "event_id": uuid7(), "prompt": instructions,
+                                    "response_channel": monitoring.get("response_channel"), "thread_policy": monitoring["thread_policy"]})
+                except RpcError:
+                    require(False, "invalid_config", "Canal de resposta da checagem inválido.")
+                try:
+                    activated = datetime.fromisoformat(str(monitoring.get("activated_at", "")).replace("Z", "+00:00"))
+                    require(activated.tzinfo is not None, "invalid_config", "Ativação da checagem inválida.")
+                except ValueError:
+                    require(False, "invalid_config", "Ativação da checagem inválida.")
 
 
 def validate_roots(root: Path, document: dict) -> None:
@@ -111,4 +133,13 @@ def render_configuration(data: dict) -> str:
             lines.extend(f"{key} = {quote(value)}" for key, value in account[kind].items() if key != "auth")
             lines.extend(("", f"[{prefix}.{kind}.auth]"))
             lines.extend(f"{key} = {quote(value)}" for key, value in account[kind]["auth"].items())
+        monitoring = account.get("monitoring")
+        if monitoring is not None:
+            lines.extend(("", f"[{prefix}.monitoring]"))
+            for key in ("enabled", "interval", "instructions", "thread_policy", "activated_at"):
+                if key in monitoring:
+                    lines.append(f"{key} = {quote(monitoring[key])}")
+            if monitoring.get("response_channel"):
+                lines.extend(("", f"[{prefix}.monitoring.response_channel]"))
+                lines.extend(f"{key} = {quote(value)}" for key, value in monitoring["response_channel"].items())
     return "\n".join(lines) + "\n"

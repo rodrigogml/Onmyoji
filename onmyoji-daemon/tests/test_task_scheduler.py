@@ -67,15 +67,30 @@ def repository(tmp_path):
     store.close()
 
 
-def test_calendar_accepts_only_once_and_five_field_cron():
+def test_calendar_accepts_once_cron_and_anchored_interval():
     now = instant("2026-11-10T00:00:00Z")
     once = validate_rule({"type": "once", "at": "2026-11-10T10:00:00+09:00"}, now)
     assert once == {"type": "once", "at": "2026-11-10T01:00:00.000Z"}
     cron = validate_rule({"type": "cron", "expression": "0 9 * * 1-5", "timezone": "America/Sao_Paulo"}, now)
     assert iso(next_at(cron, now)) == "2026-11-10T12:00:00.000Z"
-    for invalid in ({"type": "interval", "anchor_at": iso(now), "every_seconds": 60}, {"type": "cron", "expression": "0 * * * *"}, {"type": "cron", "expression": "0 0 * * * *", "timezone": "UTC"}, {"type": "once", "at": "2026-01-01"}):
+    interval = validate_rule({"type": "interval", "anchor_at": "2026-11-10T00:02:00Z", "every_seconds": 900}, now)
+    assert iso(next_at(interval, now)) == "2026-11-10T00:02:00.000Z"
+    assert iso(next_at(interval, instant("2026-11-10T00:02:00Z"))) == "2026-11-10T00:17:00.000Z"
+    assert iso(latest_due(interval, instant("2026-11-10T00:31:59Z"))) == "2026-11-10T00:17:00.000Z"
+    for invalid in ({"type": "interval", "anchor_at": iso(now), "every_seconds": 59}, {"type": "interval", "anchor_at": iso(now), "every_seconds": True}, {"type": "cron", "expression": "0 * * * *"}, {"type": "cron", "expression": "0 0 * * * *", "timezone": "UTC"}, {"type": "once", "at": "2026-01-01"}):
         with pytest.raises(RpcError):
             validate_rule(invalid, now)
+
+
+def test_interval_coalesces_from_activation_anchor_across_restart(repository):
+    store, now, schedules = repository
+    (schedules / "interval.toml").write_text(event_toml(time='type = "interval"\nanchor_at = "2026-11-10T00:02:00Z"\nevery_seconds = 900'), encoding="utf-8")
+    store.reconcile()
+    assert store.get("interval")["next_run_at"] == "2026-11-10T00:02:00.000Z"
+    now[0] = instant("2026-11-10T00:48:00Z"); store.materialize()
+    occurrence = store.history("interval")["items"][0]
+    assert occurrence["scheduled_at"] == "2026-11-10T00:47:00.000Z"
+    assert store.get("interval")["next_run_at"] == "2026-11-10T01:02:00.000Z"
 
 
 def test_cron_dst_nonexistent_is_skipped_and_duplicate_uses_first():

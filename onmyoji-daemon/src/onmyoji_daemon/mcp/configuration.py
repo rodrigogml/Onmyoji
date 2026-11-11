@@ -234,12 +234,22 @@ class McpConfiguration:
         return [{"name": name, **profile} for name, profile in sorted(load_configuration(self.root, namespace)["profiles"].items()) if profile["enabled"]]
 
     def save_email(self, data: dict[str, Any]) -> None:
+        from datetime import datetime, timezone
+        from .email.scheduling import prepare_monitoring, preflight_email_schedules, reconcile_email_schedules
+        previous = self.email()
+        candidate = prepare_monitoring(previous, data, datetime.now(timezone.utc))
         try:
-            validate_email(data)
-            validate_email_roots(self.root, data)
+            validate_email(candidate)
+            validate_email_roots(self.root, candidate)
+            preflight_email_schedules(self.root, candidate)
         except ValueError as error:
             raise McpConfigurationError(str(error)) from error
-        self._save(self.email_path, render_email(data))
+        self._save(self.email_path, render_email(candidate))
+        try:
+            reconcile_email_schedules(self.root, previous, candidate)
+        except (OSError, ValueError) as error:
+            raise McpConfigurationError("Configuração salva, mas o agendamento de e-mail não pôde ser reconciliado.") from error
+        data.clear(); data.update(copy.deepcopy(candidate))
         McpReconciliation(self.root).mark_pending()
 
     def enabled_email_accounts(self) -> list[dict[str, Any]]:

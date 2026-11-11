@@ -6,11 +6,12 @@ from contextlib import contextmanager
 from email.message import EmailMessage
 import json
 import smtplib
+import tomllib
 from unittest.mock import Mock
 
 import pytest
 
-from onmyoji_daemon.mcp.configuration import McpConfiguration
+from onmyoji_daemon.mcp.configuration import McpConfiguration, McpConfigurationError
 from onmyoji_daemon.mcp.email.configuration import empty_configuration, validate_configuration
 from onmyoji_daemon.mcp.email.contracts import EmailError
 from onmyoji_daemon.mcp.email.mailbox import Mailbox
@@ -94,6 +95,49 @@ def test_roundtrip_publication_selection_and_workflow(tmp_path):
 def test_configuration_rejects_invalid_and_cleartext_connections(mutate):
     document = empty_configuration(); document["accounts"]["default"] = value = account(); mutate(value)
     with pytest.raises(EmailError): validate_configuration(document)
+
+
+def test_monitoring_requires_incoming_interval_instructions_channel_and_policy():
+    valid = {"enabled": True, "interval": "15M", "instructions": "Analise a mensagem.",
+             "response_channel": {"type": "telegram", "value": "9"}, "thread_policy": "reuse",
+             "activated_at": "2026-11-11T12:00:00.000Z"}
+    for mutation in (
+        lambda value: value.update(interval="M15"),
+        lambda value: value.update(instructions=""),
+        lambda value: value.update(thread_policy="same"),
+        lambda value: value.update(response_channel={"type": "telegram"}),
+    ):
+        document = empty_configuration(); configured = account(); configured["monitoring"] = copy.deepcopy(valid); mutation(configured["monitoring"]); document["accounts"]["default"] = configured
+        with pytest.raises(EmailError): validate_configuration(document)
+    document = empty_configuration(); configured = account(None); configured["monitoring"] = copy.deepcopy(valid); document["accounts"]["default"] = configured
+    with pytest.raises(EmailError, match="recebimento"): validate_configuration(document)
+
+
+def test_email_save_reconciles_reserved_schedule_without_overwriting_other_definitions(tmp_path):
+    config = configure(tmp_path, {})
+    document = config.email(); configured = account(); configured["monitoring"] = {
+        "enabled": True, "interval": "2H", "instructions": "Classifique e responda somente quando necessário.",
+        "response_channel": {"type": "telegram", "value": "9"}, "thread_policy": "reuse"}
+    document["accounts"]["default"] = configured
+    config.save_email(document)
+    anchor = document["accounts"]["default"]["monitoring"]["activated_at"]
+    schedule = tmp_path / "configs" / "daemon" / "services" / "task-scheduler" / "schedules" / "onmyoji-email-default.toml"
+    parsed = tomllib.loads(schedule.read_text(encoding="utf-8"))
+    assert parsed["managed_by"] == "onmyoji.email-monitor"
+    assert parsed["time"] == {"type": "interval", "anchor_at": anchor, "every_seconds": 7200}
+    assert parsed["action"]["account"] == "default"
+    document["accounts"]["default"]["monitoring"]["interval"] = "3H"; config.save_email(document)
+    assert document["accounts"]["default"]["monitoring"]["activated_at"] == anchor
+    assert tomllib.loads(schedule.read_text(encoding="utf-8"))["time"]["every_seconds"] == 10800
+    document["accounts"]["default"]["monitoring"]["enabled"] = False; config.save_email(document)
+    assert not schedule.exists() and "activated_at" not in document["accounts"]["default"]["monitoring"]
+
+    schedule.parent.mkdir(parents=True, exist_ok=True)
+    schedule.write_text("schema_version = 1\n", encoding="utf-8")
+    document["accounts"]["default"]["monitoring"]["enabled"] = True
+    with pytest.raises(McpConfigurationError, match="agendamento reservado"):
+        config.save_email(document)
+    assert schedule.read_text(encoding="utf-8") == "schema_version = 1\n"
 
 
 def test_reading_and_pagination_preserve_flags_and_validate_uidvalidity(tmp_path):

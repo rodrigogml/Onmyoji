@@ -127,7 +127,7 @@ class TaskRepository:
         active = self.db.execute("SELECT state FROM occurrences WHERE definition_id=? AND state IN ('reserved','running','uncertain') ORDER BY scheduled_at LIMIT 1", (row["id"],)).fetchone()
         last = self.db.execute("SELECT state FROM occurrences WHERE definition_id=? AND state IN ('completed','failed','uncertain','resolved','discarded') ORDER BY COALESCE(completed_at,scheduled_at) DESC,id DESC LIMIT 1", (row["id"],)).fetchone()
         status = "invalid" if row["diagnosis"] else active[0] if active else "enabled" if row["enabled"] else "disabled"
-        expression = rule.get("at") if rule.get("type") == "once" else rule.get("expression")
+        expression = rule.get("at") if rule.get("type") == "once" else f"{rule.get('every_seconds')}s" if rule.get("type") == "interval" else rule.get("expression")
         return {**document, "id": row["id"], "revision": row["revision"], "status": status, "diagnosis": row["diagnosis"], "next_run_at": row["next_run_at"], "created_at": row["created_at"], "updated_at": row["updated_at"], "action_type": action.get("type"), "expression": expression, "timezone": rule.get("timezone"), "channel": channel.get("type"), "thread_policy": event.get("thread_policy"), "last_result": last[0] if last else None}
 
     def get(self, identifier):
