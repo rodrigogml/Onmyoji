@@ -185,7 +185,9 @@ class TelegramChannels:
             else [[{"text": "Registrar este canal", "callback_data": f"ch:{token}:add"}]]
         ) if owner else [[{"text": "Solicitar cadastro deste canal", "callback_data": f"ch:{token}:request"}]]
         keyboard = {"inline_keyboard": actions + [[{"text": "Fechar", "callback_data": f"ch:{token}:cancel"}]]}
+        started = time.monotonic()
         sent = self.api.send(chat_id, f"Canal: {display}\nEstado: {'registrado' if registered else 'não registrado'}", reply_markup=keyboard, **topic_values)
+        self._diagnostic("menu.publish", stage="channel", duration_ms=int((time.monotonic() - started) * 1000))
         message_id = sent.get("message_id")
         if not isinstance(message_id, int): raise RuntimeError("Telegram não retornou ID do menu /channel.")
         with self.database_lock:
@@ -205,8 +207,22 @@ class TelegramChannels:
         chat = message.get("chat") or {}
         sender_id = sender.get("id")
         chat_id = chat.get("id")
-        try: self.api.call("answerCallbackQuery", {"callback_query_id": callback["id"]})
-        except Exception: pass
+        def acknowledge() -> None:
+            started = time.monotonic()
+            try:
+                method = getattr(self.api, "answer_callback", None)
+                if callable(method):
+                    method(str(callback["id"]))
+                else:
+                    self.api.call("answerCallbackQuery", {"callback_query_id": callback["id"]})
+            except Exception:
+                self._diagnostic("callback.ack_failed", stage="channel")
+            finally:
+                self._diagnostic("menu.callback_ack", stage="channel", duration_ms=int((time.monotonic() - started) * 1000))
+        if callable(getattr(self.api, "answer_callback", None)):
+            threading.Thread(target=acknowledge, daemon=True).start()
+        else:
+            acknowledge()
         if not isinstance(sender_id, int) or not isinstance(chat_id, int): return True
         if sender_id not in self.contacts.owners() or pieces[0] == "cha":
             # Solicitações legadas não podem ser aprovadas após restringir /channel.

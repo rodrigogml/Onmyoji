@@ -6,7 +6,9 @@ senhas ou saídas brutas do processo Codex.
 from __future__ import annotations
 
 import re
+import secrets
 import threading
+import time
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -20,6 +22,8 @@ class TelegramLogin:
         self._login_lock = threading.RLock()
         self._login_session: dict[str, Any] | None = None
         self._login_early_completion: tuple[dict[str, Any], dict[str, Any] | None] | None = None
+        self._login_menus: dict[str, dict[str, Any]] = {}
+        self._login_menu_lock = threading.RLock()
 
     def _login_pending(self) -> bool:
         with self._login_lock:
@@ -77,36 +81,196 @@ class TelegramLogin:
             except Exception:
                 self._record_error("Falha no envio do resultado da autenticação Codex.")
 
-    def _login_status(self, conversation: str) -> None:
-        with self._login_lock:
-            session = self._login_session
-            if session:
-                self._login_reply(conversation, "Há uma autenticação Codex em andamento. Conclua o código enviado ou use /login cancelar.")
-                return
+    def _login_account_read(self) -> dict[str, Any] | None:
         if not self.settings.app_server_enabled:
-            self._login_reply(conversation, "O login remoto exige o Codex App Server habilitado no setup do daemon.")
-            return
-        try:
-            response = self._app_client().request("account/read", {"refreshToken": False}, timeout=25)
-        except (CodexProtocolError, CodexExecutionError, ProcessRecoveryError, OSError):
-            self._login_reply(conversation, "Não foi possível consultar a autenticação Codex agora.")
-            return
+            return None
+        response = self._app_client().request("account/read", {"refreshToken": False}, timeout=25)
         account = response.get("account")
-        if not isinstance(account, dict):
-            self._login_reply(conversation, "Codex sem conta ChatGPT conectada, ou com autenticação indisponível. Use /login para autenticar.")
-            return
+        return account if isinstance(account, dict) else {}
+
+    @staticmethod
+    def _login_account_text(account: dict[str, Any] | None, *, details: bool) -> str:
+        if account is None:
+            return "O login remoto exige o Codex App Server habilitado no setup do daemon."
+        if not account:
+            return "Nenhuma conta está conectada ao Codex."
         mode = account.get("type")
+        names = {"chatgpt": "ChatGPT", "apiKey": "Chave de API", "amazonBedrock": "Amazon Bedrock"}
+        result = "Autenticação: " + names.get(mode, "Outro provedor")
         if mode == "chatgpt":
             plan = account.get("planType")
-            if not isinstance(plan, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,24}", plan):
-                plan = None
-            self._login_reply(conversation, "Codex autenticado via ChatGPT" + (f" (plano {plan})" if plan else "") + ". Use /login para trocar a conta.")
-        elif mode == "apiKey":
-            self._login_reply(conversation, "Codex autenticado por chave de API. Use /login para trocar para ChatGPT.")
-        elif mode == "amazonBedrock":
-            self._login_reply(conversation, "Codex utiliza Amazon Bedrock. Use /login para autenticação ChatGPT, se a configuração permitir.")
+            if isinstance(plan, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,24}", plan):
+                result += "\nPlano: " + plan
+            if details:
+                email = account.get("email")
+                if isinstance(email, str) and len(email) <= 254 and re.fullmatch(r"[^@\s\x00-\x1f]{1,64}@[^@\s\x00-\x1f]{1,189}", email):
+                    result += "\nE-mail: " + email
+                else:
+                    result += "\nE-mail: não informado pelo Codex"
+        elif details:
+            result += "\nIdentificação da conta: não fornecida pelo Codex."
+        return result
+
+    @staticmethod
+    def _login_menu_keyboard(token: str, *, page: str = "root", pending: bool = False) -> dict[str, Any]:
+        def option(label: str, action: str) -> list[dict[str, str]]:
+            return [{"text": label, "callback_data": f"lg:{token}:{action}"}]
+        if page == "logout":
+            rows = [option("Confirmar logoff", "logout-confirm"), option("‹ Voltar", "back")]
+        elif page == "root":
+            rows = ([option("Cancelar login em andamento", "cancel")] if pending
+                    else [option("Iniciar login", "start")])
+            rows += [option("Status", "status"), option("Informações da conta atual", "account")]
+            if not pending:
+                rows.append(option("Logoff", "logout"))
         else:
-            self._login_reply(conversation, "O Codex utiliza outro modo de autenticação. Use /login para iniciar autenticação ChatGPT.")
+            rows = [option("‹ Voltar", "back")]
+        rows.append(option("Fechar", "close"))
+        return {"inline_keyboard": rows}
+
+    def _login_menu(self, conversation: str) -> None:
+        if not self.api:
+            return
+        generation = self._generation(conversation)
+        token = secrets.token_urlsafe(9)
+        pending = self._login_pending()
+        text = "🔐 Conta Codex\nSelecione uma opção." + ("\nLogin em andamento." if pending else "")
+        keyboard = self._login_menu_keyboard(token, pending=pending)
+        started = time.monotonic()
+        sent = self._ephemeral(conversation, text, 180, reply_markup=keyboard)
+        self._diagnostic("menu.publish", stage="login", duration_ms=int((time.monotonic() - started) * 1000))
+        message_id = sent.get("message_id") if isinstance(sent, dict) else None
+        if type(message_id) is not int:
+            return
+        with self._login_menu_lock:
+            for previous_token, previous in list(self._login_menus.items()):
+                if previous["expires"] <= time.time():
+                    self._login_menus.pop(previous_token, None)
+            if generation == self._generation(conversation):
+                self._login_menus[token] = {"conversation": conversation, "generation": generation,
+                                            "message_id": message_id, "expires": time.time() + 180, "busy": False, "page": "root"}
+                return
+        address, _topic = self._telegram_address(conversation)
+        self._delete_control_message(address, message_id)
+
+    def _login_menu_close(self, token: str, session: dict[str, Any]) -> None:
+        with self._login_menu_lock:
+            if self._login_menus.get(token) is not session:
+                return
+            del self._login_menus[token]
+        address, _topic = self._telegram_address(session["conversation"])
+        self._delete_control_message(address, session["message_id"])
+
+    def _login_menu_render(self, token: str, session: dict[str, Any], text: str, page: str) -> None:
+        conversation = session["conversation"]
+        address, topic = self._telegram_address(conversation)
+        keyboard = self._login_menu_keyboard(token, page=page, pending=self._login_pending())
+        if session["generation"] != self._generation(conversation):
+            self._login_menu_close(token, session)
+            return
+        assert self.api
+        started = time.monotonic()
+        try:
+            self.api.edit(address, session["message_id"], text, keyboard)
+        except Exception as error:
+            # Alguns tipos de tópico privado podem recusar edições; um erro HTTP
+            # confirmado (4xx) permite recriar sem duplicar um envio incerto.
+            if "direct_messages_topic_id" not in topic or getattr(error, "kind", None) != "not_sent":
+                raise
+            sent = self.api.send(address, text, reply_markup=keyboard, protect_content=True, **topic)
+            new_id = sent.get("message_id") if isinstance(sent, dict) else None
+            if type(new_id) is not int:
+                raise RuntimeError("Telegram não confirmou o menu de login.")
+            previous = session["message_id"]
+            session["message_id"] = new_id
+            self._delete_control_message(address, previous)
+        session["page"] = page
+        self._diagnostic("menu.render", stage="login", duration_ms=int((time.monotonic() - started) * 1000))
+
+    def _login_logout(self, conversation: str) -> str:
+        if not self.settings.app_server_enabled:
+            return "O login remoto exige o Codex App Server habilitado no setup do daemon."
+        with self._login_lock:
+            if self._login_session is not None:
+                return "Existe um login em andamento. Cancele-o antes de sair da conta."
+            with self.app_server_lock:
+                busy = bool(self.app_turns or any(not slot.done.is_set() for slot in self._slots.values()))
+                client = self.app_server
+            if busy or self._has_uncertain_runtime() or self.related_work.has_pending(str(getattr(client, "process_epoch", ""))):
+                return "Há execuções ou operações pendentes. Conclua ou reconcilie antes do logoff."
+            try:
+                self._app_client().request("account/logout", {}, timeout=25)
+            except (CodexProtocolError, CodexExecutionError, ProcessRecoveryError, OSError):
+                return "Não foi possível confirmar o logoff no Codex."
+        self._diagnostic("codex_login.logged_out")
+        return "Logoff concluído. Nenhuma conta ChatGPT permanece autenticada pelo Codex."
+
+    def _login_menu_callback(self, conversation: str, callback: dict[str, Any], parts: list[str]) -> bool:
+        if len(parts) != 3 or parts[0] != "lg":
+            return False
+        token, action = parts[1], parts[2]
+        message = callback.get("message") or {}
+        with self._login_menu_lock:
+            session = self._login_menus.get(token)
+            if (not session or session["conversation"] != conversation
+                    or session["message_id"] != message.get("message_id")
+                    or session["expires"] <= time.time()
+                    or session["generation"] != self._generation(conversation)):
+                session = None
+            elif session["busy"]:
+                return True
+            else:
+                pending = self._login_pending()
+                allowed = ({"start", "status", "account", "logout", "close"} if not pending
+                           else {"cancel", "status", "account", "close"}) if session["page"] == "root" else (
+                           {"logout-confirm", "back", "close"} if session["page"] == "logout"
+                           else {"back", "close"})
+                if action not in allowed:
+                    return True
+                session["busy"] = True
+        if session is None:
+            self._login_reply(conversation, "Este menu de login expirou. Envie /login para abrir outro.")
+            return True
+        try:
+            if action == "close":
+                self._login_menu_close(token, session)
+            elif action == "start":
+                self._login_menu_close(token, session)
+                self._login_start(conversation)
+            elif action == "cancel":
+                self._login_menu_close(token, session)
+                self._login_cancel(conversation)
+            elif action == "back":
+                self._login_menu_render(token, session, "🔐 Conta Codex\nSelecione uma opção.", "root")
+            elif action == "logout":
+                self._login_menu_render(token, session, "Confirmar logoff do Codex nesta instância?\nIsso também desconecta o Codex CLI.", "logout")
+            elif action == "logout-confirm":
+                result = self._login_logout(conversation)
+                self._login_menu_render(token, session, result, "result")
+            elif action in {"status", "account"}:
+                if action == "status" and self._login_pending():
+                    text = "Há uma autenticação Codex em andamento. Conclua o código enviado ou cancele o login pelo menu."
+                else:
+                    try:
+                        account = self._login_account_read()
+                        text = self._login_account_text(account, details=action == "account")
+                    except (CodexProtocolError, CodexExecutionError, ProcessRecoveryError, OSError):
+                        text = "Não foi possível consultar a conta Codex agora."
+                self._login_menu_render(token, session, text, "result")
+            else:
+                self._login_menu_render(token, session, "Opção inválida.", "result")
+        except Exception:
+            self._login_menu_close(token, session)
+            self._login_reply(conversation, "Não foi possível atualizar o menu Codex. Envie /login para tentar novamente.")
+            self._diagnostic("menu.failed", stage="login")
+        finally:
+            with self._login_menu_lock:
+                if self._login_menus.get(token) is session:
+                    session["busy"] = False
+        return True
+
+    def _login(self, conversation: str) -> None:
+        self._login_menu(conversation)
 
     def _login_cancel(self, conversation: str) -> None:
         with self._login_lock:
@@ -116,7 +280,7 @@ class TelegramLogin:
                 return
             login_id = session.get("login_id")
             if not isinstance(login_id, str) or session["state"] in {"starting", "publishing"}:
-                self._login_reply(conversation, "A autenticação ainda está iniciando. Use /login cancelar após receber o código.")
+                self._login_reply(conversation, "A autenticação ainda está iniciando. Abra /login e escolha Cancelar login após receber o código.")
                 return
             if session["state"] == "cancelling":
                 self._login_reply(conversation, "O cancelamento da autenticação já foi solicitado.")
@@ -129,29 +293,19 @@ class TelegramLogin:
             with self._login_lock:
                 if self._login_session is session and session["state"] == "cancelling":
                     session["state"] = "pending"
-            self._login_reply(conversation, "O cancelamento não foi confirmado. Tente /login cancelar novamente ou consulte /login status.")
+            self._login_reply(conversation, "O cancelamento não foi confirmado. Abra /login para cancelar ou consultar o status.")
             return
         if self._login_release(session):
-            self._login_reply(conversation, "Autenticação Codex cancelada. Use /login para iniciar outra.")
+            self._login_reply(conversation, "Autenticação Codex cancelada. Abra /login para iniciar outra.")
             self._diagnostic("codex_login.cancelled")
 
-    def _login(self, conversation: str, argument: str) -> None:
-        action = argument.strip().casefold()
-        if action == "status":
-            self._login_status(conversation)
-            return
-        if action == "cancelar":
-            self._login_cancel(conversation)
-            return
-        if action:
-            self._login_reply(conversation, "Use /login, /login status ou /login cancelar.")
-            return
+    def _login_start(self, conversation: str) -> None:
         if not self.settings.app_server_enabled:
             self._login_reply(conversation, "O login remoto exige o Codex App Server habilitado no setup do daemon.")
             return
         with self._login_lock:
             if self._login_session is not None:
-                self._login_reply(conversation, "Já existe uma autenticação Codex em andamento. Use /login status ou /login cancelar.")
+                self._login_reply(conversation, "Já existe uma autenticação Codex em andamento. Abra /login para consultar ou cancelar.")
                 return
             with self.app_server_lock:
                 busy = bool(self.app_turns or any(not slot.done.is_set() for slot in self._slots.values()))
@@ -183,7 +337,7 @@ class TelegramLogin:
                 session["state"] = "publishing"
             self._login_reply(conversation, "🔐 Login Codex CLI\n\nAbra o endereço no navegador:\n"
                               + url + "\n\nCódigo: " + code
-                              + "\n\nApós confirmar, o bot avisará o resultado. Para interromper: /login cancelar.")
+                              + "\n\nApós confirmar, o bot avisará o resultado. Para interromper: abra /login e escolha Cancelar login.")
             with self._login_lock:
                 if self._login_session is not session:
                     return
@@ -204,7 +358,7 @@ class TelegramLogin:
                     pass
             if self._login_release(session):
                 try:
-                    self._login_reply(conversation, "Não foi possível iniciar o login por código de dispositivo. Confira o Codex e a permissão de device login; tente /login novamente.")
+                    self._login_reply(conversation, "Não foi possível iniciar o login por código de dispositivo. Confira o Codex e a permissão de device login; abra /login novamente.")
                 except Exception:
                     self._record_error("Falha ao comunicar o início da autenticação Codex.")
             self._diagnostic("codex_login.start_failed")

@@ -301,7 +301,11 @@ class CodexAppServer:
                 raise CodexProtocolError("Limite de RPCs pendentes do App Server atingido", kind="not_sent", method=method, process_epoch=runtime.epoch)
             request_id, self.next_id = self.next_id, self.next_id + 1
             pending = _Pending(method, runtime.epoch)
-            pending.outbound = _Outbound({"method": method, "id": request_id, "params": params}, method)
+            payload = {"method": method, "id": request_id}
+            # account/logout é uma RPC sem parâmetros no protocolo do Codex.
+            if method != "account/logout":
+                payload["params"] = params
+            pending.outbound = _Outbound(payload, method)
             self.pending[request_id] = pending
         try:
             self._enqueue(runtime, pending.outbound)

@@ -115,18 +115,40 @@ Contrato de referência: [Codex App Server — Rate limits](https://learn.chatgp
 
 ## Login remoto do Codex
 
-O owner pode enviar `/login` na DM privada (inclusive tópicos privados) para iniciar
-autenticação ChatGPT por código de dispositivo no Codex App Server da instância.
-O Gateway transmite somente URL HTTPS validada e código temporário, com proteção
-de encaminhamento, sem acesso a tokens, senhas ou arquivos de credenciais.
-A confirmação é recebida de `account/login/completed` e a sessão é cancelável
-por `/login cancelar`. `/login status` informa o modo de autenticação sem
-mostrar e-mails, tokens ou credenciais.
+O owner envia `/login` na DM privada (inclusive tópicos privados) para abrir
+um menu interativo. O comando **não inicia o login** e não recebe parâmetros.
+As opções são **Iniciar login**, **Status**, **Informações da conta atual**,
+**Logoff** (com confirmação) e **Fechar**. Durante um desafio aberto, **Cancelar
+login em andamento** substitui Iniciar login e Logoff. O status mostra o modo e
+o plano; as informações da conta incluem o e-mail, somente quando o Codex
+o disponibiliza. Esses detalhes aparecem exclusivamente na DM do owner e
+a mensagem é protegida contra encaminhamento.
+
+Iniciar login usa autenticação ChatGPT por código de dispositivo no Codex App
+Server da instância. O Gateway transmite somente URL HTTPS validada e código
+temporário, sem receber tokens, senhas ou arquivos de credenciais. A
+confirmação é recebida de `account/login/completed`. Logoff invoca
+`account/logout` e é recusado quando há execuções ou operações pendentes.
 
 A troca da conta não é iniciada enquanto houver execuções ativas ou operações
 incertas e suspende novos despachos até seu término. Para essa função, o App
 Server deve estar habilitado e a autenticação por código de dispositivo
 permitida pela conta/workspace ChatGPT.
+
+### Diagnóstico de latência dos menus
+
+O Gateway registra eventos em `state/daemon/services/telegram/gateway-status.json`,
+no campo `diagnostics`, sem conteúdo das mensagens, e-mails ou tokens:
+`menu.inbound_age` (aproximação entre a data de envio e a chegada ao Gateway,
+com resolução de um segundo), `menu.dispatch` (tempo de processamento local),
+`menu.publish` (publicação do menu), `menu.render` (edição após um clique)
+e `menu.callback_ack` (tempo até o Telegram confirmar o botão).
+`duration_ms` indica milissegundos. Uma diferença grande entre
+`menu.inbound_age` e os demais eventos indica atraso anterior ao
+processamento; tempos altos de `menu.publish`, `menu.render` ou
+`menu.callback_ack` indicam espera nas chamadas à API do Telegram.
+A exclusão da mensagem de comando de `/login` ou `/config` ocorre fora
+do caminho crítico da publicação do menu.
 
 ## Matriz de acesso aos comandos do Telegram
 
@@ -141,7 +163,7 @@ Telegram. `DM` significa conversa privada com o bot.
 | `/config` | DM: abrir preferências; grupos: ajustar a janela de contexto com argumentos numéricos. | Não permitido. |
 | `/channel` | DM e grupos: cadastrar, identificar e gerenciar canais. | Não permitido, inclusive para solicitar cadastro. |
 | `/usage` | Somente DM (inclusive tópicos privados): consultar os limites e o consumo da conta Codex. | Não permitido; nenhuma informação da franquia é consultada ou enviada. |
-| `/login` | Somente DM (inclusive tópicos privados): iniciar, consultar ou cancelar autenticação ChatGPT do Codex. | Não permitido. |
+| `/login` | Somente DM (inclusive tópicos privados): menu de autenticação, status, informações da conta e logoff. | Não permitido. |
 | `/fila <texto>` | Somente DM: enfileirar uma entrada para o agente. | Não permitido. |
 | `/direcionar <texto>` | Somente DM: solicitar direcionamento, se o runtime permitir. | Não permitido. |
 | `/cancel` | Somente DM: cancelar o turno atual, preservando a fila. | Não permitido. |
@@ -182,7 +204,7 @@ comandos no chat privado de cada owner:
 | `/config` | Configurar a conversa atual. |
 | `/channel` | Gerenciar canal de envio. |
 | `/usage` | Consultar consumo e franquia do Codex. |
-| `/login` | Autenticar ou trocar conta Codex. |
+| `/login` | Gerenciar login e conta Codex. |
 | `/fila <texto>` | Enfileirar uma mensagem. |
 | `/direcionar <texto>` | Orientar o turno em andamento. |
 | `/cancel` | Interromper o turno atual, preservando a fila. |

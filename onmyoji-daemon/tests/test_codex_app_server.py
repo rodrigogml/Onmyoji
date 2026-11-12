@@ -734,3 +734,13 @@ def test_event_drain_rejects_unbounded_or_invalid_timeout(connected, timeout):
     client, _process = connected
     with pytest.raises(ValueError, match="timeout"):
         client.wait_events(client.epoch, timeout=timeout)
+
+
+def test_logout_sends_unit_rpc_without_params(connected):
+    """O contrato do App Server distingue params ausente de params={}."""
+    client, process = connected
+    assert client.request("account/logout", {}) == {"ok": True}
+    messages = [item for item in process.messages if item.get("method") == "account/logout"]
+    assert len(messages) == 1
+    assert "params" not in messages[0]
+    assert isinstance(messages[0]["id"], int)

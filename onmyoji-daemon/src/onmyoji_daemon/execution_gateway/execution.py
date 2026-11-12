@@ -87,6 +87,12 @@ class ExecutionGateway:
         if prompt and prompt.get("generation") != generation:
             prompt = None
         command = text.split(maxsplit=1)[0].split("@", 1)[0].casefold() if text else ""
+        if is_message and command in {"/login", "/config"} and type(message.get("date")) is int:
+            # A data do Telegram possui resolução de 1 segundo: útil como
+            # aproximação da latência externa, não para microbenchmark.
+            age = time.time() - message["date"]
+            if 0 <= age <= 600:
+                self._diagnostic("menu.inbound_age", stage=command[1:], duration_ms=int(age * 1000))
         protected_password = (session and session.get("phase") == "password") or prompt
         controls = REGISTERED_COMMANDS
         private_control = ("totp_password" if protected_password and command not in controls else "pair_pin" if command == "/pair" else None) if is_message else None
@@ -190,6 +196,13 @@ class ExecutionGateway:
         with self.workers_lock:
             intent = self._totp_intents.pop(source, None)
         self._input_local.totp_intent_token = intent
+        started = time.monotonic()
+        callback_data = str((update.get("callback_query") or {}).get("data") or "")
+        message = update.get("message") or update.get("edited_message") or {}
+        text = str(message.get("text") or "").strip()
+        control = text.split(maxsplit=1)[0].split("@", 1)[0].casefold() if text else ""
+        menu_stage = ("callback" if callback_data.startswith(("cfg:", "lg:", "ag:"))
+                      else control[1:] if control in {"/config", "/login"} else "")
         try:
             if conversation and generation != self._generation(conversation):
                 if json.loads(payload).get("private_control"):
@@ -220,6 +233,8 @@ class ExecutionGateway:
             self.store.ingress_state(source, "uncertain")
             self._diagnostic("input.uncertain", reason="preparation_interrupted")
         finally:
+            if menu_stage:
+                self._diagnostic("menu.dispatch", stage=menu_stage, duration_ms=int((time.monotonic() - started) * 1000))
             if intent:
                 with self.control_state_lock:
                     live = self.totp_sessions.get(conversation)
