@@ -328,15 +328,15 @@ def test_dns_create_81053_nested_error_chain_and_no_visible_dns_is_not_misdiagno
     assert calls.count("POST") == 1
 
 
-def test_dns_create_81053_detects_wrong_zone_and_handles_forbidden_diagnostic():
+def test_dns_create_refuses_wrong_zone_or_unreadable_zone_before_post():
     from onmyoji_daemon.cloudflare_tunnel.client import CloudflareHTTPError
 
     definition = TunnelDefinition("account", "zone", "gateway.example.com")
     for zone_response in ({"name": "different.org"}, CloudflareHTTPError(403, "GET", "/zones/zone", None)):
         client = CloudflareClient("api-private")
+        calls = []
         def call(method, path, body=None):
-            if method == "POST":
-                raise CloudflareHTTPError(400, method, path, {"errors": [{"code": "81053"}]})
+            calls.append((method, path))
             if path == "/zones/zone":
                 if isinstance(zone_response, Exception):
                     raise zone_response
@@ -345,20 +345,42 @@ def test_dns_create_81053_detects_wrong_zone_and_handles_forbidden_diagnostic():
         client._call = call
         with pytest.raises(TunnelError) as caught:
             client.ensure_dns(definition, "tunnel", True)
-        assert caught.value.code == "dns_conflict"
-        if isinstance(zone_response, Exception):
-            assert "Zone Read" in str(caught.value)
-        else:
-            assert "outro domínio" in str(caught.value)
+        assert caught.value.code == ("zone_unverified" if isinstance(zone_response, Exception) else "zone_mismatch")
+        assert "Nenhum DNS foi alterado" in str(caught.value)
+        assert all(method == "GET" for method, _ in calls)
+
+
+def test_cloudflare_zone_validation_accepts_hostname_and_subdomain():
+    client = CloudflareClient("api-private")
+    client._call = Mock(return_value={"name": "example.com"})
+    for hostname in ("example.com", "gateway.example.com", "deeper.gateway.example.com"):
+        client.validate_zone_hostname(TunnelDefinition("account", "zone", hostname))
+    assert client._call.call_count == 3
+
+
+def test_cloudflare_preflight_rejects_zone_mismatch_before_dns_discovery():
+    client = CloudflareClient("api-private")
+    calls = []
+    def call(method, path, body=None):
+        calls.append((method, path))
+        if path.endswith("/tokens/verify"):
+            return {"status": "active"}
+        if path == "/zones/zone":
+            return {"name": "unrelated.com"}
+        raise AssertionError("Não deve ler DNS nem Tunnels com Zone ID incorreto")
+    client._call = call
+    with pytest.raises(TunnelError) as caught:
+        client.preflight_access(TunnelDefinition("account", "zone", "gateway.example.com"), lambda _: None)
+    assert caught.value.code == "zone_mismatch"
+    assert [path for _, path in calls] == ["/user/tokens/verify", "/zones/zone"]
 
 
 def test_dns_reuses_compatible_record_without_writing():
     client = CloudflareClient("test-token")
     record = {"id": "record", "type": "CNAME", "content": "tunnel.cfargotunnel.com.", "proxied": True}
-    client._call = Mock(return_value=[record])
+    client._call = Mock(side_effect=[[record], {"name": "example.com"}])
     assert client.ensure_dns(TunnelDefinition("account", "zone", "gateway.example.com"), "tunnel", True) == record
-    assert client._call.call_args.args[0] == "GET"
-    assert client._call.call_count == 1
+    assert [call.args[0] for call in client._call.call_args_list] == ["GET", "GET"]
 
 
 @pytest.mark.parametrize("records", [
@@ -378,7 +400,7 @@ def test_dns_conflict_never_writes(records):
 def test_dns_creation_and_owned_removal_are_explicit():
     client = CloudflareClient("test-token")
     record = {"id": "record", "type": "CNAME", "content": "tunnel.cfargotunnel.com", "proxied": True}
-    client._call = Mock(side_effect=[[], record])
+    client._call = Mock(side_effect=[[], {"name": "example.com"}, record])
     definition = TunnelDefinition("account", "zone", "gateway.example.com", "tunnel")
     assert client.ensure_dns(definition, "tunnel", True) == record
     assert client._call.call_args.args[0] == "POST"
@@ -488,6 +510,8 @@ def test_cloudflare_preflight_checks_both_resources_despite_dns_forbidden():
         calls.append((method, path))
         if path.endswith("/tokens/verify"):
             return {"status": "active"}
+        if path == "/zones/zone":
+            return {"name": "example.com"}
         if "/dns_records" in path:
             from onmyoji_daemon.cloudflare_tunnel.client import CloudflareHTTPError
             raise CloudflareHTTPError(403, method, path, {"errors": [{"code": 9109}]})
@@ -501,7 +525,7 @@ def test_cloudflare_preflight_checks_both_resources_despite_dns_forbidden():
     assert "DNS: FALHOU" in str(caught.value) and "Tunnels: OK" in str(caught.value)
     assert "HTTP 403" in str(caught.value) and "DNS > Edit" in str(caught.value)
     assert all(method == "GET" for method, _ in calls)
-    assert len(calls) == 3
+    assert len(calls) == 4
 
 
 def test_cloudflare_preflight_reports_independent_tunnel_permission_failure():
@@ -529,6 +553,8 @@ def test_cloudflare_preflight_treats_denied_verify_endpoints_as_inconclusive():
         if path.endswith("/tokens/verify"):
             from onmyoji_daemon.cloudflare_tunnel.client import CloudflareHTTPError
             raise CloudflareHTTPError(403, method, path, None)
+        if path == "/zones/zone":
+            return {"name": "example.com"}
         return []
     client._call = call
     dns, tunnels, token_status = client.preflight_access(TunnelDefinition("account", "zone", "gateway.example.com"), lambda _: None)

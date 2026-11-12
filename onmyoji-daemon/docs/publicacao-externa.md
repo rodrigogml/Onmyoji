@@ -56,7 +56,13 @@ as referências do perfil e da entrada. Depois são solicitados:
   porta ou caminho. O túnel não exige informar o IP público do computador.
 
 Os identificadores e o hostname são dados de configuração local em
-`tunnel.toml`; o segredo permanece no KeePass. Consulte
+`tunnel.toml`; o segredo permanece no KeePass. Antes de descobrir e publicar, a
+consulta remota verifica se o Zone ID corresponde ao domínio do hostname (por
+exemplo, `laveli.com.br` para `lavelinha.laveli.com.br`). Uma divergência
+interrompe o processo sem modificar DNS, mesmo quando a listagem da zona não
+contiver o hostname. Se a consulta da identidade da zona não for permitida,
+a publicação é interrompida para evitar escrita em uma zona não verificada.
+Consulte
 [onde localizar os IDs](https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/)
 e as [permissões do API Token para Tunnel e DNS](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel-api/).
 

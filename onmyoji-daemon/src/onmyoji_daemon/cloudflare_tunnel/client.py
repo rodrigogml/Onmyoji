@@ -175,11 +175,41 @@ class CloudflareClient:
             raise TunnelError("invalid_response", "Cloudflare não confirmou a consulta de Tunnels da conta.")
         return matches
 
+    def validate_zone_hostname(self, definition: TunnelDefinition) -> None:
+        """Recusa Zone ID de outro domínio antes de criar ou modificar o DNS."""
+        definition.validate()
+        try:
+            zone = self._call("GET", f"/zones/{definition.zone_id}")
+        except TunnelError as error:
+            raise TunnelError(
+                "zone_unverified",
+                "Não foi possível confirmar a identidade da zona Cloudflare; nenhum DNS foi alterado. "
+                "Verifique o Zone ID e as permissões Zone > DNS > Edit do API Token no KeePass.",
+            ) from error
+        name = zone.get("name") if isinstance(zone, dict) else None
+        if not isinstance(name, str) or not name.strip():
+            raise TunnelError(
+                "zone_unverified",
+                "A Cloudflare não retornou o domínio da zona selecionada; nenhum DNS foi alterado. "
+                "Confira o Zone ID informado no painel.",
+            )
+        zone_name = name.strip().rstrip(".").casefold()
+        hostname = definition.hostname.rstrip(".").casefold()
+        if hostname != zone_name and not hostname.endswith("." + zone_name):
+            raise TunnelError(
+                "zone_mismatch",
+                "O Zone ID configurado pertence a outro domínio e não corresponde ao hostname público. "
+                "Abra o domínio do hostname no painel Cloudflare, copie o Zone ID correto "
+                "e atualize a opção 1 da Publicação externa. Nenhum DNS foi alterado.",
+            )
+
     def preflight_access(self, definition: TunnelDefinition, progress) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
         """Testa DNS e Tunnels independentemente, sem alteração remota."""
         definition.validate()
         progress("verificando validade do API Token administrativo na Cloudflare")
         token_status = self.verify_token(definition.account_id)
+        progress("confirmando que o Zone ID corresponde ao domínio do hostname")
+        self.validate_zone_hostname(definition)
         progress("consultando permissões efetivas de leitura: DNS da zona e Tunnels da conta")
         records, matches = None, None
         failures: list[str] = []
@@ -330,7 +360,7 @@ class CloudflareClient:
 
     def _create_dns_record(self, definition: TunnelDefinition, tunnel_id: str) -> dict[str, Any]:
         """Cria somente o CNAME autorizado; em 81053, coleta evidências sem escrever."""
-        definition.validate()
+        self.validate_zone_hostname(definition)
         target = f"{tunnel_id}.cfargotunnel.com"
         try:
             result = self._call("POST", f"/zones/{definition.zone_id}/dns_records",
@@ -404,6 +434,7 @@ class CloudflareClient:
         self._confirmed(confirm)
         existing = self.inspect_dns(definition, tunnel_id)
         if existing is not None:
+            self.validate_zone_hostname(definition)
             return existing
         return self._create_dns_record(definition, tunnel_id)
 

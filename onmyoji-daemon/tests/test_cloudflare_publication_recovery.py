@@ -31,6 +31,8 @@ class RemoteCloudflare(CloudflareClient):
         resource = urlsplit(path).path
         if resource in {"/user/tokens/verify", "/accounts/account/tokens/verify"}:
             return {"status": "active"}
+        if resource == "/zones/zone" and method == "GET":
+            return {"name": "example.com"}
         if resource == "/zones/zone/dns_records":
             if method == "GET":
                 return [deepcopy(self.record)] if self.record else []

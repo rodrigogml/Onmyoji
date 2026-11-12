@@ -4051,6 +4051,7 @@ def daemon_menu(root: Path) -> None:
                     values[key] = value.lower(); break
                 result(False, f"{label} deve ter 32 caracteres hexadecimais, sem espaços. Copie o ID do painel; a credencial já foi tratada no KeePass.")
         note("3. Hostname: endereço público completo deste Shikigami, como tsuki.seudominio.com, sem https:// nem caminho.")
+        note("O Zone ID deve pertencer ao domínio do hostname; essa relação será validada na Cloudflare antes de qualquer criação de DNS.")
         note("O cloudflared conecta este computador à Cloudflare; não é necessário informar o IP público do computador.")
         from onmyoji_daemon.cloudflare_tunnel.configuration import TunnelDefinition
         from onmyoji_daemon.cloudflare_tunnel.exception import TunnelError
