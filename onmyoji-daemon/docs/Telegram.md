@@ -113,6 +113,21 @@ processo que está atendendo o bot.
 
 Contrato de referência: [Codex App Server — Rate limits](https://learn.chatgpt.com/docs/app-server#6-rate-limits-chatgpt).
 
+## Login remoto do Codex
+
+O owner pode enviar `/login` na DM privada (inclusive tópicos privados) para iniciar
+autenticação ChatGPT por código de dispositivo no Codex App Server da instância.
+O Gateway transmite somente URL HTTPS validada e código temporário, com proteção
+de encaminhamento, sem acesso a tokens, senhas ou arquivos de credenciais.
+A confirmação é recebida de `account/login/completed` e a sessão é cancelável
+por `/login cancelar`. `/login status` informa o modo de autenticação sem
+mostrar e-mails, tokens ou credenciais.
+
+A troca da conta não é iniciada enquanto houver execuções ativas ou operações
+incertas e suspende novos despachos até seu término. Para essa função, o App
+Server deve estar habilitado e a autenticação por código de dispositivo
+permitida pela conta/workspace ChatGPT.
+
 ## Matriz de acesso aos comandos do Telegram
 
 Esta matriz descreve as permissões **efetivamente verificadas pelo Gateway**,
@@ -126,6 +141,7 @@ Telegram. `DM` significa conversa privada com o bot.
 | `/config` | DM: abrir preferências; grupos: ajustar a janela de contexto com argumentos numéricos. | Não permitido. |
 | `/channel` | DM e grupos: cadastrar, identificar e gerenciar canais. | Não permitido, inclusive para solicitar cadastro. |
 | `/usage` | Somente DM (inclusive tópicos privados): consultar os limites e o consumo da conta Codex. | Não permitido; nenhuma informação da franquia é consultada ou enviada. |
+| `/login` | Somente DM (inclusive tópicos privados): iniciar, consultar ou cancelar autenticação ChatGPT do Codex. | Não permitido. |
 | `/fila <texto>` | Somente DM: enfileirar uma entrada para o agente. | Não permitido. |
 | `/direcionar <texto>` | Somente DM: solicitar direcionamento, se o runtime permitir. | Não permitido. |
 | `/cancel` | Somente DM: cancelar o turno atual, preservando a fila. | Não permitido. |
@@ -166,6 +182,7 @@ comandos no chat privado de cada owner:
 | `/config` | Configurar a conversa atual. |
 | `/channel` | Gerenciar canal de envio. |
 | `/usage` | Consultar consumo e franquia do Codex. |
+| `/login` | Autenticar ou trocar conta Codex. |
 | `/fila <texto>` | Enfileirar uma mensagem. |
 | `/direcionar <texto>` | Orientar o turno em andamento. |
 | `/cancel` | Interromper o turno atual, preservando a fila. |
