@@ -105,6 +105,14 @@ os tipos de documento aceitos pelo MCP e os limites específicos de cada campo.
 Ausência ou invalidade de campos obrigatórios gera erro com o nome público,
 por exemplo `dados.codigo_integracao`, antes de qualquer acesso externo.
 
+Em `dados.departamentos`, cada item aceita `codigo` (texto, até 40 caracteres),
+`percentual` (número maior que zero) e `valor` opcional. Também é aceito o
+formato nativo `cCodDep`/`nPerDep`/`nValDep`. O MCP converte para os campos
+nativos, calcula os valores quando omitidos, ajusta o arredondamento em centavos
+no último departamento e exige soma de 100% e total compatível com o lançamento.
+Não misture campos dos dois formatos no mesmo item. A mesma regra vale para
+transferências entre contas.
+
 Após uma inclusão confirmada, a conferência usa `.consultar` pelo ID retornado
 ou pelo código de integração original. Em resposta incerta, consulte antes de
 repetir a escrita. Referência dos campos nativos:
@@ -181,9 +189,13 @@ traz `data`, `hora` e `usuario`.
 
 A validação e normalização são executadas antes de ler credenciais ou fazer
 HTTP. Erros retornam `error.code`, mensagem e detalhes sanitizados, incluindo
-o campo e sugestão quando aplicável. Escritas nunca sofrem retry automático;
-um resultado `outcome_unknown` exige consulta antes de repetir. Nenhuma
-operação aceita endpoint, método Omie ou credenciais fornecidos pelo agente.
+o campo e sugestão quando aplicável. Escritas nunca sofrem retry automático. Erros HTTP 4xx (exceto 408)
+preservam o diagnóstico de rejeição, inclusive bloqueios 425 e limite 429.
+Falhas HTTP 5xx, timeout 408, problemas de rede e respostas inválidas
+após uma escrita são identificados por `outcome_unknown`, conservando
+código HTTP e descrição remota sanitizada quando disponíveis. Esse
+resultado exige consulta antes de repetir. Nenhuma operação aceita endpoint,
+método Omie ou credenciais fornecidos pelo agente.
 
 Erros de contrato HTTP 500 não recebem retry automático. Excepcionalmente,
 o HTTP 500 com a descrição da Omie "Já existe uma requisição desse método

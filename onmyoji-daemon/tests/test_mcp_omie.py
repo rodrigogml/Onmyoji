@@ -80,6 +80,7 @@ def test_api_processing_failure_is_sanitized(tmp_path, monkeypatch, status):
     with pytest.raises(OmieError) as error:
         OmieService(tmp_path, Credentials()).invoke("example", "projects_get", {"params": {"codInt": "P1"}})
     assert error.value.code == "omie_api_error"
+    assert error.value.details["remote_description"] == "sensitive"
     assert "sensitive" not in str(error.value)
 
 

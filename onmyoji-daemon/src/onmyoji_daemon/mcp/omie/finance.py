@@ -15,7 +15,7 @@ from datetime import datetime
 from math import isfinite
 from typing import Any, Mapping
 
-from .contracts import DIRECT_DOCUMENT_TYPES
+from .contracts import DIRECT_DOCUMENT_TYPES, normalize_account_departments
 from .exception import OmieError
 from .service import OmieService
 
@@ -227,9 +227,12 @@ def _transaction_body(spec: FinanceSpec, data: Mapping[str, Any]) -> dict[str, A
         _invalid("dados.tipo_documento", "deve ser um dos tipos de documento publicados no contrato.")
     if "observacao" in data and not isinstance(data["observacao"], str):
         _invalid("dados.observacao", "deve ser um texto.")
-    if "departamentos" in data and (not isinstance(data["departamentos"], list) or not all(isinstance(item, Mapping) for item in data["departamentos"])):
-        _invalid("dados.departamentos", "deve ser uma lista de objetos JSON.")
-    return {names[key]: value for key, value in data.items()}
+    translated = {names[key]: value for key, value in data.items()}
+    if "departamentos" in data:
+        translated["departments"] = normalize_account_departments(
+            data["departamentos"], amount, field="dados.departamentos", error_code="invalid_parameter",
+        )
+    return translated
 
 
 def _page(arguments: Mapping[str, Any], *, native: bool) -> dict[str, int]:
@@ -237,6 +240,19 @@ def _page(arguments: Mapping[str, Any], *, native: bool) -> dict[str, int]:
     if type(page) is not int or page < 1: _invalid("pagina", "deve ser um inteiro positivo.")
     if type(size) is not int or not 1 <= size <= 50: _invalid("tamanho_pagina", "deve estar entre 1 e 50.")
     return {"nPagina": page, "nRegPorPagina": size} if native else {"page": page, "page_size": size}
+
+
+
+def _department_schema() -> dict[str, Any]:
+    code = {"type": "string", "minLength": 1, "maxLength": 40, "pattern": r"\S"}
+    percent = {"type": "number", "exclusiveMinimum": 0, "maximum": 100}
+    value = {"type": "number", "minimum": 0}
+    return {"type": "array", "items": {"oneOf": [
+        {"type": "object", "properties": {"codigo": code, "percentual": percent, "valor": value},
+         "required": ["codigo", "percentual"], "additionalProperties": False},
+        {"type": "object", "properties": {"cCodDep": code, "nPerDep": percent, "nValDep": value},
+         "required": ["cCodDep", "nPerDep"], "additionalProperties": False},
+    ]}}
 
 
 def _schema(spec: FinanceSpec, profiles: list[dict[str, str]]) -> dict[str, Any]:
@@ -252,7 +268,7 @@ def _schema(spec: FinanceSpec, profiles: list[dict[str, str]]) -> dict[str, Any]
             "lote": {"type": "integer", "minimum": 1}, "titulos": {"type": "array", "minItems": 1, "items": {"type": "object"}},
             "conta_corrente_id": {"type": "integer", "minimum": 1}, "data": date, "id_baixa": {"type": "integer", "minimum": 1},
             "chave": {"type": "integer", "minimum": 1}, "distribuicao": {"type": "array", "minItems": 1, "items": {"type": "object"}},
-            "cliente_id": {"type": "integer", "minimum": 1}, "departamentos": {"type": "array", "items": {"type": "object"}},
+            "cliente_id": {"type": "integer", "minimum": 1}, "departamentos": _department_schema(),
             "conta_origem_id": {"type": "integer", "minimum": 1}, "conta_destino_id": {"type": "integer", "minimum": 1},
         }
         data_schema: dict[str, Any] = {"type": "object", "properties": data_properties, "description": "Dados semânticos da operação; campos fora do contrato são recusados.", "additionalProperties": False}
@@ -371,7 +387,7 @@ class OmieFinanceFacade:
                 fields = list(IDENTIFIER_NAMES[spec.legacy.rsplit("_", 1)[0]])
                 description += " Informe exatamente um identificador em " + ("dados" if spec.writes else "filtros") + ": " + " ou ".join(fields) + "."
             if spec.legacy == "account_transactions_create":
-                description += " Exige codigo_integracao (texto de até 20 caracteres), conta_corrente_id, data, valor, categoria_codigo e tipo_documento em dados. O id é gerado pela Omie."
+                description += " Exige codigo_integracao (texto de até 20 caracteres), conta_corrente_id, data, valor, categoria_codigo e tipo_documento em dados. O id é gerado pela Omie. Departamentos usam codigo, percentual e valor opcional; o MCP gera o rateio nativo."
             tools.append({"name": spec.name, "description": description + " Não use parâmetros técnicos da Omie.", "input_schema": _schema(spec, profiles)})
         return tools
 
@@ -430,7 +446,12 @@ class OmieFinanceFacade:
                 return {"body": _transaction_body(spec, data)}
             if spec.kind == "transfer":
                 names = {"codigo_integracao": "integration_id", "conta_origem_id": "source_account_id", "conta_destino_id": "destination_account_id", "data": "date", "valor": "amount", "categoria_codigo": "category_code", "numero_documento": "document_number", "observacao": "note", "projeto_id": "project_id", "departamentos": "departments"}
-                return {"body": self._map(data, names)}
+                body = self._map(data, names)
+                if "departamentos" in data:
+                    body["departments"] = normalize_account_departments(
+                        data["departamentos"], data.get("valor"), field="dados.departamentos", error_code="invalid_parameter",
+                    )
+                return {"body": body}
         if not spec.paginated:
             for field in ("pagina", "tamanho_pagina"):
                 if field in arguments:

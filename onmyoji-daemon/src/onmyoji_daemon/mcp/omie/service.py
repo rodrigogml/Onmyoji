@@ -97,8 +97,20 @@ class OmieService:
         try:
             return self._request(profile, defaults, endpoint, method, parameters, retries=0 if writes else None)
         except OmieError as error:
-            if writes and error.code in {"omie_http_error", "network_error"}:
-                raise OmieError("outcome_unknown", "A escrita pode ter sido recebida pela Omie; consulte antes de repetir.", {"operation": operation, "retryable": False}) from error
+            if writes:
+                if error.code == "omie_http_error":
+                    status = error.details.get("http_status")
+                    # HTTP 4xx (exceto timeout 408) é rejeição explícita, não estado incerto.
+                    if type(status) is int and 400 <= status < 500 and status != 408:
+                        raise
+                if error.code in {"omie_http_error", "network_error", "invalid_response"}:
+                    details = {"operation": operation, "cause_code": error.code, "retryable": False}
+                    for field in ("http_status", "remote_code", "remote_description", "retry_after_seconds"):
+                        if field in error.details:
+                            details[field] = error.details[field]
+                    raise OmieError(
+                        "outcome_unknown", "A escrita pode ter sido recebida pela Omie; consulte antes de repetir.", details,
+                    ) from error
             raise
 
     def _profile(self, profile_name: str) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -213,6 +225,13 @@ class OmieService:
                 if not isinstance(result, Mapping):
                     raise OmieError("invalid_response", "A API Omie retornou uma resposta inválida.")
                 if result.get("faultstring") or ("cCodStatus" in result and (type(result["cCodStatus"]) not in (str, int) or result["cCodStatus"] not in ("0", 0))):
-                    raise OmieError("omie_api_error", "A API Omie retornou uma falha de negócio.")
+                    details: dict[str, Any] = {"retryable": False}
+                    code = result.get("faultcode") if result.get("faultstring") else result.get("cCodStatus")
+                    description = result.get("faultstring") or result.get("cDesStatus")
+                    if isinstance(code, (str, int)) and not isinstance(code, bool):
+                        details["remote_code"] = code
+                    if isinstance(description, str) and description.strip():
+                        details["remote_description"] = description.strip()[:300]
+                    raise OmieError("omie_api_error", "A API Omie retornou uma falha de negócio.", details)
                 return result
         raise OmieError("network_error", "Não foi possível consultar a API Omie.")
