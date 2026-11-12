@@ -389,6 +389,113 @@ def test_failed_local_checkpoint_after_settings_swap_can_restore_both_sides(reco
     assert config.settings() == original
 
 
+def test_cloudflare_readback_normalizes_documented_origin_defaults_and_rollback(recovery, monkeypatch):
+    manager, config, client = recovery
+    original = deepcopy(client.remote)
+    original_call = client._call
+    written = {"count": 0}
+
+    def call(method, path, body=None):
+        response = original_call(method, path, body)
+        if method == "PUT":
+            written["count"] += 1
+        if method == "GET" and path.endswith("/configurations") and written["count"]:
+            response = deepcopy(response)
+            for rule in response["config"]["ingress"]:
+                if rule.get("hostname"):
+                    rule.setdefault("originRequest", {}).update(
+                        noTLSVerify=False, connectTimeout=30, http2Origin=False,
+                        originServerName="", keepAliveConnections=100,
+                    )
+        return response
+
+    monkeypatch.setattr(client, "_call", call)
+    inspected = preview(recovery)
+    manager.apply(inspected["preview_id"], config.settings(), lambda _: None)
+    assert manager._read(inspected["preview_id"])["state"] == "applied"
+    manager.rollback(inspected["preview_id"], config.settings(), lambda _: None)
+    assert manager._read(inspected["preview_id"])["state"] == "rolled_back"
+    assert client.remote == original
+    assert written["count"] == 2
+
+
+def test_cloudflare_readback_waits_for_eventual_consistency(recovery, monkeypatch):
+    manager, config, client = recovery
+    result = preview(recovery)
+    original_call = client._call
+    before = deepcopy(client.remote)
+    remaining_old_reads = {"count": 2}
+
+    def call(method, path, body=None):
+        response = original_call(method, path, body)
+        if method == "GET" and path.endswith("/configurations"):
+            if client.remote != before and remaining_old_reads["count"]:
+                remaining_old_reads["count"] -= 1
+                return deepcopy(before)
+        return response
+
+    monkeypatch.setattr(client, "_call", call)
+    monkeypatch.setattr("onmyoji_daemon.cloudflare_tunnel.recovery.time.sleep", lambda _: None)
+    manager.apply(result["preview_id"], config.settings(), lambda _: None)
+    assert remaining_old_reads["count"] == 0
+    assert manager._read(result["preview_id"])["state"] == "applied"
+
+
+@pytest.mark.parametrize("malformation", ["ca_missing", "tls_disabled", "unexpected_origin", "global_insecure"])
+def test_cloudflare_readback_never_accepts_unsafe_or_unrelated_changes(recovery, monkeypatch, malformation):
+    manager, config, client = recovery
+    inspected = preview(recovery)
+    old_config = config.path.read_bytes()
+    original_call = client._call
+    wrote = {"value": False}
+
+    def call(method, path, body=None):
+        response = original_call(method, path, body)
+        if method == "PUT":
+            wrote["value"] = True
+        if method == "GET" and path.endswith("/configurations") and wrote["value"]:
+            response = deepcopy(response)
+            ingress = response["config"]["ingress"][0]
+            if malformation == "ca_missing":
+                ingress["originRequest"].pop("caPool")
+            elif malformation == "tls_disabled":
+                ingress["originRequest"]["noTLSVerify"] = True
+            elif malformation == "unexpected_origin":
+                ingress["service"] = "https://localhost:42000"
+            elif malformation == "global_insecure":
+                response["config"]["originRequest"] = {"noTLSVerify": True}
+                ingress["originRequest"].pop("noTLSVerify")
+        return response
+
+    monkeypatch.setattr(client, "_call", call)
+    monkeypatch.setattr("onmyoji_daemon.cloudflare_tunnel.recovery.time.sleep", lambda _: None)
+    with pytest.raises(TunnelError) as caught:
+        manager.apply(inspected["preview_id"], config.settings(), lambda _: None)
+    assert caught.value.code == "recovery_verification_failed"
+    assert "Campos divergentes" in str(caught.value)
+    assert "/configs/" not in str(caught.value) and "localhost:42000" not in str(caught.value)
+    assert config.path.read_bytes() == old_config
+    assert manager._read(inspected["preview_id"])["state"] == "failed"
+
+
+def test_cloudflare_readback_detects_only_safe_paths_without_values():
+    from onmyoji_daemon.cloudflare_tunnel.recovery import _remote_matches, _safe_difference_paths
+    expected = {"config": {"ingress": [
+        {"hostname": "example.com", "service": "https://localhost:39390", "originRequest":
+            {"caPool": "/secret/path/ca.pem", "noTLSVerify": False}},
+        {"service": "http_status:404"},
+    ]}}
+    actual = deepcopy(expected)
+    actual["config"]["ingress"][0]["originRequest"].update(
+        noTLSVerify=False, connectTimeout=30, http2Origin=False)
+    assert _remote_matches(expected, actual)
+    actual["config"]["ingress"][0]["originRequest"].pop("caPool")
+    assert not _remote_matches(expected, actual)
+    details = _safe_difference_paths(expected, actual)
+    assert "config.ingress[0].originRequest.caPool" in details
+    assert "/secret" not in details
+
+
 def test_dns_changed_during_put_does_not_confirm_local_provisioning(recovery, monkeypatch):
     manager, config, client = recovery
     original = config.settings()

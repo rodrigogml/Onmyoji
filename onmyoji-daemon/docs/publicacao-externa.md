@@ -203,6 +203,14 @@ pela própria substituição. Mudanças externas posteriores impedem a restaura�
 automática. A disponibilidade restaurada depende da execução da origem antiga;
 o rollback não reinstala aplicações nem configurações legadas.
 
+Na adoção de uma publicação existente, o setup confirma a gravação remota com
+releituras limitadas, permitindo apenas valores padrão documentados que a
+Cloudflare acrescente ou omita em `originRequest`. Nunca considera equivalentes
+alterações de hostname, serviço, `caPool`, desativação de verificação TLS ou
+outras regras. Em divergências, exibe **somente caminhos de campos**, sem
+valores sensíveis, preservando o backup e impedindo confirmação local. A
+restauração aplica a mesma comparação conservadora.
+
 As mesmas operações estão disponíveis no CLI:
 
 ```powershell

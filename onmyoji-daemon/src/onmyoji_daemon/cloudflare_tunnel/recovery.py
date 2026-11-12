@@ -36,6 +36,112 @@ def _safe_snapshot(value: Any) -> None:
             raise TunnelError("sensitive_remote_config", "Uma URL remota contém credenciais ou parâmetros; revise-a na Cloudflare antes de criar o backup da publicação.")
 
 
+# Valores padrão documentados do cloudflared podem ser materializados na leitura
+# posterior ao PUT. Não normalize CA, host, origem nem opções não reconhecidas.
+_ORIGIN_DEFAULTS = {
+    "noTLSVerify": (False,),
+    "http2Origin": (False,),
+    "matchSNItoHost": (False,),
+    "disableChunkedEncoding": (False,),
+    "noHappyEyeballs": (False,),
+    "originServerName": ("",),
+    "httpHostHeader": ("",),
+    "proxyType": ("",),
+    "connectTimeout": (30, "30s"),
+    "tlsTimeout": (10, "10s"),
+    "keepAliveTimeout": (90, "90s", "1m30s"),
+    "keepAliveConnections": (100,),
+    "tcpKeepAlive": (30, "30s"),
+}
+
+
+def _normalized_config(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Normaliza apenas padrões de origem que não alteram a semântica."""
+    value = deepcopy(snapshot)
+    config = value.get("config")
+    if not isinstance(config, dict):
+        return value
+
+    def clean_origin(item: dict[str, Any]) -> None:
+        origin = item.get("originRequest")
+        if not isinstance(origin, dict):
+            return
+        for key, defaults in _ORIGIN_DEFAULTS.items():
+            current = origin.get(key)
+            if key in origin and any(type(current) is type(default) and current == default for default in defaults):
+                origin.pop(key)
+        if not origin:
+            item.pop("originRequest", None)
+
+    clean_origin(config)
+    for rule in config.get("ingress", []):
+        if isinstance(rule, dict):
+            clean_origin(rule)
+    return value
+
+
+def _effective_tls_safe(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
+    """A falta do false explícito nunca pode herdar um true global."""
+    original = expected.get("config", {})
+    observed = actual.get("config", {})
+    if not isinstance(original, dict) or not isinstance(observed, dict):
+        return False
+    expected_ingress = original.get("ingress", [])
+    actual_ingress = observed.get("ingress", [])
+    if not isinstance(expected_ingress, list) or not isinstance(actual_ingress, list):
+        return False
+    if len(expected_ingress) != len(actual_ingress):
+        return False
+    global_origin = observed.get("originRequest")
+    globally_disabled = isinstance(global_origin, dict) and global_origin.get("noTLSVerify") is True
+    for expected_rule, actual_rule in zip(expected_ingress, actual_ingress):
+        if not isinstance(expected_rule, dict) or not isinstance(actual_rule, dict):
+            return False
+        expected_origin = expected_rule.get("originRequest")
+        actual_origin = actual_rule.get("originRequest")
+        if isinstance(expected_origin, dict) and expected_origin.get("noTLSVerify") is False:
+            # A API pode omitir o false default, exceto se isso deixar um true
+            # global efetivo sobre a rota.
+            if globally_disabled and not (isinstance(actual_origin, dict) and actual_origin.get("noTLSVerify") is False):
+                return False
+    return True
+
+
+def _remote_matches(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
+    return _effective_tls_safe(expected, actual) and _normalized_config(expected) == _normalized_config(actual)
+
+
+def _safe_difference_paths(expected: dict[str, Any], actual: dict[str, Any]) -> str:
+    """Exibe apenas caminhos de campos divergentes, nunca dados da Cloudflare."""
+    missing = object()
+    left, right = _normalized_config(expected), _normalized_config(actual)
+    paths: list[str] = []
+
+    def walk(a: Any, b: Any, path: str) -> None:
+        if len(paths) >= 6:
+            return
+        if isinstance(a, dict) and isinstance(b, dict):
+            for key in sorted(set(a) | set(b)):
+                label = str(key) if isinstance(key, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,31}", key) else "campo"
+                walk(a.get(key, missing), b.get(key, missing), f"{path}.{label}" if path else label)
+                if len(paths) >= 6:
+                    return
+        elif isinstance(a, list) and isinstance(b, list):
+            if len(a) != len(b):
+                paths.append(path + ".quantidade")
+            for index, (ai, bi) in enumerate(zip(a, b)):
+                walk(ai, bi, f"{path}[{index}]")
+                if len(paths) >= 6:
+                    return
+        elif type(a) is not type(b) or a != b:
+            paths.append(path)
+
+    walk(left, right, "")
+    if not _effective_tls_safe(expected, actual) and "config.ingress[0].originRequest.noTLSVerify" not in paths:
+        paths.append("config.ingress[0].originRequest.noTLSVerify")
+    return ", ".join(paths[:6]) if paths else "config.ingress[0].originRequest.noTLSVerify"
+
+
 def _dns_snapshot(record: dict[str, Any] | None) -> dict[str, Any] | None:
     return {key: record.get(key) for key in ("id", "type", "name", "content", "proxied")} if record is not None else None
 
@@ -116,6 +222,29 @@ class PublicationRecovery:
                 "dns_action": "reuse" if dns else "create", "configuration_changes": remote != desired,
                 "message": "Publicação existente encontrada. O setup pode reutilizar o Tunnel e aplicar a origem e a CA deste Gateway, sem excluir o Tunnel. A leitura e o token de execução foram validados; permissões de escrita serão confirmadas pela API ao aplicar."}
 
+    def _confirm_remote(self, definition: TunnelDefinition, expected: dict[str, Any], progress, *, restoring: bool = False) -> None:
+        """Confirma HTTPS, CA, ingress único e configuração preservada após PUT.
+
+        Tolera padrões documentados e leituras brevemente antigas sem aceitar
+        alterações de origem/TLS ou regras adicionais.
+        """
+        last = None
+        for attempt in range(4):
+            if attempt:
+                progress("aguardando atualização da configuração remota do Tunnel")
+                time.sleep(0.4 * attempt)
+            last = self._remote_config(self.client.get_configuration(definition), definition.hostname)
+            if _remote_matches(expected, last):
+                return
+        mismatch = _safe_difference_paths(expected, last)
+        action = "restauração" if restoring else "origem HTTPS e CA"
+        raise TunnelError(
+            "recovery_verification_failed",
+            f"A Cloudflare aceitou a escrita, mas a leitura não confirmou {action}. "
+            f"Campos divergentes (sem valores): {mismatch}. "
+            "O backup foi preservado e a confirmação local não foi gravada; não repita a escrita sem revisar a publicação.",
+        )
+
     def apply(self, identifier: str, settings: dict[str, Any], progress) -> dict[str, Any]:
         data = self._read(identifier)
         if data.get("state") != "prepared" or time.time() - data.get("created_at", 0) > 900:
@@ -144,8 +273,7 @@ class PublicationRecovery:
             data["remote_write_attempted"] = True
             self._save(identifier, data)
             self.client.configure_ingress(definition, definition.tunnel_id, settings["gateway_url"], True, settings["ca_file"], expected_previous=data["remote_before"])
-            if self._remote_config(self.client.get_configuration(definition), definition.hostname) != data["remote_expected"]:
-                raise TunnelError("recovery_verification_failed", "A Cloudflare não confirmou a origem esperada. O backup foi preservado; confira a publicação antes de tentar novamente ou restaurar.")
+            self._confirm_remote(definition, data["remote_expected"], progress)
             progress("confirmando o CNAME após a atualização da origem")
             if _dns_snapshot(self.client.inspect_dns(definition, definition.tunnel_id)) != data.get("dns_created", data["dns_before"]):
                 raise TunnelError("recovery_verification_failed", "O DNS mudou durante a atualização da origem. O backup foi preservado e o estado local não foi confirmado; revise a publicação Cloudflare.")
@@ -180,16 +308,17 @@ class PublicationRecovery:
         remote = self._remote_config(self.client.get_configuration(definition), definition.hostname)
         expected_dns = data.get("dns_created", data["dns_before"])
         dns = self.client.inspect_dns(definition, definition.tunnel_id)
-        dns_already_removed = data["state"] == "rolling_back" and data.get("dns_created") and dns is None and remote == data["remote_before"]
-        if (_dns_snapshot(dns) != expected_dns and not dns_already_removed) or remote not in (data["remote_before"], data["remote_expected"]):
+        before_matches = _remote_matches(data["remote_before"], remote)
+        after_matches = _remote_matches(data["remote_expected"], remote)
+        dns_already_removed = data["state"] == "rolling_back" and data.get("dns_created") and dns is None and before_matches
+        if (_dns_snapshot(dns) != expected_dns and not dns_already_removed) or not (before_matches or after_matches):
             raise TunnelError("stale_preview", "A publicação foi alterada fora desta operação; nenhuma restauração automática foi aplicada.")
         data["state"] = "rolling_back"
         self._save(identifier, data)
-        if remote != data["remote_before"]:
+        if not before_matches:
             progress("restaurando a configuração remota anterior")
             self.client.set_configuration(definition, data["remote_before"], True)
-            if self._remote_config(self.client.get_configuration(definition), definition.hostname) != data["remote_before"]:
-                raise TunnelError("recovery_verification_failed", "A restauração remota não foi confirmada; preserve o backup e confira o Tunnel.")
+            self._confirm_remote(definition, data["remote_before"], progress, restoring=True)
         if data.get("dns_created") and not dns_already_removed:
             progress("removendo somente o CNAME criado por esta substituição")
             self.client.delete_managed_dns(definition, definition.tunnel_id, data["dns_created"]["id"], True)
