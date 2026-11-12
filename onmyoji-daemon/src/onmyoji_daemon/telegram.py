@@ -34,6 +34,7 @@ from .telegram_process import ProcessRecoveryError
 from .telegram_delivery import GatewayDelivery, DeliveryOwner, DeliveryUncertain, DeliverySuppressed
 from .codex_capabilities import CapabilitySet
 from .codex_usage import format_rate_limits
+from .telegram_login import TelegramLogin
 from .instructions import InstructionComposer, TelegramTurnContext
 from .instance import identity, telegram_configuration_path
 from .codex_execution import CodexExecutionError, CodexLaunch
@@ -465,7 +466,7 @@ def under(path: Path, root: Path) -> bool:
     except ValueError: return False
 
 
-class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
+class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramChannels):
     def __init__(self, settings: Settings):
         lease = GatewayStore.open_lease(settings.state_dir / "gateway-writer.lock")
         try:
@@ -510,6 +511,7 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
         self.archive_root.mkdir(parents=True, exist_ok=True); self.staging_root.mkdir(parents=True, exist_ok=True)
         self.api: TelegramApi | None = None; self.bot_id: int | None = None; self.pair: tuple[str, float] | None = None; self.offset = 0; self.work = threading.BoundedSemaphore(settings.parallel); self.totp_sessions: dict[int, dict[str, Any]] = {}; self.config_sessions: dict[str, dict[str, Any]] = {}; self.config_lock = threading.RLock(); self.menu_sessions: dict[str, MenuSession] = {}; self.channel_identify_sessions: dict[str, dict[str, Any]] = {}; self.menu_lock = threading.RLock(); self.last_error: str | None = None; self.cleanup_path = settings.state_dir / "totp-cleanup.json"; self.pending_deletions = json_file(self.cleanup_path, {}); self.app_server: CodexAppServer | None = None; self.app_server_lock = threading.RLock(); self.app_turns: dict[str, AppServerTurn] = {}; self.last_app_activity = time.monotonic(); self.turn_locks: dict[str, threading.Lock] = {}; self.turn_locks_lock = threading.Lock(); self.workers: set[str] = set(); self.workers_lock = threading.Lock()
         self.workers_changed = threading.Condition(self.workers_lock)
+        self._initialize_login()
         self.related_work = RelatedWorkMonitor(self.store, lambda: self.capabilities, lambda: self.app_server, self._generation, self._enqueue_related_result, enabled=settings.post_turn_results, timeout_seconds=settings.turn_timeout, diagnostic=self._diagnostic)
         self._init_notifications()
 
@@ -1423,6 +1425,8 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
             self._recovery_control(conversation_id, text[len(text.split(maxsplit=1)[0]):].strip().casefold()); return
         if command == "/usage":
             self._usage(conversation_id); return
+        if command == "/login":
+            self._login(conversation_id, text[len(text.split(maxsplit=1)[0]):].strip()); return
         if conversation_id in self.totp_sessions:
             if text.startswith("/"):
                 self._clear_totp_session(conversation_id); self._ephemeral(conversation_id, "Fluxo TOTP cancelado por um novo comando.")

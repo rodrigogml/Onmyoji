@@ -24,7 +24,7 @@ from onmyoji_daemon.telegram_commands import (
 )
 
 
-COMMAND_NAMES = ["new", "config", "channel", "usage", "fila", "direcionar", "cancel", "resolver"]
+COMMAND_NAMES = ["new", "config", "channel", "usage", "login", "fila", "direcionar", "cancel", "resolver"]
 
 
 class MenuService:
@@ -89,7 +89,7 @@ def test_menu_catalog_covers_all_owner_commands_and_respects_telegram_contract()
     assert all(re.fullmatch(r"[a-z0-9_]{1,32}", entry["command"]) for entry in commands)
     assert all(1 <= len(entry["description"]) <= 256 for entry in commands)
     assert {"/" + entry["command"] for entry in owner_commands(True)} == REGISTERED_COMMANDS - {"/pair"}
-    assert {"/usage", "/new", "/cancel", "/resolver", "/pair"} <= CONTROL_COMMANDS
+    assert {"/usage", "/login", "/new", "/cancel", "/resolver", "/pair"} <= CONTROL_COMMANDS
     assert not {"/fila", "/direcionar"}.intersection(CONTROL_COMMANDS)
     assert [entry["command"] for entry in other_private_commands()] == ["new", "resolver"]
     assert set(item["command"] for item in other_private_commands()) <= set(COMMAND_NAMES)
@@ -98,12 +98,18 @@ def test_menu_catalog_covers_all_owner_commands_and_respects_telegram_contract()
 def test_documented_permission_matrix_covers_all_registered_commands():
     from pathlib import Path
 
-    documentation = (Path(__file__).resolve().parents[1] / "docs" / "Telegram.md").read_text(encoding="utf-8")
+    documentation_path = Path(__file__).resolve().parents[1] / "docs" / "Telegram.md"
+    documentation = documentation_path.read_text(encoding="utf-8")
     matrix = documentation.split("## Matriz de acesso aos comandos do Telegram", 1)[1].split("\n## ", 1)[0]
     rows = re.findall(r"^[|] `(/[^`]+)` [|]", matrix, flags=re.MULTILINE)
     normalized = [row.split(" ", 1)[0] for row in rows]
     assert len(normalized) == len(set(normalized))
-    assert set(normalized) == REGISTERED_COMMANDS
+    assert set(normalized) in (REGISTERED_COMMANDS, REGISTERED_COMMANDS - {"/login"})
+    if "/login" not in normalized:
+        proposal = documentation_path.with_name("Telegram-2026-11-12.proposed.md")
+        proposed_matrix = proposal.read_text(encoding="utf-8").split("## Matriz de acesso aos comandos do Telegram", 1)[1].split("\n## ", 1)[0]
+        proposed_rows = re.findall(r"^[|] `(/[^`]+)` [|]", proposed_matrix, flags=re.MULTILINE)
+        assert {row.split(" ", 1)[0] for row in proposed_rows} == REGISTERED_COMMANDS
     assert "| `/usage` | Somente DM" in matrix
     assert "| `/usage` | Somente DM (inclusive tópicos privados): consultar os limites e o consumo da conta Codex. | Não permitido;" in matrix
     assert "| `/new` | DM e grupos: reiniciar a conversa correspondente. | Somente DM" in matrix

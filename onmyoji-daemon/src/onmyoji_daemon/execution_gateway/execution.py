@@ -328,13 +328,15 @@ class ExecutionGateway:
                 generation = self._generation(conversation)
                 item = self.store.next_input(conversation, generation)
                 if not slot and item:
-                    from ..telegram import ConversationExecution
-                    identifier = self.store.reserve(conversation, generation, item["id"], self.settings.turn_timeout)
-                    slot = ConversationExecution(identifier, conversation, generation, item)
-                    with self.app_server_lock:
-                        self._slots[conversation] = slot
-                    threading.Thread(target=self._execute_inbox, args=(slot,), daemon=True).start()
-                    continue
+                    with self._login_lock:
+                        if self._login_session is None:
+                            from ..telegram import ConversationExecution
+                            identifier = self.store.reserve(conversation, generation, item["id"], self.settings.turn_timeout)
+                            slot = ConversationExecution(identifier, conversation, generation, item)
+                            with self.app_server_lock:
+                                self._slots[conversation] = slot
+                            threading.Thread(target=self._execute_inbox, args=(slot,), daemon=True).start()
+                            continue
                 if slot and item and slot.active and self._can_steer(slot, item):
                     self._steer_input(slot, item)
                     continue
@@ -858,6 +860,7 @@ class ExecutionGateway:
         return active
 
     def _app_event(self, method: str, params: dict[str, Any], event: dict[str, Any] | None) -> None:
+        self._login_event(method, params, event)
         if method == "transport/lost":
             epoch = str((event or {}).get("process_epoch"))
             self.related_work.process_lost(epoch)
@@ -1160,7 +1163,7 @@ class ExecutionGateway:
                 own = getattr(self._execution_local, "slot", None)
                 safe = not self.app_turns and not any(slot is not own and not slot.done.is_set() for slot in self._slots.values())
                 client = self.app_server
-            safe = safe and not self.related_work.has_pending(str(getattr(client, "process_epoch", ""))) and not self._has_uncertain_runtime()
+            safe = safe and not self._login_pending() and not self.related_work.has_pending(str(getattr(client, "process_epoch", ""))) and not self._has_uncertain_runtime()
             if safe:
                 try:
                     launch = CodexLaunch.from_system(self.settings.root)
@@ -1202,7 +1205,7 @@ class ExecutionGateway:
                 with self.app_server_lock:
                     safe = not self.app_turns and not any(not slot.done.is_set() for slot in self._slots.values())
                     client = self.app_server
-                if client and client.running() and safe and not getattr(client, "busy", False) and not self._has_uncertain_runtime() and not self.related_work.has_pending(str(getattr(client, "process_epoch", ""))) and (mcp_reconciliation_pending(self.settings.root) or time.monotonic() - self.last_app_activity >= self.settings.app_server_idle_seconds):
+                if client and client.running() and safe and not getattr(client, "busy", False) and not self._login_pending() and not self._has_uncertain_runtime() and not self.related_work.has_pending(str(getattr(client, "process_epoch", ""))) and (mcp_reconciliation_pending(self.settings.root) or time.monotonic() - self.last_app_activity >= self.settings.app_server_idle_seconds):
                     client.stop(); self._mark_process_stopped(str(getattr(client, "process_epoch", ""))); self.last_app_activity = time.monotonic()
             finally:
                 self._client_start_lock.release()
