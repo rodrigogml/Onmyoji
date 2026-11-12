@@ -122,22 +122,31 @@ Telegram. `DM` significa conversa privada com o bot.
 
 | Comando | Owner | Outros |
 | --- | --- | --- |
-| `/new` | DM e grupos: reiniciar a conversa correspondente. | Não permitido. |
+| `/new` | DM e grupos: reiniciar a conversa correspondente. | Somente DM: reiniciar a própria conversa. |
 | `/config` | DM: abrir preferências; grupos: ajustar a janela de contexto com argumentos numéricos. | Não permitido. |
-| `/channel` | DM e grupos: cadastrar, identificar e gerenciar canais. | Somente DM: solicitar o cadastro de um canal ainda não registrado; aprovação exclusiva do owner. |
+| `/channel` | DM e grupos: cadastrar, identificar e gerenciar canais. | Não permitido, inclusive para solicitar cadastro. |
 | `/usage` | Somente DM (inclusive tópicos privados): consultar os limites e o consumo da conta Codex. | Não permitido; nenhuma informação da franquia é consultada ou enviada. |
 | `/fila <texto>` | Somente DM: enfileirar uma entrada para o agente. | Não permitido. |
 | `/direcionar <texto>` | Somente DM: solicitar direcionamento, se o runtime permitir. | Não permitido. |
 | `/cancel` | Somente DM: cancelar o turno atual, preservando a fila. | Não permitido. |
-| `/resolver` | Somente DM: reconciliar ou descartar operações incertas. | Não permitido. |
+| `/resolver` | DM e grupos: reconciliar ou descartar operações incertas da conversa correspondente. | Somente DM: reconciliar ou descartar operações incertas da própria conversa. |
 | `/totp` | Somente DM, quando TOTP estiver habilitado. | Não permitido. |
-| `/pair <PIN>` | Somente DM, quando houver PIN temporário válido. | Somente DM, com PIN temporário válido: realiza o pareamento e concede o papel de owner. |
+| `/pair <PIN>` | Somente DM, com PIN temporário válido. | Somente DM, com PIN temporário válido: realiza o pareamento e concede o papel de owner. |
 
 A relação acima inclui `/pair`, embora ele não seja divulgado no menu permanente.
-Apenas o owner recebe o menu privado de comandos; a exibição no Telegram não
-substitui a autorização no servidor. Em grupos, mensagens de terceiros podem
-compor o contexto não confiável, mas não autorizam a execução dos controles
-privados. O Gateway rejeita `/usage` fora da DM do owner antes de consultar
+O PIN é gerado pelo setup, expira e só pode ser consumido uma vez; a sua
+validação e consumo são atômicos para impedir pareamentos simultâneos com o
+mesmo código. Outros usuários recebem apenas `/new` e `/resolver` no menu
+privado; o menu do owner prevalece para usuários pareados. A exibição no
+Telegram não substitui a autorização no servidor.
+
+O Gateway restringe `/new` e `/resolver` de outros usuários à própria DM,
+sem permitir alterar o estado do owner ou de terceiros. O argumento
+`/resolver descartar` também é isolado por conversa. `/channel` não pode
+ser executado por outros usuários: menus antigos de solicitação não podem
+ser confirmados por callbacks. Em grupos, mensagens de terceiros podem
+compor o contexto não confiável, mas não autorizam comandos de controle.
+O Gateway rejeita `/usage` fora da DM do owner antes de consultar
 `account/rateLimits/read`.
 
 A futura operação de consumo de renovação, `/resetusage`, deve seguir a mesma
@@ -148,8 +157,8 @@ estiver disponível.
 
 ## Menu de comandos do bot
 
-O catálogo central em `telegram_commands.py` publica os comandos permanentes
-no chat privado de cada owner:
+O catálogo central em `telegram_commands.py` publica o conjunto completo de
+comandos no chat privado de cada owner:
 
 | Comando | Função |
 | --- | --- |
@@ -168,6 +177,11 @@ Variações como `/resolver descartar` são argumentos do comando correspondente
 O teste do catálogo compara os handlers com essa relação para detectar novos
 comandos permanentes que ainda não tenham sido incluídos no menu.
 
+Para **outros usuários**, o menu na DM contém somente `/new` e `/resolver`.
+O Gateway publica esse catálogo pelo escopo `all_private_chats`, sem divulgar
+comandos administrativos no escopo global do Telegram. O catálogo individual
+do owner tem prioridade sobre o escopo geral de DMs.
+
 A sincronização configura o escopo do chat do owner sem idioma e também os
 idiomas conhecidos daquele owner, normalizados para duas letras. Isso evita
 que uma lista antiga por idioma prevaleça sobre o catálogo geral do chat.
@@ -175,12 +189,13 @@ O Gateway preserva os idiomas já observados; quando recebe um novo idioma,
 solicita nova sincronização. A API não permite enumerar catálogos de idiomas
 desconhecidos, portanto o owner precisa interagir com o bot após trocar de
 idioma para que essa variante seja observada. O botão do menu também é
-confirmado como menu de comandos. Essas operações ficam restritas ao chat
-do owner e não alteram os escopos públicos ou globais do bot.
+confirmado como menu de comandos. A reconciliação do catálogo dos outros
+usuários verifica também a leitura de volta de `all_private_chats`. Nenhuma
+dessas operações altera o menu global ou o dos grupos do bot.
 
-A confirmação compara nomes, descrições e ordem do catálogo retornado pelo
-Telegram. O recibo local inclui a revisão do catálogo, a configuração TOTP,
-owners confirmados e pendências. O setup e a CLI só informam sucesso quando
+A confirmação compara nomes, descrições e ordem dos catálogos retornados
+pelo Telegram. O recibo local inclui a revisão conjunta dos catálogos, a
+configuração TOTP, owners confirmados, o resultado para outras DMs e pendências. O setup e a CLI só informam sucesso quando
 esse recibo corresponde ao catálogo da versão local; um recibo antigo ou uma
 tentativa ainda em andamento permanece pendente.
 
@@ -189,8 +204,8 @@ ao parear um owner, ao observar novo idioma e a cada cinco minutos. Falhas
 têm nova tentativa após um minuto, respeitando um prazo maior informado pelo
 Telegram em `retry_after`. Cada rodada tem orçamento de 30 segundos e não
 ocupa o recebimento normal de updates. Rodadas parciais retomam os owners
-pendentes, preservando confirmações da mesma revisão e idiomas até concluir
-o ciclo. Owners lentos não impedem a tentativa dos demais. O ciclo seguinte
+pendentes e o catálogo das demais DMs, preservando confirmações da mesma revisão
+até concluir o ciclo. Owners lentos não impedem a tentativa dos demais. O ciclo seguinte
 verifica novamente o catálogo de todos os owners. Um ciclo parcial também
 expira após cinco minutos, para uma falha persistente não impedir a nova
 verificação de quem já havia sido confirmado.

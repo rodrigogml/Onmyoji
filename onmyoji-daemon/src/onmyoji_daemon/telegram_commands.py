@@ -1,4 +1,4 @@
-"""Catálogo único dos comandos privados publicados aos owners no Telegram."""
+"""Catálogo de comandos e permissões para DMs de owners e outros usuários."""
 from __future__ import annotations
 
 import hashlib
@@ -18,6 +18,7 @@ _OWNER_COMMANDS = (
     ("resolver", "Consultar e reconciliar solicitações sem confirmação"),
 )
 _TOTP_COMMAND = ("totp", "Obter código de autenticação")
+_OTHER_PRIVATE_COMMAND_NAMES = ("new", "resolver")
 REGISTERED_COMMANDS = frozenset("/" + name for name, _ in (*_OWNER_COMMANDS, _TOTP_COMMAND)) | {"/pair"}
 CONTROL_COMMANDS = REGISTERED_COMMANDS - {"/fila", "/direcionar"}
 COMMAND_REFRESH_SECONDS = 300
@@ -30,8 +31,15 @@ def owner_commands(totp_enabled: bool) -> list[dict[str, str]]:
     return [{"command": name, "description": description} for name, description in entries]
 
 
+def other_private_commands() -> list[dict[str, str]]:
+    """Comandos seguros para qualquer usuário, somente em sua própria DM."""
+    return [{"command": name, "description": description}
+            for name, description in _OWNER_COMMANDS if name in _OTHER_PRIVATE_COMMAND_NAMES]
+
+
 def command_catalog_revision(totp_enabled: bool) -> str:
-    payload = json.dumps(owner_commands(totp_enabled), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    catalogs = {"owner": owner_commands(totp_enabled), "other_private": other_private_commands()}
+    payload = json.dumps(catalogs, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -52,6 +60,8 @@ def command_sync_is_current(summary: object, totp_enabled: bool) -> bool:
             and owners > 0 and verified == owners and failed == 0
             and summary.get("pending", False) is False and summary.get("in_progress", False) is False
             and summary.get("expected") == [item["command"] for item in owner_commands(totp_enabled)]
+            and summary.get("other_private_verified") is True
+            and summary.get("expected_other_private") == [item["command"] for item in other_private_commands()]
             and summary.get("catalog_revision") == command_catalog_revision(totp_enabled))
 
 

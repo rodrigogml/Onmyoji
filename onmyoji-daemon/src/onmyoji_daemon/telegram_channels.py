@@ -166,7 +166,7 @@ class TelegramChannels:
         owner = sender_id in self.contacts.owners()
         kind = self._channel_kind(conversation_id)
         chat_id, topic_values = self._telegram_address(conversation_id)
-        if not owner and (chat.get("type") != "private" or kind != "dm"):
+        if not owner:
             self.api.send(chat_id, "Esta operação é permitida apenas ao proprietário.", **topic_values)
             return
         registered = self._channel_registered(conversation_id)
@@ -208,6 +208,9 @@ class TelegramChannels:
         try: self.api.call("answerCallbackQuery", {"callback_query_id": callback["id"]})
         except Exception: pass
         if not isinstance(sender_id, int) or not isinstance(chat_id, int): return True
+        if sender_id not in self.contacts.owners() or pieces[0] == "cha":
+            # Solicitações legadas não podem ser aprovadas após restringir /channel.
+            return True
         token, action = pieces[1], pieces[2]
         if pieces[0] == "cha":
             with self.database_lock:
@@ -249,8 +252,7 @@ class TelegramChannels:
             return True
         origin_chat, origin_topic = self._telegram_address(str(row[0]))
         if origin_chat != chat_id: return True
-        if row[3] == "owner" and sender_id not in self.contacts.owners(): return True
-        if row[3] == "request" and (chat.get("type") != "private" or self._channel_kind(str(row[0])) != "dm"): return True
+        if row[3] != "owner": return True
         if action not in {"add", "remove", "request", "identify", "cancel"}: return True
         if row[3] == "owner" and action not in {"add", "remove", "identify", "cancel"}: return True
         if row[3] == "request" and action not in {"request", "cancel"}: return True

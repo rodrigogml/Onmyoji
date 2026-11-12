@@ -112,32 +112,35 @@ def test_group_outsider_is_denied_without_approval_menu(tmp_path):
     assert not gw.database.execute("SELECT 1 FROM telegram_channel_requests").fetchone()
 
 
-def test_third_party_private_request_requires_owner_approval(tmp_path):
+def test_third_party_private_channel_is_rejected_even_with_legacy_callbacks(tmp_path):
     gw = gateway_for(tmp_path)
     api = gw.api = FakeApi()
     maria = {"id": 42, "first_name": "Maria"}
     chat = {"id": 42, "type": "private"}
+
     gw._channel_menu("42", chat, maria)
-    menu = api.sent[-1]
-    action = menu[2]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
-    request_cb = {"id": "req", "data": action, "from": maria, "message": {"message_id": menu[3]["message_id"], "chat": chat}}
-    assert gw._channel_callback(request_cb)
+    assert "apenas ao proprietário" in api.sent[-1][1]
+    assert not gw.database.execute("SELECT 1 FROM telegram_channel_menus").fetchone()
+    assert not gw.database.execute("SELECT 1 FROM telegram_channel_requests").fetchone()
+
+    # Backwards-compatible callbacks may still be present in old Telegram messages.
+    assert gw._channel_callback({"id": "old-request", "data": "ch:obsolete:request",
+                                 "from": maria, "message": {"message_id": 100, "chat": chat}})
+    assert gw._channel_callback({"id": "old-approval", "data": "cha:obsolete:approve",
+                                 "from": maria, "message": {"message_id": 100, "chat": chat}})
     assert not gw._channels_list()
-    owner_menu = [m for m in api.sent if m[0] == 9][-1]
-    approve = owner_menu[2]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
-    assert approve.startswith("cha:")
-    approval_message = {"chat": {"id": 9, "type": "private"}, "message_id": owner_menu[3]["message_id"]}
-    assert gw._channel_callback({"id": "approval", "data": approve, "from": {"id": 42}, "message": {"chat": chat}})
-    assert not gw._channels_list()
-    assert gw._channel_callback({"id": "forged", "data": approve, "from": {"id": 9},
-                                 "message": {"chat": {"id": 9, "type": "private"}, "message_id": 123}})
-    assert not gw._channels_list()
-    gw._channel_callback({"id": "approval2", "data": approve, "from": {"id": 9},
-                          "message": approval_message})
-    assert gw._channels_list()[0]["id"] == "42"
-    assert gw._channel_callback({"id": "replay", "data": approve, "from": {"id": 9},
-                                 "message": approval_message})
-    assert len(gw._channels_list()) == 1
+
+
+def test_non_owner_channel_command_is_silent_and_does_not_open_a_request(tmp_path):
+    gw = gateway_for(tmp_path)
+    api = gw.api = FakeApi()
+    maria = {"id": 42, "first_name": "Maria"}
+    gw._update({"message": {"message_id": 23, "chat": {"id": 42, "type": "private"},
+                             "from": maria, "text": "/channel"}})
+
+    assert not api.sent
+    assert not gw.database.execute("SELECT 1 FROM telegram_channel_menus").fetchone()
+    assert not gw.database.execute("SELECT 1 FROM telegram_channel_requests").fetchone()
 
 
 def test_send_requires_catalog_and_does_not_create_codex_thread(tmp_path):

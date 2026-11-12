@@ -16,13 +16,15 @@ MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 
-from onmyoji_daemon.telegram_commands import command_catalog_revision, owner_commands
+from onmyoji_daemon.telegram_commands import command_catalog_revision, owner_commands, other_private_commands
 
 
 def confirmed_commands(totp_enabled: bool = False) -> dict:
     return {
         "owners": 1, "verified": 1, "failed": 0,
         "expected": [item["command"] for item in owner_commands(totp_enabled)],
+        "expected_other_private": [item["command"] for item in other_private_commands()],
+        "other_private_verified": True,
         "catalog_revision": command_catalog_revision(totp_enabled),
         "totp_enabled": totp_enabled,
     }
@@ -85,6 +87,8 @@ def test_telegram_command_menu_reports_success_only_for_the_current_local_catalo
     {"owners": 0, "verified": 0},
     {"expected": ["new", "config", "channel", "usage"]},
     {"catalog_revision": "previous-version"},
+    {"other_private_verified": False},
+    {"expected_other_private": ["new"]},
     {"pending": True},
 ])
 def test_telegram_command_menu_rejects_incomplete_or_stale_confirmation_even_with_exit_zero(tmp_path, monkeypatch, changes):

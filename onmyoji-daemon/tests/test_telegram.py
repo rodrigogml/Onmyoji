@@ -370,7 +370,8 @@ def test_usage_command_reads_codex_account_limits_without_starting_a_turn(tmp_pa
 def test_usage_is_included_in_the_owner_command_catalog(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
     gateway = Gateway(Settings.load(tmp_path, data)); gateway.contacts.add_owner({"id": 9, "first_name": "owner"})
-    gateway.api = type("Api", (), {"set_owner_commands": lambda _self, _owner, _totp, _languages, **_kwargs: True})()
+    gateway.api = type("Api", (), {"set_owner_commands": lambda _self, _owner, _totp, _languages, **_kwargs: True,
+                                   "set_other_private_commands": lambda _self, **_kwargs: True})()
 
     summary = gateway._configure_owner_commands()
 
@@ -384,6 +385,87 @@ def test_new_command_is_deleted_once_and_still_resets_conversation(tmp_path):
     gateway._update({"message": {"message_id": 71, "chat": {"id": 9, "type": "private"}, "from": {"id": 9}, "text": "/new"}})
     assert deleted == [(9, 71)]
     assert sent == [(9, "Conversa reiniciada.")]
+
+
+def test_non_owner_can_reset_only_their_own_private_conversation(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data)); gateway.contacts.add_owner({"id": 9})
+    sent, deleted, resets = [], [], []
+    gateway.api = type("Api", (), {"delete": lambda _self, chat, message: deleted.append((chat, message)),
+                                   "send": lambda _self, chat, text, **_values: sent.append((chat, text)) or {"message_id": 1}})()
+    original_reset = gateway._new_conversation
+    def capture(conversation):
+        resets.append(conversation)
+        original_reset(conversation)
+    gateway._new_conversation = capture
+    gateway._update({"message": {"message_id": 71, "chat": {"id": 42, "type": "private"},
+                                  "from": {"id": 42}, "text": "/new"}})
+    assert resets == ["42"] and sent == [(42, "Conversa reiniciada.")]
+    assert deleted == [(42, 71)]
+    assert gateway._generation("9") == 0
+    assert gateway._generation("42") == 1
+
+
+def test_private_resolver_permissions_are_isolated_by_user(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data)); gateway.contacts.add_owner({"id": 9})
+    sent, recovery = [], []
+    gateway.api = type("Api", (), {"delete": lambda *_args: None,
+                                   "send": lambda _self, chat, text, **_values: sent.append((chat, text)) or {"message_id": 1}})()
+    gateway._recovery_control = lambda conversation, argument: recovery.append((conversation, argument))
+    for chat_id, text in [(42, "/resolver"), (42, "/resolver descartar"),
+                          (9, "/resolver descartar")]:
+        gateway._update({"message": {"message_id": 77, "chat": {"id": chat_id, "type": "private"},
+                                      "from": {"id": chat_id}, "text": text}})
+    assert recovery == [("42", ""), ("42", "descartar"), ("9", "descartar")]
+    assert sent == []
+
+
+def test_other_user_private_command_cannot_control_a_different_chat(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data)); gateway.contacts.add_owner({"id": 9})
+    calls = []
+    gateway.api = type("Api", (), {"delete": lambda *_args: None,
+                                   "send": lambda *_args, **_kwargs: {"message_id": 1}})()
+    gateway._new_conversation = lambda conversation: calls.append(("new", conversation))
+    gateway._recovery_control = lambda conversation, argument: calls.append(("resolver", conversation))
+    for text in ["/new", "/resolver", "/resolver descartar"]:
+        gateway._update({"message": {"message_id": 77, "chat": {"id": 9, "type": "private"},
+                                      "from": {"id": 42}, "text": text}})
+    assert calls == []
+
+
+def test_group_resolver_is_owner_only_and_scoped_to_group_topic(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data)); gateway.contacts.add_owner({"id": 9})
+    gateway.api = type("Api", (), {"delete": lambda *_args: None,
+                                   "send": lambda *_args, **_kwargs: {"message_id": 1}})()
+    recoveries, resets = [], []
+    gateway._recovery_control = lambda conversation, argument: recoveries.append((conversation, argument))
+    gateway._new_conversation = lambda conversation: resets.append(conversation)
+    group = {"id": -1001, "type": "supergroup"}
+    for sender in ({"id": 8}, {"id": 9}):
+        for text in ("/new", "/resolver descartar"):
+            gateway._update({"message": {"message_id": 55, "chat": group, "from": sender,
+                                         "message_thread_id": 11, "text": text}})
+    assert resets == ["group:-1001:11"]
+    assert recoveries == [("group:-1001:11", "descartar")]
+
+
+def test_pair_pin_is_one_time_and_works_for_a_non_owner(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data)); gateway.contacts.add_owner({"id": 9})
+    sent = []
+    gateway.api = type("Api", (), {"delete": lambda *_args: None,
+                                   "send": lambda _self, chat, text, **_values: sent.append((chat, text)) or {"message_id": 1}})()
+    gateway._configure_owner_commands = lambda: {"pending": True}
+    gateway.pair = ("123456", time.time() + 60)
+    for user_id, pin in ((42, "000000"), (42, "123456"), (43, "123456")):
+        gateway._update({"message": {"message_id": 88, "chat": {"id": user_id, "type": "private"},
+                                      "from": {"id": user_id}, "text": "/pair " + pin}})
+    assert gateway.contacts.owners() == {9, 42}
+    assert gateway.pair is None
+    assert len(sent) == 1 and sent[0][0] == 42
 
 
 def test_totp_session_cleanup_removes_all_related_messages(tmp_path):

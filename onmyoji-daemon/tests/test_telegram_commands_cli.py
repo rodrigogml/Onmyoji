@@ -9,7 +9,7 @@ import pytest
 from onmyoji_daemon import cli
 from onmyoji_daemon import supervisor as supervisor_module
 from onmyoji_daemon.supervisor import Supervisor
-from onmyoji_daemon.telegram_commands import command_catalog_revision, owner_commands
+from onmyoji_daemon.telegram_commands import command_catalog_revision, owner_commands, other_private_commands
 
 
 def _current_summary(totp_enabled=False):
@@ -18,6 +18,8 @@ def _current_summary(totp_enabled=False):
         "verified": 2,
         "failed": 0,
         "expected": [item["command"] for item in owner_commands(totp_enabled)],
+        "expected_other_private": [item["command"] for item in other_private_commands()],
+        "other_private_verified": True,
         "catalog_revision": command_catalog_revision(totp_enabled),
         "totp_enabled": totp_enabled,
     }
@@ -54,6 +56,8 @@ def test_sync_cli_accepts_only_confirmed_current_catalog(tmp_path, monkeypatch, 
     pytest.param({"owners": "2"}, None, id="malformed-count"),
     pytest.param({"expected": ["new", "config", "channel", "usage"]}, None, id="old-command-list"),
     pytest.param({"catalog_revision": "previous-catalog"}, None, id="old-revision"),
+    pytest.param({"other_private_verified": False}, None, id="unconfirmed-other-private-menu"),
+    pytest.param({"expected_other_private": ["new"]}, None, id="outdated-other-private-menu"),
     pytest.param({"pending": True}, None, id="pending-publication"),
     pytest.param({"in_progress": True}, None, id="publication-in-progress"),
     pytest.param({}, "totp_enabled", id="missing-totp-mode"),

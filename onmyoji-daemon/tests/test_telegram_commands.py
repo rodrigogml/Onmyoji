@@ -20,6 +20,7 @@ from onmyoji_daemon.telegram_commands import (
     command_sync_is_current,
     normalize_language_code,
     owner_commands,
+    other_private_commands,
 )
 
 
@@ -43,8 +44,8 @@ class MenuService:
         self.calls.append((method, values, timeout))
         if method in {"getMyCommands", "setMyCommands"}:
             scope = values["scope"]
-            assert scope["type"] == "chat", "A lista administrativa não pode ser publicada globalmente."
-            target = (scope["chat_id"], values.get("language_code", ""))
+            assert scope["type"] in {"chat", "all_private_chats"}, "Catálogos não podem ser publicados globalmente."
+            target = (scope["chat_id"], values.get("language_code", "")) if scope["type"] == "chat" else ("all_private_chats", values.get("language_code", ""))
             if method == "getMyCommands":
                 return deepcopy(self.catalogs.get(target, []))
             if self.set_commands_result is True:
@@ -74,6 +75,8 @@ def current_summary(totp_enabled=False):
         "pending": False, "in_progress": False,
         "totp_enabled": totp_enabled,
         "expected": [entry["command"] for entry in owner_commands(totp_enabled)],
+        "expected_other_private": [entry["command"] for entry in other_private_commands()],
+        "other_private_verified": True,
         "catalog_revision": command_catalog_revision(totp_enabled),
     }
 
@@ -88,6 +91,8 @@ def test_menu_catalog_covers_all_owner_commands_and_respects_telegram_contract()
     assert {"/" + entry["command"] for entry in owner_commands(True)} == REGISTERED_COMMANDS - {"/pair"}
     assert {"/usage", "/new", "/cancel", "/resolver", "/pair"} <= CONTROL_COMMANDS
     assert not {"/fila", "/direcionar"}.intersection(CONTROL_COMMANDS)
+    assert [entry["command"] for entry in other_private_commands()] == ["new", "resolver"]
+    assert set(item["command"] for item in other_private_commands()) <= set(COMMAND_NAMES)
 
 
 def test_documented_permission_matrix_covers_all_registered_commands():
@@ -101,6 +106,10 @@ def test_documented_permission_matrix_covers_all_registered_commands():
     assert set(normalized) == REGISTERED_COMMANDS
     assert "| `/usage` | Somente DM" in matrix
     assert "| `/usage` | Somente DM (inclusive tópicos privados): consultar os limites e o consumo da conta Codex. | Não permitido;" in matrix
+    assert "| `/new` | DM e grupos: reiniciar a conversa correspondente. | Somente DM" in matrix
+    assert "| `/resolver` | DM e grupos:" in matrix
+    assert "| `/channel` | DM e grupos:" in matrix
+    assert "| `/pair <PIN>` | Somente DM, com PIN temporário válido." in matrix
 
 
 def test_menu_catalog_covers_commands_recognized_by_the_actual_handlers():
@@ -144,11 +153,34 @@ def test_summary_requires_complete_current_catalog_instead_of_old_verified_count
 
 @pytest.mark.parametrize("changes", [
     {"catalog_revision": "old"}, {"expected": COMMAND_NAMES[:4]},
+    {"other_private_verified": False}, {"expected_other_private": ["new"]},
     {"verified": 1}, {"failed": 1}, {"pending": True}, {"in_progress": True},
     {"owners": True}, {"verified": "2"}, {"pending": 0},
 ])
 def test_summary_rejects_partial_pending_or_malformed_success(changes):
     assert not command_sync_is_current({**current_summary(), **changes}, False)
+
+
+def test_other_private_menu_publishes_only_new_and_resolver(menu_api):
+    api, remote = menu_api
+    assert api.set_other_private_commands()
+    assert remote.catalogs[("all_private_chats", "")] == other_private_commands()
+    assert not set(entry["command"] for entry in other_private_commands()) - {"new", "resolver"}
+    assert [call[0] for call in remote.calls] == ["getMyCommands", "setMyCommands", "getMyCommands"]
+    assert all(call[1]["scope"] == {"type": "all_private_chats"} for call in remote.calls)
+
+
+def test_other_private_menu_readback_failure_is_not_confirmed(menu_api):
+    api, remote = menu_api
+    remote.after_commands_write = lambda entries: entries.pop()
+    assert api.set_other_private_commands() is False
+
+
+def test_other_private_menu_does_not_rewrite_confirmed_scope(menu_api):
+    api, remote = menu_api
+    remote.catalogs[("all_private_chats", "")] = other_private_commands()
+    assert api.set_other_private_commands()
+    assert [call[0] for call in remote.calls] == ["getMyCommands"]
 
 
 def test_missing_owner_menu_publishes_full_catalog_and_enables_only_that_chat(menu_api):
@@ -326,7 +358,7 @@ def test_gateway_partial_sync_remains_pending_and_recovery_can_verify_all_owners
         calls.append((owner, totp, languages))
         return owner == 9
 
-    gateway.api = SimpleNamespace(set_owner_commands=configure)
+    gateway.api = SimpleNamespace(set_other_private_commands=lambda **_kwargs: True, set_owner_commands=configure)
     summary = gateway._configure_owner_commands()
     assert summary["owners"] == 2 and summary["verified"] == 1 and summary["failed"] == 1
     assert summary["pending"] is True and not command_sync_is_current(summary, False)
@@ -334,10 +366,29 @@ def test_gateway_partial_sync_remains_pending_and_recovery_can_verify_all_owners
     assert summary["catalog_revision"] == command_catalog_revision(False)
     assert {(owner, tuple(languages)) for owner, _totp, languages in calls} == {(9, ("pt",)), (10, ("en",))}
 
-    gateway.api = SimpleNamespace(set_owner_commands=lambda *_args, **_kwargs: True)
+    gateway.api = SimpleNamespace(set_other_private_commands=lambda **_kwargs: True, set_owner_commands=lambda *_args, **_kwargs: True)
     recovered = gateway._configure_owner_commands()
     assert command_sync_is_current(recovered, False)
     assert recovered["pending"] is False
+
+
+def test_public_private_menu_failure_keeps_sync_pending_until_verified(menu_gateway):
+    gateway = menu_gateway
+    public_attempts = []
+    gateway.api = SimpleNamespace(
+        set_owner_commands=lambda *_args, **_kwargs: True,
+        set_other_private_commands=lambda **_kwargs: public_attempts.append(True) and len(public_attempts) > 1,
+    )
+
+    first = gateway._configure_owner_commands()
+    assert first["owners"] == first["verified"] == 2
+    assert first["failed"] == 0 and first["other_private_verified"] is False
+    assert first["expected_other_private"] == ["new", "resolver"]
+    assert first["pending"] and not command_sync_is_current(first, False)
+
+    recovered = gateway._configure_owner_commands()
+    assert recovered["other_private_verified"] is True
+    assert recovered["pending"] is False and command_sync_is_current(recovered, False)
 
 
 def test_gateway_respects_telegram_flood_delay_in_pending_summary(menu_gateway):
@@ -348,7 +399,7 @@ def test_gateway_respects_telegram_flood_delay_in_pending_summary(menu_gateway):
         attempts.append(owner)
         raise TelegramApiError("Too Many Requests", kind="not_sent", retry_after=120)
 
-    gateway.api = SimpleNamespace(set_owner_commands=rate_limited)
+    gateway.api = SimpleNamespace(set_other_private_commands=lambda **_kwargs: True, set_owner_commands=rate_limited)
     before = time.time()
     summary = gateway._configure_owner_commands()
     assert summary["pending"] is True and summary["failed"] > 0
@@ -418,7 +469,7 @@ def test_command_worker_retries_failure_after_sixty_seconds_and_clears_pending(m
         attempts.append((clock.now, owner))
         return clock.now >= 1060
 
-    gateway.api = SimpleNamespace(set_owner_commands=configure)
+    gateway.api = SimpleNamespace(set_other_private_commands=lambda **_kwargs: True, set_owner_commands=configure)
     gateway.stop_event = ScriptedStopEvent(clock, (1059, 1060), lambda: summaries.append(stored_commands(gateway)))
 
     gateway._owner_commands_watch()
@@ -439,7 +490,7 @@ def test_command_worker_rechecks_current_menu_after_three_hundred_seconds(menu_g
         attempts.append((clock.now, owner))
         return True
 
-    gateway.api = SimpleNamespace(set_owner_commands=configure)
+    gateway.api = SimpleNamespace(set_other_private_commands=lambda **_kwargs: True, set_owner_commands=configure)
     gateway.stop_event = ScriptedStopEvent(clock, (1299, 1300))
 
     gateway._owner_commands_watch()
@@ -459,7 +510,7 @@ def test_new_owner_language_during_sync_remains_pending_until_worker_rechecks(me
             gateway._observe_command_language({"id": 9, "language_code": "fr-FR"})
         return True
 
-    gateway.api = SimpleNamespace(set_owner_commands=configure)
+    gateway.api = SimpleNamespace(set_other_private_commands=lambda **_kwargs: True, set_owner_commands=configure)
     gateway.stop_event = ScriptedStopEvent(clock, (1001,), lambda: summaries.append(stored_commands(gateway)))
 
     gateway._owner_commands_watch()
@@ -489,7 +540,7 @@ def test_poll_reconnection_requests_menu_sync_before_the_periodic_refresh(menu_g
         gateway.stop_event.set()
         return []
 
-    gateway.api = SimpleNamespace(set_owner_commands=configure, call=call)
+    gateway.api = SimpleNamespace(set_other_private_commands=lambda **_kwargs: True, set_owner_commands=configure, call=call)
     assert command_sync_is_current(gateway._configure_owner_commands(), False)
     assert not gateway._commands_refresh_needed.is_set()
     gateway.stop_event = ScriptedStopEvent(clock, (1003,))
@@ -527,6 +578,7 @@ def test_pairing_during_sync_preserves_pending_refresh_for_the_new_owner(menu_ga
         return True
 
     gateway.api = SimpleNamespace(
+        set_other_private_commands=lambda **_kwargs: True,
         set_owner_commands=configure,
         send=lambda chat, text, **_kwargs: replies.append((chat, text)),
         delete=lambda *_args: None,
@@ -558,7 +610,7 @@ def test_partial_command_cycle_reaches_later_owners_and_next_cycle_rechecks_ever
         clock.now += 10
         return True
 
-    gateway.api = SimpleNamespace(set_owner_commands=configure)
+    gateway.api = SimpleNamespace(set_other_private_commands=lambda **_kwargs: True, set_owner_commands=configure)
 
     partial = gateway._configure_owner_commands()
     assert attempts == [9, 10, 11]
@@ -592,7 +644,7 @@ def test_owner_consuming_the_entire_budget_does_not_starve_other_owners(menu_gat
         clock.now += 30 if owner == 9 else 10
         return owner != 9
 
-    gateway.api = SimpleNamespace(set_owner_commands=configure)
+    gateway.api = SimpleNamespace(set_other_private_commands=lambda **_kwargs: True, set_owner_commands=configure)
 
     blocked = gateway._configure_owner_commands()
     assert attempts == [9]
@@ -616,7 +668,7 @@ def test_partial_success_is_invalidated_when_its_language_or_catalog_changes(men
         attempts.append((phase, owner, totp, languages))
         return owner == 9 if phase == 1 else owner == 10 if phase == 2 else True
 
-    gateway.api = SimpleNamespace(set_owner_commands=configure)
+    gateway.api = SimpleNamespace(set_other_private_commands=lambda **_kwargs: True, set_owner_commands=configure)
     original = gateway._configure_owner_commands()
     assert original["verified"] == 1 and original["failed"] == 1
 
@@ -656,7 +708,7 @@ def test_expired_partial_cycle_rechecks_and_repairs_a_previously_verified_owner(
             return False
         return api.set_owner_commands(owner, totp, languages, **kwargs)
 
-    gateway.api = SimpleNamespace(set_owner_commands=configure)
+    gateway.api = SimpleNamespace(set_other_private_commands=lambda **_kwargs: True, set_owner_commands=configure)
     partial = gateway._configure_owner_commands()
     assert partial["verified"] == 1 and partial["failed"] == 1 and partial["pending"] is True
     assert remote.catalogs[(9, "")] == owner_commands(False)

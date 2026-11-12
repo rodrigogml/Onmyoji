@@ -45,7 +45,7 @@ from .mcp.artifacts import ArtifactPathError, authorized_file, transfer_roots
 from .telegram_formatting import MAX_MESSAGE_LENGTH, plain_text, render_html, split_html
 from .telegram_commands import (COMMAND_REFRESH_SECONDS, COMMAND_RETRY_SECONDS, COMMAND_SYNC_BUDGET_SECONDS,
                                 command_catalog_matches, command_catalog_revision, command_sync_is_current, invalid_command_message,
-                                normalize_language_code, owner_commands)
+                                normalize_language_code, owner_commands, other_private_commands)
 
 SERVICE_MESSAGE_FIELDS = frozenset((
     "forum_topic_closed", "forum_topic_created", "forum_topic_edited", "forum_topic_reopened",
@@ -366,6 +366,26 @@ class TelegramApi:
             detail = str(payload.get("description") or "resposta sem descrição") if isinstance(payload, dict) else "resposta inválida"
             raise TelegramMediaUploadError(f"Telegram API recusou {method}: {detail[:300]}", kind="not_sent")
         return payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    def set_other_private_commands(self, *, deadline: float | None = None) -> bool:
+        """Publica somente /new e /resolver no escopo de todas as DMs."""
+        deadline = time.monotonic() + COMMAND_SYNC_BUDGET_SECONDS if deadline is None else deadline
+        scope = {"type": "all_private_chats"}
+        target = {"scope": scope}
+        commands = other_private_commands()
+
+        def request(method: str, values: dict[str, Any]) -> Any:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TelegramApiError("A atualização dos comandos privados excedeu o tempo disponível.")
+            return self.call(method, values, timeout=min(8, remaining))
+
+        if not command_catalog_matches(request("getMyCommands", target), commands):
+            if request("setMyCommands", {**target, "commands": commands}) is not True:
+                return False
+            if not command_catalog_matches(request("getMyCommands", target), commands):
+                return False
+        return True
+
     def set_owner_commands(self, owner_id: int, totp_enabled: bool, language_codes: tuple[str, ...] = (), *, deadline: float | None = None) -> bool:
         """Reconcilia o catálogo e o botão somente no chat privado deste owner."""
         commands = owner_commands(totp_enabled)
@@ -468,6 +488,7 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
         self._commands_next_sync = 0.0
         self._commands_retry_not_before = 0.0
         self._commands_verified_owners: dict[int, tuple[str, tuple[str, ...]]] = {}
+        self._commands_other_private_verified = False
         self._commands_owner_attempts: dict[int, int] = {}
         self._commands_attempt_sequence = 0
         self._commands_cycle_complete = False
@@ -615,6 +636,7 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
                 if (self._commands_cycle_complete or not self.api or self._commands_cycle_started is None
                         or now - self._commands_cycle_started >= COMMAND_REFRESH_SECONDS):
                     self._commands_verified_owners.clear()
+                    self._commands_other_private_verified = False
                     self._commands_cycle_started = now
                 self._commands_cycle_complete = False
                 self._commands_verified_owners = {
@@ -630,6 +652,8 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
                 )
                 summary = {"updated_at": time.time(), "owners": len(owners), "verified": len(self._commands_verified_owners), "failed": 0,
                            "expected": [item["command"] for item in owner_commands(totp)],
+                           "expected_other_private": [item["command"] for item in other_private_commands()],
+                           "other_private_verified": self._commands_other_private_verified,
                            "catalog_revision": revision, "totp_enabled": totp,
                            "pending": True, "in_progress": True, "next_retry_at": None}
                 state = json_file(self.settings.state_dir / "gateway-status.json", {})
@@ -652,16 +676,32 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
                     if type(retry_after) is int and retry_after > 0:
                         self._commands_retry_not_before = time.monotonic() + retry_after
                         break
+            if (self.api and not self._commands_other_private_verified
+                    and time.monotonic() < deadline
+                    and time.monotonic() >= self._commands_retry_not_before):
+                try:
+                    if self.api.set_other_private_commands(deadline=deadline):
+                        self._commands_other_private_verified = True
+                    else:
+                        self._record_error("Telegram não confirmou o menu privado dos demais usuários.")
+                except Exception as error:
+                    self._record_error(error)
+                    retry_after = getattr(error, "retry_after", None)
+                    if type(retry_after) is int and retry_after > 0:
+                        self._commands_retry_not_before = time.monotonic() + retry_after
             summary["verified"] = len(self._commands_verified_owners)
             summary["failed"] = len(owners) - summary["verified"]
+            summary["other_private_verified"] = self._commands_other_private_verified
             now = time.monotonic()
-            delay = COMMAND_RETRY_SECONDS if summary["failed"] else COMMAND_REFRESH_SECONDS
+            pending = bool(summary["failed"] or not owners or not self._commands_other_private_verified
+                           or self._commands_refresh_needed.is_set())
+            delay = COMMAND_RETRY_SECONDS if pending else COMMAND_REFRESH_SECONDS
             delay = max(delay, self._commands_retry_not_before - now)
             self._commands_next_sync = now + delay
             with self._status_lock:
                 summary.update(updated_at=time.time(), in_progress=False,
-                               pending=bool(summary["failed"] or not owners or self._commands_refresh_needed.is_set()),
-                               next_retry_at=time.time() + delay if summary["failed"] else None)
+                               pending=pending,
+                               next_retry_at=time.time() + delay if pending else None)
                 self._commands_cycle_complete = not summary["pending"]
                 state = json_file(self.settings.state_dir / "gateway-status.json", {})
                 state["commands"] = summary
@@ -1348,17 +1388,30 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
         command = text.split(maxsplit=1)[0].split("@", 1)[0].casefold() if text else ""
         if command == "/channel":
             self._delete_received_command(int(chat["id"]), message)
-            self._channel_menu(conversation_id, chat, sender)
+            if sender["id"] in self.contacts.owners():
+                self._channel_menu(conversation_id, chat, sender)
             return
         if text.startswith("/"): self._delete_received_command(int(chat.get("id") or sender["id"]), message)
-        if text.startswith("/pair ") and self.pair and time.time() < self.pair[1] and secrets.compare_digest(text[6:].strip(), self.pair[0]):
-            self.contacts.add_owner(sender)
-            self._request_command_sync()
-            self.pair = None
-            synced = self._configure_owner_commands()
-            telegram_chat_id, topic_values = self._telegram_address(conversation_id)
-            self.api.send(telegram_chat_id, "Pairing concluído e comandos privados configurados." if command_sync_is_current(synced, self._totp_enabled()) else "Pairing concluído; a atualização dos comandos privados está pendente. Consulte o diagnóstico.", **topic_values); return
-        if sender["id"] not in self.contacts.owners(): return
+        if int(chat["id"]) != sender["id"]:
+            return
+        if command == "/pair":
+            arguments = text.split(maxsplit=1)
+            if len(arguments) == 2:
+                with self.control_state_lock:
+                    pair = self.pair
+                    paired = bool(pair and time.time() < pair[1] and secrets.compare_digest(arguments[1].strip(), pair[0]))
+                    if paired:
+                        self.pair = None  # Consumo atômico: um PIN não pode parear dois usuários.
+                if paired:
+                    self.contacts.add_owner(sender)
+                    self._request_command_sync()
+                    synced = self._configure_owner_commands()
+                    telegram_chat_id, topic_values = self._telegram_address(conversation_id)
+                    self.api.send(telegram_chat_id, "Pairing concluído e comandos privados configurados." if command_sync_is_current(synced, self._totp_enabled()) else "Pairing concluído; a atualização dos comandos privados está pendente. Consulte o diagnóstico.", **topic_values)
+            return
+        is_owner = sender["id"] in self.contacts.owners()
+        if not is_owner and command not in {"/new", "/resolver"}:
+            return
         channel = self._channel_state(conversation_id, renew=True)
         if channel["expired"]: self._ephemeral(conversation_id, "O modo de respostas em áudio foi desligado por inatividade.")
         telegram_chat_id, topic_values = self._telegram_address(conversation_id)
@@ -1425,7 +1478,8 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
         if text.startswith("/"):
             self._delete_received_command(int(chat["id"]), message)
             if text.split(maxsplit=1)[0].split("@", 1)[0].casefold() == "/channel":
-                self._channel_menu(conversation_id, chat, sender)
+                if sender.get("id") in self.contacts.owners():
+                    self._channel_menu(conversation_id, chat, sender)
                 return
             if sender.get("id") in self.contacts.owners() and text.split(maxsplit=1)[0].split("@", 1)[0].casefold() == "/new":
                 self._new_conversation(conversation_id)
@@ -1441,6 +1495,9 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
                     self.database.execute("UPDATE conversations SET context_max_messages=?, context_max_age_seconds=?, updated_at=? WHERE chat_id=?", (maximum, age, time.time(), conversation_id)); self.database.commit()
                 thread_values = {"message_thread_id": message["message_thread_id"]} if isinstance(message.get("message_thread_id"), int) else {}
                 self.api.send(int(chat["id"]), f"Janela deste canal: {maximum} mensagens; {age} segundos.", **thread_values)
+            if sender.get("id") in self.contacts.owners() and text.split(maxsplit=1)[0].split("@", 1)[0].casefold() == "/resolver":
+                argument = text[len(text.split(maxsplit=1)[0]):].strip().casefold()
+                self._recovery_control(conversation_id, argument)
             return
         attachments: list[dict[str, Any]] = []
         structured: dict[str, Any] = {}
@@ -2049,8 +2106,9 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
         if method == "telegram.status": return {"owners": len(self.contacts.owners()), "listener": "running", "totp_enabled": self._totp_enabled(), "last_error": self.last_error, "commands": json_file(self.settings.state_dir / "gateway-status.json", {}).get("commands"), "execution_mode": "app-server" if self.settings.app_server_enabled else "unavailable", "busy_input_policy": self.settings.busy_input_policy, "steering_available": self.capabilities.supports("steering"), "steering_reason": self.capabilities.reason("steering"), "post_turn_results": self.settings.post_turn_results and self.capabilities.supports("post_turn"), "execution": self.store.summary(), "app_server_running": bool(self.app_server and self.app_server.running()), "app_server_idle_timeout_seconds": self.settings.app_server_idle_seconds}
         if method == "telegram.sync-commands": return self._configure_owner_commands()
         if method == "telegram.pair-request":
-            self.pair = (f"{secrets.randbelow(1_000_000):06d}", time.time() + min(600, max(60, int(params.get("ttl_seconds", 300)))))
-            return {"pin": self.pair[0], "expires_at": self.pair[1]}
+            with self.control_state_lock:
+                self.pair = (f"{secrets.randbelow(1_000_000):06d}", time.time() + min(600, max(60, int(params.get("ttl_seconds", 300)))))
+                return {"pin": self.pair[0], "expires_at": self.pair[1]}
         if method == "telegram.owners": return sorted(self.contacts.owners())
         if method == "telegram.channels.list": return self._channels_list()
         if method == "telegram.channels.remove":
