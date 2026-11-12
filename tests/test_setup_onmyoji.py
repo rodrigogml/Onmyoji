@@ -710,6 +710,83 @@ class SystemSetupTests(unittest.TestCase):
             attributes = (root / ".git" / "info" / "attributes").read_text(encoding="utf-8")
             self.assertIn("instructions.md merge=shikigami-local", attributes)
 
+    def test_updated_setup_python_uses_configured_global_with_spaces(self) -> None:
+        temporary_root = MODULE.ROOT / "tmp"
+        temporary_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temporary_root) as temporary:
+            root = Path(temporary)
+            executable = root / "Program Files" / "Python312" / "python.exe"
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            config = root / "configs" / "onmyoji-system.toml"
+            config.parent.mkdir()
+            config.write_text('[python]\nmode = "global"\nexecutable = ' + json.dumps(str(executable)) + '\n', encoding="utf-8")
+            self.assertEqual(MODULE._updated_setup_python(root), executable.resolve())
+
+    def test_updated_setup_python_prefers_venv_and_uses_base_only_if_missing(self) -> None:
+        temporary_root = MODULE.ROOT / "tmp"
+        temporary_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temporary_root) as temporary:
+            root = Path(temporary)
+            base = root / "Python Base" / "python.exe"
+            base.parent.mkdir(parents=True)
+            base.touch()
+            config = root / "configs" / "onmyoji-system.toml"
+            config.parent.mkdir()
+            config.write_text('[python]\nmode = "isolated"\nbase_python = ' + json.dumps(str(base)) + '\n', encoding="utf-8")
+            self.assertEqual(MODULE._updated_setup_python(root), base.resolve())
+            venv = MODULE.python_runtime.python(root)
+            venv.parent.mkdir(parents=True)
+            venv.touch()
+            self.assertEqual(MODULE._updated_setup_python(root), venv.resolve())
+
+    def test_updated_setup_python_rejects_missing_configured_interpreter(self) -> None:
+        temporary_root = MODULE.ROOT / "tmp"
+        temporary_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temporary_root) as temporary:
+            root = Path(temporary)
+            config = root / "configs" / "onmyoji-system.toml"
+            config.parent.mkdir()
+            config.write_text('[python]\nmode = "global"\nexecutable = ' + json.dumps(str(root / "missing python.exe")) + '\n', encoding="utf-8")
+            with self.assertRaisesRegex(MODULE.GitSetupError, "não foi encontrado"):
+                MODULE._updated_setup_python(root)
+
+    def test_restart_updated_setup_windows_quotes_configured_python_and_exits(self) -> None:
+        root = Path(r"C:\opt\Shikigami-Akuma")
+        executable = Path(r"C:\Program Files\Python\Python312\python.exe")
+        with patch.object(MODULE.sys, "platform", "win32"), patch.object(MODULE.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run, patch.object(MODULE.os, "execv") as execv:
+            with self.assertRaises(SystemExit) as exit_code:
+                MODULE._restart_updated_setup(root, executable, restart_daemon=True)
+        self.assertEqual(exit_code.exception.code, 0)
+        run.assert_called_once_with(
+            [str(executable), str(root / "setupOnmyoji.py"), "--resume-after-update", "--restart-daemon-after-update"],
+            cwd=str(root), check=False,
+        )
+        execv.assert_not_called()
+
+    def test_restart_updated_setup_windows_propagates_failed_child(self) -> None:
+        root = Path("instance")
+        executable = Path("Python with spaces/python.exe")
+        with patch.object(MODULE.sys, "platform", "win32"), patch.object(MODULE.subprocess, "run", return_value=subprocess.CompletedProcess([], 7)), patch.object(MODULE, "result") as report:
+            with self.assertRaises(SystemExit) as exit_code:
+                MODULE._restart_updated_setup(root, executable, restart_daemon=False)
+        self.assertEqual(exit_code.exception.code, 7)
+        report.assert_called_once()
+        self.assertFalse(report.call_args.args[0])
+
+    def test_restart_updated_setup_linux_replaces_process(self) -> None:
+        root = Path("/srv/shikigami")
+        executable = Path("/usr/bin/python3")
+        with patch.object(MODULE.sys, "platform", "linux"), patch.object(MODULE.os, "execv") as execv, patch.object(MODULE.subprocess, "run") as run:
+            MODULE._restart_updated_setup(root, executable, restart_daemon=False)
+        execv.assert_called_once_with(str(executable), [str(executable), str(root / "setupOnmyoji.py"), "--resume-after-update"])
+        run.assert_not_called()
+
+    def test_restart_updated_setup_reports_launch_error(self) -> None:
+        with patch.object(MODULE.sys, "platform", "win32"), patch.object(MODULE.subprocess, "run", side_effect=OSError("execução recusada")):
+            with self.assertRaisesRegex(MODULE.GitSetupError, "Não foi possível reiniciar"):
+                MODULE._restart_updated_setup(Path("instance"), Path("python.exe"), restart_daemon=False)
+
     def test_git_sync_merges_upstream_main_into_the_instance_branch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary); upstream = base / "upstream.git"; own = base / "own.git"; seed = base / "seed"; root = base / "instance"
