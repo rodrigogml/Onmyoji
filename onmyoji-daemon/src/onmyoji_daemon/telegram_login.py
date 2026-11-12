@@ -193,7 +193,18 @@ class TelegramLogin:
             if early:
                 self._login_event("account/login/completed", *early)
             self._diagnostic("codex_login.started")
-        except (CodexProtocolError, CodexExecutionError, ProcessRecoveryError, OSError, ValueError):
+        except Exception:
+            # Falhas no Telegram também liberam o bloqueio global. Se o App
+            # Server já iniciou o desafio, tentamos cancelá-lo sem reenviar o código.
+            login_id = session.get("login_id")
+            if isinstance(login_id, str) and login_id:
+                try:
+                    client.request("account/login/cancel", {"loginId": login_id}, timeout=10)
+                except Exception:
+                    pass
             if self._login_release(session):
-                self._login_reply(conversation, "Não foi possível iniciar o login por código de dispositivo. Confira o Codex e a permissão de device login; tente /login novamente.")
+                try:
+                    self._login_reply(conversation, "Não foi possível iniciar o login por código de dispositivo. Confira o Codex e a permissão de device login; tente /login novamente.")
+                except Exception:
+                    self._record_error("Falha ao comunicar o início da autenticação Codex.")
             self._diagnostic("codex_login.start_failed")

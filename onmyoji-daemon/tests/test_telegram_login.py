@@ -175,3 +175,15 @@ def test_app_server_disabled_does_not_call_codex(lab):
     gateway._update(update())
     assert calls == []
     assert "App Server habilitado" in sent[-1][1]
+
+
+def test_delivery_failure_cancels_challenge_and_releases_dispatch(lab):
+    gateway, _client, _sent, _deleted, calls = lab
+
+    def unavailable(*_args, **_kwargs):
+        raise RuntimeError("Telegram temporariamente indisponível")
+
+    gateway.api.send = unavailable
+    gateway._update(update())
+    assert not gateway._login_pending()
+    assert calls[-1] == ("account/login/cancel", {"loginId": "login-1"})
