@@ -178,6 +178,7 @@ class TunnelService:
         validate_origin(settings["gateway_url"], settings.get("ca_file", ""))
         client = self._client(settings)
         if not definition.tunnel_id:
+            client.preflight_access(definition, progress)
             progress("consultando o DNS antes de criar um novo Tunnel")
             client.inspect_dns(definition, "")
             progress("criando Tunnel remoto")

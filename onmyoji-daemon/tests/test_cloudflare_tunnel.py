@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import threading
 import time
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 import urllib.error
 
 import pytest
@@ -293,6 +293,123 @@ def test_client_errors_never_include_remote_response_secrets(monkeypatch):
         client.status("account", "tunnel")
     assert "403" in str(captured.value)
     assert "private" not in str(captured.value)
+
+
+
+@pytest.mark.parametrize("path,expected", [
+    ("/zones/private-zone/dns_records?name=token-private", "/zones/{zone_id}/dns_records"),
+    ("/accounts/private-account/cfd_tunnel?name=private", "/accounts/{account_id}/cfd_tunnel"),
+])
+def test_cloudflare_http_error_reports_endpoint_and_numeric_codes_only(monkeypatch, path, expected):
+    client = CloudflareClient("api-private")
+    payload = json.dumps({"success": False, "errors": [
+        {"code": 9109, "message": "token=private-do-not-print"},
+        {"code": "10000", "message": "password=private-do-not-print"},
+        {"code": "private-key", "message": "secret"}]}).encode()
+    error = urllib.error.HTTPError("https://api.cloudflare.com?private=secret", 403, "token=private", {}, io.BytesIO(payload))
+    monkeypatch.setattr("onmyoji_daemon.cloudflare_tunnel.client.urllib.request.urlopen", Mock(side_effect=error))
+    with pytest.raises(TunnelError) as caught:
+        client._call("GET", path)
+    message = str(caught.value)
+    assert caught.value.code == "cloudflare_http_error"
+    assert expected in message and "HTTP 403" in message
+    assert "9109" in message and "10000" in message
+    assert "private" not in message and "secret" not in message
+    if "/zones/" in path:
+        assert "DNS > Edit" in message
+    else:
+        assert "Cloudflare Tunnel > Edit" in message
+
+
+def test_cloudflare_response_rejection_only_exposes_numeric_codes(monkeypatch):
+    client = CloudflareClient("api-private")
+    reply = {"success": False, "errors": [{"code": 9999, "message": "token=private"}]}
+    response = MagicMock()
+    response.read.return_value = json.dumps(reply).encode()
+    response.__enter__.return_value = response
+    monkeypatch.setattr("onmyoji_daemon.cloudflare_tunnel.client.urllib.request.urlopen", Mock(return_value=response))
+    with pytest.raises(TunnelError) as caught:
+        client._call("GET", "/zones/zone/dns_records?token=private")
+    assert caught.value.code == "cloudflare_rejected"
+    assert "9999" in str(caught.value) and "private" not in str(caught.value)
+
+
+def test_cloudflare_token_verification_falls_back_to_account_tokens():
+    client = CloudflareClient("api-private")
+    calls = []
+    def call(method, path):
+        calls.append((method, path))
+        if path == "/user/tokens/verify":
+            from onmyoji_daemon.cloudflare_tunnel.client import CloudflareHTTPError
+            raise CloudflareHTTPError(403, method, path, {"errors": [{"code": 10000}]})
+        return {"status": "active"}
+    client._call = call
+    assert client.verify_token("account") == "active"
+    assert calls == [("GET", "/user/tokens/verify"), ("GET", "/accounts/account/tokens/verify")]
+
+
+@pytest.mark.parametrize("status", ["expired", "disabled"])
+def test_cloudflare_token_inactive_is_rejected_before_resource_calls(status):
+    client = CloudflareClient("api-private")
+    client._call = Mock(return_value={"status": status})
+    with pytest.raises(TunnelError) as caught:
+        client.preflight_access(TunnelDefinition("account", "zone", "gateway.example.com"), lambda _: None)
+    assert caught.value.code == "cloudflare_token_inactive"
+    assert client._call.call_count == 1
+
+
+def test_cloudflare_preflight_checks_both_resources_despite_dns_forbidden():
+    client = CloudflareClient("api-private")
+    calls = []
+    def call(method, path):
+        calls.append((method, path))
+        if path.endswith("/tokens/verify"):
+            return {"status": "active"}
+        if "/dns_records" in path:
+            from onmyoji_daemon.cloudflare_tunnel.client import CloudflareHTTPError
+            raise CloudflareHTTPError(403, method, path, {"errors": [{"code": 9109}]})
+        if "/cfd_tunnel" in path:
+            return []
+        raise AssertionError(path)
+    client._call = call
+    with pytest.raises(TunnelError) as caught:
+        client.preflight_access(TunnelDefinition("account", "zone", "gateway.example.com"), lambda _: None)
+    assert caught.value.code == "cloudflare_access_failed"
+    assert "DNS: FALHOU" in str(caught.value) and "Tunnels: OK" in str(caught.value)
+    assert "HTTP 403" in str(caught.value) and "DNS > Edit" in str(caught.value)
+    assert all(method == "GET" for method, _ in calls)
+    assert len(calls) == 3
+
+
+def test_cloudflare_preflight_reports_independent_tunnel_permission_failure():
+    client = CloudflareClient("api-private")
+    def call(method, path):
+        if path.endswith("/tokens/verify"):
+            return {"status": "active"}
+        if "/dns_records" in path:
+            return []
+        if "/cfd_tunnel" in path:
+            from onmyoji_daemon.cloudflare_tunnel.client import CloudflareHTTPError
+            raise CloudflareHTTPError(403, method, path, {"errors": [{"code": 10000}]})
+        raise AssertionError(path)
+    client._call = call
+    with pytest.raises(TunnelError) as caught:
+        client.preflight_access(TunnelDefinition("account", "zone", "gateway.example.com"), lambda _: None)
+    assert caught.value.code == "cloudflare_access_failed"
+    assert "DNS: OK" in str(caught.value) and "Tunnels: FALHOU" in str(caught.value)
+    assert "Cloudflare Tunnel > Edit" in str(caught.value)
+
+
+def test_cloudflare_preflight_treats_denied_verify_endpoints_as_inconclusive():
+    client = CloudflareClient("api-private")
+    def call(method, path):
+        if path.endswith("/tokens/verify"):
+            from onmyoji_daemon.cloudflare_tunnel.client import CloudflareHTTPError
+            raise CloudflareHTTPError(403, method, path, None)
+        return []
+    client._call = call
+    dns, tunnels, token_status = client.preflight_access(TunnelDefinition("account", "zone", "gateway.example.com"), lambda _: None)
+    assert (dns, tunnels, token_status) == ([], [], "unverified")
 
 
 def test_process_passes_runtime_token_only_in_child_environment(tmp_path, monkeypatch):

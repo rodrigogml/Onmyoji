@@ -90,10 +90,12 @@ class PublicationRecovery:
         definition = self._definition(settings)
         definition.validate()
         validate_origin(settings["gateway_url"], settings.get("ca_file", ""))
+        records, matches, token_status = self.client.preflight_access(definition, progress)
         progress("consultando DNS e procurando publicação existente na conta Cloudflare")
-        found, dns = self.client.discover_tunnel(definition)
+        found, dns = self.client.discover_tunnel(definition, records=records, matches=matches)
         if found is None:
             return {"status": "new", "hostname": definition.hostname, "new_origin": settings["gateway_url"],
+                    "token_verification": token_status,
                     "message": "Nenhum DNS ou Tunnel com este nome foi encontrado; o provisionamento criará uma nova publicação após confirmação."}
         progress("validando a configuração remota do Tunnel encontrado")
         remote = self._remote_config(self.client.get_configuration(found), found.hostname)
@@ -110,6 +112,7 @@ class PublicationRecovery:
                 "ca_sha256": sha256(Path(settings["ca_file"]).read_bytes()).hexdigest()}
         self._save(identifier, data)
         return {"status": "existing", "preview_id": identifier, "hostname": found.hostname, "tunnel_id": found.tunnel_id,
+                "token_verification": token_status,
                 "tunnel_name": found.tunnel_name, "configured_tunnel_id": definition.tunnel_id,
                 "current_origin": current, "new_origin": settings["gateway_url"],
                 "dns_action": "reuse" if dns else "create", "configuration_changes": remote != desired,

@@ -29,6 +29,8 @@ class RemoteCloudflare(CloudflareClient):
         if method != "GET" and self.write_error:
             raise self.write_error
         resource = urlsplit(path).path
+        if resource in {"/user/tokens/verify", "/accounts/account/tokens/verify"}:
+            return {"status": "active"}
         if resource == "/zones/zone/dns_records":
             if method == "GET":
                 return [deepcopy(self.record)] if self.record else []
@@ -84,6 +86,17 @@ def test_remote_dns_reconstructs_existing_publication_without_legacy_files(recov
     assert config.path.read_bytes() == before
     saved = (manager.directory / (result["preview_id"] + ".json")).read_text(encoding="utf-8")
     assert "api-private" not in saved and "runtime-private" not in saved
+
+
+def test_inspection_preflight_does_not_repeat_dns_or_tunnel_listing(recovery):
+    manager, config, client = recovery
+    result = preview(recovery)
+    assert result["status"] == "existing" and result["token_verification"] == "active"
+    paths = [urlsplit(path).path for method, path, _ in client.calls if method == "GET"]
+    assert paths.count("/zones/zone/dns_records") == 1
+    assert paths.count("/accounts/account/cfd_tunnel") == 1
+    assert "/user/tokens/verify" in paths
+    assert all(method == "GET" for method, *_ in client.calls)
 
 
 def test_confirmed_adoption_reuses_tunnel_and_dns_and_can_restore_backup(recovery):

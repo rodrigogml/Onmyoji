@@ -26,6 +26,60 @@ def gateway_ingress(previous: dict[str, Any], local_url: str, ca_file: str) -> l
     return [{"service": local_url, "originRequest": origin}, {"service": "http_status:404"}]
 
 
+
+def _safe_endpoint(path: str) -> str:
+    """Exibe o recurso sem IDs, hostnames nem query strings."""
+    route = urllib.parse.urlsplit(path).path
+    route = re.sub(r"(/zones/)[A-Za-z0-9_-]+", r"\1{zone_id}", route, count=1)
+    route = re.sub(r"(/accounts/)[A-Za-z0-9_-]+", r"\1{account_id}", route, count=1)
+    route = re.sub(r"(/cfd_tunnel/)[A-Za-z0-9_-]+", r"\1{tunnel_id}", route, count=1)
+    route = re.sub(r"(/dns_records/)[A-Za-z0-9_-]+", r"\1{record_id}", route, count=1)
+    return route if re.fullmatch(r"[A-Za-z0-9/_{}.-]+", route) and route.startswith(("/zones/", "/accounts/", "/user/tokens/")) else "/recurso-cloudflare"
+
+
+def _error_codes(payload: Any) -> str:
+    """Somente códigos numéricos; nunca copia mensagens da resposta externa."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("errors"), list):
+        return ""
+    codes = []
+    for entry in payload["errors"][:8]:
+        if not isinstance(entry, dict):
+            continue
+        value = entry.get("code")
+        if type(value) is int and 0 <= value <= 9999999999:
+            codes.append(str(value))
+        elif isinstance(value, str) and re.fullmatch(r"[0-9]{1,10}", value):
+            codes.append(value)
+    return ", ".join(dict.fromkeys(codes))
+
+
+def _http_advice(status: int, endpoint: str) -> str:
+    if status == 401:
+        return "API Token administrativo rejeitado. Confira o valor no KeePass, expiração e restrições de IP."
+    if status == 403:
+        if endpoint.startswith("/zones/"):
+            return "Acesso DNS negado. Confira Zone ID, zona autorizada e Zone > DNS > Edit no API Token."
+        if "/cfd_tunnel" in endpoint:
+            return "Acesso ao Tunnel negado. Confira Account ID, conta autorizada e Account > Cloudflare Tunnel > Edit no API Token."
+        return "Acesso não autorizado. Confira o API Token, conta selecionada, escopos e restrições de IP."
+    if status == 404:
+        return "Recurso não encontrado. Confira Account ID, Zone ID e se o Tunnel pertence à conta."
+    if status == 429:
+        return "Limite temporário de requisições Cloudflare; tente novamente após o intervalo indicado pelo serviço."
+    return "Confira o estado da API Cloudflare e os identificadores configurados."
+
+
+class CloudflareHTTPError(TunnelError):
+    """Mantém status HTTP para diagnóstico sem propagar a resposta original."""
+
+    def __init__(self, status: int, method: str, path: str, payload: Any):
+        self.http_status = status
+        endpoint = _safe_endpoint(path)
+        codes = _error_codes(payload)
+        suffix = f" Códigos Cloudflare: {codes}." if codes else ""
+        super().__init__("cloudflare_http_error", f"Cloudflare HTTP {status} em {method} {endpoint}.{suffix} {_http_advice(status, endpoint)}")
+
+
 class CloudflareClient:
     def __init__(self, token: str, base_url: str = "https://api.cloudflare.com/client/v4", timeout: float = 30):
         if not token:
@@ -39,17 +93,68 @@ class CloudflareClient:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 value = json.loads(response.read())
         except urllib.error.HTTPError as error:
-            advice = ""
-            if error.code in {401, 403}:
-                advice = " Confira o API Token administrativo no KeePass, sua validade e os escopos Cloudflare Tunnel (conta) e DNS (zona). O token de execução do conector não substitui o API Token."
-            elif error.code == 404:
-                advice = " Confira Account ID, Zone ID e se o Tunnel pertence à conta selecionada."
-            raise TunnelError("cloudflare_http_error", f"Cloudflare retornou HTTP {error.code} durante {method}." + advice) from error
+            try:
+                remote_error = json.loads(error.read(4096))
+            except (AttributeError, OSError, TypeError, ValueError):
+                remote_error = None
+            raise CloudflareHTTPError(error.code, method, path, remote_error) from error
         except (OSError, ValueError) as error:
             raise TunnelError("cloudflare_unavailable", "Falha de comunicação com a Cloudflare.") from error
         if not isinstance(value, dict) or value.get("success") is not True:
-            raise TunnelError("cloudflare_rejected", "Cloudflare não confirmou a operação.")
+            codes = _error_codes(value)
+            detail = f" Códigos Cloudflare: {codes}." if codes else ""
+            raise TunnelError("cloudflare_rejected", f"Cloudflare rejeitou {method} {_safe_endpoint(path)}.{detail} Confira permissões e identificadores.")
         return value.get("result")
+
+
+    def verify_token(self, account_id: str) -> str:
+        """Compatível com tokens de usuário e de conta, sem listar tokens."""
+        paths = ("/user/tokens/verify", f"/accounts/{account_id}/tokens/verify")
+        for path in paths:
+            try:
+                result = self._call("GET", path)
+            except CloudflareHTTPError as error:
+                # A recusa em ambos os endpoints não comprova token inválido.
+                # A autorização efetiva será testada nos recursos específicos.
+                if error.http_status in {401, 403, 404}:
+                    continue
+                raise
+            if not isinstance(result, dict) or result.get("status") not in {"active", "disabled", "expired"}:
+                raise TunnelError("invalid_response", "Cloudflare não retornou um estado reconhecido do API Token.")
+            if result["status"] != "active":
+                raise TunnelError("cloudflare_token_inactive", f"API Token Cloudflare {result['status']}. Reative ou substitua a credencial no KeePass.")
+            return "active"
+        return "unverified"
+
+    def named_tunnels(self, definition: TunnelDefinition) -> list[dict[str, Any]]:
+        definition.validate()
+        matches = self._call("GET", f"/accounts/{definition.account_id}/cfd_tunnel?" + urllib.parse.urlencode({"name": definition.tunnel_name, "is_deleted": "false"})) or []
+        if not isinstance(matches, list) or any(not isinstance(item, dict) for item in matches):
+            raise TunnelError("invalid_response", "Cloudflare não confirmou a consulta de Tunnels da conta.")
+        return matches
+
+    def preflight_access(self, definition: TunnelDefinition, progress) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
+        """Testa DNS e Tunnels independentemente, sem alteração remota."""
+        definition.validate()
+        progress("verificando validade do API Token administrativo na Cloudflare")
+        token_status = self.verify_token(definition.account_id)
+        progress("consultando permissões efetivas de leitura: DNS da zona e Tunnels da conta")
+        records, matches = None, None
+        failures: list[str] = []
+        try:
+            records = self.dns_records(definition)
+        except TunnelError as error:
+            failures.append(f"DNS: FALHOU ({error})")
+        try:
+            matches = self.named_tunnels(definition)
+        except TunnelError as error:
+            failures.append(f"Tunnels: FALHOU ({error})")
+        if failures:
+            dns = "DNS: OK" if records is not None else next(item for item in failures if item.startswith("DNS:"))
+            tunnels = "Tunnels: OK" if matches is not None else next(item for item in failures if item.startswith("Tunnels:"))
+            verification = "ativo" if token_status == "active" else "não confirmado"
+            raise TunnelError("cloudflare_access_failed", f"Pré-verificação Cloudflare: API Token {verification}; {dns}; {tunnels}. Nenhuma alteração remota foi realizada.")
+        return records, matches, token_status
 
     @staticmethod
     def _confirmed(confirm: bool) -> None:
@@ -59,7 +164,7 @@ class CloudflareClient:
     def create_tunnel(self, definition: TunnelDefinition, confirm: bool) -> dict[str, Any]:
         definition.validate()
         self._confirmed(confirm)
-        existing = self._call("GET", f"/accounts/{definition.account_id}/cfd_tunnel?" + urllib.parse.urlencode({"name": definition.tunnel_name, "is_deleted": "false"})) or []
+        existing = self.named_tunnels(definition)
         if existing:
             raise TunnelError("tunnel_name_conflict", "Já existe um Tunnel com esse nome; informe seu ID explicitamente para adotá-lo.")
         result = self._call("POST", f"/accounts/{definition.account_id}/cfd_tunnel", {"name": definition.tunnel_name, "config_src": "cloudflare"})
@@ -131,14 +236,15 @@ class CloudflareClient:
             raise TunnelError("invalid_response", "Cloudflare não confirmou a lista de registros DNS.")
         return records
 
-    def discover_tunnel(self, definition: TunnelDefinition) -> tuple[TunnelDefinition | None, dict[str, Any] | None]:
+    def discover_tunnel(self, definition: TunnelDefinition, *, records: list[dict[str, Any]] | None = None, matches: list[dict[str, Any]] | None = None) -> tuple[TunnelDefinition | None, dict[str, Any] | None]:
         """Descobre um Tunnel remoto por DNS, ID ou nome, sem escritas.
 
         Recusa DNS externo, múltiplos registros e Tunnels locais. Um ID local
         divergente não substitui o candidato do DNS: sua troca exige a prévia e
         a confirmação explícitas do wizard antes de persistir qualquer alteração.
         """
-        records = self.dns_records(definition)
+        if records is None:
+            records = self.dns_records(definition)
         record = records[0] if len(records) == 1 else None
         tunnel_id = definition.tunnel_id
         if records:
@@ -148,9 +254,8 @@ class CloudflareClient:
             discovered = match.group(1)
             tunnel_id = discovered
         if not tunnel_id:
-            matches = self._call("GET", f"/accounts/{definition.account_id}/cfd_tunnel?" + urllib.parse.urlencode({"name": definition.tunnel_name, "is_deleted": "false"})) or []
-            if not isinstance(matches, list) or any(not isinstance(item, dict) for item in matches):
-                raise TunnelError("invalid_response", "Cloudflare não confirmou a busca de Tunnels pelo nome.")
+            if matches is None:
+                matches = self.named_tunnels(definition)
             if not matches:
                 return None, None
             if len(matches) != 1 or not isinstance(matches[0].get("id"), str):

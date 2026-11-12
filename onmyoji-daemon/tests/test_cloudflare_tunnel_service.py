@@ -210,6 +210,18 @@ def test_confirmed_provision_reuses_existing_tunnel_and_starts_after_activation(
     assert tunnel.status()["ingress_ready"] and tunnel.status()["running"]
 
 
+def test_new_tunnel_preflight_denial_prevents_remote_creation(service):
+    tunnel, _, client, _ = service
+    tunnel.configuration.configure({"tunnel_id": ""}, validate_credentials=False)
+    client.preflight_access.side_effect = TunnelError("cloudflare_access_failed", "DNS negado.")
+    operation = tunnel.rpc("cloudflare-tunnel.provision", {"confirm": True})
+    result = wait_operation(tunnel, operation)
+    assert result["state"] == "failed" and result["error_code"] == "cloudflare_access_failed"
+    client.inspect_dns.assert_not_called()
+    client.create_tunnel.assert_not_called()
+    assert not tunnel.configuration.settings()["tunnel_id"]
+
+
 def test_new_tunnel_id_survives_partial_provisioning_failure_and_retry(service):
     tunnel, resolver, client, ca = service
     tunnel.configuration.configure({"tunnel_id": ""}, validate_credentials=False)
