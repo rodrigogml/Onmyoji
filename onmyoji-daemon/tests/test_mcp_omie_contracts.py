@@ -223,10 +223,47 @@ class OmieContractRegressionTests(unittest.TestCase):
         allocation = build_params("receivables.department-allocation.create", {"body": {"chave_lancamento": 1, "distribuicao": [{"cCodDep": "D1", "nPerDep": 100}]}})
         self.assertEqual(allocation["chave_lancamento"], 1)
 
-    def test_inbound_nfe_completion_uses_explicit_financial_fields(self):
-        data = build_params("inbound-nfe-receipts.update-completed", {"body": {"receipt_id": 1, "purchase_category_code": "2.01", "bank_account_id": 2, "registration_date": "19/08/2026", "departments": [{"cCodDepartamento": "D1", "pDepartamento": 100}]}})
-        self.assertEqual(data["ide"], {"nIdReceb": 1})
-        self.assertEqual(data["infoAdicionais"]["cCategCompra"], "2.01")
+    def test_inbound_nfe_receipt_update_financial_data_and_allocation(self):
+        body = {
+            "receipt_id": 1, "purchase_category_code": "2.01.03",
+            "bank_account_id": 8382785861, "project_id": 8444062614,
+            "departments": [{"cCodDepartamento": "8532595062", "pDepartamento": 100, "vDepartamento": 2545.40}],
+        }
+        data = build_params("inbound-nfe-receipts.update", {"body": body})
+        self.assertEqual(data, {
+            "ide": {"nIdReceb": 1},
+            "infoAdicionais": {"cCategCompra": "2.01.03", "nIdConta": 8382785861, "nIdProjeto": 8444062614},
+            "departamentos": [{"cCodDepartamento": "8532595062", "pDepartamento": 100, "vDepartamento": 2545.40}],
+        })
+        self.assertNotIn("itensRecebimentoEditar", data)
+        done = build_params("inbound-nfe-receipts.update-completed", {"body": {"receipt_id": 1, "project_id": 8444062614}})
+        self.assertEqual(done, {"ide": {"nIdReceb": 1}, "infoAdicionais": {"nIdProjeto": 8444062614}})
+
+    def test_inbound_nfe_receipt_rejects_unmapped_fields_or_empty_changes(self):
+        invalid = [
+            ("update", {"receipt_id": 1}),
+            ("update", {"receipt_id": 1, "items": {}}),
+            ("update", {"receipt_id": 1, "purchase_category_code": ""}),
+            ("update", {"receipt_id": 1, "project_id": "8444062614"}),
+            ("update", {"receipt_id": 1, "supplier_id": 9028181622, "purchase_category_code": "2.01.03"}),
+            ("update", {"receipt_id": 1, "total": 2545.40}),
+            ("update", {"receipt_id": 1, "departments": [{"cCodDepartamento": 8532595062, "pDepartamento": 100}]}),
+            ("update", {"receipt_id": 1, "departments": [{"cCodDepartamento": "D1", "pDepartamento": 60}]}),
+            ("update", {"receipt_id": 1, "departments": [{"cCodDepartamento": "D1", "pDepartamento": 100, "vDepartamento": -2}]}),
+            ("update-completed", {"receipt_id": 1, "departments": [{"cCodDepartamento": "D1", "pDepartamento": 100}]}),
+            ("update-completed", {"receipt_id": 1}),
+            ("update-completed", {"receipt_id": 1, "categories": []}),
+            ("update-completed", {"receipt_id": 1, "registration_date": "31/02/2026"}),
+        ]
+        for operation, body in invalid:
+            with self.subTest(operation=operation, body=body), self.assertRaises(OmieError) as error:
+                build_params("inbound-nfe-receipts." + operation, {"body": body})
+            self.assertEqual(error.exception.code, "invalid_body")
+
+    def test_inbound_nfe_receipt_accepts_item_when_explicit_and_valid(self):
+        payload = {"body": {"receipt_id": 1, "items": [{"itensIde": {"nSequencia": 1, "cAcao": "IGNORAR"}}]}}
+        result = build_params("inbound-nfe-receipts.update", payload)
+        self.assertEqual(result["itensRecebimentoEditar"], [{"itensIde": {"nSequencia": 1, "cAcao": "IGNORAR"}}])
 
     def test_invalid_identifiers_and_unregistered_fields_are_rejected(self):
         with self.assertRaises(OmieError):

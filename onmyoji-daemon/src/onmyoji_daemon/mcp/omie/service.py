@@ -72,7 +72,7 @@ class OmieService:
             def request(method: str, params: Mapping[str, Any], *, retries: int | None = None) -> Any:
                 return self._request(profile, defaults, "customers", method, params, retries=retries)
             return {"data": create_customer(parameters, request)}
-        return {"data": self._request(profile, defaults, endpoint, method, parameters)}
+        return {"data": self._request(profile, defaults, endpoint, method, parameters, retries=0 if writes else None)}
 
     def invoke_financial(self, profile_name: str, operation: str, arguments: Mapping[str, Any], *, writes: bool) -> dict[str, Any]:
         """Executa o contrato financeiro já normalizado pela fachada pública."""

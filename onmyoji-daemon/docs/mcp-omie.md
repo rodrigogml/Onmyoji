@@ -216,6 +216,41 @@ conferência de dados atualizados antes de operações sensíveis.
 | Contas a pagar/receber | Preserva tipos de documento, baixas, conciliação, distribuição e lotes. Linha digitável somente em contas a pagar, texto não vazio de até 70 caracteres sem reformatação. |
 | Recebimentos e NF-e | Converte identificadores, etapa, itens e informações financeiras para os envelopes específicos da Omie. |
 
+### Correção dos recebimentos de NF-e
+
+A tool `omie.inbound_nfe_receipts_update` utiliza `AlterarRecebimento` para
+recebimentos **ainda não concluídos**. A requisição deve conter `body`
+(não `data`) e um `receipt_id` ou `access_key`, além de pelo menos uma
+alteração real. Para dados financeiros, utilize `purchase_category_code`,
+`bank_account_id`, `project_id`, `registration_date`, `buyer_id` e/ou
+`departments`. O MCP envia os cinco primeiros em `infoAdicionais` e o
+rateio em `departamentos`. Não envia mais `itensRecebimentoEditar: {}`
+quando somente dados financeiros forem solicitados.
+
+Exemplo fictício, a ser enviado **apenas após consultar a NF-e e validar** seus
+dados e sua etapa:
+
+```json
+{"tool":"omie.inbound_nfe_receipts_update","arguments":{"confirm":true,"body":{"receipt_id":123,"purchase_category_code":"2.01.03","bank_account_id":456,"project_id":789,"departments":[{"cCodDepartamento":"DEP-01","pDepartamento":100,"vDepartamento":2545.40}]}}}
+```
+
+`cCodDepartamento` é o **código textual** do departamento na Omie, não
+necessariamente o ID; mantenha zeros à esquerda. O percentual do rateio deve
+somar 100%. Fornecedor (`nIdFornecedor`) e valor da nota (`nValorNFe`)
+são conferidos com `omie.inbound_nfe_receipts_get`, não enviados como campos
+de alteração. Antes de escrever, confirme que o valor do rateio corresponde
+ao valor consultado da NF-e. Após escrever, consulte novamente e confira os
+campos efetivamente atualizados. Erros locais de estrutura são recusados antes
+do acesso ao cofre ou à rede.
+
+Para recebimentos **concluídos**, use
+`omie.inbound_nfe_receipts_update_completed`; a Omie documenta para essa
+operação somente `ide` e `infoAdicionais`. Ela **não** aceita
+`departments` ou `categories`, e o MCP os rejeita em vez de enviá-los
+silenciosamente. Se o rateio precisar ser alterado em uma nota concluída,
+não reverta ou reabra automaticamente: peça autorização específica.
+
+
 Exemplos com um único perfil habilitado:
 
 ```json

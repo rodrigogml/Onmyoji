@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from math import isfinite
 from typing import Any, Mapping
 
 from .exception import OmieError
@@ -191,6 +192,92 @@ def financial_params(operation: str, params: Mapping[str, Any], body: Mapping[st
     fail("unsupported_operation", "Operação financeira não permitida.")
 
 
+def _receipt_info_and_allocations(body: Mapping[str, Any], *, completed: bool) -> dict[str, Any]:
+    """Monta somente tags de alteração documentadas para recebimentos de NF-e."""
+    info_keys = {
+        "purchase_category_code": "cCategCompra",
+        "bank_account_id": "nIdConta",
+        "project_id": "nIdProjeto",
+        "registration_date": "dRegistro",
+        "buyer_id": "nIdComprador",
+    }
+    allowed = {"receipt_id", "access_key", *info_keys}
+    if not completed:
+        allowed.update({"departments", "items"})
+    unknown = sorted(set(body) - allowed)
+    if unknown:
+        fail("invalid_body", "Campos não aceitos na alteração deste recebimento: " + ", ".join(unknown) + ". Fornecedor e valor da NF-e são dados de consulta, não campos editáveis.")
+    info: dict[str, Any] = {}
+    for public, native in info_keys.items():
+        if public not in body:
+            continue
+        value = body[public]
+        if public == "purchase_category_code":
+            value = require_string(value, public, max_length=20)
+        elif public == "registration_date":
+            if not isinstance(value, str) or not re.fullmatch(r"[0-9]{2}/[0-9]{2}/[0-9]{4}", value):
+                fail("invalid_body", "registration_date deve ser dd/mm/aaaa.")
+            from datetime import datetime
+            try:
+                datetime.strptime(value, "%d/%m/%Y")
+            except ValueError:
+                fail("invalid_body", "registration_date contém data inválida.")
+        elif type(value) is not int or value <= 0:
+            fail("invalid_body", f"{public} deve ser um inteiro positivo.")
+        info[native] = value
+    result: dict[str, Any] = {}
+    if info:
+        result["infoAdicionais"] = info
+    if "departments" in body:
+        departments = body["departments"]
+        if not isinstance(departments, list) or not departments:
+            fail("invalid_body", "departments deve ser uma lista não vazia.")
+        total = 0.0
+        validated = []
+        for index, row in enumerate(departments):
+            if not isinstance(row, Mapping) or set(row) - {"cCodDepartamento", "pDepartamento", "vDepartamento"} or not {"cCodDepartamento", "pDepartamento"} <= set(row):
+                fail("invalid_body", f"departments[{index}] exige cCodDepartamento e pDepartamento (vDepartamento é opcional).")
+            code = require_string(row["cCodDepartamento"], f"departments[{index}].cCodDepartamento", max_length=40)
+            pct = row["pDepartamento"]
+            if type(pct) not in (float, int) or not 0 < pct <= 100:
+                fail("invalid_body", f"departments[{index}].pDepartamento deve estar entre 0 e 100.")
+            item = {"cCodDepartamento": code, "pDepartamento": pct}
+            if "vDepartamento" in row:
+                amount = row["vDepartamento"]
+                if type(amount) not in (int, float) or not isfinite(amount) or amount < 0:
+                    fail("invalid_body", f"departments[{index}].vDepartamento deve ser numérico não negativo.")
+                item["vDepartamento"] = amount
+            total += pct
+            validated.append(item)
+        if abs(total - 100) > 0.01:
+            fail("invalid_body", "A soma de departments[].pDepartamento deve ser 100%.")
+        result["departamentos"] = validated
+    if "items" in body:
+        items = body["items"]
+        single = isinstance(items, Mapping)
+        rows = [items] if single else items
+        if not isinstance(rows, list) or not rows:
+            fail("invalid_body", "items exige um item válido ou lista não vazia de itens.")
+        validated_items = []
+        for index, item in enumerate(rows):
+            if not isinstance(item, Mapping) or set(item) - {"itensIde", "itensInfoAdicEditar"} or not isinstance(item.get("itensIde"), Mapping):
+                fail("invalid_body", f"items[{index}] exige itensIde e só aceita os campos de item publicados.")
+            identity = item["itensIde"]
+            if set(identity) != {"nSequencia", "cAcao"} or type(identity.get("nSequencia")) is not int or identity["nSequencia"] < 1 or identity.get("cAcao") not in {"NOVO", "ASSOCIAR-PRODUTO", "ASSOCIAR-PEDIDO", "IGNORAR", "EDITAR"}:
+                fail("invalid_body", f"items[{index}].itensIde exige nSequencia e cAcao válidos.")
+            validated_item: dict[str, Any] = {"itensIde": dict(identity)}
+            if "itensInfoAdicEditar" in item:
+                additional = item["itensInfoAdicEditar"]
+                if not isinstance(additional, Mapping) or set(additional) != {"cCategoriaItem"}:
+                    fail("invalid_body", f"items[{index}].itensInfoAdicEditar aceita apenas cCategoriaItem.")
+                validated_item["itensInfoAdicEditar"] = {"cCategoriaItem": require_string(additional["cCategoriaItem"], "cCategoriaItem", max_length=20)}
+            validated_items.append(validated_item)
+        result["itensRecebimentoEditar"] = validated_items[0] if single else validated_items
+    if not result:
+        fail("invalid_body", "Informe ao menos purchase_category_code, bank_account_id, project_id, registration_date, buyer_id" + (", departments ou items." if not completed else "."))
+    return result
+
+
 def nfe_params(operation: str, params: Mapping[str, Any], body: Mapping[str, Any]) -> dict[str, Any]:
     if operation == "inbound-nfe-receipts.list":
         return copy_fields(params, {"nPagina", "nRegistrosPorPagina", "cOrdenarPor", "dtAltDe", "dtAltAte", "hrAltDe", "hrAltAte", "dtEmissaoDe", "dtEmissaoAte", "nIdFornecedor", "cEtapa", "cExibirDetalhes"})
@@ -203,6 +290,10 @@ def nfe_params(operation: str, params: Mapping[str, Any], body: Mapping[str, Any
         if operation.endswith(".get"):
             identifier = {"nIdReceb": params["receipt_id"]} if isinstance(params.get("receipt_id"), int) else ({"cChaveNfe": params["access_key"]} if isinstance(params.get("access_key"), str) else {})
         if not identifier: fail("missing_parameter", "receipt_id ou access_key é obrigatório.")
+        if "nIdReceb" in identifier and (type(identifier["nIdReceb"]) is not int or identifier["nIdReceb"] < 1):
+            fail("invalid_body", "receipt_id deve ser inteiro positivo.")
+        if "cChaveNfe" in identifier and not re.fullmatch(r"[0-9]{44}", identifier["cChaveNfe"]):
+            fail("invalid_body", "access_key deve ter 44 dígitos.")
         if operation in {"inbound-nfe-receipts.get", "inbound-nfe-receipts.complete", "inbound-nfe-receipts.reverse", "inbound-nfe-receipts.set-stage"}:
             if operation != "inbound-nfe-receipts.get":
                 stage = body.get("stage")
@@ -210,15 +301,9 @@ def nfe_params(operation: str, params: Mapping[str, Any], body: Mapping[str, Any
                 identifier["cEtapa"] = stage
             return identifier
         if operation == "inbound-nfe-receipts.update-completed":
-            for field in ("purchase_category_code", "bank_account_id", "registration_date"):
-                if field not in body: fail("invalid_body", f"{field} é obrigatório.")
-            result = {"ide": identifier, "infoAdicionais": {"cCategCompra": body["purchase_category_code"], "nIdConta": body["bank_account_id"], "dRegistro": body["registration_date"]}}
-            if "project_id" in body: result["infoAdicionais"]["nIdProjeto"] = body["project_id"]
-            if "departments" in body: result["departamentos"] = body["departments"]
-            if "categories" in body: result["categorias"] = body["categories"]
-            return result
+            return {"ide": identifier, **_receipt_info_and_allocations(body, completed=True)}
         if operation == "inbound-nfe-receipts.update":
-            return {"ide": identifier, "itensRecebimentoEditar": body.get("items", {})}
+            return {"ide": identifier, **_receipt_info_and_allocations(body, completed=False)}
     if operation in {"incoming-invoices.list", "electronic-invoices.list"}:
         return copy_fields(params, {"nPagina", "nRegistrosPorPagina", "pagina", "registros_por_pagina", "ordenar_por", "dDataEmissaoInicial", "dDataEmissaoFinal"})
     if operation in {"incoming-invoices.get", "incoming-invoices.status", "incoming-invoices.delete"}:

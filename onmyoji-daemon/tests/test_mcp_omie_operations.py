@@ -46,9 +46,9 @@ def operation_cases():
     add("inbound_nfe_receipts_list", "params", {"nPagina": 1, "nRegistrosPorPagina": 10})
     add("inbound_nfe_receipts_get", "params", {"receipt_id": 1})
     add("inbound_nfe_receipts_delete", "body", {"receipt_id": 1})
-    add("inbound_nfe_receipts_update", "body", {"receipt_id": 1, "items": {}})
+    add("inbound_nfe_receipts_update", "body", {"receipt_id": 1, "purchase_category_code": "2.01", "departments": [{"cCodDepartamento": "D1", "pDepartamento": 100}]})
     add("inbound_nfe_receipts_set_stage inbound_nfe_receipts_complete inbound_nfe_receipts_reverse", "body", {"receipt_id": 1, "stage": "50"})
-    add("inbound_nfe_receipts_update_completed", "body", {"receipt_id": 1, "purchase_category_code": "2.01", "bank_account_id": 2, "registration_date": "25/10/2026", "departments": []})
+    add("inbound_nfe_receipts_update_completed", "body", {"receipt_id": 1, "purchase_category_code": "2.01", "bank_account_id": 2, "registration_date": "25/10/2026"})
     add("incoming_invoices_list electronic_invoices_list", "params", {"nPagina": 1, "nRegistrosPorPagina": 10})
     add("incoming_invoices_get incoming_invoices_status", "params", {"id": 1})
     add("incoming_invoices_delete", "body", {"id": 1})
@@ -83,6 +83,7 @@ def test_service_routes_normalized_parameters_to_registered_endpoint(operation, 
         assert result == {"data": {"id": 42}}
         endpoint, method, _ = OPERATIONS[operation]
         assert service._request.call_args.args == ({}, {}, endpoint, method, build_params(operation, arguments))
+        assert service._request.call_args.kwargs == {"retries": 0 if operation in WRITES else None}
 
 
 @pytest.mark.parametrize("operation", WRITES)
@@ -113,6 +114,43 @@ def test_publication_selects_one_profile_and_publishes_context():
     transfer = next(tool for tool in tools if tool["name"] == "omie.financeiro.transferencias.criar")
     assert "dados" in transfer["input_schema"]["properties"]
     assert "omie.account_transfers_create" not in {tool["name"] for tool in tools}
+
+
+def test_receipt_update_publishes_financial_fields_and_rejects_unsupported_completed_allocation():
+    from jsonschema import Draft202012Validator, ValidationError
+    definitions = OmieToolRegistry(Configuration([{"name": "empresa", "description": "ERP"}])).definitions()
+    update = next(tool for tool in definitions if tool["name"] == "omie.inbound_nfe_receipts_update")
+    completed = next(tool for tool in definitions if tool["name"] == "omie.inbound_nfe_receipts_update_completed")
+    schema = update["input_schema"]
+    Draft202012Validator(schema).validate({
+        "confirm": True,
+        "body": {
+            "receipt_id": 1, "purchase_category_code": "2.01.03",
+            "bank_account_id": 2, "project_id": 3,
+            "departments": [{"cCodDepartamento": "000123", "pDepartamento": 100, "vDepartamento": 2545.4}],
+        },
+    })
+    for arguments in (
+        {"confirm": True, "body": {"receipt_id": 1}},
+        {"confirm": True, "body": {"receipt_id": 1, "items": {}}},
+        {"confirm": True, "body": {"receipt_id": 1, "supplier_id": 99}},
+    ):
+        with pytest.raises(ValidationError):
+            Draft202012Validator(schema).validate(arguments)
+    with pytest.raises(ValidationError):
+        Draft202012Validator(completed["input_schema"]).validate({
+            "confirm": True,
+            "body": {"receipt_id": 1, "departments": [{"cCodDepartamento": "000123", "pDepartamento": 100}]},
+        })
+
+
+def test_invalid_receipt_changes_are_blocked_before_loading_profile(tmp_path):
+    service = OmieService(tmp_path)
+    service._profile = Mock(side_effect=AssertionError("Não consultar cofre/configuração em dados inválidos"))
+    for body in ({"receipt_id": 1}, {"receipt_id": 1, "items": {}}, {"receipt_id": 1, "supplier_id": 3}):
+        with pytest.raises(OmieError) as error:
+            service.invoke("example", "inbound_nfe_receipts_update", {"confirm": True, "body": body})
+        assert error.value.code == "invalid_body"
 
 
 def test_multiple_profiles_require_selection_and_expose_context():
