@@ -105,13 +105,16 @@ os tipos de documento aceitos pelo MCP e os limites específicos de cada campo.
 Ausência ou invalidade de campos obrigatórios gera erro com o nome público,
 por exemplo `dados.codigo_integracao`, antes de qualquer acesso externo.
 
-Em `dados.departamentos`, cada item aceita `codigo` (texto, até 40 caracteres),
-`percentual` (número maior que zero) e `valor` opcional. Também é aceito o
-formato nativo `cCodDep`/`nPerDep`/`nValDep`. O MCP converte para os campos
-nativos, calcula os valores quando omitidos, ajusta o arredondamento em centavos
-no último departamento e exige soma de 100% e total compatível com o lançamento.
-Não misture campos dos dois formatos no mesmo item. A mesma regra vale para
-transferências entre contas.
+Em `dados.departamentos`, cada item aceita `codigo` (texto, até 40 caracteres)
+e ao menos um entre `percentual` e `valor`. Também aceita o formato nativo
+`cCodDep` e ao menos um entre `nPerDep` e `nValDep`. Assim, um único
+departamento pode ser informado só com `{"cCodDep":"DEP-1","nValDep":9599}`:
+o MCP calcula `nPerDep: 100` a partir do valor do lançamento. Para vários
+departamentos, valores explícitos devem cobrir todos os itens e somar o total;
+percentuais ausentes são derivados dos valores. Com percentuais informados sem
+valores, o MCP calcula os valores e ajusta os centavos no último departamento.
+Os percentuais devem totalizar 100%, com valores consistentes. Não misture nomes
+semânticos e nativos no mesmo item. A regra também vale para transferências.
 
 Após uma inclusão confirmada, a conferência usa `.consultar` pelo ID retornado
 ou pelo código de integração original. Em resposta incerta, consulte antes de

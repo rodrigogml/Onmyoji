@@ -880,6 +880,27 @@ def test_transaction_rateio_is_normalized_before_omie(tmp_path, monkeypatch, row
     assert request.call_args.args[4]["cabecalho"]["nValorLanc"] == 9599
 
 
+@pytest.mark.parametrize("rows,expected", [
+    ([{"cCodDep": "8532594895", "nValDep": 9599}],
+     [{"cCodDep": "8532594895", "nPerDep": 100.0, "nValDep": 9599.0}]),
+    ([{"codigo": "8532594895", "valor": 9599}],
+     [{"cCodDep": "8532594895", "nPerDep": 100.0, "nValDep": 9599.0}]),
+    ([{"cCodDep": "D1", "nValDep": 4000}, {"cCodDep": "D2", "nValDep": 5599}],
+     [{"cCodDep": "D1", "nPerDep": 41.671007, "nValDep": 4000.0},
+      {"cCodDep": "D2", "nPerDep": 58.328993, "nValDep": 5599.0}]),
+])
+def test_transaction_rateio_com_valor_calcula_percentual(tmp_path, monkeypatch, rows, expected):
+    data = {**transaction_data(), "valor": 9599, "departamentos": rows}
+    _, request = mock_remote(monkeypatch, [{"cCodStatus": "0", "nCodLanc": 9000000222}])
+
+    OmieFinanceFacade(Configuration(tmp_path)).call(
+        TRANSACTION_CREATE, {"confirmar": True, "dados": data}, "empresa",
+    )
+
+    assert request.call_args.args[4]["departamentos"] == expected
+    assert request.call_count == 1
+
+
 def test_transaction_rateio_distributes_rounding_to_last_department(tmp_path, monkeypatch):
     data = {**transaction_data(), "departamentos": [
         {"codigo": "D1", "percentual": 50}, {"codigo": "D2", "percentual": 50},
@@ -903,6 +924,11 @@ def test_transaction_rateio_distributes_rounding_to_last_department(tmp_path, mo
     [{"codigo": "D1", "percentual": 50, "valor": 61.73}, {"codigo": "D2", "percentual": 50}],
     [{"codigo": "D1", "percentual": 100, "valor": 123.456}],
     [{"codigo": "D1", "nPerDep": 100}],
+    [{"codigo": "D1"}],
+    [{"cCodDep": "D1"}],
+    [{"cCodDep": "D1", "nValDep": 123.44}],
+    [{"cCodDep": "D1", "nValDep": 123.45, "nPerDep": 95}],
+    [{"cCodDep": "D1", "nValDep": 123.45, "nPerDep": 0}],
 ])
 def test_invalid_transaction_rateio_never_reaches_credentials(tmp_path, monkeypatch, rateio):
     profile, request = mock_remote(monkeypatch, [])
@@ -924,7 +950,10 @@ def test_transaction_rateio_schema_disallows_unknown_department_fields(tmp_path)
     ) if tool["name"] == TRANSACTION_CREATE)
     validator = Draft202012Validator(schema)
     Draft202012Validator.check_schema(schema)
-    for row in ({"codigo": "D1", "percentual": 100}, {"cCodDep": "D1", "nPerDep": 100}):
+    for row in (
+        {"codigo": "D1", "percentual": 100}, {"codigo": "D1", "valor": 123.45},
+        {"cCodDep": "D1", "nPerDep": 100}, {"cCodDep": "D1", "nValDep": 123.45},
+    ):
         validator.validate({"confirmar": True, "dados": {**transaction_data(), "departamentos": [row]}})
     assert not validator.is_valid({"confirmar": True, "dados": {
         **transaction_data(), "departamentos": [{"codigo": "D1", "percentual": 100, "outro": "N"}],
@@ -943,6 +972,21 @@ def test_transferencia_rateio_usa_mesma_traducao(tmp_path, monkeypatch):
     )
     assert request.call_args.args[4]["departamentos"] == [
         {"cCodDep": "8532594895", "nPerDep": 100, "nValDep": 9599.0},
+    ]
+
+
+def test_transferencia_com_valor_calcula_percentual(tmp_path, monkeypatch):
+    _, request = mock_remote(monkeypatch, [{"cCodStatus": "0", "nCodLanc": 9000000222}])
+    OmieFinanceFacade(Configuration(tmp_path)).call(
+        "omie.financeiro.transferencias.criar",
+        {"confirmar": True, "dados": {
+            "codigo_integracao": "TR-20261112-2", "conta_origem_id": 10, "conta_destino_id": 11,
+            "data": "12/11/2026", "valor": 9599, "categoria_codigo": "0.01.02",
+            "departamentos": [{"cCodDep": "8532594895", "nValDep": 9599}],
+        }}, "empresa",
+    )
+    assert request.call_args.args[4]["departamentos"] == [
+        {"cCodDep": "8532594895", "nPerDep": 100.0, "nValDep": 9599.0},
     ]
 
 

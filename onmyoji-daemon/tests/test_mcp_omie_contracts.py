@@ -88,6 +88,18 @@ class OmieContractRegressionTests(unittest.TestCase):
                 with self.subTest(operation=operation, value=value), self.assertRaises(OmieError):
                     build_params(operation, {"body": {**body, "document_type": "CRT", "document_number": value}})
 
+
+    def test_native_department_amount_derives_percentage_before_http(self):
+        body = {
+            "integration_id": "TEST-VALOR-DEP", "account_id": 1, "date": "12/11/2026",
+            "amount": 9599, "category_code": "2.01.03", "document_type": "99999",
+            "departments": [{"cCodDep": "8532594895", "nValDep": 9599}],
+        }
+        result = build_params("account-transactions.create", {"body": body})
+        self.assertEqual(result["departamentos"], [
+            {"cCodDep": "8532594895", "nPerDep": 100.0, "nValDep": 9599.0},
+        ])
+
     def test_four_document_types_are_preserved_in_all_financial_operations(self):
         self.assertEqual(FINANCIAL_DOCUMENT_TYPES, {"99999", "NFE", "FAT", "NFS"})
         title = {"codigo_lancamento_omie": 1, "codigo_lancamento_integracao": "NFS-25", "codigo_cliente_fornecedor": 2, "data_vencimento": "08/10/2026", "valor_documento": 1280, "codigo_categoria": "2.01", "codigo_projeto": 3, "distribuicao": []}

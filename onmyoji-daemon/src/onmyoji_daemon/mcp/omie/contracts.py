@@ -93,7 +93,7 @@ OPERATION_NAMES = {
 def normalize_account_departments(
     rows: Any, amount: Any, *, field: str = "departamentos", error_code: str = "invalid_body",
 ) -> list[dict[str, Any]]:
-    """Valida rateio semântico/nativo e converte para os campos de IncluirLancCC."""
+    """Converte rateio semântico ou nativo em cCodDep/nPerDep/nValDep."""
     def invalid(message: str) -> None:
         raise OmieError(error_code, f"{field}: {message}", {"field": field, "reason": message, "retryable": False})
 
@@ -106,49 +106,80 @@ def normalize_account_departments(
     total, cent = Decimal(str(amount)), Decimal("0.01")
     if total != total.quantize(cent):
         invalid("o valor do lançamento deve ter no máximo duas casas decimais quando houver rateio.")
-    parsed = []
+
+    parsed: list[tuple[str, Decimal | None, Decimal | None]] = []
     for index, row in enumerate(rows):
         if not isinstance(row, Mapping):
             invalid(f"item {index}: deve ser um objeto JSON.")
         keys = set(row)
-        if {"codigo", "percentual"} <= keys <= {"codigo", "percentual", "valor"}:
-            code, percent, value = row["codigo"], row["percentual"], row.get("valor")
-        elif {"cCodDep", "nPerDep"} <= keys <= {"cCodDep", "nPerDep", "nValDep"}:
-            code, percent, value = row["cCodDep"], row["nPerDep"], row.get("nValDep")
+        if "codigo" in keys and keys <= {"codigo", "percentual", "valor"}:
+            code, percent, value = row["codigo"], row.get("percentual"), row.get("valor")
+            percent_key, value_key = "percentual", "valor"
+        elif "cCodDep" in keys and keys <= {"cCodDep", "nPerDep", "nValDep"}:
+            code, percent, value = row["cCodDep"], row.get("nPerDep"), row.get("nValDep")
+            percent_key, value_key = "nPerDep", "nValDep"
         else:
-            invalid(f"item {index}: use codigo/percentual/valor ou cCodDep/nPerDep/nValDep, sem misturar formatos.")
+            invalid(
+                f"item {index}: use codigo com percentual e/ou valor, "
+                "ou cCodDep com nPerDep e/ou nValDep, sem misturar formatos."
+            )
+        if percent_key not in keys and value_key not in keys:
+            invalid(f"item {index}: informe percentual ou valor do departamento.")
         if not isinstance(code, str) or not code.strip() or len(code) > 40:
             invalid(f"item {index}: código do departamento deve ser texto não vazio de até 40 caracteres.")
-        if type(percent) not in (int, float) or (isinstance(percent, float) and not isfinite(percent)):
-            invalid(f"item {index}: percentual deve ser um número finito.")
-        fraction = Decimal(str(percent))
-        if fraction <= 0 or fraction > 100:
-            invalid(f"item {index}: percentual deve estar acima de zero e até 100.")
+        fraction = None
+        if percent_key in keys:
+            if type(percent) not in (int, float) or (isinstance(percent, float) and not isfinite(percent)):
+                invalid(f"item {index}: percentual deve ser um número finito.")
+            fraction = Decimal(str(percent))
+            if fraction <= 0 or fraction > 100:
+                invalid(f"item {index}: percentual deve estar acima de zero e até 100.")
         monetary = None
-        if value is not None:
+        if value_key in keys:
             if type(value) not in (int, float) or value < 0 or (isinstance(value, float) and not isfinite(value)):
                 invalid(f"item {index}: valor deve ser um número finito não negativo.")
             monetary = Decimal(str(value))
             if monetary != monetary.quantize(cent):
                 invalid(f"item {index}: valor deve ter no máximo duas casas decimais.")
-        parsed.append((code, percent, fraction, monetary))
-    if sum((row[2] for row in parsed), Decimal(0)) != Decimal(100):
-        invalid("a soma dos percentuais deve ser exatamente 100.")
-    with_value = [row[3] is not None for row in parsed]
-    if any(with_value) and not all(with_value):
-        invalid("informe valor em todos os departamentos ou omita em todos.")
-    if all(with_value):
-        amounts = [row[3] for row in parsed]
+        parsed.append((code, fraction, monetary))
+
+    fractions = [row[1] for row in parsed]
+    values = [row[2] for row in parsed]
+    if any(value is not None for value in values):
+        if any(value is None for value in values):
+            invalid("informe valor em todos os departamentos ou omita em todos.")
+        amounts = [value for value in values if value is not None]
         if sum(amounts, Decimal(0)) != total:
             invalid("a soma dos valores dos departamentos deve corresponder ao valor do lançamento.")
-        if any(abs(value - total * row[2] / 100) > cent for row, value in zip(parsed, amounts)):
-            invalid("valores e percentuais dos departamentos são inconsistentes.")
+        missing = [index for index, fraction in enumerate(fractions) if fraction is None]
+        if missing:
+            # Ajuste residual evita que a soma dos percentuais calculados divirja de 100%.
+            for index in missing[:-1]:
+                fractions[index] = (amounts[index] * 100 / total).quantize(
+                    Decimal("0.000001"), rounding=ROUND_HALF_UP,
+                )
+            last = missing[-1]
+            fractions[last] = Decimal(100) - sum(
+                (fraction for fraction in fractions if fraction is not None), Decimal(0),
+            )
     else:
-        amounts = [(total * row[2] / 100).quantize(cent, rounding=ROUND_HALF_UP) for row in parsed[:-1]]
+        if any(fraction is None for fraction in fractions):
+            invalid("informe percentual quando o valor do departamento for omitido.")
+        amounts = [(total * fraction / 100).quantize(cent, rounding=ROUND_HALF_UP) for fraction in fractions[:-1]]
         amounts.append(total - sum(amounts, Decimal(0)))
         if any(value < 0 for value in amounts):
             invalid("o rateio produz valor negativo; revise os percentuais.")
-    return [{"cCodDep": row[0], "nPerDep": row[1], "nValDep": float(value)} for row, value in zip(parsed, amounts)]
+
+    if any(fraction is None or not 0 < fraction <= 100 for fraction in fractions):
+        invalid("percentual informado ou calculado deve estar acima de zero e até 100.")
+    if sum(fractions, Decimal(0)) != Decimal(100):
+        invalid("a soma dos percentuais deve ser exatamente 100.")
+    if any(abs(value - total * fraction / 100) > cent for value, fraction in zip(amounts, fractions)):
+        invalid("valores e percentuais dos departamentos são inconsistentes.")
+    return [
+        {"cCodDep": code, "nPerDep": float(fraction), "nValDep": float(value)}
+        for (code, _, _), fraction, value in zip(parsed, fractions, amounts)
+    ]
 
 
 def require_string(value: Any, field: str, *, max_length: int | None = None) -> str:

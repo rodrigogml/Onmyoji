@@ -249,9 +249,11 @@ def _department_schema() -> dict[str, Any]:
     value = {"type": "number", "minimum": 0}
     return {"type": "array", "items": {"oneOf": [
         {"type": "object", "properties": {"codigo": code, "percentual": percent, "valor": value},
-         "required": ["codigo", "percentual"], "additionalProperties": False},
+         "required": ["codigo"], "anyOf": [{"required": ["percentual"]}, {"required": ["valor"]}],
+         "additionalProperties": False},
         {"type": "object", "properties": {"cCodDep": code, "nPerDep": percent, "nValDep": value},
-         "required": ["cCodDep", "nPerDep"], "additionalProperties": False},
+         "required": ["cCodDep"], "anyOf": [{"required": ["nPerDep"]}, {"required": ["nValDep"]}],
+         "additionalProperties": False},
     ]}}
 
 
@@ -387,7 +389,7 @@ class OmieFinanceFacade:
                 fields = list(IDENTIFIER_NAMES[spec.legacy.rsplit("_", 1)[0]])
                 description += " Informe exatamente um identificador em " + ("dados" if spec.writes else "filtros") + ": " + " ou ".join(fields) + "."
             if spec.legacy == "account_transactions_create":
-                description += " Exige codigo_integracao (texto de até 20 caracteres), conta_corrente_id, data, valor, categoria_codigo e tipo_documento em dados. O id é gerado pela Omie. Departamentos usam codigo, percentual e valor opcional; o MCP gera o rateio nativo."
+                description += " Exige codigo_integracao (texto de até 20 caracteres), conta_corrente_id, data, valor, categoria_codigo e tipo_documento em dados. O id é gerado pela Omie. Departamentos usam codigo com percentual e/ou valor; o MCP calcula o campo omitido e gera o rateio nativo."
             tools.append({"name": spec.name, "description": description + " Não use parâmetros técnicos da Omie.", "input_schema": _schema(spec, profiles)})
         return tools
 
