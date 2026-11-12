@@ -177,7 +177,16 @@ class CloudflareClient:
         result = self._call("GET", f"/accounts/{definition.account_id}/cfd_tunnel/{definition.tunnel_id}/configurations")
         if not isinstance(result, dict):
             raise TunnelError("invalid_response", "Cloudflare não retornou a configuração do Tunnel.")
-        return result
+        # Tunnels ainda sem publicação podem retornar config/ingress ausente ou null.
+        # Um fallback 404 é semanticamente vazio e pode ser restaurado via PUT.
+        config = result.get("config")
+        if config is None:
+            config = {}
+        if not isinstance(config, dict):
+            raise TunnelError("invalid_ingress", "Cloudflare retornou uma configuração de ingress inválida.")
+        if config.get("ingress") is None or config.get("ingress") == []:
+            config = {**config, "ingress": [{"service": "http_status:404"}]}
+        return {**result, "config": config}
 
     def set_configuration(self, definition: TunnelDefinition, config: dict[str, Any], confirm: bool) -> None:
         definition.validate()

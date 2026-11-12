@@ -116,6 +116,24 @@ def test_confirmed_adoption_reuses_tunnel_and_dns_and_can_restore_backup(recover
     assert config.settings() == original_settings
 
 
+
+@pytest.mark.parametrize("initial_remote", [
+    {}, {"config": None}, {"config": {}},
+    {"config": {"ingress": None}}, {"config": {"ingress": []}},
+])
+def test_unconfigured_tunnel_from_partial_provision_can_be_adopted_and_restored(recovery, initial_remote):
+    manager, config, client = recovery
+    client.remote = deepcopy(initial_remote)
+    initial_settings = config.settings()
+    inspected = preview(recovery)
+    assert inspected["status"] == "existing" and inspected["current_origin"] is None
+    manager.apply(inspected["preview_id"], config.settings(), lambda _: None)
+    assert client.remote["config"]["ingress"][0]["hostname"] == "gateway.example.com"
+    manager.rollback(inspected["preview_id"], config.settings(), lambda _: None)
+    assert client.remote["config"]["ingress"] == [{"service": "http_status:404"}]
+    assert config.settings() == initial_settings
+
+
 def test_discovery_with_no_dns_and_no_matching_tunnel_is_new(recovery):
     manager, config, client = recovery
     client.record = None

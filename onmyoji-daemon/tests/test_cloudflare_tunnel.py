@@ -178,6 +178,37 @@ def test_cloudflare_writes_require_confirmation_before_network():
     client._call.assert_not_called()
 
 
+
+@pytest.mark.parametrize("remote", [
+    {}, {"config": None}, {"config": {}},
+    {"config": {"ingress": None}}, {"config": {"ingress": []}},
+])
+def test_unconfigured_remote_tunnel_accepts_first_ingress_with_safe_fallback(tmp_path, remote):
+    client = CloudflareClient("test-token")
+    ca = tmp_path / "ca.pem"; ca.write_text("ca", encoding="utf-8")
+    client._call = Mock(side_effect=lambda method, path, body=None: remote if method == "GET" else {})
+    definition = TunnelDefinition("account", "zone", "gateway.example.com", "tunnel")
+    client.configure_ingress(definition, "tunnel", "https://localhost:39390", True, str(ca))
+    assert [call.args[0] for call in client._call.call_args_list] == ["GET", "PUT"]
+    saved = client._call.call_args_list[-1].args[2]["config"]["ingress"]
+    assert saved == [
+        {"hostname": "gateway.example.com", "service": "https://localhost:39390",
+         "originRequest": {"caPool": str(ca), "noTLSVerify": False}},
+        {"service": "http_status:404"},
+    ]
+
+
+def test_malformed_remote_config_is_rejected_without_write(tmp_path):
+    client = CloudflareClient("test-token")
+    ca = tmp_path / "ca.pem"; ca.write_text("ca", encoding="utf-8")
+    client._call = Mock(return_value={"config": "invalid"})
+    with pytest.raises(TunnelError) as caught:
+        client.configure_ingress(TunnelDefinition("account", "zone", "gateway.example.com", "tunnel"),
+                                 "tunnel", "https://localhost:39390", True, str(ca))
+    assert caught.value.code == "invalid_ingress"
+    client._call.assert_called_once()
+
+
 def test_ingress_has_one_origin_verified_tls_and_final_fallback(tmp_path):
     client = CloudflareClient("test-token")
     ca = tmp_path / "ca.pem"; ca.write_text("ca", encoding="utf-8")
