@@ -12,12 +12,48 @@ from .configuration import TunnelDefinition, validate_origin
 from .exception import TunnelError
 
 
+def _json_type(value: Any) -> str:
+    """Descreve somente o tipo JSON; nunca reproduz valores da API."""
+    if value is None:
+        return "nulo"
+    if isinstance(value, bool):
+        return "booleano"
+    if isinstance(value, dict):
+        return "objeto"
+    if isinstance(value, list):
+        return "lista"
+    if isinstance(value, str):
+        return "texto"
+    if isinstance(value, (int, float)):
+        return "número"
+    return "tipo desconhecido"
+
+
+def validated_ingress(config: Any) -> list[dict[str, Any]]:
+    """Valida regras remotas sem registrar conteúdos, hostnames ou credenciais."""
+    if not isinstance(config, dict):
+        raise TunnelError("invalid_ingress", f"Configuração Cloudflare inválida: config é {_json_type(config)} (esperado objeto). Nenhuma alteração remota foi realizada.")
+    ingress = config.get("ingress")
+    if not isinstance(ingress, list):
+        raise TunnelError("invalid_ingress", f"Configuração Cloudflare inválida: config.ingress é {_json_type(ingress)} (esperada lista). Nenhuma alteração remota foi realizada.")
+    for index, rule in enumerate(ingress):
+        if not isinstance(rule, dict):
+            raise TunnelError("invalid_ingress", f"Configuração Cloudflare inválida: config.ingress[{index}] é {_json_type(rule)} (esperado objeto). Nenhuma alteração remota foi realizada.")
+        service = rule.get("service")
+        if not isinstance(service, str) or not service.strip():
+            kind = "ausente" if "service" not in rule else ("texto vazio" if isinstance(service, str) else _json_type(service))
+            raise TunnelError("invalid_ingress", f"Configuração Cloudflare inválida: config.ingress[{index}].service é {kind} (esperado texto não vazio). Nenhuma alteração remota foi realizada.")
+    return ingress
+
+
 def gateway_ingress(previous: dict[str, Any], local_url: str, ca_file: str) -> list[dict[str, Any]]:
     """Define TLS da origem local sem herdar SNI/Host de uma publicação antiga."""
     origin = {"caPool": str(ca_file), "noTLSVerify": False}
-    inherited = previous.get("originRequest", {})
+    inherited = previous.get("originRequest")
+    if inherited is None:
+        inherited = {}
     if not isinstance(inherited, dict):
-        raise TunnelError("invalid_ingress", "Cloudflare retornou opções globais de origem inválidas.")
+        raise TunnelError("invalid_ingress", f"Configuração Cloudflare inválida: config.originRequest é {_json_type(inherited)} (esperado objeto). Nenhuma alteração remota foi realizada.")
     parsed = urllib.parse.urlsplit(local_url)
     if "originServerName" in inherited:
         origin["originServerName"] = parsed.hostname
@@ -182,10 +218,9 @@ class CloudflareClient:
         config = result.get("config")
         if config is None:
             config = {}
-        if not isinstance(config, dict):
-            raise TunnelError("invalid_ingress", "Cloudflare retornou uma configuração de ingress inválida.")
-        if config.get("ingress") is None or config.get("ingress") == []:
+        if isinstance(config, dict) and (config.get("ingress") is None or config.get("ingress") == []):
             config = {**config, "ingress": [{"service": "http_status:404"}]}
+        validated_ingress(config)
         return {**result, "config": config}
 
     def set_configuration(self, definition: TunnelDefinition, config: dict[str, Any], confirm: bool) -> None:
@@ -206,9 +241,7 @@ class CloudflareClient:
         validate_origin(local_url, ca_file)
         current = self.get_configuration(TunnelDefinition(definition.account_id, definition.zone_id, definition.hostname, tunnel_id, definition.tunnel_name))
         previous = current.get("config", {})
-        ingress = previous.get("ingress", []) if isinstance(previous, dict) else None
-        if not isinstance(ingress, list) or any(not isinstance(rule, dict) for rule in ingress):
-            raise TunnelError("invalid_ingress", "Cloudflare retornou uma configuração de ingress inválida.")
+        ingress = validated_ingress(previous)
         named = [rule for rule in ingress if rule.get("hostname")]
         unnamed = [rule for rule in ingress if not rule.get("hostname")]
         if len(named) > 1 or any(rule.get("hostname") != definition.hostname or rule.get("path") for rule in named) or len(unnamed) > 1 or any(rule != {"service": "http_status:404"} for rule in unnamed) or (unnamed and ingress[-1] is not unnamed[0]):

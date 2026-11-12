@@ -11,7 +11,7 @@ from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from .client import CloudflareClient, gateway_ingress
+from .client import CloudflareClient, gateway_ingress, validated_ingress
 from .configuration import TunnelConfiguration, TunnelDefinition, validate_origin, write_local_json
 from .exception import TunnelError
 
@@ -75,9 +75,7 @@ class PublicationRecovery:
     @staticmethod
     def _remote_config(remote: Any, hostname: str) -> dict[str, Any]:
         config = remote.get("config") if isinstance(remote, dict) else None
-        ingress = config.get("ingress", []) if isinstance(config, dict) else None
-        if not isinstance(ingress, list) or any(not isinstance(rule, dict) for rule in ingress):
-            raise TunnelError("invalid_ingress", "Cloudflare retornou um ingress inválido; revise a configuração remota.")
+        ingress = validated_ingress(config)
         named = [rule for rule in ingress if rule.get("hostname")]
         unnamed = [rule for rule in ingress if not rule.get("hostname")]
         if len(named) > 1 or any(rule.get("hostname") != hostname or rule.get("path") for rule in named) or len(unnamed) > 1 or any(rule != {"service": "http_status:404"} for rule in unnamed) or (unnamed and ingress[-1] is not unnamed[0]):

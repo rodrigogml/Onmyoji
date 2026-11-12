@@ -209,6 +209,27 @@ def test_malformed_remote_config_is_rejected_without_write(tmp_path):
     client._call.assert_called_once()
 
 
+@pytest.mark.parametrize("remote,location", [
+    ({"config": "private-password"}, "config é texto"),
+    ({"config": {"ingress": {"service": "http_status:404"}}}, "config.ingress é objeto"),
+    ({"config": {"ingress": [{"service": "http_status:404"}, "private-password"]}}, "config.ingress[1] é texto"),
+    ({"config": {"ingress": [{"hostname": "gateway.example.com"}]}}, "config.ingress[0].service é ausente"),
+    ({"config": {"ingress": [{"service": False}]}}, "config.ingress[0].service é booleano"),
+    ({"config": {"ingress": [{"service": ""}]}}, "config.ingress[0].service é texto vazio"),
+])
+def test_invalid_remote_ingress_reports_safe_location_without_writing(tmp_path, remote, location):
+    client = CloudflareClient("test-token")
+    ca = tmp_path / "ca.pem"; ca.write_text("ca", encoding="utf-8")
+    client._call = Mock(return_value=remote)
+    with pytest.raises(TunnelError) as caught:
+        client.configure_ingress(TunnelDefinition("account", "zone", "gateway.example.com", "tunnel"),
+                                 "tunnel", "https://localhost:39390", True, str(ca))
+    assert caught.value.code == "invalid_ingress"
+    assert location in str(caught.value) and "private-password" not in str(caught.value)
+    client._call.assert_called_once()
+    assert client._call.call_args.args[0] == "GET"
+
+
 def test_ingress_has_one_origin_verified_tls_and_final_fallback(tmp_path):
     client = CloudflareClient("test-token")
     ca = tmp_path / "ca.pem"; ca.write_text("ca", encoding="utf-8")

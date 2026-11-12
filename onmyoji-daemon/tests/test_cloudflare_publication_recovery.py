@@ -222,6 +222,33 @@ def test_sensitive_remote_configuration_is_not_printed_or_saved(recovery, mutate
     assert not manager.directory.exists()
 
 
+@pytest.mark.parametrize("bad_ingress,location", [
+    ({"service": "http_status:404"}, "config.ingress é objeto"),
+    ([{"service": "http_status:404"}, "private-password"], "config.ingress[1] é texto"),
+    ([{"hostname": "gateway.example.com", "service": None}], "config.ingress[0].service é nulo"),
+])
+def test_invalid_existing_remote_ingress_is_read_only_and_explained(recovery, bad_ingress, location):
+    manager, config, client = recovery
+    before = config.path.read_bytes()
+    client.remote = {"config": {"ingress": deepcopy(bad_ingress)}}
+    with pytest.raises(TunnelError) as caught:
+        preview(recovery)
+    assert caught.value.code == "invalid_ingress"
+    assert location in str(caught.value) and "private-password" not in str(caught.value)
+    assert all(method == "GET" for method, *_ in client.calls)
+    assert config.path.read_bytes() == before
+    assert not manager.directory.exists()
+
+
+def test_null_global_origin_request_preserves_validated_tls(recovery):
+    manager, config, client = recovery
+    client.remote["config"]["originRequest"] = None
+    inspected = preview(recovery)
+    manager.apply(inspected["preview_id"], config.settings(), lambda _: None)
+    origin = client.remote["config"]["ingress"][0]["originRequest"]
+    assert origin == {"caPool": config.settings()["ca_file"], "noTLSVerify": False}
+
+
 def test_inherited_sni_and_host_header_are_overridden_per_route_for_new_gateway(recovery):
     manager, config, client = recovery
     original = {"originServerName": "old-host.example.com", "httpHostHeader": "old-host.example.com", "connectTimeout": 20}
