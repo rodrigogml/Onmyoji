@@ -411,6 +411,73 @@ def test_reconciliation_query_filters_the_account_and_collects_all_pages(tmp_pat
     assert result["paginacao"]["proxima_pagina"] is None
 
 
+
+@pytest.mark.parametrize("number,total_pages", [(0, 0), (0, 1), ("0", "0"), ("1", "0"), (1, 0)])
+def test_empty_omie_day_can_use_zero_page_or_decimal_string(tmp_path, monkeypatch, number, total_pages):
+    response = native_page(number, total_pages, 0, [])
+    response.update({"nRegistros": "0", "nTotRegistros": "0"})
+    _, request = mock_remote(monkeypatch, [response])
+    result = OmieFinanceFacade(Configuration(tmp_path)).call(
+        ACCOUNT_QUERY,
+        {"filtros": {"data_inicial": "09/11/2026", "data_final": "09/11/2026",
+                     "conta_corrente_id": 8382785861}},
+        "empresa",
+    )
+    assert result["dados"] == []
+    assert result["paginacao"]["total_registros"] == 0
+    assert result["paginacao"]["proxima_pagina"] is None
+    request.assert_called_once()
+
+
+def test_omie_decimal_string_pagination_preserves_complete_results(tmp_path, monkeypatch):
+    first_page = native_page("1", "1", "1", [transaction(5, 8382785861)])
+    first_page["nRegistros"] = "1"
+    mock_remote(monkeypatch, [first_page])
+    result = OmieFinanceFacade(Configuration(tmp_path)).call(
+        ACCOUNT_QUERY, {"filtros": {"data_inicial": "09/11/2026",
+                                    "data_final": "09/11/2026", "conta_corrente_id": 8382785861}},
+        "empresa",
+    )
+    assert [row["nCodLanc"] for row in result["dados"]] == [5]
+
+
+@pytest.mark.parametrize("number,reason", [
+    (2, "page_mismatch"), ("2", "page_mismatch"),
+    ("not-a-page", "invalid_integer"), (True, "invalid_integer"),
+    (None, "invalid_integer"), (-1, "invalid_integer"),
+])
+def test_omie_bad_page_remains_blocked_with_safe_diagnostics(tmp_path, monkeypatch, number, reason):
+    response = native_page(number, 1, 0, [])
+    response["provider_private_note"] = "PRIVATE"
+    mock_remote(monkeypatch, [response])
+    with pytest.raises(OmieError) as error:
+        OmieFinanceFacade(Configuration(tmp_path)).call(
+            ACCOUNT_QUERY, {"filtros": {**PERIOD, "conta_corrente_id": 12}}, "empresa",
+        )
+    assert error.value.code == "invalid_response"
+    assert error.value.details["field"] == "nPagina"
+    assert error.value.details["reason"] == reason
+    assert error.value.details["requested_page"] == 1
+    if reason == "page_mismatch":
+        assert error.value.details["returned_page"] == 2
+    assert "PRIVATE" not in str(error.value.as_dict())
+
+
+def test_omie_empty_page_zero_cannot_hide_nonempty_or_inconsistent_results(tmp_path, monkeypatch):
+    invalid = [
+        native_page(0, 0, 1, [transaction(7)]),
+        native_page(0, 2, 0, []),
+        native_page(0, 1, 1, []),
+    ]
+    for response in invalid:
+        mock_remote(monkeypatch, [response])
+        with pytest.raises(OmieError) as error:
+            OmieFinanceFacade(Configuration(tmp_path)).call(
+                ACCOUNT_QUERY, {"filtros": {**PERIOD, "conta_corrente_id": 12}}, "empresa",
+            )
+        assert error.value.code == "invalid_response"
+        assert error.value.details["field"] == "nPagina"
+
 @pytest.mark.parametrize("name,collection,make_row", [
     (ACCOUNT_QUERY, "listaLancamentos", transaction),
     (RECONCILIATION_QUERY, "movimentos", movement),

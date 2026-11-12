@@ -143,7 +143,15 @@ Essa filtragem exige percorrer o período completo na primeira consulta não
 armazenada; use o período necessário à tarefa. Uma página remota sem lançamentos da conta
 não encerra a busca. Se houver erro, conta ausente em um registro ou paginação
 inconsistente, o MCP falha explicitamente em vez de apresentar uma consulta
-parcial como completa.
+parcial como completa. A validação aceita contadores inteiros representados
+como texto decimal e a convenção de resposta vazia com `nPagina=0` somente
+quando a primeira página não contém registros e todos os totais são zero.
+Uma página realmente diferente da solicitada continua sendo recusada, com
+diagnóstico sanitizado `reason`, `requested_page` e, quando numérico,
+`returned_page` para identificar a divergência sem expor o corpo remoto.
+**Se a listagem falhar, não afirme ausência de lançamentos ou duplicidade.**
+A consulta de título sem baixa não comprova ausência de lançamento direto,
+transferência ou movimento independente no extrato.
 
 `omie.financeiro.movimentos.listar_por_pagamento` consulta outra operação,
 `ListarMovimentos`, que aceita o filtro de conta diretamente. Já

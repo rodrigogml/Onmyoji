@@ -366,7 +366,7 @@ class OmieFinanceFacade:
         for spec in SPECS:
             description = spec.description
             if spec.legacy == "account_transactions_list":
-                description += " Aceita conta_corrente_id; o MCP consulta todas as páginas do período, filtra a conta e só então aplica pagina e tamanho_pagina (máximo 50)."
+                description += " Aceita conta_corrente_id; o MCP consulta todas as páginas do período, filtra a conta e só então aplica pagina e tamanho_pagina (máximo 50). Se a consulta falhar, a ausência de duplicidade NÃO está confirmada. Resultados bem-sucedidos podem permanecer em cache por 5 minutos."
             if spec.kind == "get":
                 fields = list(IDENTIFIER_NAMES[spec.legacy.rsplit("_", 1)[0]])
                 description += " Informe exatamente um identificador em " + ("dados" if spec.writes else "filtros") + ": " + " ou ".join(fields) + "."
@@ -489,10 +489,10 @@ class OmieFinanceFacade:
         return result
 
     @staticmethod
-    def _invalid_response(field: str) -> None:
+    def _invalid_response(field: str, **diagnostics: Any) -> None:
         raise OmieError(
             "invalid_response", "A Omie retornou uma listagem incompleta ou inconsistente; nenhum resultado parcial foi entregue.",
-            {"field": field, "retryable": False},
+            {"field": field, "retryable": False, **diagnostics},
         )
 
     @classmethod
@@ -502,13 +502,36 @@ class OmieFinanceFacade:
         rows = response.get(row_key)
         if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
             cls._invalid_response(row_key)
+        # Algumas respostas JSON representam contadores como texto decimal.
+        # Aceitar somente representações exatas evita rejeições artificiais,
+        # sem transformar metadados ausentes ou inválidos em resultados vazios.
+        metadata: dict[str, int] = {}
         for field in ("nPagina", "nTotPaginas", "nRegistros", "nTotRegistros"):
-            if type(response.get(field)) is not int or response[field] < 0:
-                cls._invalid_response(field)
-        if response["nPagina"] != expected_page:
-            cls._invalid_response("nPagina")
-        total_pages, total_records = response["nTotPaginas"], response["nTotRegistros"]
-        if response["nRegistros"] != len(rows) or len(rows) > 50:
+            value = response.get(field)
+            if type(value) is int and value >= 0:
+                metadata[field] = value
+            elif isinstance(value, str) and 1 <= len(value) <= 12 and value.isascii() and value.isdecimal():
+                metadata[field] = int(value)
+            else:
+                cls._invalid_response(
+                    field, reason="missing" if field not in response else "invalid_integer",
+                    requested_page=expected_page,
+                )
+        current_page = metadata["nPagina"]
+        total_pages, total_records = metadata["nTotPaginas"], metadata["nTotRegistros"]
+        if current_page != expected_page:
+            # Zero páginas e zero registros podem ser representados por nPagina=0.
+            # Só é seguro aceitar esse caso na primeira página inteiramente vazia.
+            empty_first_page = (
+                expected_page == 1 and current_page == 0 and total_records == 0
+                and total_pages in (0, 1) and metadata["nRegistros"] == 0 and not rows
+            )
+            if not empty_first_page:
+                cls._invalid_response(
+                    "nPagina", reason="page_mismatch",
+                    requested_page=expected_page, returned_page=current_page,
+                )
+        if metadata["nRegistros"] != len(rows) or len(rows) > 50:
             cls._invalid_response("nRegistros")
         if total_records == 0:
             if expected_page != 1 or total_pages not in (0, 1) or rows:
