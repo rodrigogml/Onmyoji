@@ -180,14 +180,19 @@ Telegram. `DM` significa conversa privada com o bot.
 | `/cancel` | Somente DM: cancelar o turno atual, preservando a fila. | Não permitido. |
 | `/resolver` | DM e grupos: reconciliar ou descartar operações incertas da conversa correspondente. | Somente DM: reconciliar ou descartar operações incertas da própria conversa. |
 | `/totp` | Somente DM, quando TOTP estiver habilitado. | Não permitido. |
+| `/register` | Somente DM própria: informa que já é Owner. | Somente DM própria: solicita cadastro pendente, sem obter permissões nem iniciar Codex. |
+| `/status` | Somente DM própria: identifica a conta como Owner. | Somente DM própria: consulta apenas o próprio status e roles. |
+| `/unregister` | Somente DM própria: não altera o Owner. | Somente DM própria: confirma em menu efêmero a retirada do cadastro e revogação dos roles. |
+| `/users` | Somente DM própria: na Fase 2, informa que o menu de administração será ativado na Fase 3. | Não permitido. |
 | `/pair <PIN>` | Somente DM, com PIN temporário válido. | Somente DM, com PIN temporário válido: realiza o pareamento e concede o papel de owner. |
 
 A relação acima inclui `/pair`, embora ele não seja divulgado no menu permanente.
 O PIN é gerado pelo setup, expira e só pode ser consumido uma vez; a sua
 validação e consumo são atômicos para impedir pareamentos simultâneos com o
-mesmo código. Outros usuários recebem apenas `/new` e `/resolver` no menu
-privado; o menu do owner prevalece para usuários pareados. A exibição no
-Telegram não substitui a autorização no servidor.
+mesmo código. Outros usuários recebem `/new`, `/resolver`, `/register`,
+`/status` e `/unregister` no menu privado; o menu do Owner prevalece.
+Os três controles de cadastro são processados diretamente pelo Gateway, sem
+invocar o Codex. A exibição no Telegram não substitui a autorização no servidor.
 
 O Gateway restringe `/new` e `/resolver` de outros usuários à própria DM,
 sem permitir alterar o estado do owner ou de terceiros. O argumento
@@ -203,6 +208,24 @@ permissão de `/usage` e exigir confirmação explícita; ela ainda não é um
 comando implementado nem faz parte do catálogo atual. A orientação para
 `/resetusage` só deve aparecer na resposta de `/usage` depois que o comando
 estiver disponível.
+
+### Autocadastro de terceiros — Fase 2
+
+`/register` cria ou renova um pedido `PENDING` no SQLite, somente em DM
+própria, e avisa os Owners uma vez por nova solicitação (inclusive após
+`WITHDRAWN`). O estado não autoriza conversa, MCP ou destino de saída; uma
+repetição não envia novos alertas. Rejeitados e suspensos não se reabrem sem
+intervenção do Owner. `/status` consulta exclusivamente o cadastro do próprio
+remetente. `/unregister` requer confirmação efêmera de uso único vinculada
+ao ID de usuário, conversa, mensagem, revisão e prazo; a retirada limpa roles
+e pode ser sucedida por novo `/register`. Falhas de aviso ao Owner não anulam
+o registro. Os comandos são ignorados em grupos, DMs de terceiros, mensagens
+editadas e mensagens dirigidas a outro bot.
+
+A administração em `/users` só será implementada na Fase 3. Nesta fase,
+o comando Owner-only informa essa limitação; os pedidos ficam preservados em
+banco. Mensagens comuns de terceiros continuam sem acionar o agente, mesmo
+que um cadastro tenha sido aprovado diretamente no banco ou a flag esteja ativa.
 
 ## Menu de comandos do bot
 
@@ -220,6 +243,10 @@ comandos no chat privado de cada owner:
 | `/direcionar <texto>` | Orientar o turno em andamento. |
 | `/cancel` | Interromper o turno atual, preservando a fila. |
 | `/resolver` | Consultar e reconciliar solicitações sem confirmação. |
+| `/users` | Menu administrativo previsto para a Fase 3 (aviso na Fase 2). |
+| `/register` | Solicitar cadastro pendente. |
+| `/status` | Consultar o próprio cadastro. |
+| `/unregister` | Retirar cadastro após confirmação. |
 | `/totp` | Obter código de autenticação, quando TOTP estiver habilitado. |
 
 `/pair <PIN>` pertence ao pareamento temporário e não entra no menu permanente.
@@ -227,7 +254,8 @@ Variações como `/resolver descartar` são argumentos do comando correspondente
 O teste do catálogo compara os handlers com essa relação para detectar novos
 comandos permanentes que ainda não tenham sido incluídos no menu.
 
-Para **outros usuários**, o menu na DM contém somente `/new` e `/resolver`.
+Para **outros usuários**, o menu na DM contém `/new`, `/resolver`,
+`/register`, `/status` e `/unregister`.
 O Gateway publica esse catálogo pelo escopo `all_private_chats`, sem divulgar
 comandos administrativos no escopo global do Telegram. O catálogo individual
 do owner tem prioridade sobre o escopo geral de DMs.

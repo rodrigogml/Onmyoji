@@ -18,9 +18,13 @@ _OWNER_COMMANDS = (
     ("direcionar", "Orientar o turno em andamento: /direcionar <texto>"),
     ("cancel", "Interromper o turno atual e preservar a fila"),
     ("resolver", "Consultar e reconciliar solicitações sem confirmação"),
+    ("users", "Administrar solicitações e permissões de usuários"),
+    ("register", "Solicitar cadastro ao proprietário"),
+    ("status", "Consultar o próprio cadastro"),
+    ("unregister", "Retirar o próprio cadastro"),
 )
 _TOTP_COMMAND = ("totp", "Obter código de autenticação")
-_OTHER_PRIVATE_COMMAND_NAMES = ("new", "resolver")
+_OTHER_PRIVATE_COMMAND_NAMES = ("new", "resolver", "register", "status", "unregister")
 REGISTERED_COMMANDS = frozenset("/" + name for name, _ in (*_OWNER_COMMANDS, _TOTP_COMMAND)) | {"/pair"}
 CONTROL_COMMANDS = REGISTERED_COMMANDS - {"/fila", "/direcionar"}
 COMMAND_REFRESH_SECONDS = 300
@@ -34,7 +38,7 @@ def owner_commands(totp_enabled: bool) -> list[dict[str, str]]:
 
 
 def other_private_commands() -> list[dict[str, str]]:
-    """Comandos seguros para qualquer usuário, somente em sua própria DM."""
+    """Comandos públicos e controles legados, disponíveis somente em DM própria."""
     return [{"command": name, "description": description}
             for name, description in _OWNER_COMMANDS if name in _OTHER_PRIVATE_COMMAND_NAMES]
 

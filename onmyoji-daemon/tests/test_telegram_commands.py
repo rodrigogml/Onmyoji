@@ -24,7 +24,7 @@ from onmyoji_daemon.telegram_commands import (
 )
 
 
-COMMAND_NAMES = ["new", "config", "channel", "usage", "resetusage", "login", "fila", "direcionar", "cancel", "resolver"]
+COMMAND_NAMES = ["new", "config", "channel", "usage", "resetusage", "login", "fila", "direcionar", "cancel", "resolver", "users", "register", "status", "unregister"]
 
 
 class MenuService:
@@ -91,7 +91,7 @@ def test_menu_catalog_covers_all_owner_commands_and_respects_telegram_contract()
     assert {"/" + entry["command"] for entry in owner_commands(True)} == REGISTERED_COMMANDS - {"/pair"}
     assert {"/usage", "/resetusage", "/login", "/new", "/cancel", "/resolver", "/pair"} <= CONTROL_COMMANDS
     assert not {"/fila", "/direcionar"}.intersection(CONTROL_COMMANDS)
-    assert [entry["command"] for entry in other_private_commands()] == ["new", "resolver"]
+    assert [entry["command"] for entry in other_private_commands()] == ["new", "resolver", "register", "status", "unregister"]
     assert set(item["command"] for item in other_private_commands()) <= set(COMMAND_NAMES)
     assert "resetusage" not in {item["command"] for item in other_private_commands()}
 
@@ -109,7 +109,7 @@ def test_documented_permission_matrix_covers_all_registered_commands():
     proposal = documentation_path.with_name("Telegram-2026-11-12.proposed.md")
     proposed_matrix = proposal.read_text(encoding="utf-8").split("## Matriz de acesso aos comandos do Telegram", 1)[1].split("\n## ", 1)[0]
     proposed_rows = re.findall(r"^[|] `(/[^`]+)` [|]", proposed_matrix, flags=re.MULTILINE)
-    assert {row.split(" ", 1)[0] for row in proposed_rows} == REGISTERED_COMMANDS
+    assert {row.split(" ", 1)[0] for row in proposed_rows} == REGISTERED_COMMANDS - {"/register", "/status", "/unregister", "/users"}
     assert "| `/resetusage` | Somente DM" in proposed_matrix
     assert "| `/usage` | Somente DM" in matrix
     assert "| `/usage` | Somente DM (inclusive tópicos privados): consultar os limites e o consumo da conta Codex. | Não permitido;" in matrix
@@ -117,6 +117,8 @@ def test_documented_permission_matrix_covers_all_registered_commands():
     assert "| `/resolver` | DM e grupos:" in matrix
     assert "| `/channel` | DM e grupos:" in matrix
     assert "| `/pair <PIN>` | Somente DM, com PIN temporário válido." in matrix
+    for new_control in ("/register", "/status", "/unregister", "/users"):
+        assert f"| `{new_control}` |" in matrix
 
 
 def test_menu_catalog_covers_commands_recognized_by_the_actual_handlers():
@@ -168,11 +170,11 @@ def test_summary_rejects_partial_pending_or_malformed_success(changes):
     assert not command_sync_is_current({**current_summary(), **changes}, False)
 
 
-def test_other_private_menu_publishes_only_new_and_resolver(menu_api):
+def test_other_private_menu_publishes_only_legacy_and_registration_controls(menu_api):
     api, remote = menu_api
     assert api.set_other_private_commands()
     assert remote.catalogs[("all_private_chats", "")] == other_private_commands()
-    assert not set(entry["command"] for entry in other_private_commands()) - {"new", "resolver"}
+    assert not set(entry["command"] for entry in other_private_commands()) - {"new", "resolver", "register", "status", "unregister"}
     assert [call[0] for call in remote.calls] == ["getMyCommands", "setMyCommands", "getMyCommands"]
     assert all(call[1]["scope"] == {"type": "all_private_chats"} for call in remote.calls)
 

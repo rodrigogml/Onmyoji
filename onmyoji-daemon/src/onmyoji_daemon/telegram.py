@@ -32,6 +32,7 @@ from .agent_notification.ingress import NotificationIngress
 from .telegram_work import RelatedWorkMonitor
 from .telegram_persistence import GatewayStore, GatewayPersistenceError, protect_legacy_gateway
 from .telegram_users import TelegramUserRegistry
+from .telegram_user_controls import TelegramUserControls, own_dm_sender, public_command_name
 from .telegram_process import ProcessRecoveryError
 from .telegram_delivery import GatewayDelivery, DeliveryOwner, DeliveryUncertain, DeliverySuppressed
 from .codex_capabilities import CapabilitySet
@@ -472,7 +473,7 @@ def under(path: Path, root: Path) -> bool:
     except ValueError: return False
 
 
-class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramChannels):
+class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramChannels, TelegramUserControls):
     def __init__(self, settings: Settings):
         lease = GatewayStore.open_lease(settings.state_dir / "gateway-writer.lock")
         try:
@@ -489,6 +490,7 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
         self._recovery_delivery_lock = threading.Lock()
         self._status_lock = threading.RLock()
         self.control_state_lock = threading.RLock()
+        self._init_user_controls()
         self._reset_usage_lock = threading.RLock()
         self._reset_usage_pending: dict[str, dict[str, Any]] = {}
         self._reset_usage_inflight = False
@@ -1478,6 +1480,7 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
         if chat.get("type") not in {"private", "group", "supergroup"} or not isinstance(sender.get("id"), int): return
         self._observe_command_language(sender)
         private = chat.get("type") == "private"
+        verified_user_dm = own_dm_sender(sender, chat)
         if not isinstance(chat.get("id"), int):
             if not private: return
             chat = {**chat, "id": sender["id"]}; message = {**message, "chat": chat}
@@ -1514,6 +1517,13 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
             self._group_message(conversation_id, chat, sender, message, text)
             return
         command = text.split(maxsplit=1)[0].split("@", 1)[0].casefold() if text else ""
+        if command in {"/register", "/status", "/unregister"}:
+            raw_command = text.split(maxsplit=1)[0]
+            if (not verified_user_dm or "edited_message" in update
+                    or type(message.get("text")) is not str
+                    or any(message.get(kind) for kind in ("photo", "voice", "audio", "document", "location", "venue"))
+                    or public_command_name(raw_command, self.bot_username) != command):
+                return
         if command == "/channel":
             self._delete_control_message(int(chat["id"]), message.get("message_id"))
             if sender["id"] in self.contacts.owners():
@@ -1544,6 +1554,15 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
                     self.api.send(telegram_chat_id, "Pairing concluído e comandos privados configurados." if command_sync_is_current(synced, self._totp_enabled()) else "Pairing concluído; a atualização dos comandos privados está pendente. Consulte o diagnóstico.", **topic_values)
             return
         is_owner = sender["id"] in self.contacts.owners()
+        if command in {"/register", "/status", "/unregister"}:
+            self._registration_command(command, text, sender, conversation_id)
+            return
+        if command == "/users":
+            if is_owner and (type(chat["id"]) is int and type(sender["id"]) is int):
+                self._registration_reply(conversation_id,
+                    "O menu de aprovação /users será disponibilizado na Fase 3. "
+                    "As solicitações recebidas estão registradas para avaliação.")
+            return
         if not is_owner and command not in {"/new", "/resolver"}:
             return
         channel = self._channel_state(conversation_id, renew=True)
@@ -2173,6 +2192,7 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
         self._observe_command_language(callback.get("from") or {})
         assert self.api
         sender = callback.get("from") or {}; message = callback.get("message") or {}; chat = message.get("chat") or {}; chat_id = sender.get("id")
+        if self._registration_callback(callback): return
         if self._channel_callback(callback): return
         if chat.get("type") != "private" or not isinstance(chat_id, int) or chat_id not in self.contacts.owners(): return
         if not isinstance(chat.get("id"), int): chat = {**chat, "id": chat_id}
