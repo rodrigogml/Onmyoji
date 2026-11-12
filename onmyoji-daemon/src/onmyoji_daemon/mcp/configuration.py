@@ -1,0 +1,1016 @@
+"""Configuração local e transacional de perfis das integrações MCP."""
+from __future__ import annotations
+
+import copy
+import json
+import os
+from pathlib import Path
+import tempfile
+import tomllib
+from typing import Any
+
+from ..config_publication import publish_instance_file
+from .credentials import mcp_credentials_path
+from .reconciliation import McpReconciliation
+from .todoist import todoist_config_path
+from .btg.configuration import BtgConfigurationError, configuration_lock as btg_configuration_lock, empty_configuration as empty_btg, render_configuration as render_btg, validate_configuration as validate_btg
+from .google.configuration import empty_configuration as empty_google, render_configuration as render_google, validate_configuration as validate_google
+from .spotify.configuration import empty_configuration as empty_spotify, render_configuration as render_spotify, validate_configuration as validate_spotify
+from .email.configuration import empty_configuration as empty_email, render_configuration as render_email, validate_configuration as validate_email, validate_roots as validate_email_roots
+from .mercado.configuration import empty_configuration as empty_mercado, enabled_profiles as enabled_mercado, load_configuration as load_mercado, render_configuration as render_mercado, validate_configuration as validate_mercado
+
+
+def omie_config_path(onmyoji_root: Path) -> Path:
+    """Retorna a configuração privada da integração Omie para o MCP."""
+    return onmyoji_root.resolve() / "configs" / "mcp" / "omie.toml"
+
+
+class McpConfigurationError(ValueError):
+    """Informa um erro seguro de configuração que pode ser exibido ao operador."""
+
+
+def empty_credentials() -> dict[str, Any]:
+    return {"schema_version": 1, "defaults": {"timeout_seconds": 30}, "vaults": {}, "profiles": {}}
+
+
+def empty_todoist() -> dict[str, Any]:
+    return {"schema_version": 1, "defaults": {"api_base": "https://api.todoist.com/api/v1", "timeout_seconds": 30, "max_retries": 2}, "profiles": {}}
+
+
+def empty_omie() -> dict[str, Any]:
+    return {"schema_version": 1, "defaults": {"timeout_seconds": 30, "max_retries": 2}, "profiles": {}}
+
+
+def empty_cloudflare() -> dict[str, Any]:
+    return {"schema_version": 1, "defaults": {"api_base": "https://api.cloudflare.com/client/v4", "timeout_seconds": 30, "max_retries": 2}, "profiles": {}}
+
+
+def empty_forward_email() -> dict[str, Any]:
+    return {"schema_version": 1, "defaults": {"api_base": "https://api.forwardemail.net/v1", "timeout_seconds": 30, "max_retries": 2}, "profiles": {}}
+
+
+def empty_notion() -> dict[str, Any]:
+    return {"schema_version": 1, "defaults": {"api_base": "https://api.notion.com", "notion_version": "2026-03-11", "timeout_seconds": 30, "max_retries": 2, "page_size": 100}, "profiles": {}}
+
+
+def empty_aws() -> dict[str, Any]:
+    return {"schema_version": 1, "defaults": {"timeout_seconds": 30, "max_attempts": 3}, "profiles": {}}
+
+
+def empty_mysql() -> dict[str, Any]:
+    return {"schema_version": 1, "defaults": {"executable": "mysql", "port": 3306, "connect_timeout": 10, "timeout_seconds": 120}, "profiles": {}}
+
+
+def empty_ssh() -> dict[str, Any]:
+    return {"schema_version": 1, "defaults": {"timeout_seconds": 30}, "profiles": {}}
+
+
+def empty_bis2cmd() -> dict[str, Any]:
+    return {"schema_version": 1, "defaults": {"java_path": "java", "timeout_seconds": 180, "encoding": "utf-8"}, "profiles": {}}
+
+
+def empty_bis10cmd() -> dict[str, Any]:
+    return {"schema_version": 1, "defaults": {"java_path": "java", "timeout_seconds": 180, "encoding": "utf-8"}, "profiles": {}}
+
+
+def empty_eccovox() -> dict[str, Any]:
+    """Modelo da integração local de voz, sem segredos."""
+    return {"schema_version": 1, "defaults": {"request_timeout_seconds": 120, "max_audio_bytes": 10485760, "max_text_characters": 4000}, "profiles": {}}
+
+
+def empty_memory() -> dict[str, Any]:
+    """Modelo simples da memória de instruções, sem perfis ou ciclo de vida."""
+    return {"schema_version": 1, "enabled": False, "max_results": 50}
+
+
+def empty_data_tables() -> dict[str, Any]:
+    """Estado local dos schemas declarados pelas skills do Shikigami."""
+    return {"schema_version": 1, "schema_authoring_enabled": False, "schemas": {}}
+
+
+def _quote(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _array(values: list[str]) -> str:
+    return json.dumps(values, ensure_ascii=False)
+
+
+def _profile_name(value: str) -> str:
+    if not isinstance(value, str) or not value or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for char in value):
+        raise McpConfigurationError("O nome do perfil deve usar apenas letras, números, hífen ou sublinhado.")
+    return value
+
+
+class McpConfiguration:
+    """Lê, valida e grava os arquivos em ``configs/mcp``.
+
+    Cofres são manipulados somente como parte de um perfil de vault. O registro
+    interno ``vaults`` existe para descrever o KDBX, mas cada perfil criado pelo
+    setup recebe seu próprio identificador de vault e somente um cofre associado.
+    """
+
+    def __init__(self, onmyoji_root: Path):
+        self.root = onmyoji_root.resolve()
+
+    @property
+    def credentials_path(self) -> Path:
+        return mcp_credentials_path(self.root)
+
+    @property
+    def todoist_path(self) -> Path:
+        return todoist_config_path(self.root)
+
+    @property
+    def omie_path(self) -> Path:
+        return omie_config_path(self.root)
+
+    @property
+    def cloudflare_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "cloudflare.toml"
+
+    @property
+    def forward_email_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "forward-email.toml"
+
+    @property
+    def notion_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "notion.toml"
+
+    @property
+    def aws_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "aws.toml"
+
+    @property
+    def mysql_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "mysql.toml"
+
+    @property
+    def ssh_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "ssh.toml"
+
+    @property
+    def bis2cmd_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "bis2cmd.toml"
+
+    @property
+    def bis10cmd_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "bis10cmd.toml"
+
+    @property
+    def google_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "google.toml"
+
+    @property
+    def spotify_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "spotify.toml"
+
+    @property
+    def btg_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "btg-empresas.toml"
+
+    @property
+    def eccovox_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "eccovox.toml"
+
+    @property
+    def memory_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "memory.toml"
+
+    @property
+    def data_tables_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "data-tables.toml"
+
+    @property
+    def mercado_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "mercado.toml"
+
+    def credentials(self) -> dict[str, Any]:
+        return self._load(self.credentials_path, empty_credentials())
+
+    @property
+    def email_path(self) -> Path:
+        return self.root / "configs" / "mcp" / "email.toml"
+
+    def email(self) -> dict[str, Any]:
+        return self._load(self.email_path, empty_email())
+
+    def pdf(self) -> dict[str, Any]:
+        from .document_processing.configuration import load_configuration
+        return load_configuration(self.root, "pdf")
+
+    def ocr(self) -> dict[str, Any]:
+        from .document_processing.configuration import load_configuration
+        return load_configuration(self.root, "ocr")
+
+    def excel(self) -> dict[str, Any]:
+        from .excel.config.configuration import load_configuration
+        return load_configuration(self.root)
+
+    def save_excel(self, data: dict) -> None:
+        from .excel.config.configuration import render_configuration, validate_configuration
+        try:
+            validate_configuration(self.root, data)
+        except ValueError as error:
+            raise McpConfigurationError(str(error)) from error
+        self._save(self.root / "configs" / "mcp" / "excel.toml", render_configuration(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def enabled_excel_profiles(self) -> list[dict]:
+        return [{"name": name, **profile} for name, profile in sorted(self.excel()["profiles"].items()) if profile["enabled"]]
+
+    def save_document_profiles(self, namespace: str, data: dict) -> None:
+        from .document_processing.configuration import validate_configuration, render_configuration
+        try:
+            validate_configuration(self.root, namespace, data)
+        except ValueError as error:
+            raise McpConfigurationError(str(error)) from error
+        self._save(self.root / "configs" / "mcp" / f"{namespace}.toml", render_configuration(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def save_pdf(self, data: dict) -> None:
+        self.save_document_profiles("pdf", data)
+
+    def save_ocr(self, data: dict) -> None:
+        self.save_document_profiles("ocr", data)
+
+    def enabled_document_profiles(self, namespace: str) -> list[dict]:
+        from .document_processing.configuration import load_configuration
+        return [{"name": name, **profile} for name, profile in sorted(load_configuration(self.root, namespace)["profiles"].items()) if profile["enabled"]]
+
+    def save_email(self, data: dict[str, Any]) -> None:
+        from datetime import datetime, timezone
+        from .email.scheduling import prepare_monitoring, preflight_email_schedules, reconcile_email_schedules
+        previous = self.email()
+        candidate = prepare_monitoring(previous, data, datetime.now(timezone.utc))
+        try:
+            validate_email(candidate)
+            validate_email_roots(self.root, candidate)
+            preflight_email_schedules(self.root, candidate)
+        except ValueError as error:
+            raise McpConfigurationError(str(error)) from error
+        self._save(self.email_path, render_email(candidate))
+        try:
+            reconcile_email_schedules(self.root, previous, candidate)
+        except (OSError, ValueError) as error:
+            try:
+                self._save(self.email_path, render_email(previous))
+                reconcile_email_schedules(self.root, candidate, previous)
+            except (OSError, ValueError) as rollback_error:
+                raise McpConfigurationError(
+                    "O agendamento de e-mail falhou e a configuração anterior não pôde ser restaurada."
+                ) from rollback_error
+            raise McpConfigurationError(
+                "O agendamento de e-mail falhou; a configuração anterior foi restaurada."
+            ) from error
+        data.clear(); data.update(copy.deepcopy(candidate))
+        McpReconciliation(self.root).mark_pending()
+
+    def enabled_email_accounts(self) -> list[dict[str, Any]]:
+        document = self.email()
+        validate_email(document)
+        vaults = self.credentials()["profiles"]
+        return [{"name": name, **account} for name, account in sorted(document["accounts"].items())
+                if account["enabled"] and all(endpoint["auth"]["credential_profile"] in vaults
+                                             for endpoint in (account.get("incoming"), account.get("smtp")) if endpoint)]
+
+    def todoist(self) -> dict[str, Any]:
+        return self._load(self.todoist_path, empty_todoist())
+
+    def omie(self) -> dict[str, Any]:
+        return self._load(self.omie_path, empty_omie())
+
+    def cloudflare(self) -> dict[str, Any]:
+        return self._load(self.cloudflare_path, empty_cloudflare())
+
+    def forward_email(self) -> dict[str, Any]:
+        return self._load(self.forward_email_path, empty_forward_email())
+
+    def notion(self) -> dict[str, Any]:
+        return self._load(self.notion_path, empty_notion())
+
+    def aws(self) -> dict[str, Any]:
+        return self._load(self.aws_path, empty_aws())
+
+    def mysql(self) -> dict[str, Any]:
+        return self._load(self.mysql_path, empty_mysql())
+
+    def ssh(self) -> dict[str, Any]:
+        return self._load(self.ssh_path, empty_ssh())
+
+    def bis2cmd(self) -> dict[str, Any]:
+        return self._load(self.bis2cmd_path, empty_bis2cmd())
+
+    def bis10cmd(self) -> dict[str, Any]:
+        return self._load(self.bis10cmd_path, empty_bis10cmd())
+
+    def google(self) -> dict[str, Any]:
+        return self._load(self.google_path, empty_google())
+
+    def spotify(self) -> dict[str, Any]:
+        return self._load(self.spotify_path, empty_spotify())
+
+    def btg(self) -> dict[str, Any]:
+        return self._load(self.btg_path, empty_btg())
+
+    def eccovox(self) -> dict[str, Any]:
+        return self._load(self.eccovox_path, empty_eccovox())
+
+    def memory(self) -> dict[str, Any]:
+        return self._load(self.memory_path, empty_memory())
+
+    def data_tables(self) -> dict[str, Any]:
+        return self._load(self.data_tables_path, empty_data_tables())
+
+    def mercado(self) -> dict[str, Any]:
+        return load_mercado(self.root)
+
+    def save_credentials(self, data: dict[str, Any]) -> None:
+        self._validate_credentials(data)
+        self._save(self.credentials_path, self._render_credentials(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def save_todoist(self, data: dict[str, Any]) -> None:
+        self._validate_todoist(data)
+        self._save(self.todoist_path, self._render_todoist(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def save_omie(self, data: dict[str, Any]) -> None:
+        self._validate_omie(data)
+        self._save(self.omie_path, self._render_omie(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def save_cloudflare(self, data: dict[str, Any]) -> None:
+        self._validate_cloudflare(data)
+        self._save(self.cloudflare_path, self._render_cloudflare(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def save_forward_email(self, data: dict[str, Any]) -> None:
+        self._validate_forward_email(data)
+        self._save(self.forward_email_path, self._render_forward_email(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def save_notion(self, data: dict[str, Any]) -> None:
+        self._validate_notion(data)
+        self._save(self.notion_path, self._render_notion(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def save_aws(self, data: dict[str, Any]) -> None:
+        self._validate_aws(data)
+        self._save(self.aws_path, self._render_aws(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def save_mysql(self, data: dict[str, Any]) -> None:
+        self._validate_mysql(data)
+        self._save(self.mysql_path, self._render_mysql(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def save_ssh(self, data: dict[str, Any]) -> None:
+        self._validate_ssh(data)
+        self._save(self.ssh_path, self._render_ssh(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def save_bis2cmd(self, data: dict[str, Any]) -> None:
+        self._validate_bis2cmd(data); self._save(self.bis2cmd_path, self._render_bis2cmd(data)); McpReconciliation(self.root).mark_pending()
+
+    def save_bis10cmd(self, data: dict[str, Any]) -> None:
+        self._validate_bis10cmd(data); self._save(self.bis10cmd_path, self._render_bis10cmd(data)); McpReconciliation(self.root).mark_pending()
+
+    def save_google(self, data: dict[str, Any]) -> None:
+        try: validate_google(data)
+        except ValueError as error: raise McpConfigurationError(str(error)) from error
+        self._save(self.google_path, render_google(data)); McpReconciliation(self.root).mark_pending()
+
+    def save_spotify(self, data: dict[str, Any]) -> None:
+        try: validate_spotify(data)
+        except ValueError as error: raise McpConfigurationError(str(error)) from error
+        self._save(self.spotify_path, render_spotify(data)); McpReconciliation(self.root).mark_pending()
+
+    def save_mercado(self, data: dict[str, Any]) -> None:
+        try:
+            validate_mercado(data, set(self.credentials()["profiles"]))
+        except ValueError as error:
+            raise McpConfigurationError(str(error)) from error
+        self._save(self.mercado_path, render_mercado(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def enabled_mercado_profiles(self) -> list[dict[str, Any]]:
+        return enabled_mercado(self.mercado())
+
+    def save_btg(self, data: dict[str, Any]) -> None:
+        try:
+            validate_btg(data)
+            with btg_configuration_lock(self.root):
+                previous = self.btg()["profiles"]
+                candidate = copy.deepcopy(data)
+                for name, incoming in candidate["profiles"].items():
+                    existing = previous.get(name, {})
+                    if existing.get("account_id"):
+                        if any(existing.get(key) != incoming.get(key) for key in ("environment", "company_id")):
+                            raise BtgConfigurationError("Use outro perfil para mudar empresa ou ambiente de uma conta descoberta.")
+                        for key in ("account_id", "account_number", "branch_code"):
+                            if incoming.get(key) and incoming[key] != existing[key]:
+                                raise BtgConfigurationError("A conta foi descoberta enquanto o perfil era editado; reabra o perfil.")
+                            incoming[key] = existing[key]
+                validate_btg(candidate)
+                self._save(self.btg_path, render_btg(candidate))
+        except BtgConfigurationError as error:
+            raise McpConfigurationError(str(error)) from error
+        McpReconciliation(self.root).mark_pending()
+
+    def save_eccovox(self, data: dict[str, Any]) -> None:
+        self._validate_eccovox(data)
+        self._save(self.eccovox_path, self._render_eccovox(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def save_memory(self, data: dict[str, Any]) -> None:
+        self._validate_memory(data)
+        self._save(self.memory_path, self._render_memory(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def save_data_tables(self, data: dict[str, Any]) -> None:
+        data = copy.deepcopy(data)
+        data.setdefault("schema_authoring_enabled", False)
+        self._validate_data_tables(data)
+        self._save(self.data_tables_path, self._render_data_tables(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def update_btg_profile(self, name: str, updater) -> None:
+        """Atualiza um perfil sob a mesma trava usada pelo menu e pelo callback."""
+        with btg_configuration_lock(self.root):
+            data = self.btg()
+            if name not in data["profiles"]:
+                raise McpConfigurationError("Perfil BTG não encontrado.")
+            updater(data["profiles"][name])
+            validate_btg(data)
+            self._save(self.btg_path, render_btg(data))
+        McpReconciliation(self.root).mark_pending()
+
+    def vault_profile_names(self) -> list[str]:
+        return sorted(self.credentials()["profiles"])
+
+    def todoist_tool_available(self) -> bool:
+        """Indica se ao menos um perfil Todoist habilitado tem vault válido."""
+        try:
+            vault_profiles = self.credentials()["profiles"]
+            for profile in self.todoist()["profiles"].values():
+                if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles:
+                    return True
+        except (KeyError, McpConfigurationError):
+            return False
+        return False
+
+    def omie_tool_available(self) -> bool:
+        try:
+            vault_profiles = self.credentials()["profiles"]
+            return any(profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles for profile in self.omie()["profiles"].values())
+        except (KeyError, McpConfigurationError):
+            return False
+
+    def cloudflare_tool_available(self) -> bool:
+        try:
+            vault_profiles = self.credentials()["profiles"]
+            return any(profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles for profile in self.cloudflare()["profiles"].values())
+        except (KeyError, McpConfigurationError):
+            return False
+
+    def forward_email_tool_available(self) -> bool:
+        try:
+            vault_profiles = self.credentials()["profiles"]
+            return any(profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles for profile in self.forward_email()["profiles"].values())
+        except (KeyError, McpConfigurationError):
+            return False
+
+    def notion_tool_available(self) -> bool:
+        try:
+            vault_profiles = self.credentials()["profiles"]
+            return any(profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles for profile in self.notion()["profiles"].values())
+        except (KeyError, McpConfigurationError):
+            return False
+
+    def aws_tool_available(self) -> bool:
+        try:
+            vault_profiles = self.credentials()["profiles"]
+            return any(profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles for profile in self.aws()["profiles"].values())
+        except (KeyError, McpConfigurationError):
+            return False
+
+    def mysql_tool_available(self) -> bool:
+        try:
+            vault_profiles = self.credentials()["profiles"]
+            return any(profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles for profile in self.mysql()["profiles"].values())
+        except (KeyError, McpConfigurationError):
+            return False
+
+    def ssh_tool_available(self) -> bool:
+        try:
+            vault_profiles = self.credentials()["profiles"]
+            return any(profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles for profile in self.ssh()["profiles"].values())
+        except (KeyError, McpConfigurationError):
+            return False
+
+    def bis2cmd_tool_available(self) -> bool:
+        try:
+            vault_profiles = self.credentials()["profiles"]
+            return any(profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles for profile in self.bis2cmd()["profiles"].values())
+        except (KeyError, McpConfigurationError): return False
+
+    def bis10cmd_tool_available(self) -> bool:
+        try:
+            vault_profiles = self.credentials()["profiles"]
+            return any(profile.get("enabled") is True and profile.get("jndi_credential_profile") in vault_profiles and profile.get("bis_credential_profile") in vault_profiles for profile in self.bis10cmd()["profiles"].values())
+        except (KeyError, McpConfigurationError): return False
+
+    def google_tool_available(self) -> bool:
+        try:
+            vault_profiles = self.credentials()["profiles"]
+            return any(profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles for profile in self.google()["profiles"].values())
+        except (KeyError, McpConfigurationError): return False
+
+    def spotify_tool_available(self) -> bool:
+        try:
+            vault_profiles = self.credentials()["profiles"]
+            return any(profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles for profile in self.spotify()["profiles"].values())
+        except (KeyError, McpConfigurationError): return False
+
+    def memory_tool_available(self) -> bool:
+        try: return self.memory().get("enabled") is True
+        except McpConfigurationError: return False
+
+    def data_tables_tool_available(self) -> bool:
+        try: return any(state.get("enabled") is True for state in self.data_tables()["schemas"].values())
+        except (KeyError, McpConfigurationError): return False
+
+    def data_tables_schema_authoring_available(self) -> bool:
+        """Indica se o workflow de autoria do serviço Data Tables está publicado."""
+        try: return self.data_tables().get("schema_authoring_enabled") is True
+        except McpConfigurationError: return False
+
+    def enabled_todoist_profiles(self) -> list[dict[str, str]]:
+        vault_profiles = self.credentials()["profiles"]
+        return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.todoist()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
+
+    def enabled_omie_profiles(self) -> list[dict[str, str]]:
+        vault_profiles = self.credentials()["profiles"]
+        return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.omie()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
+
+    def enabled_cloudflare_profiles(self) -> list[dict[str, str]]:
+        vault_profiles = self.credentials()["profiles"]
+        return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.cloudflare()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
+
+    def enabled_forward_email_profiles(self) -> list[dict[str, str]]:
+        vault_profiles = self.credentials()["profiles"]
+        return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.forward_email()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
+
+    def enabled_notion_profiles(self) -> list[dict[str, str]]:
+        vault_profiles = self.credentials()["profiles"]
+        return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.notion()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
+
+    def enabled_aws_profiles(self) -> list[dict[str, str]]:
+        vault_profiles = self.credentials()["profiles"]
+        return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.aws()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
+
+    def enabled_mysql_profiles(self) -> list[dict[str, str]]:
+        vault_profiles = self.credentials()["profiles"]
+        return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.mysql()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
+
+    def enabled_ssh_profiles(self) -> list[dict[str, str]]:
+        vault_profiles = self.credentials()["profiles"]
+        return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.ssh()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
+
+    def enabled_bis2cmd_profiles(self) -> list[dict[str, str]]:
+        vault_profiles = self.credentials()["profiles"]
+        return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.bis2cmd()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
+
+    def enabled_bis10cmd_profiles(self) -> list[dict[str, str]]:
+        vault_profiles = self.credentials()["profiles"]
+        return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.bis10cmd()["profiles"].items()) if profile.get("enabled") is True and profile.get("jndi_credential_profile") in vault_profiles and profile.get("bis_credential_profile") in vault_profiles]
+
+    def enabled_google_profiles(self) -> list[dict[str, str]]:
+        vault_profiles = self.credentials()["profiles"]
+        return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.google()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
+
+    def enabled_spotify_profiles(self) -> list[dict[str, str]]:
+        vault_profiles = self.credentials()["profiles"]
+        return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.spotify()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
+
+    def enabled_btg_profiles(self) -> list[dict[str, str]]:
+        vault_profiles = self.credentials()["profiles"]
+        return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.btg()["profiles"].items()) if profile.get("enabled") is True and profile.get("credential_profile") in vault_profiles]
+
+    def enabled_eccovox_profiles(self) -> list[dict[str, str]]:
+        return [{"name": name, "description": profile["description"]} for name, profile in sorted(self.eccovox()["profiles"].items()) if profile.get("enabled") is True]
+
+    @staticmethod
+    def _load(path: Path, empty: dict[str, Any]) -> dict[str, Any]:
+        if not path.exists():
+            return empty
+        try:
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+        except PermissionError as error:
+            raise McpConfigurationError(
+                "Sem permissão para ler a configuração MCP. No Linux com conta dedicada, use "
+                "Daemon > Processo/Serviço do Daemon > Serviço do sistema operacional > Reparar permissões."
+            ) from error
+        except (OSError, tomllib.TOMLDecodeError) as error:
+            raise McpConfigurationError("Não foi possível ler a configuração MCP.") from error
+        if not isinstance(data, dict):
+            raise McpConfigurationError("Configuração MCP inválida.")
+        # TOML não materializa tabelas vazias. Após remover o último perfil,
+        # o arquivo salvo não possui uma seção ``profiles``; complete-a com o
+        # modelo para que o menu continue navegável.
+        merged = copy.deepcopy(empty)
+        merged.update(data)
+        return merged
+
+    def _save(self, path: Path, content: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent, text=True)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as target:
+                target.write(content)
+            tomllib.loads(Path(temporary).read_text(encoding="utf-8"))
+            publish_instance_file(self.root, Path(temporary), path)
+        except Exception:
+            Path(temporary).unlink(missing_ok=True)
+            raise
+
+    @staticmethod
+    def _validate_credentials(data: dict[str, Any]) -> None:
+        if data.get("schema_version") != 1 or not isinstance(data.get("defaults"), dict) or not isinstance(data.get("vaults"), dict) or not isinstance(data.get("profiles"), dict):
+            raise McpConfigurationError("Estrutura de perfis de vault inválida.")
+        timeout = data["defaults"].get("timeout_seconds")
+        if not isinstance(timeout, int) or timeout <= 0:
+            raise McpConfigurationError("Timeout do cofre inválido.")
+        for name, profile in data["profiles"].items():
+            _profile_name(name)
+            if not isinstance(profile, dict) or profile.get("vault") not in data["vaults"]:
+                raise McpConfigurationError("Perfil de vault referencia um cofre inexistente.")
+            vault = data["vaults"][profile["vault"]]
+            if not isinstance(vault, dict) or not isinstance(vault.get("cli_command"), list) or not vault["cli_command"] or not all(isinstance(value, str) and value for value in vault["cli_command"]):
+                raise McpConfigurationError("Executável KeePassXC inválido.")
+            database = vault.get("database")
+            if not isinstance(database, dict) or not all(isinstance(database.get(platform), str) for platform in ("windows", "linux")):
+                raise McpConfigurationError("Caminhos do cofre inválidos.")
+            roots = profile.get("allowed_entry_roots")
+            if not isinstance(roots, list) or not all(isinstance(value, str) for value in roots):
+                raise McpConfigurationError("Raízes permitidas do perfil de vault inválidas.")
+            auth = profile.get("auth")
+            if not isinstance(auth, dict) or not isinstance(auth.get("windows"), dict) or not isinstance(auth.get("linux"), dict):
+                raise McpConfigurationError("Autenticação do perfil de vault incompleta.")
+            linux_auth = auth["linux"]
+            linux_mode = linux_auth.get("mode")
+            if linux_mode == "command":
+                command = linux_auth.get("command")
+                if not isinstance(command, list) or not command or not all(isinstance(value, str) and value for value in command):
+                    raise McpConfigurationError("Comando de autenticação Linux inválido.")
+            elif linux_mode == "protected_file":
+                if not isinstance(linux_auth.get("path"), str) or not linux_auth["path"]:
+                    raise McpConfigurationError("Arquivo protegido da autenticação Linux não configurado.")
+
+    def _validate_todoist(self, data: dict[str, Any]) -> None:
+        if data.get("schema_version") != 1 or not isinstance(data.get("defaults"), dict) or not isinstance(data.get("profiles"), dict):
+            raise McpConfigurationError("Estrutura de perfis Todoist inválida.")
+        for name, profile in data["profiles"].items():
+            _profile_name(name)
+            if not isinstance(profile, dict) or type(profile.get("enabled")) is not bool:
+                raise McpConfigurationError("Estado do perfil Todoist inválido.")
+            if not isinstance(profile.get("description"), str) or not 1 <= len(profile["description"].strip()) <= 240:
+                raise McpConfigurationError("Descrição do perfil Todoist é obrigatória e deve ter até 240 caracteres.")
+            if not all(isinstance(profile.get(key), str) and profile[key] for key in ("credential_profile", "credential_entry_path", "credential_field")):
+                raise McpConfigurationError("Referência de vault do perfil Todoist incompleta.")
+            if profile["credential_field"] not in {"password", "notes"}:
+                raise McpConfigurationError("Campo KeePass do perfil Todoist inválido.")
+            # Configurações anteriores podem conter allowed_operations. O
+            # campo deixou de controlar a publicação: um perfil habilitado
+            # expõe toda a superfície Todoist do MCP.
+            allowed = profile.get("allowed_operations")
+            if allowed is not None and (not isinstance(allowed, list) or not all(isinstance(item, str) for item in allowed)):
+                raise McpConfigurationError("Operações Todoist legadas inválidas.")
+
+    def _validate_omie(self, data: dict[str, Any]) -> None:
+        if data.get("schema_version") != 1 or not isinstance(data.get("defaults"), dict) or not isinstance(data.get("profiles"), dict):
+            raise McpConfigurationError("Estrutura de perfis Omie inválida.")
+        defaults = data["defaults"]
+        if not isinstance(defaults.get("timeout_seconds"), int) or defaults["timeout_seconds"] <= 0 or not isinstance(defaults.get("max_retries"), int) or defaults["max_retries"] < 0:
+            raise McpConfigurationError("Timeout ou tentativas Omie inválidos.")
+        for name, profile in data["profiles"].items():
+            _profile_name(name)
+            if not isinstance(profile, dict) or type(profile.get("enabled")) is not bool:
+                raise McpConfigurationError("Estado do perfil Omie inválido.")
+            if not isinstance(profile.get("description"), str) or not 1 <= len(profile["description"].strip()) <= 240:
+                raise McpConfigurationError("Descrição do perfil Omie é obrigatória e deve ter até 240 caracteres.")
+            if not all(isinstance(profile.get(key), str) and profile[key] for key in ("credential_profile", "credential_entry_path", "app_key_field", "app_secret_field")):
+                raise McpConfigurationError("Referência de vault do perfil Omie incompleta.")
+            if profile["app_key_field"] not in {"username", "password", "url", "notes"} or profile["app_secret_field"] not in {"username", "password", "url", "notes"}:
+                raise McpConfigurationError("Campos KeePass do perfil Omie inválidos.")
+
+    def _validate_cloudflare(self, data: dict[str, Any]) -> None:
+        if data.get("schema_version") != 1 or not isinstance(data.get("defaults"), dict) or not isinstance(data.get("profiles"), dict):
+            raise McpConfigurationError("Estrutura de perfis Cloudflare inválida.")
+        defaults = data["defaults"]
+        api_base = defaults.get("api_base")
+        if not isinstance(api_base, str) or not api_base.startswith("https://"):
+            raise McpConfigurationError("Endpoint Cloudflare deve usar HTTPS.")
+        if not isinstance(defaults.get("timeout_seconds"), int) or defaults["timeout_seconds"] <= 0 or not isinstance(defaults.get("max_retries"), int) or defaults["max_retries"] < 0:
+            raise McpConfigurationError("Timeout ou tentativas Cloudflare inválidos.")
+        for name, profile in data["profiles"].items():
+            _profile_name(name)
+            if not isinstance(profile, dict) or type(profile.get("enabled")) is not bool:
+                raise McpConfigurationError("Estado do perfil Cloudflare inválido.")
+            if not isinstance(profile.get("description"), str) or not 1 <= len(profile["description"].strip()) <= 240:
+                raise McpConfigurationError("Descrição do perfil Cloudflare é obrigatória e deve ter até 240 caracteres.")
+            if not all(isinstance(profile.get(key), str) and profile[key] for key in ("credential_profile", "credential_entry_path", "credential_field")):
+                raise McpConfigurationError("Referência de vault do perfil Cloudflare incompleta.")
+            if profile["credential_field"] not in {"password", "notes"}:
+                raise McpConfigurationError("Campo KeePass do perfil Cloudflare inválido.")
+            if not isinstance(profile.get("zone_id", ""), str):
+                raise McpConfigurationError("Zone ID do perfil Cloudflare inválido.")
+
+    def _validate_forward_email(self, data: dict[str, Any]) -> None:
+        if data.get("schema_version") != 1 or not isinstance(data.get("defaults"), dict) or not isinstance(data.get("profiles"), dict):
+            raise McpConfigurationError("Estrutura de perfis Forward Email inválida.")
+        defaults = data["defaults"]
+        api_base = defaults.get("api_base")
+        if not isinstance(api_base, str) or api_base.rstrip("/") != "https://api.forwardemail.net/v1":
+            raise McpConfigurationError("Endpoint Forward Email deve usar a API oficial v1.")
+        if not isinstance(defaults.get("timeout_seconds"), int) or defaults["timeout_seconds"] <= 0 or not isinstance(defaults.get("max_retries"), int) or defaults["max_retries"] < 0:
+            raise McpConfigurationError("Timeout ou tentativas Forward Email inválidos.")
+        for name, profile in data["profiles"].items():
+            _profile_name(name)
+            if not isinstance(profile, dict) or type(profile.get("enabled")) is not bool:
+                raise McpConfigurationError("Estado do perfil Forward Email inválido.")
+            if not isinstance(profile.get("description"), str) or not 1 <= len(profile["description"].strip()) <= 240:
+                raise McpConfigurationError("Descrição do perfil Forward Email é obrigatória e deve ter até 240 caracteres.")
+            if not all(isinstance(profile.get(key), str) and profile[key] for key in ("credential_profile", "credential_entry_path", "credential_field")):
+                raise McpConfigurationError("Referência de vault do perfil Forward Email incompleta.")
+            if profile["credential_field"] not in {"password", "notes"}:
+                raise McpConfigurationError("Campo KeePass do perfil Forward Email inválido.")
+            if not isinstance(profile.get("domain", ""), str):
+                raise McpConfigurationError("Domínio do perfil Forward Email inválido.")
+
+    def _validate_notion(self, data: dict[str, Any]) -> None:
+        if data.get("schema_version") != 1 or not isinstance(data.get("defaults"), dict) or not isinstance(data.get("profiles"), dict):
+            raise McpConfigurationError("Estrutura de perfis Notion inválida.")
+        defaults = data["defaults"]
+        if defaults.get("api_base") != "https://api.notion.com" or defaults.get("notion_version") != "2026-03-11":
+            raise McpConfigurationError("Endpoint ou versão Notion não suportados.")
+        if not isinstance(defaults.get("timeout_seconds"), int) or defaults["timeout_seconds"] <= 0 or not isinstance(defaults.get("max_retries"), int) or defaults["max_retries"] < 0 or not isinstance(defaults.get("page_size"), int) or not 1 <= defaults["page_size"] <= 100:
+            raise McpConfigurationError("Timeout, tentativas ou paginação Notion inválidos.")
+        for name, profile in data["profiles"].items():
+            _profile_name(name)
+            if not isinstance(profile, dict) or type(profile.get("enabled")) is not bool:
+                raise McpConfigurationError("Estado do perfil Notion inválido.")
+            if not isinstance(profile.get("description"), str) or not 1 <= len(profile["description"].strip()) <= 240:
+                raise McpConfigurationError("Descrição do perfil Notion é obrigatória e deve ter até 240 caracteres.")
+            if not all(isinstance(profile.get(key), str) and profile[key] for key in ("credential_profile", "credential_entry_path", "credential_field")):
+                raise McpConfigurationError("Referência de vault do perfil Notion incompleta.")
+            if profile["credential_field"] not in {"password", "notes"}:
+                raise McpConfigurationError("Campo KeePass do perfil Notion inválido.")
+            roots = profile.get("readable_roots")
+            if not isinstance(roots, list) or not all(isinstance(value, str) and value.strip() for value in roots):
+                raise McpConfigurationError("Raízes de leitura do perfil Notion inválidas.")
+
+    def _validate_aws(self, data: dict[str, Any]) -> None:
+        if data.get("schema_version") != 1 or not isinstance(data.get("defaults"), dict) or not isinstance(data.get("profiles"), dict):
+            raise McpConfigurationError("Estrutura de perfis AWS inválida.")
+        defaults = data["defaults"]
+        if not isinstance(defaults.get("timeout_seconds"), int) or defaults["timeout_seconds"] <= 0 or not isinstance(defaults.get("max_attempts"), int) or defaults["max_attempts"] <= 0:
+            raise McpConfigurationError("Timeout ou tentativas AWS inválidos.")
+        for name, profile in data["profiles"].items():
+            _profile_name(name)
+            if not isinstance(profile, dict) or type(profile.get("enabled")) is not bool:
+                raise McpConfigurationError("Estado do perfil AWS inválido.")
+            if not isinstance(profile.get("description"), str) or not 1 <= len(profile["description"].strip()) <= 240:
+                raise McpConfigurationError("Descrição do perfil AWS é obrigatória e deve ter até 240 caracteres.")
+            if not all(isinstance(profile.get(key), str) and profile[key] for key in ("credential_profile", "credential_entry_path", "access_key_id_field", "secret_access_key_field", "cli_path")):
+                raise McpConfigurationError("Credencial ou executável do perfil AWS incompleto.")
+            if profile["access_key_id_field"] not in {"username", "password", "url", "notes"} or profile["secret_access_key_field"] not in {"username", "password", "url", "notes"}:
+                raise McpConfigurationError("Campos KeePass do perfil AWS inválidos.")
+            region = profile.get("region", "")
+            account = profile.get("expected_account_id", "")
+            if not isinstance(region, str) or not isinstance(account, str) or account and (len(account) != 12 or not account.isascii() or not account.isdigit()):
+                raise McpConfigurationError("Região ou conta esperada do perfil AWS inválida.")
+            for key in ("readable_roots", "writable_roots"):
+                roots = profile.get(key)
+                if not isinstance(roots, list) or not all(isinstance(value, str) and value.strip() for value in roots):
+                    raise McpConfigurationError("Raízes de arquivos do perfil AWS inválidas.")
+
+    def _validate_mysql(self, data: dict[str, Any]) -> None:
+        if data.get("schema_version") != 1 or not isinstance(data.get("defaults"), dict) or not isinstance(data.get("profiles"), dict): raise McpConfigurationError("Estrutura de perfis MySQL inválida.")
+        defaults = data["defaults"]
+        if not isinstance(defaults.get("executable"), str) or not defaults["executable"] or not isinstance(defaults.get("port"), int) or not 1 <= defaults["port"] <= 65535 or not isinstance(defaults.get("connect_timeout"), int) or defaults["connect_timeout"] <= 0 or not isinstance(defaults.get("timeout_seconds"), int) or defaults["timeout_seconds"] <= 0: raise McpConfigurationError("Configuração operacional MySQL inválida.")
+        for name, profile in data["profiles"].items():
+            _profile_name(name)
+            if not isinstance(profile, dict) or type(profile.get("enabled")) is not bool: raise McpConfigurationError("Estado do perfil MySQL inválido.")
+            if not isinstance(profile.get("description"), str) or not 1 <= len(profile["description"].strip()) <= 240: raise McpConfigurationError("Descrição do perfil MySQL é obrigatória e deve ter até 240 caracteres.")
+            if not all(isinstance(profile.get(key), str) and profile[key] for key in ("host", "credential_profile", "credential_entry_path", "username_field", "password_field")): raise McpConfigurationError("Conexão ou credencial MySQL incompleta.")
+            if profile["username_field"] not in {"username", "password", "url", "notes"} or profile["password_field"] not in {"username", "password", "url", "notes"}: raise McpConfigurationError("Campos KeePass do perfil MySQL inválidos.")
+            if not isinstance(profile.get("database", ""), str) or not isinstance(profile.get("socket", ""), str) or type(profile.get("allow_client_commands")) is not bool: raise McpConfigurationError("Opções do perfil MySQL inválidas.")
+            roots = profile.get("readable_roots")
+            if not isinstance(roots, list) or not all(isinstance(value, str) and value.strip() for value in roots): raise McpConfigurationError("Raízes de scripts MySQL inválidas.")
+
+    def _validate_ssh(self, data: dict[str, Any]) -> None:
+        if data.get("schema_version") != 1 or not isinstance(data.get("defaults"), dict) or not isinstance(data.get("profiles"), dict): raise McpConfigurationError("Estrutura de perfis SSH inválida.")
+        timeout = data["defaults"].get("timeout_seconds")
+        if not isinstance(timeout, int) or timeout <= 0: raise McpConfigurationError("Timeout SSH inválido.")
+        for name, profile in data["profiles"].items():
+            _profile_name(name)
+            if not isinstance(profile, dict) or type(profile.get("enabled")) is not bool: raise McpConfigurationError("Estado do perfil SSH inválido.")
+            if not isinstance(profile.get("description"), str) or not 1 <= len(profile["description"].strip()) <= 240: raise McpConfigurationError("Descrição do perfil SSH é obrigatória e deve ter até 240 caracteres.")
+            if not all(isinstance(profile.get(key), str) and profile[key] for key in ("host", "username", "auth_mode", "credential_profile", "credential_entry_path", "known_hosts")): raise McpConfigurationError("Conexão ou credencial SSH incompleta.")
+            if not isinstance(profile.get("port"), int) or not 1 <= profile["port"] <= 65535 or profile["auth_mode"] not in {"password", "key"}: raise McpConfigurationError("Porta ou modo de autenticação SSH inválido.")
+            if profile["auth_mode"] == "password" and profile.get("password_field") not in {"username", "password", "url", "notes"}: raise McpConfigurationError("Campo de senha SSH inválido.")
+            if profile["auth_mode"] == "key" and (not isinstance(profile.get("key_attachment"), str) or not profile["key_attachment"] or profile.get("passphrase_field", "") not in {"", "username", "password", "url", "notes"}): raise McpConfigurationError("Anexo ou campo da chave SSH inválido.")
+            for key in ("readable_roots", "writable_roots"):
+                roots = profile.get(key)
+                if not isinstance(roots, list) or not all(isinstance(value, str) and value.strip() for value in roots): raise McpConfigurationError("Raízes de arquivos SSH inválidas.")
+
+    def _validate_bis2cmd(self, data: dict[str, Any]) -> None:
+        if data.get("schema_version") != 1 or not isinstance(data.get("defaults"), dict) or not isinstance(data.get("profiles"), dict): raise McpConfigurationError("Estrutura de perfis BIS2CMD inválida.")
+        defaults = data["defaults"]
+        if not isinstance(defaults.get("java_path"), str) or not defaults["java_path"] or not isinstance(defaults.get("timeout_seconds"), int) or defaults["timeout_seconds"] <= 0 or not isinstance(defaults.get("encoding"), str) or not defaults["encoding"]: raise McpConfigurationError("Configuração operacional BIS2CMD inválida.")
+        for name, profile in data["profiles"].items():
+            _profile_name(name)
+            if not isinstance(profile, dict) or type(profile.get("enabled")) is not bool or not isinstance(profile.get("description"), str) or not 1 <= len(profile["description"].strip()) <= 240: raise McpConfigurationError("Estado ou descrição do perfil BIS2CMD inválido.")
+            if not all(isinstance(profile.get(key), str) and profile[key] for key in ("jar_path", "working_dir", "host", "credential_profile", "credential_entry_path", "username_field", "password_field")) or not isinstance(profile.get("java_options", ""), str): raise McpConfigurationError("Execução ou credencial BIS2CMD incompleta.")
+            if not isinstance(profile.get("port"), int) or not 1 <= profile["port"] <= 65535 or profile["username_field"] not in {"username", "password", "url", "notes"} or profile["password_field"] not in {"username", "password", "url", "notes"}: raise McpConfigurationError("Porta ou campos KeePass BIS2CMD inválidos.")
+            for key in ("readable_roots", "writable_roots"):
+                roots = profile.get(key)
+                if not isinstance(roots, list) or not all(isinstance(value, str) and value.strip() for value in roots): raise McpConfigurationError("Raízes de arquivos BIS2CMD inválidas.")
+
+    def _validate_bis10cmd(self, data: dict[str, Any]) -> None:
+        if data.get("schema_version") != 1 or not isinstance(data.get("defaults"), dict) or not isinstance(data.get("profiles"), dict):
+            raise McpConfigurationError("Estrutura de perfis BIS10CMD inválida.")
+        defaults = data["defaults"]
+        if not isinstance(defaults.get("java_path"), str) or not defaults["java_path"] or not isinstance(defaults.get("timeout_seconds"), int) or defaults["timeout_seconds"] <= 0 or not isinstance(defaults.get("encoding"), str) or not defaults["encoding"]:
+            raise McpConfigurationError("Configuração operacional BIS10CMD inválida.")
+        credential_fields = {"username", "password", "url", "notes"}
+        for name, profile in data["profiles"].items():
+            _profile_name(name)
+            if not isinstance(profile, dict) or type(profile.get("enabled")) is not bool or not isinstance(profile.get("description"), str) or not 1 <= len(profile["description"].strip()) <= 240:
+                raise McpConfigurationError("Estado ou descrição do perfil BIS10CMD inválido.")
+            required = ("jar_path", "working_dir", "host", "locale", "jndi_credential_profile", "jndi_credential_entry_path", "jndi_username_field", "jndi_password_field", "bis_credential_profile", "bis_credential_entry_path", "bis_username_field", "bis_password_field")
+            if not all(isinstance(profile.get(key), str) and profile[key] for key in required):
+                raise McpConfigurationError("Execução ou credenciais BIS10CMD incompletas.")
+            if not isinstance(profile.get("port"), int) or not 1 <= profile["port"] <= 65535:
+                raise McpConfigurationError("Porta BIS10CMD inválida.")
+            for key in ("jndi_username_field", "jndi_password_field", "bis_username_field", "bis_password_field"):
+                if profile[key] not in credential_fields:
+                    raise McpConfigurationError("Campo KeePass BIS10CMD inválido.")
+
+    def _validate_eccovox(self, data: dict[str, Any]) -> None:
+        if data.get("schema_version") != 1 or not isinstance(data.get("defaults"), dict) or not isinstance(data.get("profiles"), dict):
+            raise McpConfigurationError("Estrutura de perfis EccoVox inválida.")
+        defaults = data["defaults"]
+        for key, maximum in (("request_timeout_seconds", 300), ("max_audio_bytes", 104857600), ("max_text_characters", 100000)):
+            value = defaults.get(key)
+            if not isinstance(value, int) or not 1 <= value <= maximum:
+                raise McpConfigurationError("Limites padrão EccoVox inválidos.")
+        for name, profile in data["profiles"].items():
+            _profile_name(name)
+            if not isinstance(profile, dict) or type(profile.get("enabled")) is not bool:
+                raise McpConfigurationError("Estado do perfil EccoVox inválido.")
+            if not isinstance(profile.get("description"), str) or not 1 <= len(profile["description"].strip()) <= 240:
+                raise McpConfigurationError("Descrição do perfil EccoVox é obrigatória e deve ter até 240 caracteres.")
+            base_url = profile.get("base_url")
+            if not isinstance(base_url, str) or not base_url.strip():
+                raise McpConfigurationError("Endpoint EccoVox inválido.")
+            if not isinstance(profile.get("voice", ""), str) or len(str(profile.get("voice", ""))) > 120:
+                raise McpConfigurationError("Voz padrão do perfil EccoVox inválida.")
+            if not isinstance(profile.get("language", ""), str) or len(str(profile.get("language", ""))) > 40:
+                raise McpConfigurationError("Idioma padrão do perfil EccoVox inválido.")
+            if not isinstance(profile.get("default_output_directory", ""), str):
+                raise McpConfigurationError("Pasta padrão de saída do perfil EccoVox inválida.")
+            for key in ("readable_roots", "writable_roots"):
+                roots = profile.get(key)
+                if not isinstance(roots, list) or not all(isinstance(value, str) and value.strip() for value in roots):
+                    raise McpConfigurationError("Raízes de arquivos EccoVox inválidas.")
+
+    @staticmethod
+    def _validate_memory(data: dict[str, Any]) -> None:
+        if data.get("schema_version") != 1 or type(data.get("enabled")) is not bool:
+            raise McpConfigurationError("Configuração da memória MCP inválida.")
+        if not isinstance(data.get("max_results"), int) or not 1 <= data["max_results"] <= 50:
+            raise McpConfigurationError("O limite de resultados da memória deve estar entre 1 e 50.")
+
+    @staticmethod
+    def _validate_data_tables(data: dict[str, Any]) -> None:
+        if data.get("schema_version") != 1 or type(data.get("schema_authoring_enabled")) is not bool or not isinstance(data.get("schemas"), dict):
+            raise McpConfigurationError("Configuração de tabelas de dados inválida.")
+        for identifier, state in data["schemas"].items():
+            _profile_name(identifier)
+            if not isinstance(state, dict) or type(state.get("enabled")) is not bool:
+                raise McpConfigurationError("Estado de schema inválido.")
+
+    @staticmethod
+    def _render_credentials(data: dict[str, Any]) -> str:
+        lines = ["schema_version = 1", "", "[defaults]", f"timeout_seconds = {data['defaults']['timeout_seconds']}"]
+        for name, vault in sorted(data["vaults"].items()):
+            lines += ["", f"[vaults.{name}]", f"cli_command = {_array(vault['cli_command'])}", "", f"[vaults.{name}.database]", f"windows = {_quote(vault['database']['windows'])}", f"linux = {_quote(vault['database']['linux'])}"]
+        for name, profile in sorted(data["profiles"].items()):
+            auth = profile["auth"]
+            linux_auth = auth["linux"]
+            lines += ["", f"[profiles.{name}]", f"vault = {_quote(profile['vault'])}", f"allowed_entry_roots = {_array(profile['allowed_entry_roots'])}", "", f"[profiles.{name}.auth.windows]", f"mode = {_quote(auth['windows']['mode'])}", f"target = {_quote(auth['windows'].get('target', ''))}", "", f"[profiles.{name}.auth.linux]", f"mode = {_quote(linux_auth['mode'])}"]
+            if linux_auth["mode"] == "protected_file":
+                lines.append(f"path = {_quote(linux_auth['path'])}")
+            else:
+                lines.append(f"command = {_array(linux_auth.get('command', []))}")
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _render_todoist(data: dict[str, Any]) -> str:
+        defaults = data["defaults"]
+        lines = ["schema_version = 1", "", "[defaults]", f"api_base = {_quote(defaults['api_base'])}", f"timeout_seconds = {defaults['timeout_seconds']}", f"max_retries = {defaults['max_retries']}"]
+        for name, profile in sorted(data["profiles"].items()):
+            lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"credential_profile = {_quote(profile['credential_profile'])}", f"credential_entry_path = {_quote(profile['credential_entry_path'])}", f"credential_field = {_quote(profile['credential_field'])}"]
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _render_omie(data: dict[str, Any]) -> str:
+        defaults = data["defaults"]
+        lines = ["schema_version = 1", "", "[defaults]", f"timeout_seconds = {defaults['timeout_seconds']}", f"max_retries = {defaults['max_retries']}"]
+        for name, profile in sorted(data["profiles"].items()):
+            lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"credential_profile = {_quote(profile['credential_profile'])}", f"credential_entry_path = {_quote(profile['credential_entry_path'])}", f"app_key_field = {_quote(profile['app_key_field'])}", f"app_secret_field = {_quote(profile['app_secret_field'])}"]
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _render_cloudflare(data: dict[str, Any]) -> str:
+        defaults = data["defaults"]
+        lines = ["schema_version = 1", "", "[defaults]", f"api_base = {_quote(defaults['api_base'])}", f"timeout_seconds = {defaults['timeout_seconds']}", f"max_retries = {defaults['max_retries']}"]
+        for name, profile in sorted(data["profiles"].items()):
+            lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"credential_profile = {_quote(profile['credential_profile'])}", f"credential_entry_path = {_quote(profile['credential_entry_path'])}", f"credential_field = {_quote(profile['credential_field'])}", f"zone_id = {_quote(profile.get('zone_id', ''))}"]
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _render_forward_email(data: dict[str, Any]) -> str:
+        defaults = data["defaults"]
+        lines = ["schema_version = 1", "", "[defaults]", f"api_base = {_quote(defaults['api_base'])}", f"timeout_seconds = {defaults['timeout_seconds']}", f"max_retries = {defaults['max_retries']}"]
+        for name, profile in sorted(data["profiles"].items()):
+            lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"credential_profile = {_quote(profile['credential_profile'])}", f"credential_entry_path = {_quote(profile['credential_entry_path'])}", f"credential_field = {_quote(profile['credential_field'])}", f"domain = {_quote(profile.get('domain', ''))}"]
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _render_notion(data: dict[str, Any]) -> str:
+        defaults = data["defaults"]
+        lines = ["schema_version = 1", "", "[defaults]", f"api_base = {_quote(defaults['api_base'])}", f"notion_version = {_quote(defaults['notion_version'])}", f"timeout_seconds = {defaults['timeout_seconds']}", f"max_retries = {defaults['max_retries']}", f"page_size = {defaults['page_size']}"]
+        for name, profile in sorted(data["profiles"].items()):
+            lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"credential_profile = {_quote(profile['credential_profile'])}", f"credential_entry_path = {_quote(profile['credential_entry_path'])}", f"credential_field = {_quote(profile['credential_field'])}", f"readable_roots = {_array(profile['readable_roots'])}"]
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _render_aws(data: dict[str, Any]) -> str:
+        defaults = data["defaults"]
+        lines = ["schema_version = 1", "", "[defaults]", f"timeout_seconds = {defaults['timeout_seconds']}", f"max_attempts = {defaults['max_attempts']}"]
+        for name, profile in sorted(data["profiles"].items()):
+            lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"credential_profile = {_quote(profile['credential_profile'])}", f"credential_entry_path = {_quote(profile['credential_entry_path'])}", f"access_key_id_field = {_quote(profile['access_key_id_field'])}", f"secret_access_key_field = {_quote(profile['secret_access_key_field'])}", f"cli_path = {_quote(profile['cli_path'])}", f"region = {_quote(profile.get('region', ''))}", f"expected_account_id = {_quote(profile.get('expected_account_id', ''))}", f"readable_roots = {_array(profile['readable_roots'])}", f"writable_roots = {_array(profile['writable_roots'])}"]
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _render_mysql(data: dict[str, Any]) -> str:
+        defaults = data["defaults"]
+        lines = ["schema_version = 1", "", "[defaults]", f"executable = {_quote(defaults['executable'])}", f"port = {defaults['port']}", f"connect_timeout = {defaults['connect_timeout']}", f"timeout_seconds = {defaults['timeout_seconds']}"]
+        for name, profile in sorted(data["profiles"].items()):
+            lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"host = {_quote(profile['host'])}", f"database = {_quote(profile.get('database', ''))}", f"socket = {_quote(profile.get('socket', ''))}", f"allow_client_commands = {'true' if profile['allow_client_commands'] else 'false'}", f"credential_profile = {_quote(profile['credential_profile'])}", f"credential_entry_path = {_quote(profile['credential_entry_path'])}", f"username_field = {_quote(profile['username_field'])}", f"password_field = {_quote(profile['password_field'])}", f"readable_roots = {_array(profile['readable_roots'])}"]
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _render_ssh(data: dict[str, Any]) -> str:
+        lines = ["schema_version = 1", "", "[defaults]", f"timeout_seconds = {data['defaults']['timeout_seconds']}"]
+        for name, profile in sorted(data["profiles"].items()):
+            lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"host = {_quote(profile['host'])}", f"port = {profile['port']}", f"username = {_quote(profile['username'])}", f"auth_mode = {_quote(profile['auth_mode'])}", f"credential_profile = {_quote(profile['credential_profile'])}", f"credential_entry_path = {_quote(profile['credential_entry_path'])}", f"password_field = {_quote(profile.get('password_field', 'password'))}", f"key_attachment = {_quote(profile.get('key_attachment', ''))}", f"passphrase_field = {_quote(profile.get('passphrase_field', ''))}", f"known_hosts = {_quote(profile['known_hosts'])}", f"readable_roots = {_array(profile['readable_roots'])}", f"writable_roots = {_array(profile['writable_roots'])}"]
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _render_bis2cmd(data: dict[str, Any]) -> str:
+        defaults = data["defaults"]; lines = ["schema_version = 1", "", "[defaults]", f"java_path = {_quote(defaults['java_path'])}", f"timeout_seconds = {defaults['timeout_seconds']}", f"encoding = {_quote(defaults['encoding'])}"]
+        for name, profile in sorted(data["profiles"].items()):
+            lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"jar_path = {_quote(profile['jar_path'])}", f"working_dir = {_quote(profile['working_dir'])}", f"host = {_quote(profile['host'])}", f"port = {profile['port']}", f"java_options = {_quote(profile.get('java_options', ''))}", f"credential_profile = {_quote(profile['credential_profile'])}", f"credential_entry_path = {_quote(profile['credential_entry_path'])}", f"username_field = {_quote(profile['username_field'])}", f"password_field = {_quote(profile['password_field'])}", f"readable_roots = {_array(profile['readable_roots'])}", f"writable_roots = {_array(profile['writable_roots'])}"]
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _render_bis10cmd(data: dict[str, Any]) -> str:
+        defaults = data["defaults"]
+        lines = ["schema_version = 1", "", "[defaults]", f"java_path = {_quote(defaults['java_path'])}", f"timeout_seconds = {defaults['timeout_seconds']}", f"encoding = {_quote(defaults['encoding'])}"]
+        for name, profile in sorted(data["profiles"].items()):
+            lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"jar_path = {_quote(profile['jar_path'])}", f"working_dir = {_quote(profile['working_dir'])}", f"host = {_quote(profile['host'])}", f"port = {profile['port']}", f"locale = {_quote(profile['locale'])}", f"jndi_credential_profile = {_quote(profile['jndi_credential_profile'])}", f"jndi_credential_entry_path = {_quote(profile['jndi_credential_entry_path'])}", f"jndi_username_field = {_quote(profile['jndi_username_field'])}", f"jndi_password_field = {_quote(profile['jndi_password_field'])}", f"bis_credential_profile = {_quote(profile['bis_credential_profile'])}", f"bis_credential_entry_path = {_quote(profile['bis_credential_entry_path'])}", f"bis_username_field = {_quote(profile['bis_username_field'])}", f"bis_password_field = {_quote(profile['bis_password_field'])}"]
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _render_eccovox(data: dict[str, Any]) -> str:
+        defaults = data["defaults"]
+        lines = ["schema_version = 1", "", "[defaults]", f"request_timeout_seconds = {defaults['request_timeout_seconds']}", f"max_audio_bytes = {defaults['max_audio_bytes']}", f"max_text_characters = {defaults['max_text_characters']}"]
+        for name, profile in sorted(data["profiles"].items()):
+            lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"base_url = {_quote(profile['base_url'])}", f"voice = {_quote(profile.get('voice', ''))}", f"language = {_quote(profile.get('language', ''))}", f"default_output_directory = {_quote(profile.get('default_output_directory', ''))}", f"readable_roots = {_array(profile['readable_roots'])}", f"writable_roots = {_array(profile['writable_roots'])}"]
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _render_memory(data: dict[str, Any]) -> str:
+        return "\n".join(["schema_version = 1", f"enabled = {'true' if data['enabled'] else 'false'}", f"max_results = {data['max_results']}", ""])
+
+    @staticmethod
+    def _render_data_tables(data: dict[str, Any]) -> str:
+        lines = ["schema_version = 1", f"schema_authoring_enabled = {'true' if data.get('schema_authoring_enabled', False) else 'false'}"]
+        for identifier, state in sorted(data["schemas"].items()):
+            lines += ["", f"[schemas.{identifier}]", f"enabled = {'true' if state['enabled'] else 'false'}"]
+        return "\n".join(lines) + "\n"

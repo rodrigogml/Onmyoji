@@ -1,0 +1,13 @@
+schema_version = 1
+
+[defaults]
+timeout_seconds = 30
+max_retries = 2
+
+[profiles.example]
+enabled = true
+description = "Explique quando este perfil Omie deve ser utilizado."
+credential_profile = "example"
+credential_entry_path = "APIs/Omie/example"
+app_key_field = "username"
+app_secret_field = "password"

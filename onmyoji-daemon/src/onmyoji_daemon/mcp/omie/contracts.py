@@ -137,83 +137,6 @@ LIST_FIELDS = {"pagina", "registros_por_pagina", "apenas_importado_api", "ordena
 FINANCIAL_MOVEMENT_LIST_FIELDS = {"nPagina", "nRegPorPagina", "cOrdenarPor", "cOrdemDecrescente", "dDtIncDe", "dDtIncAte", "dDtAltDe", "dDtAltAte", "nCodCC", "cStatus", "cNatureza", "cTipo", "dDtVencDe", "dDtVencAte", "dDtPagtoDe", "dDtPagtoAte", "dDtPrevDe", "dDtPrevAte", "lDadosCad"}
 ACCOUNT_TRANSACTION_LIST_FIELDS = {"nPagina", "nRegPorPagina", "cOrdenarPor", "cOrdemDecrescente", "cOrigem", "dDtIncDe", "dDtIncAte", "dDtAltDe", "dDtAltAte", "dtPagInicial", "dtPagFinal"}
 
-# Contratos nativos de listagem de NF-e (ListarNotaEnt e ListarNF).
-# Uma única definição alimenta a publicação MCP e a validação de entrada.
-_INVOICE_DATE = {"type": "string", "pattern": "^[0-9]{2}/[0-9]{2}/[0-9]{4}$"}
-_INVOICE_TIME = {"type": "string", "pattern": "^[0-9]{2}:[0-9]{2}:[0-9]{2}$"}
-_INVOICE_POSITIVE_ID = {"type": "integer", "minimum": 1}
-_INVOICE_YES_NO = {"type": "string", "enum": ["S", "N"]}
-
-INCOMING_INVOICE_LIST_FIELDS = {
-    "nPagina": _INVOICE_POSITIVE_ID,
-    "nRegistrosPorPagina": _INVOICE_POSITIVE_ID,
-    "nIdCliente": _INVOICE_POSITIVE_ID,
-    "cOrdenarPor": {"type": "string", "enum": ["CODIGO", "CODINT"]},
-    "cExibirDetalhes": _INVOICE_YES_NO,
-    "dtAltDe": _INVOICE_DATE,
-    "dtAltAte": _INVOICE_DATE,
-    "hrAltDe": _INVOICE_TIME,
-    "hrAltAte": _INVOICE_TIME,
-}
-
-ELECTRONIC_INVOICE_LIST_FIELDS = {
-    "pagina": _INVOICE_POSITIVE_ID,
-    "registros_por_pagina": _INVOICE_POSITIVE_ID,
-    "nIdCliente": _INVOICE_POSITIVE_ID,
-    "nNFInicial": _INVOICE_POSITIVE_ID,
-    "nNFFinal": _INVOICE_POSITIVE_ID,
-    "apenas_importado_api": _INVOICE_YES_NO,
-    "cApenasResumo": _INVOICE_YES_NO,
-    "cDetalhesPedido": _INVOICE_YES_NO,
-    "cNumeroPedidoCliente": {"type": "string", "maxLength": 30},
-    "cSerie": {"type": "string", "maxLength": 5},
-    "cnpj_cpf": {"type": "string", "maxLength": 100},
-    "dCanInicial": _INVOICE_DATE,
-    "dCanFinal": _INVOICE_DATE,
-    "dEmiInicial": _INVOICE_DATE,
-    "dEmiFinal": _INVOICE_DATE,
-    "dInutInicial": _INVOICE_DATE,
-    "dInutFinal": _INVOICE_DATE,
-    "dRegInicial": _INVOICE_DATE,
-    "dRegFinal": _INVOICE_DATE,
-    "dSaiEntInicial": _INVOICE_DATE,
-    "dSaiEntFinal": _INVOICE_DATE,
-    "filtrar_apenas_alteracao": _INVOICE_YES_NO,
-    "filtrar_apenas_inclusao": _INVOICE_YES_NO,
-    "filtrar_por_data_de": _INVOICE_DATE,
-    "filtrar_por_data_ate": _INVOICE_DATE,
-    "filtrar_por_status": {"type": "string", "enum": ["N", "C"]},
-    "hEmiInicial": _INVOICE_TIME,
-    "hEmiFinal": _INVOICE_TIME,
-    "opPedido": {"type": "string", "maxLength": 2},
-    "ordem_decrescente": _INVOICE_YES_NO,
-    "ordenar_por": {"type": "string", "maxLength": 100},
-    "tpAmb": {"type": "string", "enum": ["1", "2"]},
-    "tpNF": {"type": "string", "enum": ["0", "1"]},
-}
-
-
-def invoice_list_params(params: Mapping[str, Any], fields: Mapping[str, Mapping[str, Any]], *, page: str, size: str) -> dict[str, Any]:
-    """Recusa campos da outra API antes de consultar o cofre ou a rede."""
-    unknown = set(params) - fields.keys()
-    if unknown:
-        fail("invalid_request", f"Campos não aceitos nesta listagem: {', '.join(sorted(unknown))}. Use {page} e {size} para paginar.")
-    for name, value in params.items():
-        spec = fields[name]
-        if spec["type"] == "integer":
-            valid = type(value) is int and value >= spec.get("minimum", 0)
-        else:
-            valid = (
-                isinstance(value, str) and bool(value.strip())
-                and len(value) <= spec.get("maxLength", 1000)
-                and ("enum" not in spec or value in spec["enum"])
-                and ("pattern" not in spec or re.fullmatch(spec["pattern"], value) is not None)
-            )
-        if not valid:
-            fail("invalid_request", f"params.{name} tem formato ou valor inválido.")
-    return dict(params)
-
-
 
 def title_body(operation: str, body: Mapping[str, Any]) -> dict[str, Any]:
     """Preserva o campo de boleto de contas a pagar; rejeita valores vazios ou maiores que 70 caracteres."""
@@ -442,10 +365,8 @@ def nfe_params(operation: str, params: Mapping[str, Any], body: Mapping[str, Any
             return {"ide": identifier, **_receipt_info_and_allocations(body, completed=True)}
         if operation == "inbound-nfe-receipts.update":
             return {"ide": identifier, **_receipt_info_and_allocations(body, completed=False)}
-    if operation == "incoming-invoices.list":
-        return invoice_list_params(params, INCOMING_INVOICE_LIST_FIELDS, page="nPagina", size="nRegistrosPorPagina")
-    if operation == "electronic-invoices.list":
-        return invoice_list_params(params, ELECTRONIC_INVOICE_LIST_FIELDS, page="pagina", size="registros_por_pagina")
+    if operation in {"incoming-invoices.list", "electronic-invoices.list"}:
+        return copy_fields(params, {"nPagina", "nRegistrosPorPagina", "pagina", "registros_por_pagina", "ordenar_por", "dDataEmissaoInicial", "dDataEmissaoFinal"})
     if operation in {"incoming-invoices.get", "incoming-invoices.status", "incoming-invoices.delete"}:
         source = params if operation != "incoming-invoices.delete" else body
         result = {"nCodNotaEnt": source["id"]} if isinstance(source.get("id"), int) else ({"cCodIntNotaEnt": source["integration_id"]} if isinstance(source.get("integration_id"), str) else {})

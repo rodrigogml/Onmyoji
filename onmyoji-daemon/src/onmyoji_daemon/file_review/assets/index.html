@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Revisão de arquivo · Onmyōji</title>
+  <link rel="stylesheet" href="review.css">
+  <script src="review.js" defer></script>
+</head>
+<body>
+  <main id="file-review">
+    <header class="page-header">
+      <div>
+        <p class="eyebrow">Onmyōji · Revisão de arquivo</p>
+        <h1 id="filename">Carregando revisão…</h1>
+        <p id="review-status" class="muted" role="status">Aguarde enquanto os arquivos são carregados.</p>
+      </div>
+      <button id="cancel" type="button" class="quiet" disabled>Cancelar revisão</button>
+    </header>
+
+    <div id="error" class="notice error" role="alert" hidden>
+      <p id="error-message"></p>
+      <button id="reload" type="button">Carregar revisão salva</button>
+    </div>
+    <div id="receipt" class="notice receipt" role="status" hidden></div>
+
+    <div id="review-content" hidden>
+      <section aria-labelledby="changes-title">
+        <div class="section-header">
+          <div>
+            <h2 id="changes-title">Alterações propostas</h2>
+            <p id="progress" class="muted" aria-live="polite"></p>
+          </div>
+          <button id="accept-all" type="button">Usar todas as pendentes</button>
+        </div>
+        <p class="help">Cada decisão modifica somente o rascunho. Você também pode editar o resultado antes de aplicar.</p>
+        <div id="changes"></div>
+        <details class="snapshots">
+          <summary>Consultar os arquivos completos preservados</summary>
+          <div class="diff-columns">
+            <section><h3>Original preservado</h3><pre id="original-full" class="source"></pre></section>
+            <section><h3>Proposta preservada</h3><pre id="proposed-full" class="source"></pre></section>
+          </div>
+        </details>
+      </section>
+
+      <section aria-labelledby="result-title" class="result-section">
+        <div class="section-header">
+          <div>
+            <h2 id="result-title">Resultado final</h2>
+            <p id="draft-status" class="muted" aria-live="polite">Rascunho salvo.</p>
+          </div>
+          <button id="download" type="button" class="quiet">Baixar resultado</button>
+        </div>
+        <label for="result" class="sr-only">Texto completo do resultado final</label>
+        <textarea id="result" spellcheck="false" wrap="soft" aria-describedby="result-help"></textarea>
+        <p id="result-help" class="help">Editar ou salvar este rascunho mantém o arquivo original intacto.</p>
+        <div class="actions">
+          <button id="save" type="button">Salvar rascunho</button>
+          <button id="preview" type="button" class="primary">Conferir resultado</button>
+        </div>
+      </section>
+
+      <section id="preview-section" class="preview-section" aria-labelledby="preview-title" hidden>
+        <h2 id="preview-title">Conferência final</h2>
+        <p class="help">Confira abaixo todas as diferenças entre o original e o resultado que será aplicado.</p>
+        <div id="preview-changes"></div>
+        <p id="proposal-fate" class="notice"></p>
+        <label id="discard-label" class="check" hidden>
+          <input id="discard" type="checkbox">
+          <span>Descartar as sugestões restantes e remover o arquivo .proposed.</span>
+        </label>
+        <p id="apply-help" class="help"></p>
+        <div class="actions">
+          <button id="apply" type="button" class="primary" disabled>Aplicar resultado</button>
+        </div>
+      </section>
+    </div>
+    <noscript><p class="notice">Ative o JavaScript para revisar e aplicar as alterações.</p></noscript>
+  </main>
+</body>
+</html>

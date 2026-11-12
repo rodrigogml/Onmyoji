@@ -231,33 +231,6 @@ conferência de dados atualizados antes de operações sensíveis.
 | Contas a pagar/receber | Preserva tipos de documento, baixas, conciliação, distribuição e lotes. Linha digitável somente em contas a pagar, texto não vazio de até 70 caracteres sem reformatação. |
 | Recebimentos e NF-e | Converte identificadores, etapa, itens e informações financeiras para os envelopes específicos da Omie. |
 
-### Paginação e filtros de listagens fiscais
-
-As listagens de nota de entrada e de NF-e têm contratos **distintos**, conforme
-[ListarNotaEnt](https://api.omie.com.br/docs/apis/produtos/notaentrada) e
-[ListarNF](https://api.omie.com.br/docs/apis/produtos/nfconsultar).
-
-- `omie.incoming_invoices_list` (`ListarNotaEnt`): use `nPagina` e
-  `nRegistrosPorPagina`; filtro de fornecedor/cliente `nIdCliente`,
-  `dtAltDe`/`dtAltAte` para datas de **alteração** e `cExibirDetalhes`.
-- `omie.electronic_invoices_list` (`ListarNF`): use `pagina` e
-  `registros_por_pagina`; filtro `nIdCliente`, `dEmiInicial`/`dEmiFinal`
-  para datas de **emissão** e `tpNF` (`0` para entrada, `1` para saída).
-  A tool também expõe os demais filtros nativos documentados.
-
-O MCP publica e valida os nomes nativos separadamente. Passar `nPagina`
-em `electronic_invoices_list`, `pagina` em `incoming_invoices_list` ou
-filtros de outro endpoint resulta em `invalid_request` **antes** de
-acessar o cofre ou enviar HTTP. Parâmetros inválidos não são ignorados.
-
-Quando a Omie responder exatamente que **não existem registros na primeira
-página** de uma dessas duas listagens, o MCP normaliza a resposta para
-`data` com contadores zero e a lista nativa vazia (`notas` ou `nfCadastro`).
-Erros diferentes e páginas além da primeira continuam sendo erros.
-
-Essas listagens não substituem `omie.inbound_nfe_receipts_list` para
-consultar recebimentos de NF-e de fornecedor.
-
 ### Correção dos recebimentos de NF-e
 
 A tool `omie.inbound_nfe_receipts_update` utiliza `AlterarRecebimento` para

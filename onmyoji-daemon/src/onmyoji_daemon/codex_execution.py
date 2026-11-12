@@ -1,0 +1,172 @@
+"""Contrato único para iniciar o Codex em uma instância Onmyōji.
+
+Os clientes direto, interativo e de gateway têm protocolos próprios, mas todos
+derivam desta especificação: executável, ``CODEX_HOME``, workspace, política e
+registro MCP. Nenhum consumidor deve montar esses valores isoladamente.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+import json
+import os
+from pathlib import Path
+from typing import Any, Mapping
+
+from .management import daemon_python, runtime_ready
+from .mcp.codex import CodexMcpRegistration
+from .mcp.reconciliation import McpReconciliation
+from .shikigami_skills import ShikigamiSkillMaterializer
+from .shikigami_agents import ShikigamiAgentMaterializer
+from .instructions import InstructionComposer, InstructionError
+from .instance import identity
+
+
+APP_SERVER_ARGUMENTS = ("--config", "check_for_update_on_startup=false", "app-server", "--stdio")
+
+
+class CodexExecutionError(RuntimeError):
+    """Indica que não é seguro iniciar o Codex com a configuração atual."""
+
+
+@dataclass(frozen=True)
+class CodexLaunch:
+    """Especificação normalizada usada por todas as aberturas do Codex.
+
+    As propriedades de modelo, esforço, sandbox e aprovação são mantidas aqui
+    mesmo quando o protocolo App Server as transmite depois do processo iniciar.
+    """
+
+    root: Path
+    executable: str
+    workspace: Path
+    model: str
+    effort: str
+    sandbox: str
+    approval: str
+    writable_directories: tuple[str, ...]
+
+    @classmethod
+    def from_data(cls, root: Path, data: Mapping[str, object]) -> "CodexLaunch":
+        """Cria a especificação a partir da configuração já validada pelo setup."""
+        root = root.resolve()
+        workspace = Path(str(data.get("project_directory") or "")).expanduser()
+        if not workspace.is_absolute():
+            workspace = root / workspace
+        directories = data.get("additional_writable_directories", [])
+        if not isinstance(directories, list) or not all(isinstance(value, str) for value in directories):
+            raise CodexExecutionError("Diretórios adicionais do Codex são inválidos.")
+        executable = str(data.get("executable") or "").strip()
+        if not executable or not workspace.is_dir():
+            raise CodexExecutionError("Executável ou workspace do Codex não está configurado.")
+        return cls(root, executable, workspace.resolve(), str(data.get("model") or ""), str(data.get("model_reasoning_effort") or ""), str(data.get("sandbox_mode") or ""), str(data.get("approval_policy") or ""), tuple(directories))
+
+    @classmethod
+    def from_system(cls, root: Path) -> "CodexLaunch":
+        """Lê a fonte local de verdade compartilhada pelos processos do daemon."""
+        import tomllib
+
+        try:
+            document = tomllib.loads((root.resolve() / "configs" / "onmyoji-system.toml").read_text(encoding="utf-8"))
+            data = document.get("codex", {})
+        except (OSError, tomllib.TOMLDecodeError) as error:
+            raise CodexExecutionError("Configuração local do Codex não está disponível.") from error
+        if not isinstance(data, dict):
+            raise CodexExecutionError("Configuração local do Codex é inválida.")
+        return cls.from_data(root, data)
+
+    def environment(self, *, daemon_source: bool = False) -> dict[str, str]:
+        """Gera o ambiente comum; ``daemon_source`` habilita o launcher local."""
+        environment = dict(os.environ)
+        environment["CODEX_HOME"] = str(self.root)
+        if daemon_source:
+            source = str(Path(__file__).resolve().parents[1])
+            inherited = environment.get("PYTHONPATH")
+            environment["PYTHONPATH"] = source + (os.pathsep + inherited if inherited else "")
+        return environment
+
+    def direct_command(self) -> list[str]:
+        """Monta o cliente nativo com a composição comum de instruções."""
+        command = [
+            self.executable,
+            "--config", self._update_check_override(),
+            "--config", self._developer_instruction_override(),
+        ]
+        for directory in self.writable_directories:
+            command.extend(["--add-dir", directory])
+        return command
+
+    def developer_instructions(self) -> str:
+        """Compõe as instruções comuns a todo ponto de entrada não Telegram."""
+        instructions: Mapping[str, object] = {}
+        try:
+            import tomllib
+            platform = tomllib.loads((self.root / "configs" / "daemon" / "daemon.toml").read_text(encoding="utf-8"))
+            if isinstance(platform.get("instructions"), dict):
+                instructions = platform["instructions"]
+        except (OSError, ValueError, AttributeError):
+            pass
+        try:
+            bundle = InstructionComposer(
+                self.root,
+                self.root / "configs" / "daemon" / "services" / "telegram",
+                str(instructions.get("shikigami_file") or "instructions.md"),
+                bool(instructions.get("enabled", True)),
+            ).compose(identity=identity(self.root), telegram=False)
+        except InstructionError as error:
+            raise CodexExecutionError(str(error)) from error
+        return bundle.text
+
+    def _developer_instruction_override(self) -> str:
+        """Codifica a composição como valor TOML aceito por ``codex --config``."""
+        return "developer_instructions=" + json.dumps(self.developer_instructions(), ensure_ascii=False)
+
+    @staticmethod
+    def _update_check_override() -> str:
+        """Impede que o CLI tente atualizar um prefixo npm que não administra."""
+        return "check_for_update_on_startup=false"
+
+    def direct_launch(self) -> tuple[list[str], Path, dict[str, str]]:
+        """Prepara o cliente direto e reconcilia o MCP quando houver pendência."""
+        self._reconcile_mcp()
+        return self.direct_command(), self.workspace, self.environment()
+
+    def app_server_launch(self) -> tuple[list[str], Path, dict[str, str]]:
+        """Prepara o App Server e reconcilia o MCP antes de iniciá-lo."""
+        self._reconcile_mcp()
+        return [self.executable, *APP_SERVER_ARGUMENTS], self.workspace, self.environment()
+
+    def _reconcile_mcp(self) -> None:
+        """Aplica uma pendência MCP sem exigir reinicialização do gateway."""
+        try:
+            self.synchronize_shikigami_skills()
+            self.synchronize_shikigami_agents()
+            McpReconciliation(self.root).reconcile_if_pending(CodexMcpRegistration(self.root, self.executable))
+        except Exception as error:
+            raise CodexExecutionError(str(error)) from error
+
+    def synchronize_shikigami_skills(self) -> bool:
+        """Mantém no workspace somente as skills próprias do Shikigami."""
+        try:
+            return ShikigamiSkillMaterializer(self.root).synchronize(self.workspace)
+        except Exception as error:
+            raise CodexExecutionError(str(error)) from error
+
+    def synchronize_shikigami_agents(self) -> bool:
+        """Distribui perfis opcionais somente após certificação G4 do runtime."""
+        from .codex_capabilities import load_profile_capability
+
+        try:
+            materializer = ShikigamiAgentMaterializer(self.root)
+            configured = materializer.configuration()
+            needs_gate = any(record["enabled"] for record in configured.values()) or materializer.runtime_state_path.exists() or materializer.runtime_backup_path.exists()
+            capability = load_profile_capability(self.root, self.executable, self.workspace) if needs_gate else None
+            return materializer.synchronize(self.workspace, capability=capability)
+        except Exception as error:
+            raise CodexExecutionError(str(error)) from error
+
+    def interactive_launcher(self) -> tuple[list[str], Path, dict[str, str]]:
+        """Prepara o console Onmyōji no mesmo runtime que atende o gateway."""
+        if not runtime_ready(self.root):
+            raise CodexExecutionError("Runtime do daemon não está pronto para iniciar o console Onmyōji.")
+        self._reconcile_mcp()
+        return [str(daemon_python(self.root)), "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(self.root), "interactive"], self.workspace, self.environment(daemon_source=True)
