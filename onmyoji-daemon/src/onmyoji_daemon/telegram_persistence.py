@@ -18,9 +18,10 @@ import tomllib
 from typing import Any
 
 from .config_publication import write_instance_bytes, write_instance_text
+from .telegram_user_schema import migrate_telegram_users
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 NONTERMINAL = ("starting", "active", "interrupting", "reconciling", "uncertain")
 
 
@@ -87,17 +88,23 @@ class GatewayStore:
                 backup = Path(database_path).with_name(f"gateway-before-delegation-v{version}.sqlite3")
                 if not backup.exists():
                     self.backup(backup)
+            if version == 4:
+                migrate_telegram_users(self.db)
+                return
             if version == 3:
                 self._migrate_multiorigin()
+                migrate_telegram_users(self.db)
                 return
             if version == 2:
                 self._migrate_structured_content()
                 self._migrate_multiorigin()
+                migrate_telegram_users(self.db)
                 return
             if version == 1:
                 self._migrate_terminal_outputs()
                 self._migrate_structured_content()
                 self._migrate_multiorigin()
+                migrate_telegram_users(self.db)
                 return
             columns = {row[1] for row in self.db.execute("PRAGMA table_info(inbox_items)")}
             for name, definition in (("source_key", "TEXT"), ("sequence", "INTEGER"), ("route", "TEXT NOT NULL DEFAULT 'auto'"), ("execution_id", "TEXT"), ("failure_reason", "TEXT")):
@@ -126,6 +133,7 @@ class GatewayStore:
             self._migrate_terminal_outputs()
             self._migrate_structured_content()
             self._migrate_multiorigin()
+            migrate_telegram_users(self.db)
 
     def _migrate_multiorigin(self) -> None:
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(inbox_items)")}

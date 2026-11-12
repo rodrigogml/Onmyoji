@@ -31,6 +31,7 @@ from .telegram_execution import TelegramExecution
 from .agent_notification.ingress import NotificationIngress
 from .telegram_work import RelatedWorkMonitor
 from .telegram_persistence import GatewayStore, GatewayPersistenceError, protect_legacy_gateway
+from .telegram_users import TelegramUserRegistry
 from .telegram_process import ProcessRecoveryError
 from .telegram_delivery import GatewayDelivery, DeliveryOwner, DeliveryUncertain, DeliverySuppressed
 from .codex_capabilities import CapabilitySet
@@ -527,6 +528,7 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
         """Migra sob posse exclusiva; nenhum cliente externo foi aberto ainda."""
         self.settings, self.stop_event = settings, threading.Event(); self.contacts = Contacts(settings.data_dir / "contacts.json")
         settings.state_dir.mkdir(parents=True, exist_ok=True); self.database = sqlite3.connect(settings.state_dir / "gateway.sqlite3", check_same_thread=False); self.database_lock = threading.RLock()
+        self.database.execute("PRAGMA foreign_keys=ON")
         GatewayStore.validate_schema(self.database)
         protect_legacy_gateway(settings.root, telegram_configuration_path(settings.root))
         self.database.execute("CREATE TABLE IF NOT EXISTS conversations(chat_id TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL, share_thoughts INTEGER NOT NULL DEFAULT 1, delete_thoughts INTEGER NOT NULL DEFAULT 1, codex_thread_id TEXT, instruction_baseline_hash TEXT)")
@@ -549,6 +551,9 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
         self.database.commit()
         self._init_channel_tables(); self._init_external_table()
         self.store = GatewayStore(self.database, self.database_lock)
+        # Phase 1: registry is read/write-ready, but no inbound/outbound path uses it yet.
+        self.users = TelegramUserRegistry(self.database, self.database_lock, self.contacts.owners,
+                                          user_roles_enabled=settings.user_roles_enabled)
 
     @staticmethod
     def _conversation_id(chat: dict[str, Any], message: dict[str, Any]) -> str:
