@@ -12,6 +12,7 @@ _OWNER_COMMANDS = (
     ("config", "Configurar esta conversa"),
     ("channel", "Gerenciar canal de envio"),
     ("usage", "Consultar consumo e franquia do Codex"),
+    ("resetusage", "Resgatar uma renovação extra da franquia do Codex"),
     ("login", "Gerenciar login e conta Codex"),
     ("fila", "Enfileirar uma mensagem: /fila <texto>"),
     ("direcionar", "Orientar o turno em andamento: /direcionar <texto>"),

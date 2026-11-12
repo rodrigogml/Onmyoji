@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import tomllib
+import uuid
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -483,6 +484,9 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
         self._recovery_delivery_lock = threading.Lock()
         self._status_lock = threading.RLock()
         self.control_state_lock = threading.RLock()
+        self._reset_usage_lock = threading.RLock()
+        self._reset_usage_pending: dict[str, dict[str, Any]] = {}
+        self._reset_usage_inflight = False
         self._client_start_lock = threading.RLock()
         self._commands_sync_lock = threading.Lock()
         self._commands_refresh_needed = threading.Event()
@@ -1345,7 +1349,118 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
             self._record_error(error)
             reply("Não foi possível consultar o consumo e a franquia do Codex agora. Tente novamente.", ephemeral=True)
             return
+        credit_info = response.get("rateLimitResetCredits") if isinstance(response, dict) else None
+        if isinstance(credit_info, dict) and type(credit_info.get("availableCount")) is int and credit_info["availableCount"] > 0:
+            output += "\n\nPara resgatar uma renovação extra, use /resetusage (requer confirmação)."
         reply(output)
+
+    def _resetusage(self, conversation_id: str, argument: str) -> None:
+        """Consome uma renovação extra somente após confirmação explícita do owner."""
+        chat_id, _topic = self._telegram_address(conversation_id)
+        if chat_id not in self.contacts.owners():
+            return
+        generation = getattr(self._input_local, "generation", None)
+        if generation is None:
+            generation = self._generation(conversation_id)
+        if generation != self._generation(conversation_id):
+            return
+
+        def reply(text: str) -> None:
+            if generation == self._generation(conversation_id):
+                self._ephemeral(conversation_id, text, 120)
+
+        values = argument.strip().split()
+        action = values[0].casefold() if values else ""
+        if action == "cancelar" and len(values) == 1:
+            with self._reset_usage_lock:
+                removed = self._reset_usage_pending.pop(conversation_id, None)
+            reply("Confirmação de resgate cancelada." if removed else "Não há resgate aguardando confirmação.")
+            return
+        if action == "confirmar" and len(values) == 2:
+            with self._reset_usage_lock:
+                pending = self._reset_usage_pending.get(conversation_id)
+                valid = bool(pending and pending["generation"] == generation
+                             and pending["expires_at"] >= time.time()
+                             and secrets.compare_digest(pending["token"], values[1]))
+                busy = self._reset_usage_inflight
+                if valid and not busy:
+                    self._reset_usage_pending.pop(conversation_id, None)
+                    self._reset_usage_inflight = True
+            if busy:
+                reply("Já existe um resgate em andamento. Consulte /usage antes de iniciar outro.")
+                return
+            if not valid:
+                reply("Confirmação inválida ou expirada. Envie /resetusage para começar novamente.")
+                return
+            try:
+                if generation != self._generation(conversation_id) or not self.settings.app_server_enabled:
+                    return
+                client = self._app_client()
+                result = client.request("account/rateLimitResetCredit/consume",
+                                        {"idempotencyKey": pending["idempotency_key"]}, timeout=25)
+                outcome = result.get("outcome") if isinstance(result, dict) else None
+                if outcome in {"reset", "alreadyRedeemed"}:
+                    self._diagnostic("codex_reset.redeemed", outcome=outcome)
+                    try:
+                        latest = client.request("account/rateLimits/read", {}, timeout=25)
+                        reply("Renovação extra aplicada.\n\n" + format_rate_limits(latest))
+                    except (CodexProtocolError, CodexExecutionError, ProcessRecoveryError, OSError):
+                        reply("Renovação extra aplicada. Consulte /usage para atualizar a franquia.")
+                elif outcome == "noCredit":
+                    reply("O Codex informou que não há renovações extras disponíveis. Consulte /usage.")
+                elif outcome == "nothingToReset":
+                    reply("O Codex informou que nenhuma janela está elegível para renovação. Nenhum resgate foi aplicado.")
+                else:
+                    reply("O Codex não confirmou o resgate. Confira /usage antes de tentar novamente.")
+            except CodexProtocolError as error:
+                self._record_error(error)
+                if error.definitive_rejection and error.rpc_code in {-32600, -32601}:
+                    reply("O Codex instalado não suporta o resgate de franquia. Atualize o Codex pelo setup.")
+                else:
+                    reply("O resultado do resgate é incerto. Confira /usage antes de tentar novamente; não há repetição automática.")
+            except (CodexExecutionError, ProcessRecoveryError, OSError) as error:
+                self._record_error(error)
+                reply("O resultado do resgate é incerto. Confira /usage antes de tentar novamente; não há repetição automática.")
+            finally:
+                with self._reset_usage_lock:
+                    self._reset_usage_inflight = False
+            return
+        if values:
+            reply("Use /resetusage para preparar o resgate, /resetusage confirmar <código> para concluir ou /resetusage cancelar.")
+            return
+        if not self.settings.app_server_enabled:
+            reply("O resgate de franquia exige o Codex App Server habilitado no setup do daemon.")
+            return
+        with self._reset_usage_lock:
+            if self._reset_usage_inflight:
+                reply("Já existe um resgate em andamento. Consulte /usage antes de iniciar outro.")
+                return
+            self._reset_usage_pending.pop(conversation_id, None)
+        try:
+            limits = self._app_client().request("account/rateLimits/read", {}, timeout=25)
+        except (CodexProtocolError, CodexExecutionError, ProcessRecoveryError, OSError) as error:
+            self._record_error(error)
+            reply("Não foi possível conferir as renovações extras. Consulte /usage e tente novamente.")
+            return
+        if generation != self._generation(conversation_id):
+            return
+        credits = limits.get("rateLimitResetCredits") if isinstance(limits, dict) else None
+        count = credits.get("availableCount") if isinstance(credits, dict) else None
+        if type(count) is not int or count <= 0:
+            reply("O Codex não informou renovações extras disponíveis. Consulte /usage.")
+            return
+        token = secrets.token_hex(3)
+        pending = {"generation": generation, "expires_at": time.time() + 120,
+                   "token": token, "idempotency_key": str(uuid.uuid4())}
+        with self._reset_usage_lock:
+            if self._reset_usage_inflight:
+                reply("Já existe um resgate em andamento. Consulte /usage antes de iniciar outro.")
+                return
+            self._reset_usage_pending[conversation_id] = pending
+        reply(f"Renovações extras disponíveis: {count}.\n"
+              "Este resgate consome 1 renovação extra e não pode ser desfeito.\n"
+              f"Para confirmar em até 2 minutos, envie /resetusage confirmar {token}\n"
+              "Para desistir, envie /resetusage cancelar.")
 
     def _update(self, update: dict[str, Any]) -> None:
         self._input_local.route = "auto"
@@ -1433,6 +1548,8 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
             self._recovery_control(conversation_id, text[len(text.split(maxsplit=1)[0]):].strip().casefold()); return
         if command == "/usage":
             self._usage(conversation_id); return
+        if command == "/resetusage":
+            self._resetusage(conversation_id, text[len(text.split(maxsplit=1)[0]):].strip()); return
         if command == "/login":
             self._login(conversation_id); return
         if conversation_id in self.totp_sessions:
