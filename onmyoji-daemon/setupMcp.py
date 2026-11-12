@@ -2575,8 +2575,53 @@ def mercado_applications_menu(config: McpConfiguration, provider: str) -> None:
         else: result(False, "Opção inválida.")
 
 
+def _mercado_provider_label(provider: str) -> str:
+    return "Mercado Livre" if provider == "mercadolivre" else "Mercado Pago"
+
+
+def _mercado_missing_applications(data: dict, modules: list[str]) -> list[str]:
+    """Identifica provedores selecionados sem aplicativo antes de configurar autorizações."""
+    providers = {MODULE_PROVIDER[module] for module in modules}
+    return [provider for provider in ("mercadolivre", "mercadopago") if provider in providers and not data["applications"][provider]]
+
+
+def resolve_mercado_application_dependencies(config: McpConfiguration, modules: list[str]) -> tuple[list[str], dict] | None:
+    """Permite corrigir dependências sem perder módulos ou dados já informados do perfil."""
+    selected = list(modules)
+    while True:
+        data = config.mercado()
+        if not selected:
+            alert("Selecione pelo menos um módulo para criar o perfil Mercado.")
+            revised = choose_mercado_modules(selected)
+            if revised is None:
+                return None
+            selected = revised
+            continue
+        missing = _mercado_missing_applications(data, selected)
+        if not missing:
+            return selected, data
+        provider = missing[0]
+        label = _mercado_provider_label(provider)
+        required_modules = ", ".join(module for module in selected if MODULE_PROVIDER[module] == provider)
+        alert(f"Nenhum aplicativo {label} configurado para: {required_modules}.")
+        options = ["Revisar módulos selecionados", f"Cadastrar aplicativo {label} agora"]
+        action = flow_choice("Dependência de aplicativo Mercado", options, options[0])
+        if action is None:
+            return None
+        if action == options[0]:
+            revised = choose_mercado_modules(selected)
+            if revised is not None:
+                selected = revised
+        else:
+            create_mercado_application(config, provider)
+            # O cadastro grava seu próprio estado; sempre releia antes de continuar.
+
+
 def configure_mercado_profile_provider(config: McpConfiguration, data: dict, profile_name: str, provider: str, current: dict | None = None) -> dict | None:
     applications = sorted(data["applications"][provider])
+    if not applications:
+        result(False, f"Nenhum aplicativo {_mercado_provider_label(provider)} configurado. Cadastre um aplicativo antes de vincular este provedor.")
+        return None
     application = select(f"Aplicativo {provider}", applications, (current or {}).get("application", ""))
     if not application:
         return None
@@ -2615,6 +2660,10 @@ def create_mercado_profile(config: McpConfiguration) -> None:
     if not description: return
     modules = choose_mercado_modules([])
     if modules is None: return
+    resolved = resolve_mercado_application_dependencies(config, modules)
+    if resolved is None:
+        return
+    modules, data = resolved
     profile: dict = {"enabled": False, "description": description, "modules": modules}
     for provider in sorted({MODULE_PROVIDER[module] for module in modules}):
         configured = configure_mercado_profile_provider(config, data, name, provider)
