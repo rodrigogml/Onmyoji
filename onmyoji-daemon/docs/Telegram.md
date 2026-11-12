@@ -113,6 +113,39 @@ processo que está atendendo o bot.
 
 Contrato de referência: [Codex App Server — Rate limits](https://learn.chatgpt.com/docs/app-server#6-rate-limits-chatgpt).
 
+## Matriz de acesso aos comandos do Telegram
+
+Esta matriz descreve as permissões **efetivamente verificadas pelo Gateway**,
+independentemente dos comandos exibidos no menu do bot. **Owner** é o usuário
+pareado e cadastrado com esse papel; **Outros** são os demais usuários do
+Telegram. `DM` significa conversa privada com o bot.
+
+| Comando | Owner | Outros |
+| --- | --- | --- |
+| `/new` | DM e grupos: reiniciar a conversa correspondente. | Não permitido. |
+| `/config` | DM: abrir preferências; grupos: ajustar a janela de contexto com argumentos numéricos. | Não permitido. |
+| `/channel` | DM e grupos: cadastrar, identificar e gerenciar canais. | Somente DM: solicitar o cadastro de um canal ainda não registrado; aprovação exclusiva do owner. |
+| `/usage` | Somente DM (inclusive tópicos privados): consultar os limites e o consumo da conta Codex. | Não permitido; nenhuma informação da franquia é consultada ou enviada. |
+| `/fila <texto>` | Somente DM: enfileirar uma entrada para o agente. | Não permitido. |
+| `/direcionar <texto>` | Somente DM: solicitar direcionamento, se o runtime permitir. | Não permitido. |
+| `/cancel` | Somente DM: cancelar o turno atual, preservando a fila. | Não permitido. |
+| `/resolver` | Somente DM: reconciliar ou descartar operações incertas. | Não permitido. |
+| `/totp` | Somente DM, quando TOTP estiver habilitado. | Não permitido. |
+| `/pair <PIN>` | Somente DM, quando houver PIN temporário válido. | Somente DM, com PIN temporário válido: realiza o pareamento e concede o papel de owner. |
+
+A relação acima inclui `/pair`, embora ele não seja divulgado no menu permanente.
+Apenas o owner recebe o menu privado de comandos; a exibição no Telegram não
+substitui a autorização no servidor. Em grupos, mensagens de terceiros podem
+compor o contexto não confiável, mas não autorizam a execução dos controles
+privados. O Gateway rejeita `/usage` fora da DM do owner antes de consultar
+`account/rateLimits/read`.
+
+A futura operação de consumo de renovação, `/resetusage`, deve seguir a mesma
+permissão de `/usage` e exigir confirmação explícita; ela ainda não é um
+comando implementado nem faz parte do catálogo atual. A orientação para
+`/resetusage` só deve aparecer na resposta de `/usage` depois que o comando
+estiver disponível.
+
 ## Menu de comandos do bot
 
 O catálogo central em `telegram_commands.py` publica os comandos permanentes

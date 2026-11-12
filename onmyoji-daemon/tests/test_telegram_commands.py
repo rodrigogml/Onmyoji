@@ -90,6 +90,19 @@ def test_menu_catalog_covers_all_owner_commands_and_respects_telegram_contract()
     assert not {"/fila", "/direcionar"}.intersection(CONTROL_COMMANDS)
 
 
+def test_documented_permission_matrix_covers_all_registered_commands():
+    from pathlib import Path
+
+    documentation = (Path(__file__).resolve().parents[1] / "docs" / "Telegram.md").read_text(encoding="utf-8")
+    matrix = documentation.split("## Matriz de acesso aos comandos do Telegram", 1)[1].split("\n## ", 1)[0]
+    rows = re.findall(r"^[|] `(/[^`]+)` [|]", matrix, flags=re.MULTILINE)
+    normalized = [row.split(" ", 1)[0] for row in rows]
+    assert len(normalized) == len(set(normalized))
+    assert set(normalized) == REGISTERED_COMMANDS
+    assert "| `/usage` | Somente DM" in matrix
+    assert "| `/usage` | Somente DM (inclusive tópicos privados): consultar os limites e o consumo da conta Codex. | Não permitido;" in matrix
+
+
 def test_menu_catalog_covers_commands_recognized_by_the_actual_handlers():
     tree = ast.parse(dedent(inspect.getsource(Gateway._update)))
     handled = set()
