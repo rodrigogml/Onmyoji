@@ -74,11 +74,13 @@ def _safe_endpoint(path: str) -> str:
 
 
 def _error_codes(payload: Any) -> str:
-    """Somente códigos numéricos; nunca copia mensagens da resposta externa."""
+    """Somente códigos numéricos, inclusive error_chain; nunca mensagens externas."""
     if not isinstance(payload, dict) or not isinstance(payload.get("errors"), list):
         return ""
     codes = []
-    for entry in payload["errors"][:8]:
+    queue = list(payload["errors"][:8])
+    while queue and len(codes) < 32:
+        entry = queue.pop(0)
         if not isinstance(entry, dict):
             continue
         value = entry.get("code")
@@ -86,6 +88,9 @@ def _error_codes(payload: Any) -> str:
             codes.append(str(value))
         elif isinstance(value, str) and re.fullmatch(r"[0-9]{1,10}", value):
             codes.append(value)
+        nested = entry.get("error_chain")
+        if isinstance(nested, list):
+            queue.extend(nested[:8])
     return ", ".join(dict.fromkeys(codes))
 
 
@@ -112,6 +117,7 @@ class CloudflareHTTPError(TunnelError):
         self.http_status = status
         endpoint = _safe_endpoint(path)
         codes = _error_codes(payload)
+        self.cloudflare_codes = frozenset(codes.split(", ")) if codes else frozenset()
         suffix = f" Códigos Cloudflare: {codes}." if codes else ""
         super().__init__("cloudflare_http_error", f"Cloudflare HTTP {status} em {method} {endpoint}.{suffix} {_http_advice(status, endpoint)}")
 
@@ -257,6 +263,86 @@ class CloudflareClient:
         config = {"config": {**previous, "ingress": desired}}
         self.set_configuration(TunnelDefinition(definition.account_id, definition.zone_id, definition.hostname, tunnel_id, definition.tunnel_name), config, True)
 
+    def _dns_records_unfiltered_for_hostname(self, definition: TunnelDefinition) -> tuple[list[dict[str, Any]], bool]:
+        """Varredura limitada somente para investigar uma recusa 81053."""
+        for page in range(1, 21):
+            query = urllib.parse.urlencode({"page": page, "per_page": 100})
+            records = self._call("GET", f"/zones/{definition.zone_id}/dns_records?{query}")
+            if not isinstance(records, list) or any(not isinstance(item, dict) for item in records):
+                raise TunnelError("invalid_response", "Cloudflare não confirmou a listagem DNS para o diagnóstico.")
+            found = [record for record in records
+                     if isinstance(record.get("name"), str)
+                     and record["name"].rstrip(".").casefold() == definition.hostname.rstrip(".").casefold()]
+            if found:
+                return found, True
+            if len(records) < 100:
+                return [], True
+        return [], False
+
+    def _dns_create_conflict(self, definition: TunnelDefinition) -> TunnelError:
+        """Explica uma colisão remota sem reproduzir registros, tokens nem IDs."""
+        details: list[str] = []
+        try:
+            filtered = self.dns_records(definition)
+        except TunnelError:
+            filtered = None
+            details.append("Consulta por hostname: indisponível.")
+        else:
+            if filtered:
+                details.append("Consulta por hostname agora encontra registro(s) DNS do mesmo nome.")
+            else:
+                details.append("Consulta por hostname continua sem retornar registros.")
+        if not filtered:
+            try:
+                other, complete = self._dns_records_unfiltered_for_hostname(definition)
+            except TunnelError:
+                details.append("Listagem DNS da zona sem filtro: indisponível.")
+            else:
+                if other:
+                    types = ", ".join(sorted({str(record.get("type")) if record.get("type") in {"A", "AAAA", "CNAME"} else "outro"
+                                             for record in other}))
+                    details.append(f"Listagem sem filtro encontrou registro(s) do hostname (tipos: {types}), não retornados pelo filtro.")
+                elif complete:
+                    details.append("Listagem completa da zona não encontrou registro do hostname.")
+                else:
+                    details.append("Listagem da zona ultrapassou 20 páginas; resultado inconclusivo.")
+        try:
+            zone = self._call("GET", f"/zones/{definition.zone_id}")
+        except TunnelError:
+            details.append("Não foi possível consultar o nome da zona (Zone Read pode ser necessário).")
+        else:
+            zone_name = zone.get("name") if isinstance(zone, dict) else None
+            if isinstance(zone_name, str) and zone_name.strip():
+                normalized = zone_name.rstrip(".").casefold()
+                hostname = definition.hostname.rstrip(".").casefold()
+                if hostname == normalized or hostname.endswith("." + normalized):
+                    details.append("O Zone ID corresponde ao domínio do hostname.")
+                else:
+                    details.append("O Zone ID aponta para outro domínio; revise a zona configurada.")
+            else:
+                details.append("A API não informou o nome da zona para conferência.")
+        return TunnelError(
+            "dns_conflict",
+            "A Cloudflare recusou criar o CNAME (81053: já existe A/AAAA/CNAME com o mesmo nome). "
+            + " ".join(details)
+            + " Nenhum DNS foi removido ou substituído. Confira registros, zona e eventuais DNS gerenciados na Cloudflare antes de tentar novamente.",
+        )
+
+    def _create_dns_record(self, definition: TunnelDefinition, tunnel_id: str) -> dict[str, Any]:
+        """Cria somente o CNAME autorizado; em 81053, coleta evidências sem escrever."""
+        definition.validate()
+        target = f"{tunnel_id}.cfargotunnel.com"
+        try:
+            result = self._call("POST", f"/zones/{definition.zone_id}/dns_records",
+                                {"type": "CNAME", "name": definition.hostname, "content": target, "proxied": True})
+        except CloudflareHTTPError as error:
+            if error.http_status == 400 and "81053" in error.cloudflare_codes:
+                raise self._dns_create_conflict(definition) from error
+            raise
+        if not isinstance(result, dict) or not result.get("id"):
+            raise TunnelError("invalid_response", "Cloudflare não confirmou o ID do CNAME criado; confira a zona antes de repetir a operação.")
+        return result
+
     def inspect_dns(self, definition: TunnelDefinition, tunnel_id: str) -> dict[str, Any] | None:
         """Consulta o hostname sem escrita e rejeita qualquer registro incompatível."""
         definition.validate()
@@ -319,11 +405,7 @@ class CloudflareClient:
         existing = self.inspect_dns(definition, tunnel_id)
         if existing is not None:
             return existing
-        target = f"{tunnel_id}.cfargotunnel.com"
-        result = self._call("POST", f"/zones/{definition.zone_id}/dns_records", {"type": "CNAME", "name": definition.hostname, "content": target, "proxied": True})
-        if not isinstance(result, dict) or not result.get("id"):
-            raise TunnelError("invalid_response", "Cloudflare não confirmou o registro DNS.")
-        return result
+        return self._create_dns_record(definition, tunnel_id)
 
     def delete_managed_dns(self, definition: TunnelDefinition, tunnel_id: str, record_id: str, confirm: bool) -> None:
         """Remove somente o registro cujo ID e destino ainda comprovem a propriedade."""

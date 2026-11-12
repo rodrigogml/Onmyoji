@@ -143,6 +143,31 @@ def test_discovery_with_no_dns_and_no_matching_tunnel_is_new(recovery):
     assert all(method == "GET" for method, *_ in client.calls)
 
 
+def test_adoption_81053_preserves_remote_and_local_settings(recovery):
+    from onmyoji_daemon.cloudflare_tunnel.client import CloudflareHTTPError
+
+    manager, config, client = recovery
+    client.record = None
+    client.found_by_name = [deepcopy(client.tunnel)]
+    inspected = preview(recovery)
+    before_config, before_remote = config.path.read_bytes(), deepcopy(client.remote)
+    original_call = client._call
+    def call(method, path, body=None):
+        if method == "GET" and urlsplit(path).path == "/zones/zone":
+            return {"name": "example.com"}
+        return original_call(method, path, body)
+    client._call = call
+    client.write_error = CloudflareHTTPError(400, "POST", "/zones/zone/dns_records",
+                                            {"errors": [{"code": 81053}]})
+    with pytest.raises(TunnelError) as caught:
+        manager.apply(inspected["preview_id"], config.settings(), lambda _: None)
+    assert caught.value.code == "dns_conflict"
+    assert client.remote == before_remote and client.record is None
+    assert config.path.read_bytes() == before_config
+    saved = (manager.directory / (inspected["preview_id"] + ".json")).read_text(encoding="utf-8")
+    assert '"state": "failed"' in saved and "api-private" not in saved
+
+
 def test_named_tunnel_without_dns_is_adopted_with_explicit_dns_creation_and_rollback(recovery):
     manager, config, client = recovery
     original = deepcopy(client.remote)

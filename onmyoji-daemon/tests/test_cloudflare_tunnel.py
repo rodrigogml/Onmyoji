@@ -281,6 +281,77 @@ def test_ingress_never_discards_unrecognized_rules(tmp_path, ingress):
     assert all(call.args[0] == "GET" for call in client._call.call_args_list)
 
 
+def test_dns_create_81053_compares_filtered_and_unfiltered_zone_without_leaking_values():
+    from onmyoji_daemon.cloudflare_tunnel.client import CloudflareHTTPError
+
+    client = CloudflareClient("api-private")
+    calls = []
+    def call(method, path, body=None):
+        calls.append((method, path))
+        if method == "POST":
+            raise CloudflareHTTPError(400, method, path, {"errors": [{"code": 81053, "message": "token=secret"}]})
+        if path == "/zones/zone":
+            return {"name": "example.com"}
+        if "name=" in path:
+            return []
+        return [{"name": "gateway.example.com", "type": "A", "content": "private-dns-value"}]
+    client._call = call
+    with pytest.raises(TunnelError) as caught:
+        client.ensure_dns(TunnelDefinition("account", "zone", "gateway.example.com"), "tunnel", True)
+    message = str(caught.value)
+    assert caught.value.code == "dns_conflict"
+    assert "81053" in message and "tipos: A" in message and "não retornados pelo filtro" in message
+    assert "private" not in message and "secret" not in message
+    assert len([method for method, _ in calls if method == "POST"]) == 1
+    assert any("page=1" in path for method, path in calls if method == "GET")
+
+
+def test_dns_create_81053_nested_error_chain_and_no_visible_dns_is_not_misdiagnosed():
+    from onmyoji_daemon.cloudflare_tunnel.client import CloudflareHTTPError
+
+    client = CloudflareClient("api-private")
+    calls = []
+    def call(method, path, body=None):
+        calls.append(method)
+        if method == "POST":
+            raise CloudflareHTTPError(400, method, path, {"errors": [
+                {"code": 1004, "message": "password=private", "error_chain": [{"code": 81053, "message": "secret"}]}]})
+        if path == "/zones/zone":
+            return {"name": "example.com"}
+        return []
+    client._call = call
+    with pytest.raises(TunnelError) as caught:
+        client.ensure_dns(TunnelDefinition("account", "zone", "gateway.example.com"), "tunnel", True)
+    assert caught.value.code == "dns_conflict"
+    assert "81053" in str(caught.value) and "Listagem completa da zona não encontrou" in str(caught.value)
+    assert "private" not in str(caught.value) and "secret" not in str(caught.value)
+    assert calls.count("POST") == 1
+
+
+def test_dns_create_81053_detects_wrong_zone_and_handles_forbidden_diagnostic():
+    from onmyoji_daemon.cloudflare_tunnel.client import CloudflareHTTPError
+
+    definition = TunnelDefinition("account", "zone", "gateway.example.com")
+    for zone_response in ({"name": "different.org"}, CloudflareHTTPError(403, "GET", "/zones/zone", None)):
+        client = CloudflareClient("api-private")
+        def call(method, path, body=None):
+            if method == "POST":
+                raise CloudflareHTTPError(400, method, path, {"errors": [{"code": "81053"}]})
+            if path == "/zones/zone":
+                if isinstance(zone_response, Exception):
+                    raise zone_response
+                return zone_response
+            return []
+        client._call = call
+        with pytest.raises(TunnelError) as caught:
+            client.ensure_dns(definition, "tunnel", True)
+        assert caught.value.code == "dns_conflict"
+        if isinstance(zone_response, Exception):
+            assert "Zone Read" in str(caught.value)
+        else:
+            assert "outro domínio" in str(caught.value)
+
+
 def test_dns_reuses_compatible_record_without_writing():
     client = CloudflareClient("test-token")
     record = {"id": "record", "type": "CNAME", "content": "tunnel.cfargotunnel.com.", "proxied": True}

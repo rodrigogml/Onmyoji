@@ -137,10 +137,7 @@ class PublicationRecovery:
                 progress("criando o CNAME ausente para o Tunnel reutilizado")
                 # A prévia autorizou somente um DNS ausente. POST recusa um
                 # registro criado por outro operador entre consulta e escrita.
-                target = f"{definition.tunnel_id}.cfargotunnel.com"
-                created = self.client._call("POST", f"/zones/{definition.zone_id}/dns_records", {"type": "CNAME", "name": definition.hostname, "content": target, "proxied": True})
-                if not isinstance(created, dict) or not created.get("id"):
-                    raise TunnelError("invalid_response", "Cloudflare não confirmou o ID do CNAME criado; confira a zona antes de repetir a operação.")
+                created = self.client._create_dns_record(definition, definition.tunnel_id)
                 data["dns_created"] = _dns_snapshot(created)
                 self._save(identifier, data)
             progress("substituindo a origem e a CA da publicação confirmada")
