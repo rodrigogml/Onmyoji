@@ -123,6 +123,7 @@ class Settings:
     preparation_workers: int = 4
     interrupt_grace_seconds: float = 15.0
     post_turn_results: bool = False
+    user_roles_enabled: bool = False
 
     @property
     def state_dir(self) -> Path:
@@ -182,8 +183,11 @@ class Settings:
             except CredentialError as error:
                 raise ValueError("Não foi possível validar as senhas TOTP no vault MCP.") from error
         value = cls(root, data_dir, profile, entry, project, str(system.get("executable") or "codex"), str(system.get("model") or ""), str(system.get("model_reasoning_effort") or "medium"), str(system.get("sandbox_mode") or "workspace-write"), str(system.get("approval_policy") or "never"), int(telegram.get("poll_timeout_seconds") or 30), int(agent.get("turn_timeout_seconds") or 900), max(1, int(agent.get("max_parallel_conversations") or 1)), str(instructions.get("shikigami_file") or "instructions.md"), bool(instructions.get("enabled", True)), bool(agent.get("owner_execution_preferences", True)), permitted_models, permitted_efforts, bool(app_server.get("enabled", False)), idle, per_file, batch, max(1, pending), retained, output_bytes, output_count, context_messages, context_age, context_bytes, compact_interval, enabled, voice_profile, str(voice.get("language") or ""), str(voice.get("voice") or ""), float(voice.get("speed") or 1.0), voice_format, voice_text, auto_off, bool(voice.get("fallback_to_text", True)), outbound_media, bool(totp.get("enabled", False)), bool(telegram.get("default_share_thoughts", True)), bool(telegram.get("default_delete_thoughts", True)))
+        user_roles_enabled = telegram.get("user_roles_enabled", False)
+        if type(user_roles_enabled) is not bool:
+            raise ValueError("user_roles_enabled deve ser booleano.")
         policy = str(agent.get("busy_input_policy") or "queue")
-        return replace(value, busy_input_policy=policy if policy in {"queue", "steer"} else "queue", preparation_workers=max(1, min(16, int(limits.get("preparation_workers") or 4))), interrupt_grace_seconds=max(0.1, min(60.0, float(agent.get("interrupt_grace_seconds", 15)))), post_turn_results=bool(agent.get("post_turn_results", False)))
+        return replace(value, busy_input_policy=policy if policy in {"queue", "steer"} else "queue", preparation_workers=max(1, min(16, int(limits.get("preparation_workers") or 4))), interrupt_grace_seconds=max(0.1, min(60.0, float(agent.get("interrupt_grace_seconds", 15)))), post_turn_results=bool(agent.get("post_turn_results", False)), user_roles_enabled=user_roles_enabled)
 
 
 from .codex_app_server import CodexAppServer, CodexProtocolError

@@ -7,6 +7,8 @@ vault_profile = ""
 token_entry = "APIs/Telegram:Shikigami"
 poll_timeout_seconds = 30
 agent_outbound_media = false
+# Fase 0: reserva de ativacao para roles Telegram; nao muda rotas nesta fase.
+user_roles_enabled = false
 
 [agent]
 # O workspace, modelo, sandbox e aprovação vêm de configs/onmyoji-system.toml.
