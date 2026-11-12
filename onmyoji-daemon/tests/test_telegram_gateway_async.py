@@ -155,7 +155,7 @@ def lab(tmp_path, monkeypatch):
     (data / "config.toml").write_text('schema_version=1\n[telegram]\nvault_profile="fake"\ntoken_entry="fake"\n[agent]\nmax_parallel_conversations=2\nturn_timeout_seconds=30\n', encoding="utf-8")
     instance = Gateway(Settings.load(root, data))
     instance.api, instance.app_server = FakeTelegram(), FakeCodex()
-    instance.contacts = SimpleNamespace(owners=lambda: {9, 10})
+    instance.contacts = SimpleNamespace(owners=lambda: {9, 10}, observe_owner_language=lambda _user: False)
     capabilities = SimpleNamespace(supports=lambda feature: feature in {"steering", "subagents", "post_turn"}, input_supported=lambda _kind: True)
     instance.capabilities = capabilities
     launch = SimpleNamespace(synchronize_shikigami_skills=lambda: False, synchronize_shikigami_agents=lambda: False, developer_instructions=lambda: "Instruções da instância")

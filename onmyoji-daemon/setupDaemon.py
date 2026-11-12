@@ -26,6 +26,8 @@ from onmyoji_daemon.instance import identity, instructions_path, telegram_config
 from onmyoji_daemon.mcp.configuration import McpConfiguration
 from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialResolver
 from onmyoji_daemon.config_publication import copy_instance_file, write_instance_text
+from onmyoji_daemon.state_layout import telegram_state_path
+from onmyoji_daemon.telegram_commands import command_catalog_revision, command_sync_is_current, owner_commands
 
 ROOT = PROJECT.parent
 MODEL = PROJECT / "configs" / "telegram.toml.model"
@@ -534,8 +536,13 @@ def validation(root: Path) -> list[dict[str, str]]:
         if not isinstance(telegram_test, dict): telegram_test = {}
     except (OSError, ValueError, AttributeError):
         pass
+    gateway: dict = {}
     try:
-        gateway = json.loads((root / "configs" / "daemon" / "services" / "telegram" / "state" / "gateway-status.json").read_text(encoding="utf-8")); last_error = str(gateway.get("last_error") or "")
+        gateway = json.loads((telegram_state_path(root) / "gateway-status.json").read_text(encoding="utf-8"))
+        if not isinstance(gateway, dict): gateway = {}
+    except (OSError, ValueError): pass
+    if gateway:
+        last_error = str(gateway.get("last_error") or "")
         error_at = recorded_timestamp(gateway, "last_error_at", "updated_at")
         tested_at = recorded_timestamp(telegram_test, "tested_at")
         test_succeeded = bool(tested_at) and not bool(telegram_test.get("failed"))
@@ -544,11 +551,18 @@ def validation(root: Path) -> list[dict[str, str]]:
             add("ok", "Último erro do gateway", detail)
         elif last_error:
             add("error", "Último erro do gateway", last_error)
-        commands = gateway.get("commands", {})
-        if isinstance(commands, dict):
-            owners, verified, failed = int(commands.get("owners", 0)), int(commands.get("verified", 0)), int(commands.get("failed", 0))
-            add("ok" if owners and verified == owners and not failed else "pending", "Comandos privados do owner", f"{verified}/{owners} owner(s) confirmados pelo Telegram." if owners else "Reinicie o gateway ou escolha Atualizar comandos privados.")
-    except (OSError, ValueError, AttributeError): pass
+    commands = gateway.get("commands")
+    totp_enabled = bool(totp.get("enabled", False))
+    if command_sync_is_current(commands, totp_enabled):
+        add("ok", "Comandos privados do owner", f"Catálogo atual confirmado pelo Telegram para {commands['verified']}/{commands['owners']} owner(s).")
+    elif isinstance(commands, dict) and commands and (
+        commands.get("catalog_revision") != command_catalog_revision(totp_enabled)
+        or commands.get("expected") != [item["command"] for item in owner_commands(totp_enabled)]
+        or commands.get("totp_enabled") is not totp_enabled
+    ):
+        add("pending", "Comandos privados do owner", "A última confirmação corresponde a um catálogo desatualizado ou a outra configuração de TOTP. Reinicie o gateway e escolha Atualizar comandos privados.")
+    else:
+        add("pending", "Comandos privados do owner", "A confirmação do catálogo atual para todos os owners está pendente. Verifique o pareamento e escolha Atualizar comandos privados.")
     try:
         marker = telegram_test
         if not marker: raise ValueError("Marcador de teste ausente.")

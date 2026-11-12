@@ -289,6 +289,8 @@ class Supervisor:
                     timeout = 30
                 elif method in {"telegram.outbound.send", "telegram.outbound.send_location", "telegram.reply.send_location"}:
                     timeout = 120
+                elif method == "telegram.sync-commands":
+                    timeout = 60
                 else:
                     timeout = 5
                 return self._call_service(name, method, params, timeout=timeout)

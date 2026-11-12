@@ -113,6 +113,67 @@ processo que está atendendo o bot.
 
 Contrato de referência: [Codex App Server — Rate limits](https://learn.chatgpt.com/docs/app-server#6-rate-limits-chatgpt).
 
+## Menu de comandos do bot
+
+O catálogo central em `telegram_commands.py` publica os comandos permanentes
+no chat privado de cada owner:
+
+| Comando | Função |
+| --- | --- |
+| `/new` | Iniciar uma nova conversa. |
+| `/config` | Configurar a conversa atual. |
+| `/channel` | Gerenciar canal de envio. |
+| `/usage` | Consultar consumo e franquia do Codex. |
+| `/fila <texto>` | Enfileirar uma mensagem. |
+| `/direcionar <texto>` | Orientar o turno em andamento. |
+| `/cancel` | Interromper o turno atual, preservando a fila. |
+| `/resolver` | Consultar e reconciliar solicitações sem confirmação. |
+| `/totp` | Obter código de autenticação, quando TOTP estiver habilitado. |
+
+`/pair <PIN>` pertence ao pareamento temporário e não entra no menu permanente.
+Variações como `/resolver descartar` são argumentos do comando correspondente.
+O teste do catálogo compara os handlers com essa relação para detectar novos
+comandos permanentes que ainda não tenham sido incluídos no menu.
+
+A sincronização configura o escopo do chat do owner sem idioma e também os
+idiomas conhecidos daquele owner, normalizados para duas letras. Isso evita
+que uma lista antiga por idioma prevaleça sobre o catálogo geral do chat.
+O Gateway preserva os idiomas já observados; quando recebe um novo idioma,
+solicita nova sincronização. A API não permite enumerar catálogos de idiomas
+desconhecidos, portanto o owner precisa interagir com o bot após trocar de
+idioma para que essa variante seja observada. O botão do menu também é
+confirmado como menu de comandos. Essas operações ficam restritas ao chat
+do owner e não alteram os escopos públicos ou globais do bot.
+
+A confirmação compara nomes, descrições e ordem do catálogo retornado pelo
+Telegram. O recibo local inclui a revisão do catálogo, a configuração TOTP,
+owners confirmados e pendências. O setup e a CLI só informam sucesso quando
+esse recibo corresponde ao catálogo da versão local; um recibo antigo ou uma
+tentativa ainda em andamento permanece pendente.
+
+Um worker verifica o menu ao iniciar o Gateway, após reconectar o polling,
+ao parear um owner, ao observar novo idioma e a cada cinco minutos. Falhas
+têm nova tentativa após um minuto, respeitando um prazo maior informado pelo
+Telegram em `retry_after`. Cada rodada tem orçamento de 30 segundos e não
+ocupa o recebimento normal de updates. Rodadas parciais retomam os owners
+pendentes, preservando confirmações da mesma revisão e idiomas até concluir
+o ciclo. Owners lentos não impedem a tentativa dos demais. O ciclo seguinte
+verifica novamente o catálogo de todos os owners. Um ciclo parcial também
+expira após cinco minutos, para uma falha persistente não impedir a nova
+verificação de quem já havia sido confirmado.
+
+Para solicitar uma verificação imediata, abra **Daemon → Telegram → Owners e
+comandos → Atualizar comandos privados**. O diagnóstico lê o recibo em
+`state/daemon/services/telegram/gateway-status.json`.
+
+Depois de atualizar os arquivos do Onmyōji, reinicie o daemon completo para
+carregar o Gateway e o supervisor novos. Em **Daemon → Processo/Serviço do
+Daemon**, use **Processo local → Finalizar/Iniciar** ou **Serviço do sistema
+operacional → Reiniciar serviço**, conforme a instalação. A retomada do
+processo local pelo atualizador não substitui o reinício de um serviço do SO.
+
+Referência: [Telegram Bot API — comandos e escopos](https://core.telegram.org/bots/api#determining-list-of-commands).
+
 ## Paralelismo de respostas
 
 O menu `Gateway Telegram` permite definir de 1 a 16 conversas processadas em

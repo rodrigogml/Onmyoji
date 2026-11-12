@@ -258,7 +258,7 @@ def test_telegram_validation_marks_only_the_legacy_generic_entry_as_pending(tmp_
 def test_telegram_validation_marks_a_gateway_error_as_superseded_by_a_later_token_test(tmp_path):
     module = setup_module(); module.bootstrap(tmp_path)
     now = module.time.time()
-    state = tmp_path / "configs" / "daemon" / "services" / "telegram" / "state" / "gateway-status.json"; state.parent.mkdir(parents=True)
+    state = tmp_path / "state" / "daemon" / "services" / "telegram" / "gateway-status.json"; state.parent.mkdir(parents=True)
     state.write_text(json.dumps({"last_error": "O cofre MCP não disponibilizou a credencial solicitada.", "last_error_at": now - 60}), encoding="utf-8")
     marker = tmp_path / "configs" / "daemon" / "runtime" / "telegram-test.json"; marker.parent.mkdir(parents=True)
     marker.write_text(json.dumps({"tested_at": now, "bot": "example_bot"}), encoding="utf-8")
@@ -268,6 +268,54 @@ def test_telegram_validation_marks_a_gateway_error_as_superseded_by_a_later_toke
     error = next(check for check in checks if check["label"] == "Último erro do gateway")
     assert error["state"] == "ok"
     assert "Erro anterior" in error["detail"] and "superado pela validação do token" in error["detail"]
+
+
+@pytest.mark.parametrize("changes,expected", [
+    ({}, "ok"),
+    ({"expected": ["new", "config", "channel", "usage"]}, "pending"),
+    ({"catalog_revision": "previous-version"}, "pending"),
+    ({"totp_enabled": True}, "pending"),
+    ({"verified": 0, "failed": 1}, "pending"),
+    ({"owners": 0, "verified": 0}, "pending"),
+    ({"verified": "1"}, "pending"),
+    ({"pending": True}, "pending"),
+])
+def test_telegram_validation_requires_the_current_catalog_in_the_current_state_path(tmp_path, changes, expected):
+    from onmyoji_daemon.telegram_commands import command_catalog_revision, owner_commands
+
+    module = setup_module(); module.bootstrap(tmp_path)
+    summary = {
+        "owners": 1, "verified": 1, "failed": 0,
+        "expected": [item["command"] for item in owner_commands(False)],
+        "catalog_revision": command_catalog_revision(False), "totp_enabled": False,
+    }
+    summary.update(changes)
+    state = tmp_path / "state" / "daemon" / "services" / "telegram" / "gateway-status.json"
+    state.parent.mkdir(parents=True)
+    state.write_text(json.dumps({"commands": summary}), encoding="utf-8")
+    legacy = tmp_path / "configs" / "daemon" / "services" / "telegram" / "state" / "gateway-status.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(json.dumps({"commands": {"owners": 1, "verified": 1, "failed": 0}}), encoding="utf-8")
+
+    commands = next(check for check in module.validation(tmp_path) if check["label"] == "Comandos privados do owner")
+
+    assert commands["state"] == expected
+    if any(name in changes for name in ("expected", "catalog_revision", "totp_enabled")):
+        assert "desatualizado" in commands["detail"]
+
+
+@pytest.mark.parametrize("contents", [None, "[]", "invalid json"])
+def test_telegram_validation_reports_pending_commands_without_a_valid_status(tmp_path, contents):
+    module = setup_module(); module.bootstrap(tmp_path)
+    if contents is not None:
+        state = tmp_path / "state" / "daemon" / "services" / "telegram" / "gateway-status.json"
+        state.parent.mkdir(parents=True)
+        state.write_text(contents, encoding="utf-8")
+
+    commands = next(check for check in module.validation(tmp_path) if check["label"] == "Comandos privados do owner")
+
+    assert commands["state"] == "pending"
+    assert "Atualizar comandos privados" in commands["detail"]
 
 
 def test_daemon_setup_uses_only_the_internal_mcp_vault() -> None:

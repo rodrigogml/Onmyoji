@@ -43,6 +43,9 @@ from .mcp.reconciliation import mcp_reconciliation_pending
 from .telegram_stickers import load as load_sticker_catalog
 from .mcp.artifacts import ArtifactPathError, authorized_file, transfer_roots
 from .telegram_formatting import MAX_MESSAGE_LENGTH, plain_text, render_html, split_html
+from .telegram_commands import (COMMAND_REFRESH_SECONDS, COMMAND_RETRY_SECONDS, COMMAND_SYNC_BUDGET_SECONDS,
+                                command_catalog_matches, command_catalog_revision, command_sync_is_current, invalid_command_message,
+                                normalize_language_code, owner_commands)
 
 SERVICE_MESSAGE_FIELDS = frozenset((
     "forum_topic_closed", "forum_topic_created", "forum_topic_edited", "forum_topic_reopened",
@@ -192,9 +195,16 @@ class TelegramMediaUploadError(RuntimeError):
 
 class TelegramApiError(RuntimeError):
     """Falha sanitizada; kind só afirma recusa quando houve resposta conclusiva."""
-    def __init__(self, message: str, *, kind: str = "uncertain"):
+    def __init__(self, message: str, *, kind: str = "uncertain", retry_after: int | None = None):
         super().__init__(message)
         self.kind = kind
+        self.retry_after = retry_after if type(retry_after) is int and 0 < retry_after <= 2_147_483_647 else None
+
+
+def _telegram_retry_after(payload: object) -> int | None:
+    parameters = payload.get("parameters") if isinstance(payload, dict) else None
+    value = parameters.get("retry_after") if isinstance(parameters, dict) else None
+    return value if type(value) is int and 0 < value <= 2_147_483_647 else None
 
 
 def _telegram_error_detail(error: Exception | str) -> str:
@@ -294,18 +304,19 @@ class TelegramApi:
         try:
             with urlopen(Request(self.base + method, data=body), timeout=timeout) as response: payload = json.loads(response.read())
         except HTTPError as error:
+            response = {}
             try:
                 response = json.loads(error.read().decode("utf-8", errors="replace"))
                 detail = str(response.get("description") or f"HTTP {error.code}") if isinstance(response, dict) else f"HTTP {error.code}"
             except Exception:
                 detail = f"HTTP {error.code}"
-            raise TelegramApiError(f"Telegram recusou {method}: {detail[:240]}", kind="not_sent" if 400 <= error.code < 500 and error.code != 408 else "uncertain") from error
+            raise TelegramApiError(f"Telegram recusou {method}: {detail[:240]}", kind="not_sent" if 400 <= error.code < 500 and error.code != 408 else "uncertain", retry_after=_telegram_retry_after(response)) from error
         except (OSError, ValueError) as error:
             raise TelegramApiError(f"Não foi possível concluir {method}: {_telegram_error_detail(error)}") from error
         if not isinstance(payload, dict): raise TelegramApiError(f"Telegram retornou uma resposta inválida ao executar {method}.")
         if not payload.get("ok"):
             detail = str(payload.get("description") or "resposta sem descrição")
-            raise TelegramApiError(f"Telegram recusou {method}: {detail[:240]}", kind="not_sent")
+            raise TelegramApiError(f"Telegram recusou {method}: {detail[:240]}", kind="not_sent", retry_after=_telegram_retry_after(payload))
         return payload.get("result")
     def answer_callback(self, callback_id: str) -> None:
         """Confirma o clique rapidamente para não deixar o botão em estado pendente."""
@@ -355,13 +366,33 @@ class TelegramApi:
             detail = str(payload.get("description") or "resposta sem descrição") if isinstance(payload, dict) else "resposta inválida"
             raise TelegramMediaUploadError(f"Telegram API recusou {method}: {detail[:300]}", kind="not_sent")
         return payload.get("result") if isinstance(payload.get("result"), dict) else {}
-    def set_owner_commands(self, owner_id: int, totp_enabled: bool) -> bool:
-        commands = [{"command": "new", "description": "Iniciar uma nova conversa"}, {"command": "config", "description": "Configurar esta conversa"}, {"command": "channel", "description": "Gerenciar canal de envio"}, {"command": "usage", "description": "Consultar consumo e franquia do Codex"}]
-        if totp_enabled: commands.append({"command": "totp", "description": "Obter código de autenticação"})
+    def set_owner_commands(self, owner_id: int, totp_enabled: bool, language_codes: tuple[str, ...] = (), *, deadline: float | None = None) -> bool:
+        """Reconcilia o catálogo e o botão somente no chat privado deste owner."""
+        commands = owner_commands(totp_enabled)
         scope = {"type": "chat", "chat_id": owner_id}
-        self.call("setMyCommands", {"commands": commands, "scope": scope})
-        actual = self.call("getMyCommands", {"scope": scope})
-        return isinstance(actual, list) and {str(item.get("command")) for item in actual if isinstance(item, dict)} == {item["command"] for item in commands}
+        deadline = time.monotonic() + COMMAND_SYNC_BUDGET_SECONDS if deadline is None else deadline
+
+        def request(method: str, values: dict[str, Any]) -> Any:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TelegramApiError("A atualização dos comandos excedeu o tempo disponível.")
+            return self.call(method, values, timeout=min(8, remaining))
+
+        languages = ("", *sorted({code for value in language_codes if (code := normalize_language_code(value))}))
+        for language in languages:
+            target = {"scope": scope, "language_code": language}
+            if not command_catalog_matches(request("getMyCommands", target), commands):
+                if request("setMyCommands", {**target, "commands": commands}) is not True:
+                    return False
+                if not command_catalog_matches(request("getMyCommands", target), commands):
+                    return False
+        menu = {"type": "commands"}
+        if request("getChatMenuButton", {"chat_id": owner_id}) != menu:
+            if request("setChatMenuButton", {"chat_id": owner_id, "menu_button": menu}) is not True:
+                return False
+            if request("getChatMenuButton", {"chat_id": owner_id}) != menu:
+                return False
+        return True
 
 
 class Contacts:
@@ -374,6 +405,34 @@ class Contacts:
             if not any(item.get("telegram_user_id") == user.get("id") for item in contacts if isinstance(item, dict)):
                 contacts.append({"telegram_user_id": user.get("id"), "username": user.get("username"), "display_name": user.get("first_name"), "roles": ["owner"], "source": "pair"})
                 write_json(self.path, data)
+        self.observe_owner_language(user)
+
+    def owner_languages(self, owner_id: int) -> tuple[str, ...]:
+        data = json_file(self.path, {"contacts": []})
+        for item in data.get("contacts", []):
+            if isinstance(item, dict) and item.get("telegram_user_id") == owner_id and "owner" in item.get("roles", []):
+                previous = item.get("command_languages")
+                values = previous if isinstance(previous, list) else []
+                return tuple(sorted({code for value in [item.get("language_code"), *values] if (code := normalize_language_code(value))}))
+        return ()
+
+    def observe_owner_language(self, user: dict[str, Any]) -> bool:
+        language = normalize_language_code(user.get("language_code"))
+        if not language:
+            return False
+        with self.lock:
+            data = json_file(self.path, {"version": 1, "contacts": []})
+            for item in data.get("contacts", []):
+                if not isinstance(item, dict) or item.get("telegram_user_id") != user.get("id") or "owner" not in item.get("roles", []):
+                    continue
+                known = self.owner_languages(user["id"])
+                if item.get("language_code") == language and language in known:
+                    return False
+                item["language_code"] = language
+                item["command_languages"] = sorted({*known, language})
+                write_json(self.path, data)
+                return True
+        return False
 
 
 def safe_name(value: str, fallback: str) -> str:
@@ -404,6 +463,15 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
         self._status_lock = threading.RLock()
         self.control_state_lock = threading.RLock()
         self._client_start_lock = threading.RLock()
+        self._commands_sync_lock = threading.Lock()
+        self._commands_refresh_needed = threading.Event()
+        self._commands_next_sync = 0.0
+        self._commands_retry_not_before = 0.0
+        self._commands_verified_owners: dict[int, tuple[str, tuple[str, ...]]] = {}
+        self._commands_owner_attempts: dict[int, int] = {}
+        self._commands_attempt_sequence = 0
+        self._commands_cycle_complete = False
+        self._commands_cycle_started: float | None = None
         self._execution_local = threading.local()
         self._input_local = threading.local()
         self._tool_local = threading.local()
@@ -511,17 +579,108 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
             counters[event] = int(counters.get(event, 0)) + 1
             write_json(self.settings.state_dir / "gateway-status.json", state)
 
-    def _configure_owner_commands(self) -> dict[str, int]:
-        if not self.api: return
-        owners, verified, failed = self.contacts.owners(), 0, 0
-        for owner in owners:
-            try:
-                if self.api.set_owner_commands(owner, self._totp_enabled()): verified += 1
-                else: failed += 1; self._record_error("Telegram não confirmou os comandos privados do owner.")
-            except Exception as error: failed += 1; self._record_error(error)
-        summary = {"updated_at": time.time(), "owners": len(owners), "verified": verified, "failed": failed, "expected": ["new", "config", "channel", "usage", *( ["totp"] if self._totp_enabled() else [])]}
-        state = json_file(self.settings.state_dir / "gateway-status.json", {}); state["commands"] = summary; write_json(self.settings.state_dir / "gateway-status.json", state)
-        return summary
+    def _request_command_sync(self) -> None:
+        """Sinaliza reconciliação sem fazer I/O de rede no recebimento de updates."""
+        with self._status_lock:
+            self._commands_refresh_needed.set()
+            state = json_file(self.settings.state_dir / "gateway-status.json", {})
+            commands = state.get("commands")
+            if isinstance(commands, dict):
+                commands["pending"] = True
+                write_json(self.settings.state_dir / "gateway-status.json", state)
+
+    def _observe_command_language(self, user: dict[str, Any]) -> None:
+        if self.contacts.observe_owner_language(user):
+            self._request_command_sync()
+
+    def _configure_owner_commands(self) -> dict[str, Any]:
+        """Confirma catálogo e botão; serializa tentativas e respeita flood control."""
+        if not self._commands_sync_lock.acquire(blocking=False):
+            with self._status_lock:
+                state = json_file(self.settings.state_dir / "gateway-status.json", {}).get("commands", {})
+                return {**(state if isinstance(state, dict) else {}), "pending": True, "in_progress": True}
+        try:
+            with self._status_lock:
+                if time.monotonic() < self._commands_retry_not_before:
+                    state = json_file(self.settings.state_dir / "gateway-status.json", {}).get("commands", {})
+                    return {**(state if isinstance(state, dict) else {}), "pending": True, "in_progress": False}
+                self._commands_refresh_needed.clear()
+                owners = sorted(self.contacts.owners())
+                totp = self._totp_enabled()
+                revision = command_catalog_revision(totp)
+                languages = {owner: self.contacts.owner_languages(owner) for owner in owners}
+                targets = {owner: (revision, languages[owner]) for owner in owners}
+                # Retoma ciclos parciais; um ciclo concluído exige verificação nova.
+                now = time.monotonic()
+                if (self._commands_cycle_complete or not self.api or self._commands_cycle_started is None
+                        or now - self._commands_cycle_started >= COMMAND_REFRESH_SECONDS):
+                    self._commands_verified_owners.clear()
+                    self._commands_cycle_started = now
+                self._commands_cycle_complete = False
+                self._commands_verified_owners = {
+                    owner: target for owner, target in self._commands_verified_owners.items()
+                    if targets.get(owner) == target
+                }
+                self._commands_owner_attempts = {
+                    owner: attempt for owner, attempt in self._commands_owner_attempts.items() if owner in targets
+                }
+                pending_owners = sorted(
+                    (owner for owner in owners if owner not in self._commands_verified_owners),
+                    key=lambda owner: (self._commands_owner_attempts.get(owner, 0), owner),
+                )
+                summary = {"updated_at": time.time(), "owners": len(owners), "verified": len(self._commands_verified_owners), "failed": 0,
+                           "expected": [item["command"] for item in owner_commands(totp)],
+                           "catalog_revision": revision, "totp_enabled": totp,
+                           "pending": True, "in_progress": True, "next_retry_at": None}
+                state = json_file(self.settings.state_dir / "gateway-status.json", {})
+                state["commands"] = summary
+                write_json(self.settings.state_dir / "gateway-status.json", state)
+            deadline = time.monotonic() + COMMAND_SYNC_BUDGET_SECONDS
+            for owner in pending_owners:
+                if not self.api or time.monotonic() >= deadline:
+                    break
+                self._commands_attempt_sequence += 1
+                self._commands_owner_attempts[owner] = self._commands_attempt_sequence
+                try:
+                    if self.api.set_owner_commands(owner, totp, languages[owner], deadline=deadline):
+                        self._commands_verified_owners[owner] = targets[owner]
+                    else:
+                        self._record_error("Telegram não confirmou os comandos privados do owner.")
+                except Exception as error:
+                    self._record_error(error)
+                    retry_after = getattr(error, "retry_after", None)
+                    if type(retry_after) is int and retry_after > 0:
+                        self._commands_retry_not_before = time.monotonic() + retry_after
+                        break
+            summary["verified"] = len(self._commands_verified_owners)
+            summary["failed"] = len(owners) - summary["verified"]
+            now = time.monotonic()
+            delay = COMMAND_RETRY_SECONDS if summary["failed"] else COMMAND_REFRESH_SECONDS
+            delay = max(delay, self._commands_retry_not_before - now)
+            self._commands_next_sync = now + delay
+            with self._status_lock:
+                summary.update(updated_at=time.time(), in_progress=False,
+                               pending=bool(summary["failed"] or not owners or self._commands_refresh_needed.is_set()),
+                               next_retry_at=time.time() + delay if summary["failed"] else None)
+                self._commands_cycle_complete = not summary["pending"]
+                state = json_file(self.settings.state_dir / "gateway-status.json", {})
+                state["commands"] = summary
+                write_json(self.settings.state_dir / "gateway-status.json", state)
+            return summary
+        finally:
+            self._commands_sync_lock.release()
+
+    def _owner_commands_watch(self) -> None:
+        while not self.stop_event.is_set():
+            now = time.monotonic()
+            if now >= self._commands_retry_not_before and (self._commands_refresh_needed.is_set() or now >= self._commands_next_sync):
+                try:
+                    self._configure_owner_commands()
+                except Exception as error:
+                    self._record_error(error)
+                    self._commands_refresh_needed.clear()
+                    self._commands_next_sync = time.monotonic() + COMMAND_RETRY_SECONDS
+            self.stop_event.wait(1)
     def start(self) -> None:
         self.store.acquire_lease(self.settings.state_dir / "gateway-writer.lock")
         try:
@@ -541,8 +700,10 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
             self.bot_username = str(identity_info.get("username") or "") if isinstance(identity_info, dict) else ""
             if self.api:
                 self._restore_totp_cleanup()
-                self._configure_owner_commands()
+                self._request_command_sync()
             self._start_execution_state()
+            if self.api:
+                threading.Thread(target=self._owner_commands_watch, daemon=True).start()
             threading.Thread(target=self._notification_watch, daemon=True).start()
             self._start_notification_http()
             if receiver:
@@ -1147,6 +1308,7 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
         if update.get("callback_query"): self._callback(update["callback_query"]); return
         message = update.get("message") or update.get("edited_message") or {}; chat, sender = message.get("chat") or {}, message.get("from") or {}
         if chat.get("type") not in {"private", "group", "supergroup"} or not isinstance(sender.get("id"), int): return
+        self._observe_command_language(sender)
         private = chat.get("type") == "private"
         if not isinstance(chat.get("id"), int):
             if not private: return
@@ -1190,9 +1352,12 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
             return
         if text.startswith("/"): self._delete_received_command(int(chat.get("id") or sender["id"]), message)
         if text.startswith("/pair ") and self.pair and time.time() < self.pair[1] and secrets.compare_digest(text[6:].strip(), self.pair[0]):
-            self.contacts.add_owner(sender); self.pair = None; synced = self._configure_owner_commands()
+            self.contacts.add_owner(sender)
+            self._request_command_sync()
+            self.pair = None
+            synced = self._configure_owner_commands()
             telegram_chat_id, topic_values = self._telegram_address(conversation_id)
-            self.api.send(telegram_chat_id, "Pairing concluído e comandos privados configurados." if synced.get("failed", 1) == 0 else "Pairing concluído, mas a configuração dos comandos falhou. Consulte o diagnóstico.", **topic_values); return
+            self.api.send(telegram_chat_id, "Pairing concluído e comandos privados configurados." if command_sync_is_current(synced, self._totp_enabled()) else "Pairing concluído; a atualização dos comandos privados está pendente. Consulte o diagnóstico.", **topic_values); return
         if sender["id"] not in self.contacts.owners(): return
         channel = self._channel_state(conversation_id, renew=True)
         if channel["expired"]: self._ephemeral(conversation_id, "O modo de respostas em áudio foi desligado por inatividade.")
@@ -1223,7 +1388,7 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
                 self._ephemeral(conversation_id, "Use /fila <texto> ou /direcionar <texto>, com anexos na mesma mensagem quando necessário."); return
             if command == "/direcionar" and not self.capabilities.supports("steering"):
                 self._ephemeral(conversation_id, "Direcionamento não certificado neste runtime; a solicitação entrará na fila.")
-        if text.startswith("/") and command not in {"/fila", "/direcionar"}: self._ephemeral(conversation_id, "Comando inválido. Use /new, /config, /usage, /fila, /direcionar, /cancel, /resolver, /channel ou /totp quando habilitado."); return
+        if text.startswith("/") and command not in {"/fila", "/direcionar"}: self._ephemeral(conversation_id, invalid_command_message(self._totp_enabled())); return
         structured: dict[str, Any] = {}
         location_error = ""
         try:
@@ -1785,6 +1950,7 @@ class Gateway(NotificationIngress, TelegramExecution, TelegramChannels):
         return session
 
     def _callback(self, callback: dict[str, Any]) -> None:
+        self._observe_command_language(callback.get("from") or {})
         assert self.api
         sender = callback.get("from") or {}; message = callback.get("message") or {}; chat = message.get("chat") or {}; chat_id = sender.get("id")
         if self._channel_callback(callback): return

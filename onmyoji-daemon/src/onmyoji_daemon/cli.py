@@ -10,6 +10,7 @@ import time
 
 from .rpc import RpcError, call
 from .supervisor import Supervisor, endpoint
+from .telegram_commands import command_sync_is_current
 from . import management
 
 
@@ -241,6 +242,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.action in {"task", "notification"}:
         timeout = new_timeout
     if args.action == "mini-apps" and args.miniapps_action == "oauth": timeout = 200 if args.oauth_action in {"start", "cancel", "info", "active", "cancel-active"} else 5
+    if args.action == "telegram" and args.telegram_action == "sync-commands": timeout = 60
     try:
         response = call(host, port, token, method, params, timeout=timeout)
         if args.action == "cloudflare-tunnel" and getattr(args, "wait", False):
@@ -265,6 +267,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.action == "notification" and args.notification_action == "submit":
         print(json.dumps(response, ensure_ascii=False))
         return 0 if response.get("execution") == "completed" and response.get("delivery") == "confirmed" else 2
+    if args.action == "telegram" and args.telegram_action == "sync-commands":
+        print(json.dumps(response, ensure_ascii=False))
+        totp_enabled = response.get("totp_enabled") if isinstance(response, dict) else None
+        return 0 if type(totp_enabled) is bool and command_sync_is_current(response, totp_enabled) else 2
     print(json.dumps(response, ensure_ascii=False)); return 0
 
 

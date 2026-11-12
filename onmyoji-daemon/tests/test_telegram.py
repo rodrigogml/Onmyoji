@@ -370,11 +370,11 @@ def test_usage_command_reads_codex_account_limits_without_starting_a_turn(tmp_pa
 def test_usage_is_included_in_the_owner_command_catalog(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
     gateway = Gateway(Settings.load(tmp_path, data)); gateway.contacts.add_owner({"id": 9, "first_name": "owner"})
-    gateway.api = type("Api", (), {"set_owner_commands": lambda _self, _owner, _totp: True})()
+    gateway.api = type("Api", (), {"set_owner_commands": lambda _self, _owner, _totp, _languages, **_kwargs: True})()
 
     summary = gateway._configure_owner_commands()
 
-    assert summary["expected"] == ["new", "config", "channel", "usage"]
+    assert summary["expected"] == ["new", "config", "channel", "usage", "fila", "direcionar", "cancel", "resolver"]
 
 
 def test_new_command_is_deleted_once_and_still_resets_conversation(tmp_path):

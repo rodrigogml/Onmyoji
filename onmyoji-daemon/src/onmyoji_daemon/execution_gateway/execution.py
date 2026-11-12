@@ -24,6 +24,7 @@ from ..telegram_delivery import DeliveryOwner, DeliverySuppressed, DeliveryUncer
 from ..telegram_formatting import plain_text
 from ..telegram_persistence import GatewayPersistenceError
 from ..telegram_process import ProcessRecoveryError, record_process, recover_process, mark_stopped
+from ..telegram_commands import CONTROL_COMMANDS, REGISTERED_COMMANDS
 
 
 class ExecutionGateway:
@@ -54,14 +55,19 @@ class ExecutionGateway:
 
     def _poll(self) -> None:
         assert self.api
+        reconnecting = False
         while not self.stop_event.is_set():
             try:
                 updates = self.api.call("getUpdates", {"offset": self.offset, "timeout": self.settings.poll_timeout, "allowed_updates": ["message", "edited_message", "callback_query"]}) or []
+                if reconnecting:
+                    self._request_command_sync()
+                    reconnecting = False
                 for update in sorted(updates, key=lambda value: value.get("update_id", 0) if isinstance(value, dict) else 0):
                     # Só avançamos sobre cada update efetivamente recebido e persistido.
                     self._receive_update(update)
                     self.offset = self.store.checkpoint(str(self.bot_id or "unknown"))
             except Exception:
+                reconnecting = True
                 self._record_error("Falha ao receber updates do Telegram; consumo será retomado pelo checkpoint persistido.")
                 self.stop_event.wait(3)
 
@@ -82,7 +88,7 @@ class ExecutionGateway:
             prompt = None
         command = text.split(maxsplit=1)[0].split("@", 1)[0].casefold() if text else ""
         protected_password = (session and session.get("phase") == "password") or prompt
-        controls = {"/new", "/cancel", "/resolver", "/config", "/channel", "/totp", "/pair", "/usage", "/fila", "/direcionar"}
+        controls = REGISTERED_COMMANDS
         private_control = ("totp_password" if protected_password and command not in controls else "pair_pin" if command == "/pair" else None) if is_message else None
         token = session.get("token") if session else None
         token_hash = hashlib.sha256(token.encode()).hexdigest() if isinstance(token, str) else prompt.get("token_hash") if prompt else None
@@ -117,7 +123,7 @@ class ExecutionGateway:
         message = update.get("message") or update.get("edited_message") or {}
         text = str(message.get("text") or message.get("caption") or "")
         command = text.split(maxsplit=1)[0].split("@", 1)[0].casefold() if text else ""
-        return bool(update.get("private_control")) or bool(update.get("callback_query")) or command in {"/new", "/cancel", "/resolver", "/config", "/channel", "/totp", "/pair", "/usage"}
+        return bool(update.get("private_control")) or bool(update.get("callback_query")) or command in CONTROL_COMMANDS
 
     def _ingress_watch(self) -> None:
         ticks = 0

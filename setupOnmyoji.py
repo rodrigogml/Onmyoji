@@ -46,6 +46,7 @@ from onmyoji_daemon.mcp.runtime import McpRuntimeError, ensure_mcp_runtime, mcp_
 from onmyoji_daemon.mcp.ocr.runtime import DocumentError, install_runtime as install_document_runtime
 from onmyoji_daemon.state_layout import LAYOUT_VERSION, SETUP_VERSION, StateLayoutError, migrate as migrate_state_layout, version_path as state_version_path
 from onmyoji_daemon.config_publication import write_instance_text
+from onmyoji_daemon.telegram_commands import command_sync_is_current
 SYSTEM_BEGIN = "# BEGIN ONMYOJI MANAGED CODEX SETTINGS"
 SYSTEM_END = "# END ONMYOJI MANAGED CODEX SETTINGS"
 INSTANCE_SKILLS_DIRECTORY = "shikigami-skills"
@@ -2735,6 +2736,30 @@ def daemon_menu(root: Path) -> None:
             time.sleep(0.3)
         return False
 
+    def sync_telegram_commands() -> bool:
+        """Confirma o catálogo atual para todos os owners na configuração local."""
+        try:
+            settings = tomllib.loads(telegram_configuration_path(root).read_text(encoding="utf-8"))
+            totp_enabled = bool(settings.get("totp", {}).get("enabled", False))
+        except (OSError, tomllib.TOMLDecodeError, AttributeError):
+            result(False, "Não foi possível verificar a configuração do Telegram; consulte o diagnóstico antes de atualizar os comandos privados.")
+            return False
+        synced = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "telegram", "sync-commands"], quiet=True)
+        try:
+            summary = json.loads(synced.stdout)
+        except (json.JSONDecodeError, TypeError):
+            summary = None
+        current = synced.returncode == 0 and command_sync_is_current(summary, totp_enabled)
+        if current:
+            result(True, f"Comandos privados do catálogo atual confirmados para {summary['verified']}/{summary['owners']} owner(s).")
+        elif isinstance(summary, dict) and summary.get("in_progress") is True:
+            result(False, "A sincronização dos comandos ainda está em andamento. Aguarde e escolha Atualizar comandos privados para verificar novamente.")
+        elif isinstance(summary, dict) and type(summary.get("owners")) is int and summary["owners"] == 0:
+            result(False, "Nenhum owner foi confirmado. Pareie um owner e atualize novamente os comandos privados.")
+        else:
+            result(False, "A sincronização do catálogo atual não foi confirmada para todos os owners. Reinicie o gateway e escolha Atualizar comandos privados; se a pendência continuar, consulte o diagnóstico do Telegram.")
+        return current
+
     def miniapps_state() -> dict[str, object]:
         completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "list-services"], quiet=True)
         if completed.returncode != 0: return {}
@@ -3477,12 +3502,7 @@ def daemon_menu(root: Path) -> None:
                 tested = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-agent"], quiet=True, use_runtime=True)
                 result(tested.returncode == 0, (tested.stdout or tested.stderr).strip())
             elif choice == "8":
-                synced = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "telegram", "sync-commands"], quiet=True)
-                if synced.returncode != 0: result(False, "Inicie o gateway Telegram antes de atualizar seus comandos privados.")
-                else:
-                    try:
-                        data = json.loads(synced.stdout); result(data.get("failed", 1) == 0, f"Comandos confirmados para {data.get('verified', 0)}/{data.get('owners', 0)} owner(s).")
-                    except json.JSONDecodeError: result(False, "O Telegram não retornou a confirmação dos comandos.")
+                sync_telegram_commands()
             elif choice == "9":
                 changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-app-server", "--disabled" if app_server_enabled else "--enabled"], quiet=True)
                 result(changed.returncode == 0, (changed.stdout or changed.stderr).strip())
@@ -3661,9 +3681,7 @@ def daemon_menu(root: Path) -> None:
         result(True, str(owner.get("detail") or "Owner pareado."))
 
         print("\n  9. Sincronizar comandos privados")
-        synced = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "telegram", "sync-commands"], quiet=True)
-        if synced.returncode != 0: result(False, (synced.stdout or synced.stderr).strip()); return
-        result(True, "Comandos privados sincronizados.")
+        if not sync_telegram_commands(): return
 
         print("\n  10. Diagnóstico final")
         ready = show_telegram_diagnosis()
