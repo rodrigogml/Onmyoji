@@ -236,6 +236,63 @@ def test_account_filter_collects_native_pages_before_public_pagination(tmp_path,
     assert result["dados_omie"]["listaLancamentos"] == [rows[99]]
 
 
+def test_account_pagination_reuses_cached_native_pages_and_separates_periods(tmp_path, monkeypatch):
+    rows = [transaction(identifier, 12 if identifier in (1, 51) else 99) for identifier in range(1, 52)]
+    pages = [
+        native_page(1, 2, 51, rows[:50]),
+        native_page(2, 2, 51, rows[50:]),
+        native_page(1, 1, 1, [transaction(100, 12)]),
+    ]
+    _, remote = mock_remote(monkeypatch, deepcopy(pages))
+    facade = OmieFinanceFacade(Configuration(tmp_path))
+    arguments = {"filtros": {**PERIOD, "conta_corrente_id": 12}, "tamanho_pagina": 1}
+
+    first = facade.call(ACCOUNT_QUERY, {**arguments, "pagina": 1}, "empresa")
+    second = facade.call(ACCOUNT_QUERY, {**arguments, "pagina": 2}, "empresa")
+    assert [item["nCodLanc"] for item in first["dados"]] == [1]
+    assert [item["nCodLanc"] for item in second["dados"]] == [51]
+    assert remote.call_count == 2  # Não refaz 2025 ao mudar de página.
+
+    different_period = {**arguments, "filtros": {**PERIOD, "data_final": "29/11/2026", "conta_corrente_id": 12}}
+    last = facade.call(ACCOUNT_QUERY, different_period, "empresa")
+    assert [item["nCodLanc"] for item in last["dados"]] == [100]
+    assert remote.call_count == 3
+
+
+def test_account_cache_expires_and_financial_writes_invalidate_it(tmp_path, monkeypatch):
+    import onmyoji_daemon.mcp.omie.finance as finance
+
+    clock = [100.0]
+    monkeypatch.setattr(finance, "monotonic", lambda: clock[0])
+    calls = []
+
+    def invoke(_self, _profile, operation, _arguments, *, writes):
+        calls.append((operation, writes))
+        if writes:
+            return {"nCodLanc": 9001}
+        return native_page(1, 1, 1, [transaction(len(calls), 12)])
+
+    monkeypatch.setattr(OmieService, "invoke_financial", invoke)
+    facade = OmieFinanceFacade(Configuration(tmp_path))
+    args = {"filtros": {**PERIOD, "conta_corrente_id": 12}}
+    assert facade.call(ACCOUNT_QUERY, args, "empresa")["dados"][0]["nCodLanc"] == 1
+    assert facade.call(ACCOUNT_QUERY, args, "empresa")["dados"][0]["nCodLanc"] == 1
+    assert len(calls) == 1
+
+    clock[0] += 301
+    assert facade.call(ACCOUNT_QUERY, args, "empresa")["dados"][0]["nCodLanc"] == 2
+    assert len(calls) == 2
+
+    facade.call(TRANSACTION_UPDATE, {"confirmar": True, "dados": {**transaction_data(), "id": 9001}}, "empresa")
+    assert facade.call(ACCOUNT_QUERY, args, "empresa")["dados"][0]["nCodLanc"] == 4
+    assert calls == [
+        ("account_transactions_list", False),
+        ("account_transactions_list", False),
+        ("account_transactions_update", True),
+        ("account_transactions_list", False),
+    ]
+
+
 def test_transactions_without_account_fetch_only_the_requested_page(tmp_path, monkeypatch):
     rows = [transaction(3), transaction(4, 99)]
     _, request = mock_remote(monkeypatch, [native_page(2, 3, 5, rows)])

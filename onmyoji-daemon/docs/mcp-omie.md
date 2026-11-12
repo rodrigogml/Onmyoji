@@ -130,8 +130,17 @@ e da página solicitadas; os campos nativos são preservados, com a paginação
 recalculada. Sem filtro de conta, cada chamada continua consultando somente
 uma página da Omie.
 
-Essa filtragem exige percorrer o período a cada página pública solicitada;
-use o período necessário à tarefa. Uma página remota sem lançamentos da conta
+Quando um filtro de conta é usado, a primeira consulta completa é mantida por
+até **5 minutos em cache de memória** (até 6 períodos/perfis e até 25 mil
+lançamentos por consulta). Páginas públicas seguintes e outras contas no mesmo
+período reutilizam o conjunto já validado, sem refazer todas as requisições
+nativas. Erros e consultas parciais nunca entram no cache. Consultas distintas
+ou expiradas fazem nova leitura; operações financeiras de escrita invalidam o
+cache do perfil, inclusive quando a resposta da escrita é incerta. Reiniciar o
+daemon também limpa esse cache.
+
+Essa filtragem exige percorrer o período completo na primeira consulta não
+armazenada; use o período necessário à tarefa. Uma página remota sem lançamentos da conta
 não encerra a busca. Se houver erro, conta ausente em um registro ou paginação
 inconsistente, o MCP falha explicitamente em vez de apresentar uma consulta
 parcial como completa.
@@ -170,8 +179,33 @@ operação aceita endpoint, método Omie ou credenciais fornecidos pelo agente.
 
 Erros de contrato HTTP 500 não recebem retry automático. HTTP 425 também
 interrompe as tentativas: a Omie documenta bloqueio temporário após requisições
-incorretas repetidas. Revise os parâmetros e aguarde o fim do bloqueio antes de
-repetir; reduzir o intervalo de datas não corrige um campo rejeitado.
+incorretas repetidas. O MCP registra o cooldown de 30 minutos para a combinação
+App Key + método em `state/mcp/omie/cooldowns.json`, identificada somente por
+hash (sem credenciais), para impedir novas chamadas mesmo após reiniciar o
+daemon. Revise os parâmetros antes de retomar; reduzir o intervalo de datas não
+corrige um campo rejeitado.
+
+O controle de tráfego do daemon serializa requisições da mesma App Key + método,
+usa janela móvel para evitar rajadas e aplica por padrão intervalo mínimo de
+0,35 segundo entre chamadas desse método, limite preventivo de 180 chamadas
+por minuto por método e 900 por minuto por processo. Há margem em relação aos
+limites padrão publicados pela Omie. Para contas Trial/FIT (60 chamadas/minuto),
+ajuste os defaults do perfil MCP para valores mais conservadores:
+
+```toml
+[defaults]
+min_request_interval_seconds = 1.1
+method_requests_per_minute = 55
+process_requests_per_minute = 900
+```
+
+HTTP 429 respeita `Retry-After` (segundos ou data HTTP) e utiliza backoff
+exponencial sem repetir escrita automaticamente. Aguardas superiores a 8 segundos
+são expostas como cooldown, sem prender a execução da tool no tempo de espera.
+O controle de ritmo é compartilhado somente entre chamadas no mesmo processo;
+se outras integrações ou instâncias consumirem o mesmo IP, seus consumos devem
+ser coordenados externamente. O cache é local ao processo e não substitui a
+conferência de dados atualizados antes de operações sensíveis.
 
 | Família | Comportamento preservado |
 | --- | --- |

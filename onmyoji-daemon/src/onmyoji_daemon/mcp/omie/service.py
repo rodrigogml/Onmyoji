@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from math import isfinite
 from pathlib import Path
 import time
 import tomllib
@@ -13,6 +14,7 @@ from ..credentials import CredentialError, KeePassCredentialResolver
 from .contracts import build_params
 from .customers import create_customer
 from .exception import OmieError
+from .traffic import TRAFFIC_GATE, retry_after_seconds
 
 
 ENDPOINTS = {
@@ -114,23 +116,50 @@ class OmieService:
             app_secret = self.credentials.resolve(credential_profile, entry, secret_field)
             timeout = float(defaults.get("timeout_seconds", 30))
             retries = int(defaults.get("max_retries", 2)) if retries is None else retries
+            interval = float(defaults.get("min_request_interval_seconds", 0.35))
+            method_limit = int(defaults.get("method_requests_per_minute", 180))
+            root_limit = int(defaults.get("process_requests_per_minute", 900))
         except CredentialError as error:
             raise OmieError("credential_" + error.code, "Não foi possível obter a credencial Omie.") from error
         except (TypeError, ValueError) as error:
             raise OmieError("invalid_config", "Timeout ou tentativas Omie inválidos.") from error
-        if timeout <= 0 or retries < 0:
-            raise OmieError("invalid_config", "Timeout ou tentativas Omie inválidos.")
+        if not isfinite(timeout) or not isfinite(interval) or timeout <= 0 or retries < 0 or interval < 0 or not 1 <= method_limit <= 240 or not 1 <= root_limit <= 960:
+            raise OmieError("invalid_config", "Timeout, tentativas ou limites de consumo Omie inválidos.")
         payload = json.dumps({"call": method, "app_key": app_key, "app_secret": app_secret, "param": [dict(parameters)]}, ensure_ascii=False).encode("utf-8")
-        for attempt in range(retries + 1):
-            try:
-                request = Request(ENDPOINTS[endpoint], data=payload, headers={"Content-Type": "application/json"}, method="POST")
-                with urlopen(request, timeout=timeout) as response:
-                    result = json.loads(response.read())
-            except HTTPError as error:
-                # HTTP 500 também indica contratos inválidos; HTTP 425 indica bloqueio
-                # temporário. Nenhum deles deve provocar novas tentativas imediatas.
-                if error.code not in {429, 502, 503, 504} or attempt == retries:
+        # A trava cobre retries e impede concorrência para o mesmo método.
+        with TRAFFIC_GATE.serialize(self.root, app_key, method):
+            for attempt in range(retries + 1):
+                TRAFFIC_GATE.await_slot(
+                    self.root, app_key, method,
+                    interval=interval, method_limit=method_limit, root_limit=root_limit,
+                )
+                try:
+                    request = Request(ENDPOINTS[endpoint], data=payload, headers={"Content-Type": "application/json"}, method="POST")
+                    with urlopen(request, timeout=timeout) as response:
+                        result = json.loads(response.read())
+                except HTTPError as error:
+                    wait_from_omie = retry_after_seconds(error.headers)
+                    # A Omie informa bloqueio de 30 minutos após repetição indevida.
+                    if error.code == 425:
+                        TRAFFIC_GATE.pause(self.root, app_key, method, 1800)
+                    if error.code in {429, 502, 503, 504} and attempt < retries:
+                        delay = min(8.0, 0.5 * (2 ** attempt))
+                        if error.code == 429:
+                            delay = max(1.0 * (2 ** attempt), wait_from_omie or 0.0)
+                            # Não prenda a tool durante um Retry-After longo.
+                            if delay > 8:
+                                TRAFFIC_GATE.pause(self.root, app_key, method, delay)
+                            else:
+                                time.sleep(delay)
+                                continue
+                        else:
+                            time.sleep(delay)
+                            continue
                     details: dict[str, Any] = {"http_status": error.code, "retryable": False}
+                    if error.code == 429:
+                        wait = max(wait_from_omie or 0.0, 2.0)
+                        TRAFFIC_GATE.pause(self.root, app_key, method, wait)
+                        details["retry_after_seconds"] = max(1, int(wait + 0.999))
                     try:
                         body = json.loads(error.read().decode("utf-8", errors="replace"))
                         if isinstance(body, Mapping):
@@ -138,23 +167,24 @@ class OmieService:
                             if isinstance(description, str) and description.strip():
                                 details["remote_description"] = description.strip()[:300]
                             code = body.get("code") or body.get("faultcode")
-                            if isinstance(code, (str, int)) and not isinstance(code, bool): details["remote_code"] = code
-                    except (OSError, ValueError, UnicodeError):
+                            if isinstance(code, (str, int)) and not isinstance(code, bool):
+                                details["remote_code"] = code
+                    except (OSError, ValueError, UnicodeError, AttributeError):
                         pass
                     message = f"A API Omie retornou HTTP {error.code}."
                     if error.code == 425:
                         message += " Aguarde o fim do bloqueio temporário e revise os parâmetros antes de tentar novamente."
                     raise OmieError("omie_http_error", message, details) from error
-            except (URLError, TimeoutError) as error:
-                if attempt == retries:
-                    raise OmieError("network_error", "Não foi possível consultar a API Omie.") from error
-            except (json.JSONDecodeError, UnicodeError) as error:
-                raise OmieError("invalid_response", "A API Omie retornou uma resposta inválida.") from error
-            else:
+                except (URLError, TimeoutError) as error:
+                    if attempt == retries:
+                        raise OmieError("network_error", "Não foi possível consultar a API Omie.") from error
+                    time.sleep(min(8.0, 0.5 * (2 ** attempt)))
+                    continue
+                except (json.JSONDecodeError, UnicodeError) as error:
+                    raise OmieError("invalid_response", "A API Omie retornou uma resposta inválida.") from error
                 if not isinstance(result, Mapping):
                     raise OmieError("invalid_response", "A API Omie retornou uma resposta inválida.")
                 if result.get("faultstring") or ("cCodStatus" in result and (type(result["cCodStatus"]) not in (str, int) or result["cCodStatus"] not in ("0", 0))):
                     raise OmieError("omie_api_error", "A API Omie retornou uma falha de negócio.")
                 return result
-            time.sleep(0.25 * (attempt + 1))
         raise OmieError("network_error", "Não foi possível consultar a API Omie.")

@@ -6,7 +6,11 @@ API não se torne uma instrução ambígua para o agente.
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
+import json
+from threading import RLock
+from time import monotonic
 from datetime import datetime
 from math import isfinite
 from typing import Any, Mapping
@@ -306,6 +310,52 @@ def _translate_title(data: Mapping[str, Any]) -> dict[str, Any]:
     return {names[key]: value for key, value in data.items()}
 
 
+# O cache guarda páginas nativas completas, nunca credenciais, somente em memória.
+# A chave inclui a instância/perfil; mudar a página pública não refaz a coleta.
+_ACCOUNT_CACHE_TTL = 300.0
+_ACCOUNT_CACHE_MAX_ENTRIES = 6
+_ACCOUNT_CACHE_MAX_ROWS = 25000
+_ACCOUNT_CACHE_LOCK = RLock()
+_ACCOUNT_CACHE: OrderedDict[tuple[str, str, str], tuple[float, dict[str, Any]]] = OrderedDict()
+_ACCOUNT_PROFILE_LOCKS: dict[tuple[str, str], RLock] = {}
+
+
+def _profile_cache_lock(root: str, profile: str) -> RLock:
+    with _ACCOUNT_CACHE_LOCK:
+        return _ACCOUNT_PROFILE_LOCKS.setdefault((root, profile), RLock())
+
+
+def _cache_get(key: tuple[str, str, str]) -> dict[str, Any] | None:
+    with _ACCOUNT_CACHE_LOCK:
+        item = _ACCOUNT_CACHE.get(key)
+        if item is None:
+            return None
+        expiration, data = item
+        if expiration <= monotonic():
+            del _ACCOUNT_CACHE[key]
+            return None
+        _ACCOUNT_CACHE.move_to_end(key)
+        return data
+
+
+def _cache_put(key: tuple[str, str, str], response: dict[str, Any]) -> None:
+    # Não manter históricos desproporcionalmente grandes na memória do daemon.
+    if len(response["listaLancamentos"]) > _ACCOUNT_CACHE_MAX_ROWS:
+        return
+    with _ACCOUNT_CACHE_LOCK:
+        _ACCOUNT_CACHE[key] = (monotonic() + _ACCOUNT_CACHE_TTL, response)
+        _ACCOUNT_CACHE.move_to_end(key)
+        while len(_ACCOUNT_CACHE) > _ACCOUNT_CACHE_MAX_ENTRIES:
+            _ACCOUNT_CACHE.popitem(last=False)
+
+
+def _cache_invalidate(root: str, profile: str) -> None:
+    with _ACCOUNT_CACHE_LOCK:
+        for key in list(_ACCOUNT_CACHE):
+            if key[0] == root and key[1] == profile:
+                del _ACCOUNT_CACHE[key]
+
+
 class OmieFinanceFacade:
     """Publica e executa os contratos financeiros orientados a finalidade."""
 
@@ -334,11 +384,29 @@ class OmieFinanceFacade:
         if spec.collect_pages or account is not None:
             legacy = {"params": {**legacy["params"], "nPagina": 1, "nRegPorPagina": 50}}
         service = OmieService(self.configuration.root)
-        response = service.invoke_financial(profile, spec.legacy, legacy, writes=spec.writes)
-        if spec.collect_pages or account is not None:
-            response = self._collect_pages(service, profile, spec, legacy, response)
+        root = str(self.configuration.root.resolve())
         if account is not None:
-            response = self._filter_account_transactions(response, account, arguments)
+            # A mesma consulta nativa é usada por todas as páginas/contas públicas.
+            cache_key = (root, profile, json.dumps(legacy["params"], sort_keys=True))
+            with _profile_cache_lock(root, profile):
+                response = _cache_get(cache_key)
+                if response is None:
+                    response = service.invoke_financial(profile, spec.legacy, legacy, writes=False)
+                    response = self._collect_pages(service, profile, spec, legacy, response)
+                    _cache_put(cache_key, response)
+                response = self._filter_account_transactions(response, account, arguments)
+        elif spec.writes:
+            # Não reutilizar respostas antigas em escritas (inclusive incertas).
+            with _profile_cache_lock(root, profile):
+                _cache_invalidate(root, profile)
+                try:
+                    response = service.invoke_financial(profile, spec.legacy, legacy, writes=True)
+                finally:
+                    _cache_invalidate(root, profile)
+        else:
+            response = service.invoke_financial(profile, spec.legacy, legacy, writes=False)
+            if spec.collect_pages:
+                response = self._collect_pages(service, profile, spec, legacy, response)
         return self._normalize(spec, response, arguments.get("incluir_dados_omie") is True)
 
     def _legacy_arguments(self, spec: FinanceSpec, arguments: Mapping[str, Any]) -> dict[str, Any]:

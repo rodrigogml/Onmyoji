@@ -195,3 +195,63 @@ def test_http_failure_exposes_sanitized_omie_diagnostic(tmp_path, monkeypatch):
         OmieService(tmp_path, Credentials()).invoke("example", "projects_get", {"params": {"codInt": "P1"}})
     assert error.value.details["remote_code"] == 123
     assert error.value.details["remote_description"] == "Filtro de data invalido"
+
+
+def test_http_425_persists_cooldown_across_service_instances(tmp_path, monkeypatch):
+    calls = []
+
+    def request(*_args, **_kwargs):
+        calls.append(True)
+        raise HTTPError("https://app.omie.com.br/", 425, "blocked", {}, None)
+
+    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.urlopen", request)
+    profile = {"credential_profile": "vault", "credential_entry_path": "APIs/Omie",
+               "app_key_field": "username", "app_secret_field": "password"}
+    with pytest.raises(OmieError) as first:
+        OmieService(tmp_path, Credentials())._request(profile, {"max_retries": 0}, "account_transactions", "ListarLancCC", {})
+    assert first.value.details["http_status"] == 425
+    assert (tmp_path / "state" / "mcp" / "omie" / "cooldowns.json").exists()
+
+    with pytest.raises(OmieError) as second:
+        OmieService(tmp_path, Credentials())._request(profile, {"max_retries": 0}, "account_transactions", "ListarLancCC", {})
+    assert second.value.code == "omie_cooldown"
+    assert second.value.details["retry_after_seconds"] > 0
+    assert calls == [True]
+
+
+def test_http_429_long_retry_after_does_not_loop_or_block_tool(tmp_path, monkeypatch):
+    calls = []
+
+    def request(*_args, **_kwargs):
+        calls.append(True)
+        raise HTTPError("https://app.omie.com.br/", 429, "busy", {"Retry-After": "65"}, None)
+
+    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.urlopen", request)
+    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.time.sleep", lambda _seconds: pytest.fail("Não aguardar 65 segundos."))
+    profile = {"credential_profile": "vault", "credential_entry_path": "APIs/Omie",
+               "app_key_field": "username", "app_secret_field": "password"}
+    with pytest.raises(OmieError) as error:
+        OmieService(tmp_path, Credentials())._request(profile, {"max_retries": 2}, "departments", "ListarDepartamentos", {})
+    assert error.value.code == "omie_http_error"
+    assert error.value.details["retry_after_seconds"] >= 65
+    assert calls == [True]
+
+
+def test_rate_limit_prevents_bursts_and_enforces_method_window(tmp_path, monkeypatch):
+    import onmyoji_daemon.mcp.omie.traffic as traffic
+
+    clock = [100.0]
+    sleeps = []
+    monkeypatch.setattr(traffic, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(traffic, "time", lambda: 10000 + clock[0])
+    def advance(delay):
+        sleeps.append(delay)
+        clock[0] += delay
+    monkeypatch.setattr(traffic, "sleep", advance)
+    gate = traffic.OmieTrafficGate()
+    gate.await_slot(tmp_path, "test-app-key", "ListarLancCC", interval=0.5, method_limit=2, root_limit=3)
+    gate.await_slot(tmp_path, "test-app-key", "ListarLancCC", interval=0.5, method_limit=2, root_limit=3)
+    assert clock[0] >= 100.5
+    gate.await_slot(tmp_path, "test-app-key", "ListarLancCC", interval=0.5, method_limit=2, root_limit=3)
+    assert clock[0] >= 160.0
+    assert sleeps
