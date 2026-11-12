@@ -941,6 +941,9 @@ class GitSetupError(RuntimeError):
     """Falha operacional sanitizada da administração Git da instância."""
 
 
+DEFAULT_UPDATE_COMMIT_MESSAGE = "Configurações do Shikigami"
+
+
 def _git_detail(completed: subprocess.CompletedProcess[str]) -> str:
     detail = diagnostic_detail(completed)
     return re.sub(r"(?i)(https?://)[^/@\s]+@", r"\1[credencial]@", detail)
@@ -1135,8 +1138,9 @@ def update_upstream(root: Path) -> None:
         note("Buscando somente a branch main do upstream.")
         _git(root, ["fetch", "--no-tags", "upstream", "+refs/heads/main:refs/remotes/upstream/main"], timeout=180)
         if choice and "commit" in choice.casefold():
-            message = prompt("Mensagem do commit [X = cancelar]: ").strip()
-            if not message or message.casefold() == "x": note("Atualização cancelada; alterações locais preservadas."); return
+            message = prompt(f"Mensagem do commit [{DEFAULT_UPDATE_COMMIT_MESSAGE}] (X = cancelar): ").strip()
+            if message.casefold() == "x": note("Atualização cancelada; alterações locais preservadas."); return
+            message = message or DEFAULT_UPDATE_COMMIT_MESSAGE
             _git(root, ["add", "-A"])
             _git(root, ["commit", "-m", message], timeout=180)
             if publish:

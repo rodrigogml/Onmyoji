@@ -96,29 +96,44 @@ def test_merge_conflict_preserves_stash_for_later_recovery(setup_module, repos, 
     assert "stash temporário foi preservado" in capsys.readouterr().out
 
 
-def test_commit_local_changes_before_merge(setup_module, repos, monkeypatch):
+@pytest.mark.parametrize("typed_message, expected_message", [
+    ("Salva trabalho local", "Salva trabalho local"),
+    ("", "Configurações do Shikigami"),
+])
+def test_commit_local_changes_before_merge(setup_module, repos, monkeypatch, typed_message, expected_message):
     _, local = repos
     (local / "local.txt").write_text("local\n", encoding="utf-8")
     monkeypatch.setattr(setup_module, "flow_choice", lambda *_args: "Salvar apenas em commit")
-    monkeypatch.setattr(setup_module, "prompt", lambda _label: "Salva trabalho local")
+    prompts = []
+
+    def answer(label):
+        prompts.append(label)
+        return typed_message
+
+    monkeypatch.setattr(setup_module, "prompt", answer)
     setup_module.update_upstream(local)
+    assert prompts == ["Mensagem do commit [Configurações do Shikigami] (X = cancelar): "]
     assert (local / "new.txt").exists()
     assert not git(local, "status", "--porcelain")
-    assert "Salva trabalho local" in git(local, "log", "--format=%s")
+    assert expected_message in git(local, "log", "--format=%s")
 
 
-def test_commit_and_push_origin_including_merge_result(setup_module, repos, monkeypatch, tmp_path):
+@pytest.mark.parametrize("typed_message, expected_message", [
+    ("Salva trabalho local", "Salva trabalho local"),
+    ("", "Configurações do Shikigami"),
+])
+def test_commit_and_push_origin_including_merge_result(setup_module, repos, monkeypatch, tmp_path, typed_message, expected_message):
     _, local = repos
     origin = tmp_path / "origin.git"
     git(tmp_path, "init", "--bare", str(origin))
     git(local, "remote", "add", "origin", str(origin))
     (local / "local.txt").write_text("local\n", encoding="utf-8")
     monkeypatch.setattr(setup_module, "flow_choice", lambda *_args: "Salvar em commit e publicar no origin")
-    monkeypatch.setattr(setup_module, "prompt", lambda _label: "Salva trabalho local")
+    monkeypatch.setattr(setup_module, "prompt", lambda _label: typed_message)
     setup_module.update_upstream(local)
     assert (local / "new.txt").exists()
     assert git(origin, "rev-parse", "refs/heads/main") == git(local, "rev-parse", "HEAD")
-    assert "Salva trabalho local" in git(origin, "log", "--format=%s", "refs/heads/main")
+    assert expected_message in git(origin, "log", "--format=%s", "refs/heads/main")
     assert not git(local, "status", "--porcelain")
 
 
@@ -205,6 +220,21 @@ def test_cancel_preserves_local_changes(setup_module, repos, monkeypatch):
     setup_module.update_upstream(local)
     assert not (local / "new.txt").exists()
     assert (local / "local.txt").exists()
+
+
+@pytest.mark.parametrize("cancel", ["x", "X"])
+def test_cancel_commit_message_preserves_local_changes(setup_module, repos, monkeypatch, cancel, capsys):
+    _, local = repos
+    (local / "local.txt").write_text("local\n", encoding="utf-8")
+    monkeypatch.setattr(setup_module, "flow_choice", lambda *_args: "Salvar apenas em commit")
+    monkeypatch.setattr(setup_module, "prompt", lambda _label: cancel)
+
+    setup_module.update_upstream(local)
+
+    assert "Atualização cancelada" in capsys.readouterr().out
+    assert not (local / "new.txt").exists()
+    assert (local / "local.txt").read_text(encoding="utf-8") == "local\n"
+    assert "local.txt" in git(local, "status", "--porcelain")
 
 
 def test_main_menu_routes_update(setup_module, tmp_path, monkeypatch):
