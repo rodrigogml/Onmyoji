@@ -533,6 +533,8 @@ def test_cloudflare_preflight_reports_independent_tunnel_permission_failure():
     def call(method, path):
         if path.endswith("/tokens/verify"):
             return {"status": "active"}
+        if path == "/zones/zone":
+            return {"name": "example.com"}
         if "/dns_records" in path:
             return []
         if "/cfd_tunnel" in path:
