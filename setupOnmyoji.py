@@ -1096,6 +1096,43 @@ def sync_git_remote(root: Path, remote: str) -> tuple[bool, str]:
         return False, str(error)
 
 
+def _updated_setup_python(root: Path) -> Path:
+    """Seleciona o Python configurado, sem herdar o interpretador do setup atual."""
+    try:
+        configuration = python_runtime.configuration(root)
+        executable = python_runtime.python(root)
+        if configuration["mode"] == "isolated" and not executable.is_file():
+            executable = python_runtime.base_python(root)
+    except python_runtime.RuntimeError as error:
+        raise GitSetupError(f"Não foi possível determinar o Python configurado: {error}") from error
+    if not executable.is_file():
+        raise GitSetupError(
+            f"O Python configurado não foi encontrado: {executable}. "
+            "Ajuste o executável em Python e bibliotecas e conclua a atualização."
+        )
+    return executable.resolve()
+
+
+def _restart_updated_setup(root: Path, executable: Path, *, restart_daemon: bool) -> None:
+    """Reabre o setup atualizado sem quebrar caminhos com espaços no Windows."""
+    arguments = [str(executable), str(root / "setupOnmyoji.py"), "--resume-after-update"]
+    if restart_daemon:
+        arguments.append("--restart-daemon-after-update")
+    try:
+        if sys.platform == "win32":
+            # os.execv usa a CRT no Windows e pode desmembrar caminhos com espaços.
+            completed = subprocess.run(arguments, cwd=str(root), check=False)
+            if completed.returncode:
+                result(False, f"O setup atualizado terminou com código {completed.returncode}. Confira a migração e o daemon.")
+            raise SystemExit(completed.returncode)
+        os.execv(str(executable), arguments)
+    except OSError as error:
+        raise GitSetupError(
+            f"Não foi possível reiniciar o setup usando {executable}: {error}. "
+            "Execute o setup atualizado manualmente para concluir a migração."
+        ) from error
+
+
 def update_upstream(root: Path) -> None:
     """Atualiza somente upstream/main e preserva alterações locais escolhidas pelo operador."""
     flow_heading("Atualizar Onmyōji", "Incorpora a main do upstream à branch atual")
@@ -1170,21 +1207,22 @@ def update_upstream(root: Path) -> None:
         if publish:
             _git(root, ["push", "origin", f"HEAD:refs/heads/{branch}"], timeout=180)
         result(True, "Atualização do Onmyōji concluída" + (" e alterações locais restauradas." if stash_id else "."))
-        if root.resolve() == ROOT.resolve() and daemon_management.running_process(root):
-            ok, message = daemon_management.stop_background(root)
-            if not ok:
-                raise GitSetupError("A atualização foi baixada, mas o daemon não pôde ser parado para migrar o estado: " + message)
-            restart_daemon = True
-            note("Daemon local encerrado para a migração de estado; ele será retomado após o novo setup.")
         if root.resolve() == ROOT.resolve():
+            # Verifica o Python selecionado antes de interromper o daemon.
+            executable = _updated_setup_python(root)
+            if daemon_management.running_process(root):
+                ok, message = daemon_management.stop_background(root)
+                if not ok:
+                    raise GitSetupError("A atualização foi baixada, mas o daemon não pôde ser parado para migrar o estado: " + message)
+                restart_daemon = True
+                note("Daemon local encerrado para a migração de estado; ele será retomado após o novo setup.")
             note("Reiniciando o setup atualizado para verificar versões e concluir migrações.")
-            arguments = [sys.executable, str(ROOT / "setupOnmyoji.py"), "--resume-after-update"]
-            if restart_daemon:
-                arguments.append("--restart-daemon-after-update")
-            os.execv(sys.executable, arguments)
+            _restart_updated_setup(root, executable, restart_daemon=restart_daemon)
         note("Execute a versão atualizada do setup para concluir a verificação de layout.")
     except GitSetupError as error:
         result(False, str(error))
+        if restart_daemon:
+            note("O daemon permanece parado até concluir a migração. Reexecute o setup com o Python configurado.")
         if stash_id:
             note(f"Stash temporário: {stash_id}. Confira seu estado antes de restaurá-lo ou removê-lo.")
 
