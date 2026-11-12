@@ -7,6 +7,8 @@ Nenhuma credencial, payload ou registro financeiro é persistido.
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from contextlib import contextmanager
+import errno
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from hashlib import sha256
@@ -71,11 +73,69 @@ class OmieTrafficGate:
         return {key: float(value) for key, value in saved.items()
                 if isinstance(key, str) and type(value) in (int, float) and isfinite(value) and value > time()}
 
-    def serialize(self, root: Path, app_key: str, method: str) -> Lock:
-        """Impede chamadas simultâneas do mesmo App Key + método no daemon."""
+    @contextmanager
+    def serialize(self, root: Path, app_key: str, method: str):
+        """Serializa chamadas de uma mesma App Key + método entre processos da instalação.
+
+        O arquivo de trava não contém App Key, payload nem qualquer dado do ERP.
+        A trava por thread evita reentrância no processo; a trava do sistema
+        operacional coordena processos independentes que usam o mesmo root.
+        """
         key = self._key(root, app_key, method)
         with self._guard:
-            return self._method_locks.setdefault(key, Lock())
+            thread_lock = self._method_locks.setdefault(key, Lock())
+        with thread_lock:
+            path = Path(key[0]) / "state" / "mcp" / "omie" / "method-locks" / (key[1] + ".lock")
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                handle = path.open("a+b")
+            except OSError as error:
+                raise OmieError(
+                    "omie_local_lock_error", "Não foi possível preparar a trava de concorrência Omie.",
+                    {"retryable": False},
+                ) from error
+            try:
+                # msvcrt.locking requer ao menos um byte; flock também aceita.
+                if os.name == "nt":
+                    import msvcrt
+                    handle.seek(0)
+                    if not handle.read(1):
+                        handle.seek(0)
+                        handle.write(b"0")
+                        handle.flush()
+                else:
+                    import fcntl
+                deadline = monotonic() + 60.0
+                while True:
+                    try:
+                        handle.seek(0)
+                        if os.name == "nt":
+                            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                        else:
+                            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except OSError as error:
+                        if error.errno not in {errno.EACCES, errno.EAGAIN}:
+                            raise OmieError(
+                                "omie_local_lock_error", "Não foi possível obter a trava de concorrência Omie.",
+                                {"retryable": False},
+                            ) from error
+                        if monotonic() >= deadline:
+                            raise OmieError(
+                                "omie_local_busy", "Outra chamada Omie desse método continua em execução nesta instalação.",
+                                {"retryable": False, "retry_after_seconds": 3},
+                            ) from error
+                        sleep(0.1)
+                try:
+                    yield
+                finally:
+                    handle.seek(0)
+                    if os.name == "nt":
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
 
     def pause(self, root: Path, app_key: str, method: str, seconds: float) -> None:
         """Registra cooldown no processo e em state/, sem gravar a App Key."""

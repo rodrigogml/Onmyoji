@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from io import BytesIO
 from pathlib import Path
+from threading import Event, Thread
 from urllib.error import HTTPError, URLError
 
 import pytest
@@ -138,6 +139,103 @@ def test_http_failure_does_not_expose_response_body(tmp_path, monkeypatch):
         OmieService(tmp_path, Credentials()).invoke("example", "projects_get", {"params": {"codInt": "P1"}})
     assert error.value.code == "omie_http_error"
     assert "sensitive" not in str(error.value)
+
+
+
+def test_same_method_lock_is_shared_between_gate_instances(tmp_path):
+    from onmyoji_daemon.mcp.omie.traffic import OmieTrafficGate
+
+    first, second = OmieTrafficGate(), OmieTrafficGate()
+    started, entered = Event(), Event()
+
+    def contender():
+        started.set()
+        with second.serialize(tmp_path, "key-from-vault", "ListarLancCC"):
+            entered.set()
+
+    worker = Thread(target=contender, daemon=True)
+    try:
+        with first.serialize(tmp_path, "key-from-vault", "ListarLancCC"):
+            worker.start()
+            assert started.wait(2)
+            assert not entered.wait(0.15), "A trava deve impedir chamadas paralelas de instâncias distintas."
+        assert entered.wait(2)
+    finally:
+        worker.join(timeout=2)
+    locks = list((tmp_path / "state" / "mcp" / "omie" / "method-locks").glob("*.lock"))
+    assert len(locks) == 1
+    assert "key-from-vault" not in locks[0].name
+    assert "ListarLancCC" not in locks[0].name
+    assert locks[0].stat().st_size <= 1
+
+
+def test_http_500_same_method_busy_retries_only_read(tmp_path, monkeypatch):
+    calls, delays = [], []
+    text = "Já existe uma requisição desse método sendo executada e você pode tentar novamente em alguns instantes."
+    def request(*_args, **_kwargs):
+        calls.append(True)
+        if len(calls) == 1:
+            raise HTTPError("https://app.omie.com.br/", 500, "other request", {},
+                            BytesIO(json.dumps({"faultstring": text}).encode("utf-8")))
+        return Response()
+    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.urlopen", request)
+    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.time.sleep", delays.append)
+    result = OmieService(tmp_path, Credentials())._request(
+        {"credential_profile": "vault", "credential_entry_path": "APIs/Omie",
+         "app_key_field": "username", "app_secret_field": "password"},
+        {"max_retries": 2}, "account_transactions", "ListarLancCC", {},
+    )
+    assert result["pagina"] == 1
+    assert len(calls) == 2
+    assert delays == [2.0]
+
+
+def test_http_500_same_method_busy_exhaustion_pauses_without_leaking_body(tmp_path, monkeypatch):
+    calls, delays = [], []
+    text = "Já existe uma requisição desse método sendo executada e você pode tentar novamente em alguns instantes."
+    def request(*_args, **_kwargs):
+        calls.append(True)
+        raise HTTPError("https://app.omie.com.br/", 500, "sensitive", {},
+                        BytesIO(json.dumps({"description": text, "private": "SECRET"}).encode("utf-8")))
+    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.urlopen", request)
+    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.time.sleep", delays.append)
+    profile = {"credential_profile": "vault", "credential_entry_path": "APIs/Omie",
+               "app_key_field": "username", "app_secret_field": "password"}
+    service = OmieService(tmp_path, Credentials())
+    with pytest.raises(OmieError) as error:
+        service._request(profile, {"max_retries": 2}, "account_transactions", "ListarLancCC", {})
+    assert error.value.code == "omie_busy"
+    assert error.value.details == {
+        "http_status": 500, "reason": "same_method_in_progress",
+        "retryable": False, "retry_after_seconds": 10,
+    }
+    assert delays == [2.0, 4.0]
+    assert len(calls) == 3
+    assert "SECRET" not in str(error.value.as_dict())
+    with pytest.raises(OmieError) as blocked:
+        service._request(profile, {"max_retries": 2}, "account_transactions", "ListarLancCC", {})
+    assert blocked.value.code == "omie_cooldown"
+    assert len(calls) == 3
+
+
+def test_http_500_same_method_busy_is_never_retried_for_write(tmp_path, monkeypatch):
+    calls = []
+    text = "Já existe uma requisição desse método sendo executada."
+    def request(*_args, **_kwargs):
+        calls.append(True)
+        raise HTTPError("https://app.omie.com.br/", 500, "other request", {},
+                        BytesIO(json.dumps({"description": text}).encode("utf-8")))
+    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.urlopen", request)
+    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.time.sleep",
+                        lambda _delay: pytest.fail("Escritas não podem repetir HTTP 500."))
+    with pytest.raises(OmieError) as error:
+        OmieService(tmp_path, Credentials())._request(
+            {"credential_profile": "vault", "credential_entry_path": "APIs/Omie",
+             "app_key_field": "username", "app_secret_field": "password"},
+            {"max_retries": 2}, "account_transactions", "IncluirLancCC", {},
+        )
+    assert error.value.code == "omie_http_error"
+    assert len(calls) == 1
 
 
 def test_http_500_is_not_retried(tmp_path, monkeypatch):

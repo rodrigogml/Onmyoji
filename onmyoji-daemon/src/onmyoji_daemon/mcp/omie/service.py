@@ -6,6 +6,7 @@ from math import isfinite
 from pathlib import Path
 import time
 import tomllib
+from unicodedata import combining, normalize
 from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -38,6 +39,17 @@ OPERATIONS = {
     "inbound_nfe_receipts_list": ("inbound_nfe_receipts", "ListarRecebimentos", False), "inbound_nfe_receipts_get": ("inbound_nfe_receipts", "ConsultarRecebimento", False), "inbound_nfe_receipts_update": ("inbound_nfe_receipts", "AlterarRecebimento", True), "inbound_nfe_receipts_set_stage": ("inbound_nfe_receipts", "AlterarEtapaRecebimento", True), "inbound_nfe_receipts_update_completed": ("inbound_nfe_receipts", "AlterarRecebimentoConcluido", True), "inbound_nfe_receipts_complete": ("inbound_nfe_receipts", "ConcluirRecebimento", True), "inbound_nfe_receipts_reverse": ("inbound_nfe_receipts", "ReverterRecebimento", True), "inbound_nfe_receipts_delete": ("inbound_nfe_receipts", "ExcluirRecebimento", True),
     "incoming_invoices_list": ("incoming_invoices", "ListarNotaEnt", False), "incoming_invoices_get": ("incoming_invoices", "ConsultarNotaEnt", False), "incoming_invoices_create": ("incoming_invoices", "IncluirNotaEnt", True), "incoming_invoices_update": ("incoming_invoices", "AlterarNotaEnt", True), "incoming_invoices_delete": ("incoming_invoices", "ExcluirNotaEnt", True), "incoming_invoices_status": ("incoming_invoices", "StatusNotaEnt", False), "electronic_invoices_list": ("electronic_invoices", "ListarNF", False), "electronic_invoices_get": ("electronic_invoices", "ConsultarNF", False),
 }
+
+
+READ_ONLY_METHODS = frozenset(method for _, method, writes in OPERATIONS.values() if not writes)
+
+
+def _method_busy_error(description: Any) -> bool:
+    """Reconhece somente o aviso conhecido de simultaneidade da Omie."""
+    if not isinstance(description, str):
+        return False
+    folded = "".join(ch for ch in normalize("NFKD", description.casefold()) if not combining(ch))
+    return "ja existe uma requisicao" in folded and "metodo" in folded and "sendo executada" in folded
 
 
 class OmieService:
@@ -171,6 +183,22 @@ class OmieService:
                                 details["remote_code"] = code
                     except (OSError, ValueError, UnicodeError, AttributeError):
                         pass
+                    # A Omie utiliza HTTP 500 também quando outro cliente já
+                    # executa o mesmo método. Esse caso não é erro de contrato:
+                    # retentar apenas métodos de leitura e após atraso limitado.
+                    if error.code == 500 and method in READ_ONLY_METHODS and _method_busy_error(details.get("remote_description")):
+                        if attempt < retries:
+                            time.sleep(min(8.0, 2.0 * (2 ** attempt)))
+                            continue
+                        # Evita uma sequência de novas tentativas que poderia
+                        # acionar o bloqueio HTTP 425 da Omie.
+                        TRAFFIC_GATE.pause(self.root, app_key, method, 10.0)
+                        raise OmieError(
+                            "omie_busy", "A Omie ainda está executando esse método em outra requisição. "
+                            "A consulta não foi concluída; tente novamente após o intervalo indicado.",
+                            {"http_status": 500, "reason": "same_method_in_progress",
+                             "retryable": False, "retry_after_seconds": 10},
+                        ) from error
                     message = f"A API Omie retornou HTTP {error.code}."
                     if error.code == 425:
                         message += " Aguarde o fim do bloqueio temporário e revise os parâmetros antes de tentar novamente."

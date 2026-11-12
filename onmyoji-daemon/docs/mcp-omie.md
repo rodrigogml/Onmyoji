@@ -185,16 +185,23 @@ o campo e sugestão quando aplicável. Escritas nunca sofrem retry automático;
 um resultado `outcome_unknown` exige consulta antes de repetir. Nenhuma
 operação aceita endpoint, método Omie ou credenciais fornecidos pelo agente.
 
-Erros de contrato HTTP 500 não recebem retry automático. HTTP 425 também
-interrompe as tentativas: a Omie documenta bloqueio temporário após requisições
-incorretas repetidas. O MCP registra o cooldown de 30 minutos para a combinação
+Erros de contrato HTTP 500 não recebem retry automático. Excepcionalmente,
+o HTTP 500 com a descrição da Omie "Já existe uma requisição desse método
+sendo executada" recebe até `max_retries` novas tentativas **somente em
+consultas**, com atrasos de 2, 4 e até 8 segundos. Esgotadas as tentativas,
+a tool devolve `omie_busy` com `retry_after_seconds: 10` e aplica cooldown
+temporário antes de permitir nova consulta. Nunca ocorre retry de escrita
+nesse cenário. HTTP 425 também interrompe as tentativas: a Omie documenta
+bloqueio temporário após requisições incorretas repetidas. O MCP registra o cooldown de 30 minutos para a combinação
 App Key + método em `state/mcp/omie/cooldowns.json`, identificada somente por
 hash (sem credenciais), para impedir novas chamadas mesmo após reiniciar o
 daemon. Revise os parâmetros antes de retomar; reduzir o intervalo de datas não
 corrige um campo rejeitado.
 
 O controle de tráfego do daemon serializa requisições da mesma App Key + método,
-usa janela móvel para evitar rajadas e aplica por padrão intervalo mínimo de
+inclusive entre processos que utilizam a **mesma raiz de instalação**,
+por meio de travas locais em `state/mcp/omie/method-locks/` com nomes hash
+sem credenciais ou dados financeiros. Também usa janela móvel para evitar rajadas e aplica por padrão intervalo mínimo de
 0,35 segundo entre chamadas desse método, limite preventivo de 180 chamadas
 por minuto por método e 900 por minuto por processo. Há margem em relação aos
 limites padrão publicados pela Omie. Para contas Trial/FIT (60 chamadas/minuto),
@@ -210,9 +217,9 @@ process_requests_per_minute = 900
 HTTP 429 respeita `Retry-After` (segundos ou data HTTP) e utiliza backoff
 exponencial sem repetir escrita automaticamente. Aguardas superiores a 8 segundos
 são expostas como cooldown, sem prender a execução da tool no tempo de espera.
-O controle de ritmo é compartilhado somente entre chamadas no mesmo processo;
-se outras integrações ou instâncias consumirem o mesmo IP, seus consumos devem
-ser coordenados externamente. O cache é local ao processo e não substitui a
+As janelas móveis de ritmo ainda são compartilhadas apenas no mesmo processo;
+a exclusão mútua por método também abrange processos da mesma instalação.
+Outras instalações e integrações no mesmo IP precisam de coordenação externa. O cache é local ao processo e não substitui a
 conferência de dados atualizados antes de operações sensíveis.
 
 | Família | Comportamento preservado |
