@@ -1633,10 +1633,15 @@ def opening_logo() -> None:
 
 
 def screen(title: str, subtitle: str = "") -> None:
+    """Desenha o cabeçalho compartilhado dos menus com a versão do setup."""
     width = terminal_width()
     print("\n" + Ui.text("╭" + "─" * (width - 2) + "╮", Ui.violet))
     heading = f" ONMYŌJI  /  {title.upper()}"
-    print("│" + Ui.text(heading.ljust(width - 2), Ui.bold, Ui.violet) + "│")
+    version = f"v{SETUP_VERSION}"
+    heading_width = width - len(version) - 4
+    if len(heading) > heading_width:
+        heading = heading[:heading_width - 1] + "…"
+    print("│" + Ui.text(heading.ljust(heading_width), Ui.bold, Ui.violet) + " " + Ui.text(version, Ui.slate) + " │")
     if subtitle: print("│ " + Ui.text(subtitle[:width - 4].ljust(width - 4), Ui.slate) + " │")
     print(Ui.text("╰" + "─" * (width - 2) + "╯", Ui.violet))
 
