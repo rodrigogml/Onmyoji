@@ -21,6 +21,9 @@ from .instructions import InstructionComposer, InstructionError
 from .instance import identity
 
 
+APP_SERVER_ARGUMENTS = ("--config", "check_for_update_on_startup=false", "app-server", "--stdio")
+
+
 class CodexExecutionError(RuntimeError):
     """Indica que não é seguro iniciar o Codex com a configuração atual."""
 
@@ -130,7 +133,7 @@ class CodexLaunch:
     def app_server_launch(self) -> tuple[list[str], Path, dict[str, str]]:
         """Prepara o App Server e reconcilia o MCP antes de iniciá-lo."""
         self._reconcile_mcp()
-        return [self.executable, "--config", self._update_check_override(), "app-server", "--stdio"], self.workspace, self.environment()
+        return [self.executable, *APP_SERVER_ARGUMENTS], self.workspace, self.environment()
 
     def _reconcile_mcp(self) -> None:
         """Aplica uma pendência MCP sem exigir reinicialização do gateway."""

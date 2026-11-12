@@ -17,6 +17,7 @@ import signal
 import sqlite3
 
 from .codex_capabilities import executable_digest
+from .codex_execution import APP_SERVER_ARGUMENTS
 
 
 CHECKPOINT_KEY = "app_server_process"
@@ -130,16 +131,20 @@ class _LinuxProcess:
             raise ProcessRecoveryError("process_termination_unconfirmed")
 
     def matches_node_launcher(self, executable: str) -> bool:
-        """Confere o Node e os argumentos do processo pinado sem registrar seu conteúdo."""
+        """Confere o Node e a forma atual ou legada do launcher sem registrar seu conteúdo."""
         try:
             proc = Path("/proc") / str(self.pid)
             native = Path(os.readlink(proc / "exe"))
             arguments = (proc / "cmdline").read_bytes().split(b"\0")
+            if arguments and arguments[-1] == b"":
+                arguments.pop()
             if self._exited() or native.name not in {"node", "nodejs"} or len(arguments) < 4:
                 return False
             launcher = Path(os.fsdecode(arguments[1])).resolve(strict=True)
             expected = Path(executable).expanduser().resolve(strict=True)
-            return launcher == expected and arguments[2:4] == [b"app-server", b"--stdio"]
+            current = tuple(argument.encode("utf-8") for argument in APP_SERVER_ARGUMENTS)
+            legacy = (b"app-server", b"--stdio")
+            return launcher == expected and tuple(arguments[2:]) in {current, legacy}
         except (OSError, ValueError):
             raise ProcessRecoveryError("process_identity_unavailable") from None
 

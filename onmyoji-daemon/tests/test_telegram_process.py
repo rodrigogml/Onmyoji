@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from onmyoji_daemon import telegram_process as lifecycle
+from onmyoji_daemon.codex_execution import APP_SERVER_ARGUMENTS
 from onmyoji_daemon.telegram_persistence import GatewayStore
 
 
@@ -110,11 +111,12 @@ def test_node_launcher_rejects_unverified_process_on_registration(native_fixture
 
 
 @pytest.mark.parametrize("native_name,arguments,expected", [
-    ("node", ["node", "script", "app-server", "--stdio"], True),
+    ("node", ["node", "script", "--config", "check_for_update_on_startup=false", "app-server", "--stdio"], True),
     ("nodejs", ["nodejs", "script", "app-server", "--stdio"], True),
     ("python", ["python", "script", "app-server", "--stdio"], False),
     ("node", ["node", "script", "other", "--stdio"], False),
     ("node", ["node", "other", "app-server", "--stdio"], False),
+    ("node", ["node", "script", "--config", "unexpected=value", "app-server", "--stdio"], False),
 ])
 def test_linux_node_launcher_matches_exact_script_and_arguments(tmp_path, monkeypatch, native_name, arguments, expected):
     script = tmp_path / "codex.js"
@@ -139,7 +141,7 @@ def test_real_linux_node_script_can_be_registered_without_terminating_another_pr
         pytest.skip("Node e pidfd são necessários")
     script = tmp_path / "codex.js"
     script.write_text("setInterval(() => {}, 1000);", encoding="utf-8")
-    process = subprocess.Popen([node, str(script), "app-server", "--stdio"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    process = subprocess.Popen([node, str(script), *APP_SERVER_ARGUMENTS], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     client = SimpleNamespace(process=process, process_epoch="node-real-test")
     try:
         assert lifecycle.record_process(process_store, tmp_path, str(script), client)
