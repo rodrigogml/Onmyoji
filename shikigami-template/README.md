@@ -1,3 +1,0 @@
-# {{SHIKIGAMI_NAME}}
-
-

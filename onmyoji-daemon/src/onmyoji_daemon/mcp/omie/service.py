@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from math import isfinite
 from pathlib import Path
 import time
@@ -50,6 +51,24 @@ def _method_busy_error(description: Any) -> bool:
         return False
     folded = "".join(ch for ch in normalize("NFKD", description.casefold()) if not combining(ch))
     return "ja existe uma requisicao" in folded and "metodo" in folded and "sendo executada" in folded
+
+
+def _empty_invoice_listing(method: str, params: Mapping[str, Any], description: Any) -> dict[str, Any] | None:
+    """Normaliza apenas a ausência conhecida de registros na primeira página."""
+    if method not in {"ListarNotaEnt", "ListarNF"} or not isinstance(description, str):
+        return None
+    page_key = "nPagina" if method == "ListarNotaEnt" else "pagina"
+    if params.get(page_key, 1) != 1:
+        return None
+    folded = "".join(ch for ch in normalize("NFKD", description.casefold()) if not combining(ch))
+    if not (
+        re.search(r"\bnao existem registros para a pagina\s*\[?1\]?[!.]?\s*$", folded)
+        or re.search(r"\bnao ha registros na pagina\s*\[?1\]?[!.]?\s*$", folded)
+    ):
+        return None
+    if method == "ListarNotaEnt":
+        return {"nPagina": 1, "nRegistros": 0, "nTotalPaginas": 0, "nTotalRegistros": 0, "notas": []}
+    return {"pagina": 1, "registros": 0, "total_de_paginas": 0, "total_de_registros": 0, "nfCadastro": []}
 
 
 class OmieService:
@@ -183,6 +202,10 @@ class OmieService:
                                 details["remote_code"] = code
                     except (OSError, ValueError, UnicodeError, AttributeError):
                         pass
+                    if error.code in {400, 500}:
+                        empty = _empty_invoice_listing(method, parameters, details.get("remote_description"))
+                        if empty is not None:
+                            return empty
                     # A Omie utiliza HTTP 500 também quando outro cliente já
                     # executa o mesmo método. Esse caso não é erro de contrato:
                     # retentar apenas métodos de leitura e após atraso limitado.
@@ -213,6 +236,9 @@ class OmieService:
                 if not isinstance(result, Mapping):
                     raise OmieError("invalid_response", "A API Omie retornou uma resposta inválida.")
                 if result.get("faultstring") or ("cCodStatus" in result and (type(result["cCodStatus"]) not in (str, int) or result["cCodStatus"] not in ("0", 0))):
+                    empty = _empty_invoice_listing(method, parameters, result.get("faultstring"))
+                    if empty is not None:
+                        return empty
                     raise OmieError("omie_api_error", "A API Omie retornou uma falha de negócio.")
                 return result
         raise OmieError("network_error", "Não foi possível consultar a API Omie.")

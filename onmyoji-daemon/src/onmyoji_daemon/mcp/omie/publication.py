@@ -6,6 +6,7 @@ from typing import Any
 from .contracts import (
     ACCOUNT_TRANSACTION_LIST_FIELDS, FINANCIAL_MOVEMENT_LIST_FIELDS,
     CUSTOMER_FILTER_FIELDS, CUSTOMER_LIST_FIELDS, DIRECT_DOCUMENT_TYPES,
+    ELECTRONIC_INVOICE_LIST_FIELDS, INCOMING_INVOICE_LIST_FIELDS,
     LIST_FIELDS, PAYMENT_FIELDS, TITLE_FIELDS, TITLE_KEYS,
 )
 
@@ -194,8 +195,10 @@ def input_contract(operation: str) -> tuple[str, dict[str, Any]]:
                 available.extend(["departments", "departamentos", "department_allocations", "items", "itensRecebimentoEditar"])
             schema["allOf"] = [{"anyOf": [{"required": [key]} for key in available]}]
         return "body", schema
-    if operation in {"incoming_invoices_list", "electronic_invoices_list"}:
-        return "params", obj({"nPagina", "nRegistrosPorPagina", "pagina", "registros_por_pagina", "ordenar_por", "dDataEmissaoInicial", "dDataEmissaoFinal"})
+    if operation == "incoming_invoices_list":
+        return "params", obj(INCOMING_INVOICE_LIST_FIELDS)
+    if operation == "electronic_invoices_list":
+        return "params", obj(ELECTRONIC_INVOICE_LIST_FIELDS)
     if operation in {"incoming_invoices_get", "incoming_invoices_status", "incoming_invoices_delete"}:
         return ("body" if operation.endswith("_delete") else "params"), identifiers({"id", "integration_id"})
     if operation in {"incoming_invoices_create", "incoming_invoices_update"}:
@@ -215,6 +218,8 @@ NOTES = {
     "payables_update": "Para corrigir tipo de título pago, preserve os demais campos e consulte após alteração. Não recrie título nem cancele/repita baixa para trocar o tipo.",
     "inbound_nfe_receipts_update": "Consulte primeiro a NF-e. Aceita body.receipt_id ou ide, campos planos, additional_info/infoAdicionais, departments/departamentos/department_allocations e items. department_allocations usa department_code, percentage e amount. project_id exige ID numérico; para STRA36 use omie.financeiro.projetos.consultar com filtros.codigo_integracao. Não envie fornecedor nem valor. Consulte após atualizar.",
     "inbound_nfe_receipts_update_completed": "Somente para recebimentos já concluídos; permite infoAdicionais (purchase_category_code, project_id, bank_account_id, registration_date ou buyer_id). A API AlterarRecebimentoConcluido não aceita departments: consulte o recebimento e não altere o rateio por esta operação.",
+    "incoming_invoices_list": "ListarNotaEnt: paginação nPagina/nRegistrosPorPagina, filtro de cliente/fornecedor nIdCliente e período de alteração dtAltDe/dtAltAte; não confunda data de alteração com emissão.",
+    "electronic_invoices_list": "ListarNF: paginação pagina/registros_por_pagina, emissão dEmiInicial/dEmiFinal, cliente/fornecedor nIdCliente e tpNF=0 para entrada. Não use nPagina nesta tool.",
 }
 
 

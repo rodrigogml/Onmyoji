@@ -49,7 +49,8 @@ def operation_cases():
     add("inbound_nfe_receipts_update", "body", {"receipt_id": 1, "purchase_category_code": "2.01", "departments": [{"cCodDepartamento": "D1", "pDepartamento": 100}]})
     add("inbound_nfe_receipts_set_stage inbound_nfe_receipts_complete inbound_nfe_receipts_reverse", "body", {"receipt_id": 1, "stage": "50"})
     add("inbound_nfe_receipts_update_completed", "body", {"receipt_id": 1, "purchase_category_code": "2.01", "bank_account_id": 2, "registration_date": "25/10/2026"})
-    add("incoming_invoices_list electronic_invoices_list", "params", {"nPagina": 1, "nRegistrosPorPagina": 10})
+    add("incoming_invoices_list", "params", {"nPagina": 1, "nRegistrosPorPagina": 10, "nIdCliente": 123, "dtAltDe": "01/11/2026"})
+    add("electronic_invoices_list", "params", {"pagina": 1, "registros_por_pagina": 10, "nIdCliente": 123, "dEmiInicial": "01/11/2026", "tpNF": "0"})
     add("incoming_invoices_get incoming_invoices_status", "params", {"id": 1})
     add("incoming_invoices_delete", "body", {"id": 1})
     add("incoming_invoices_create incoming_invoices_update", "body", {"cabec": {}, "infAdic": {}, "produtos": []})
@@ -84,6 +85,48 @@ def test_service_routes_normalized_parameters_to_registered_endpoint(operation, 
         endpoint, method, _ = OPERATIONS[operation]
         assert service._request.call_args.args == ({}, {}, endpoint, method, build_params(operation, arguments))
         assert service._request.call_args.kwargs == {"retries": 0 if operation in WRITES else None}
+
+
+def test_invoice_list_schemas_match_separate_native_endpoints():
+    from jsonschema import Draft202012Validator, ValidationError
+    definitions = OmieToolRegistry(Configuration([{"name": "empresa", "description": "ERP"}])).definitions()
+    incoming = next(item["input_schema"] for item in definitions if item["name"] == "omie.incoming_invoices_list")
+    electronic = next(item["input_schema"] for item in definitions if item["name"] == "omie.electronic_invoices_list")
+    assert "nPagina" in incoming["properties"]["params"]["properties"]
+    assert "pagina" not in incoming["properties"]["params"]["properties"]
+    assert "nIdCliente" in incoming["properties"]["params"]["properties"]
+    assert "dtAltDe" in incoming["properties"]["params"]["properties"]
+    assert "pagina" in electronic["properties"]["params"]["properties"]
+    assert "nPagina" not in electronic["properties"]["params"]["properties"]
+    assert "dEmiInicial" in electronic["properties"]["params"]["properties"]
+    for operation, schema, correct, wrong in (
+        ("incoming_invoices_list", incoming, {"nPagina": 1, "nRegistrosPorPagina": 50, "nIdCliente": 7}, {"pagina": 1}),
+        ("electronic_invoices_list", electronic, {"pagina": 1, "registros_por_pagina": 50, "dEmiInicial": "01/11/2026"}, {"nPagina": 1}),
+    ):
+        Draft202012Validator(schema).validate({"params": correct})
+        assert build_params(operation, {"params": correct}) == correct
+        with pytest.raises(ValidationError):
+            Draft202012Validator(schema).validate({"params": wrong})
+
+
+@pytest.mark.parametrize("operation,params", [
+    ("incoming_invoices_list", {"pagina": 1}),
+    ("incoming_invoices_list", {"nPagina": True}),
+    ("incoming_invoices_list", {"nPagina": 0}),
+    ("incoming_invoices_list", {"dDataEmissaoInicial": "01/11/2026"}),
+    ("incoming_invoices_list", {"dtAltDe": "2026-11-01"}),
+    ("electronic_invoices_list", {"nPagina": 1}),
+    ("electronic_invoices_list", {"nRegistrosPorPagina": 50}),
+    ("electronic_invoices_list", {"registros_por_pagina": "50"}),
+    ("electronic_invoices_list", {"dDataEmissaoFinal": "01/11/2026"}),
+    ("electronic_invoices_list", {"dEmiFinal": "2026-11-01"}),
+])
+def test_invalid_invoice_listing_is_rejected_before_loading_profile(operation, params, tmp_path):
+    service = OmieService(tmp_path)
+    service._profile = Mock(side_effect=AssertionError("A configuração não deve ser lida"))
+    with pytest.raises(OmieError) as error:
+        service.invoke("example", operation, {"params": params})
+    assert error.value.code == "invalid_request"
 
 
 @pytest.mark.parametrize("operation", WRITES)

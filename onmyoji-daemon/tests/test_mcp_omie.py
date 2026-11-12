@@ -353,3 +353,59 @@ def test_rate_limit_prevents_bursts_and_enforces_method_window(tmp_path, monkeyp
     gate.await_slot(tmp_path, "test-app-key", "ListarLancCC", interval=0.5, method_limit=2, root_limit=3)
     assert clock[0] >= 160.0
     assert sleeps
+
+@pytest.mark.parametrize("operation,params,expected", [
+    ("incoming_invoices_list", {"nPagina": 1, "nRegistrosPorPagina": 50}, {
+        "nPagina": 1, "nRegistros": 0, "nTotalPaginas": 0, "nTotalRegistros": 0, "notas": [],
+    }),
+    ("electronic_invoices_list", {"pagina": 1, "registros_por_pagina": 50}, {
+        "pagina": 1, "registros": 0, "total_de_paginas": 0, "total_de_registros": 0, "nfCadastro": [],
+    }),
+])
+@pytest.mark.parametrize("as_http_error", [False, True])
+def test_first_page_without_invoices_is_a_valid_empty_list(tmp_path, monkeypatch, operation, params, expected, as_http_error):
+    write_config(tmp_path)
+    payload = json.dumps({"faultstring": "ERROR: Não existem registros para a página [1]!"}).encode()
+    class Empty(Response):
+        def read(self): return payload
+    def urlopen_mock(*_args, **_kwargs):
+        if as_http_error:
+            raise HTTPError("https://omie.invalid", 500, "error", {}, BytesIO(payload))
+        return Empty()
+    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.urlopen", urlopen_mock)
+    result = OmieService(tmp_path, Credentials()).invoke("example", operation, {"params": params})
+    assert result == {"data": expected}
+
+
+@pytest.mark.parametrize("fault,page,expected_code", [
+    ("ERROR: Não existem registros para a página [2]!", 2, "omie_http_error"),
+    ("ERROR: Não existem registros para a página [1]!", 2, "omie_http_error"),
+    ("ERROR: Falha de autenticação", 1, "omie_http_error"),
+])
+def test_invoice_listing_does_not_hide_other_errors(tmp_path, monkeypatch, fault, page, expected_code):
+    write_config(tmp_path)
+    payload = json.dumps({"faultstring": fault}).encode()
+    def urlopen_mock(*_args, **_kwargs):
+        raise HTTPError("https://omie.invalid", 500, "error", {}, BytesIO(payload))
+    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.urlopen", urlopen_mock)
+    with pytest.raises(OmieError) as error:
+        OmieService(tmp_path, Credentials()).invoke("example", "incoming_invoices_list", {"params": {"nPagina": page}})
+    assert error.value.code == expected_code
+
+
+@pytest.mark.parametrize("operation,params,call", [
+    ("incoming_invoices_list", {"nPagina": 1, "nRegistrosPorPagina": 50, "nIdCliente": 7}, "ListarNotaEnt"),
+    ("electronic_invoices_list", {"pagina": 1, "registros_por_pagina": 50, "nIdCliente": 7, "dEmiInicial": "01/11/2026"}, "ListarNF"),
+])
+def test_invoice_listing_http_payload_contains_only_its_native_fields(tmp_path, monkeypatch, operation, params, call):
+    write_config(tmp_path)
+    received = []
+    def urlopen_mock(request, **_kwargs):
+        received.append(json.loads(request.data))
+        return Response()
+    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.urlopen", urlopen_mock)
+    OmieService(tmp_path, Credentials()).invoke("example", operation, {"params": params})
+    assert len(received) == 1
+    assert received[0]["call"] == call
+    assert received[0]["param"] == [params]
+
