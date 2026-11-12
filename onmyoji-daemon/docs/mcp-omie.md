@@ -116,13 +116,18 @@ para criação/alteração de lançamentos e criação de transferências:
 `8532594895` sem aspas. `percentual` é numérico, positivo e até 100. Para
 um departamento, use `100`; para vários, a soma deve ser `100`. **Não**
 envie `valor`, `cCodDep`, `nPerDep` nem `nValDep` nos itens da tool
-pública. O MCP calcula o valor de cada departamento a partir do valor total
-`dados.valor`, ajustando os centavos no último item.
+pública. O MCP valida os percentuais e calcula os valores internamente para conferir
+o rateio, mas **envia à Omie somente `cCodDep` e `nPerDep`**. A API calcula
+o valor do departamento; enviar `nPerDep` junto com `nValDep` provoca
+`SOAP-ENV:Client-727` ("Preencha apenas a tag [nPerDep] ou [nValDep]!").
 
 Para compatibilidade com integrações antigas, o normalizador interno continua
 aceitando `codigo/valor` e `cCodDep/nPerDep/nValDep` quando chamado
-programaticamente. Esses formatos **não são apresentados no schema público**,
-para não confundir o agente.
+programaticamente. Quando o chamador informar apenas o valor, o conector
+transmite `cCodDep` e `nValDep`; quando informar percentual (mesmo com
+valor consistente), transmite `cCodDep` e `nPerDep`. Nunca transmite ambas
+as tags no mesmo departamento. Esses formatos **não são apresentados no
+schema público**, para não confundir o agente.
 
 Após uma inclusão confirmada, a conferência usa `.consultar` pelo ID retornado
 ou pelo código de integração original. Em resposta incerta, consulte antes de

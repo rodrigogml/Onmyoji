@@ -176,10 +176,16 @@ def normalize_account_departments(
         invalid("a soma dos percentuais deve ser exatamente 100.")
     if any(abs(value - total * fraction / 100) > cent for value, fraction in zip(amounts, fractions)):
         invalid("valores e percentuais dos departamentos são inconsistentes.")
-    return [
-        {"cCodDep": code, "nPerDep": float(fraction), "nValDep": float(value)}
-        for (code, _, _), fraction, value in zip(parsed, fractions, amounts)
-    ]
+    # SOAP-ENV:Client-727: Omie aceita nPerDep OU nValDep, nunca ambos.
+    # Preserve a modalidade fornecida pelo chamador; a validação acima pode
+    # calcular os dois internamente, mas somente um vai ao payload HTTP.
+    normalized: list[dict[str, Any]] = []
+    for (code, original_fraction, _), fraction, value in zip(parsed, fractions, amounts):
+        if original_fraction is not None:
+            normalized.append({"cCodDep": code, "nPerDep": float(fraction)})
+        else:
+            normalized.append({"cCodDep": code, "nValDep": float(value)})
+    return normalized
 
 
 def require_string(value: Any, field: str, *, max_length: int | None = None) -> str:

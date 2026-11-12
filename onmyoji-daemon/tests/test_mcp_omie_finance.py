@@ -864,11 +864,11 @@ def test_transaction_update_preserves_either_or_both_identifiers(tmp_path, monke
 
 @pytest.mark.parametrize("rows,expected", [
     ([{"codigo": "8532594895", "percentual": 100}],
-     [{"cCodDep": "8532594895", "nPerDep": 100, "nValDep": 9599.0}]),
+     [{"cCodDep": "8532594895", "nPerDep": 100}]),
     ([{"codigo": "D1", "percentual": 50}, {"codigo": "D2", "percentual": 50}],
-     [{"cCodDep": "D1", "nPerDep": 50, "nValDep": 4799.5}, {"cCodDep": "D2", "nPerDep": 50, "nValDep": 4799.5}]),
+     [{"cCodDep": "D1", "nPerDep": 50}, {"cCodDep": "D2", "nPerDep": 50}]),
     ([{"cCodDep": "8532594895", "nPerDep": 100, "nValDep": 9599.0}],
-     [{"cCodDep": "8532594895", "nPerDep": 100, "nValDep": 9599.0}]),
+     [{"cCodDep": "8532594895", "nPerDep": 100}]),
 ])
 def test_transaction_rateio_is_normalized_before_omie(tmp_path, monkeypatch, rows, expected):
     data = {**transaction_data(), "valor": 9599, "departamentos": rows}
@@ -882,14 +882,13 @@ def test_transaction_rateio_is_normalized_before_omie(tmp_path, monkeypatch, row
 
 @pytest.mark.parametrize("rows,expected", [
     ([{"cCodDep": "8532594895", "nValDep": 9599}],
-     [{"cCodDep": "8532594895", "nPerDep": 100.0, "nValDep": 9599.0}]),
+     [{"cCodDep": "8532594895", "nValDep": 9599.0}]),
     ([{"codigo": "8532594895", "valor": 9599}],
-     [{"cCodDep": "8532594895", "nPerDep": 100.0, "nValDep": 9599.0}]),
+     [{"cCodDep": "8532594895", "nValDep": 9599.0}]),
     ([{"cCodDep": "D1", "nValDep": 4000}, {"cCodDep": "D2", "nValDep": 5599}],
-     [{"cCodDep": "D1", "nPerDep": 41.671007, "nValDep": 4000.0},
-      {"cCodDep": "D2", "nPerDep": 58.328993, "nValDep": 5599.0}]),
+     [{"cCodDep": "D1", "nValDep": 4000.0}, {"cCodDep": "D2", "nValDep": 5599.0}]),
 ])
-def test_transaction_rateio_com_valor_calcula_percentual(tmp_path, monkeypatch, rows, expected):
+def test_transaction_rateio_com_valor_envia_somente_nValDep(tmp_path, monkeypatch, rows, expected):
     data = {**transaction_data(), "valor": 9599, "departamentos": rows}
     _, request = mock_remote(monkeypatch, [{"cCodStatus": "0", "nCodLanc": 9000000222}])
 
@@ -901,7 +900,7 @@ def test_transaction_rateio_com_valor_calcula_percentual(tmp_path, monkeypatch, 
     assert request.call_count == 1
 
 
-def test_transaction_rateio_distributes_rounding_to_last_department(tmp_path, monkeypatch):
+def test_transaction_rateio_por_percentual_envia_somente_nPerDep(tmp_path, monkeypatch):
     data = {**transaction_data(), "departamentos": [
         {"codigo": "D1", "percentual": 50}, {"codigo": "D2", "percentual": 50},
     ]}
@@ -910,8 +909,8 @@ def test_transaction_rateio_distributes_rounding_to_last_department(tmp_path, mo
         TRANSACTION_CREATE, {"confirmar": True, "dados": data}, "empresa",
     )
     assert request.call_args.args[4]["departamentos"] == [
-        {"cCodDep": "D1", "nPerDep": 50, "nValDep": 61.73},
-        {"cCodDep": "D2", "nPerDep": 50, "nValDep": 61.72},
+        {"cCodDep": "D1", "nPerDep": 50},
+        {"cCodDep": "D2", "nPerDep": 50},
     ]
 
 
@@ -1017,7 +1016,7 @@ def test_rateio_legado_continua_aceito_pelo_normalizador_interno(tmp_path, monke
     assert request.call_count == 2
     for call in request.call_args_list:
         assert call.args[4]["departamentos"] == [
-            {"cCodDep": "8532594895", "nPerDep": 100.0, "nValDep": 9599.0},
+            {"cCodDep": "8532594895", "nValDep": 9599.0},
         ]
 
 
@@ -1032,7 +1031,7 @@ def test_transferencia_rateio_usa_mesma_traducao(tmp_path, monkeypatch):
         }}, "empresa",
     )
     assert request.call_args.args[4]["departamentos"] == [
-        {"cCodDep": "8532594895", "nPerDep": 100, "nValDep": 9599.0},
+        {"cCodDep": "8532594895", "nPerDep": 100},
     ]
 
 
@@ -1047,9 +1046,43 @@ def test_transferencia_com_valor_calcula_percentual(tmp_path, monkeypatch):
         }}, "empresa",
     )
     assert request.call_args.args[4]["departamentos"] == [
-        {"cCodDep": "8532594895", "nPerDep": 100.0, "nValDep": 9599.0},
+        {"cCodDep": "8532594895", "nValDep": 9599.0},
     ]
 
+
+
+@pytest.mark.parametrize("operation", [
+    TRANSACTION_CREATE,
+    TRANSACTION_UPDATE,
+    "omie.financeiro.transferencias.criar",
+])
+@pytest.mark.parametrize("row,expected", [
+    ({"codigo": "8532594895", "percentual": 100},
+     {"cCodDep": "8532594895", "nPerDep": 100}),
+    ({"codigo": "8532594895", "valor": 9599},
+     {"cCodDep": "8532594895", "nValDep": 9599.0}),
+    ({"cCodDep": "8532594895", "nPerDep": 100, "nValDep": 9599},
+     {"cCodDep": "8532594895", "nPerDep": 100}),
+])
+def test_rateio_nunca_envia_percentual_e_valor_juntos_omie_727(tmp_path, monkeypatch, operation, row, expected):
+    if operation == "omie.financeiro.transferencias.criar":
+        data = {
+            "codigo_integracao": "TR-20261112-727", "conta_origem_id": 10,
+            "conta_destino_id": 11, "data": "12/11/2026",
+            "valor": 9599, "categoria_codigo": "0.01.02",
+        }
+    else:
+        data = {**transaction_data(), "valor": 9599}
+    _, request = mock_remote(monkeypatch, [{"nCodLanc": 9000000222}])
+
+    OmieFinanceFacade(Configuration(tmp_path)).call(
+        operation, {"confirmar": True, "dados": {**data, "departamentos": [row]}}, "empresa",
+    )
+
+    request.assert_called_once()
+    departments = request.call_args.args[4]["departamentos"]
+    assert departments == [expected]
+    assert all(("nPerDep" in item) != ("nValDep" in item) for item in departments)
 
 @pytest.mark.parametrize("status", [400, 401, 403, 422, 425, 429])
 def test_financial_write_preserves_explicit_http_rejections(tmp_path, monkeypatch, status):
