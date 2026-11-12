@@ -70,6 +70,17 @@ pensamentos do agente durante o turno e, quando compartilhados, excluí-los ou
 mantê-los após a resposta. A configuração individual em `/config` continua
 restrita à conversa atual e não é alterada ao modificar o padrão global.
 
+## Cópia e encaminhamento
+
+Mensagens, pensamentos, notificações, menus e arquivos enviados pelo Gateway
+permitem cópia, salvamento e encaminhamento por padrão. O Gateway não aplica
+`protect_content` automaticamente, nem a códigos temporários de login ou TOTP.
+Esses códigos continuam restritos à DM autorizada, com prazo e limpeza próprios.
+
+O agente pode solicitar proteção explicitamente com `protect_content=true` nas
+ferramentas `telegram_gateway.send_message` e `telegram_gateway.ask_menu`.
+Sem essa solicitação, o parâmetro não é enviado à API do Telegram.
+
 ## Configuração na conversa
 
 `/config` confirma o clique antes de processar a alteração; a atualização do
@@ -89,7 +100,7 @@ O diagnóstico também registra as etapas de confirmação, renderização e fal
 O owner pode enviar `/usage` na conversa privada, inclusive em um tópico privado,
 para consultar a franquia da conta usada pelo Codex da instância. O comando
 permanece disponível durante um turno em andamento e não cria uma thread nem
-inicia geração. A resposta é protegida contra encaminhamento pelo Telegram.
+inicia geração. A resposta pode ser copiada ou encaminhada pelo owner.
 
 O Gateway consulta a autenticação com `account/read` e os limites com
 `account/rateLimits/read`, usando o App Server da instância. Exibe percentuais
@@ -122,7 +133,7 @@ As opções são **Iniciar login**, **Status**, **Informações da conta atual**
 login em andamento** substitui Iniciar login e Logoff. O status mostra o modo e
 o plano; as informações da conta incluem o e-mail, somente quando o Codex
 o disponibiliza. Esses detalhes aparecem exclusivamente na DM do owner e
-a mensagem é protegida contra encaminhamento.
+a mensagem permite cópia e encaminhamento.
 
 Iniciar login usa autenticação ChatGPT por código de dispositivo no Codex App
 Server da instância. O Gateway transmite somente URL HTTPS validada e código

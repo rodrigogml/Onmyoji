@@ -319,7 +319,7 @@ class ExecutionGateway:
         if busy and self.api:
             address, topic = self._telegram_address(conversation)
             try:
-                self.deliveries.text(DeliveryOwner(conversation, generation), "receipt:" + inbox, "receipt", inbox, self.api, address, "Mensagem recebida. Ela será encaminhada conforme a política de fila/direcionamento disponível.", protect_content=True, **topic)
+                self.deliveries.text(DeliveryOwner(conversation, generation), "receipt:" + inbox, "receipt", inbox, self.api, address, "Mensagem recebida. Ela será encaminhada conforme a política de fila/direcionamento disponível.", **topic)
             except Exception:
                 self._diagnostic("delivery.uncertain", generation=generation, kind="receipt")
         with self.workers_changed:
@@ -506,7 +506,7 @@ class ExecutionGateway:
 
     def _visible_text(self, active: Any, key: str, kind: str, item: str, text: str, event: dict[str, Any] | None) -> None:
         owner = self._owner(active)
-        values = {"protect_content": True, **active.telegram_topic_values}
+        values = dict(active.telegram_topic_values)
         keys = self.deliveries.plan_text(owner, key, kind, item, active.chat_id, text, **values)
         def send() -> None:
             if active.cancel_requested or kind == "thought" and not self._conversation_settings(active.conversation_id)["share_thoughts"]:
@@ -551,8 +551,10 @@ class ExecutionGateway:
                 self.store.delivery_result(key, "suppressed", reason="thoughts_disabled")
                 continue
             payload = json.loads(raw)
+            # Mensagens pendentes de versões antigas também devem permitir cópia.
+            send_values = {name: value for name, value in payload["values"].items() if name != "protect_content"}
             try:
-                self.deliveries.effect(self._owner(active), key, kind, item, payload, lambda: self.api.send(payload["chat_id"], payload["text"], **payload["values"]), part=part)
+                self.deliveries.effect(self._owner(active), key, kind, item, payload, lambda: self.api.send(payload["chat_id"], payload["text"], **send_values), part=part)
             except DeliveryUncertain:
                 active.progress_failed = True
 

@@ -90,7 +90,7 @@ def test_login_command_opens_menu_without_starting_authentication(lab):
     assert calls == []
     assert deleted == [(9, 42)]
     assert "Selecione uma opção" in sent[-1][1]
-    assert sent[-1][2]["protect_content"] is True
+    assert "protect_content" not in sent[-1][2]
     keyboard = sent[-1][2]["reply_markup"]["inline_keyboard"]
     actions = [row[0]["callback_data"] for row in keyboard]
     assert actions == [f"lg:{token}:{name}" for name in ("start", "status", "account", "logout", "close")]
@@ -107,7 +107,7 @@ def test_device_login_private_owner_and_completion(lab):
     challenge = sent[-1]
     assert "ABCD-1234" in challenge[1]
     assert "https://auth.openai.com/codex/device" in challenge[1]
-    assert challenge[2]["protect_content"] is True
+    assert "protect_content" not in challenge[2]
     assert challenge[2]["direct_messages_topic_id"] == 13
     gateway._app_event("account/login/completed", {"loginId": "other", "success": True}, {"process_epoch": "epoch-1"})
     assert len(sent) == 2
@@ -137,7 +137,7 @@ def test_status_redacts_email_and_account_info_shows_it_only_on_request(lab):
     click(gateway, token, session, "back")
     click(gateway, token, session, "account")
     assert "private@example.test" in gateway._login_test_edits[-1][2]
-    assert sent[0][2]["protect_content"] is True
+    assert "protect_content" not in sent[0][2]
 
 
 def test_argument_is_not_a_login_action(lab):

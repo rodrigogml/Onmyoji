@@ -261,7 +261,7 @@ def test_app_server_thoughts_are_shared_deduplicated_and_cleaned(tmp_path):
     active = AppServerTurn(9, "thread", __import__("threading").Event()); gateway.app_turns["thread"] = active
     notification = {"threadId": "thread", "item": {"type": "reasoning", "summary": ["Plano seguro."]}}
     gateway._app_notification("item/completed", notification); gateway._app_notification("item/completed", notification)
-    assert sent == [(9, "💭 Plano seguro.", {"parse_mode": "HTML", "protect_content": True})] and active.thought_ids == [71]
+    assert sent == [(9, "💭 Plano seguro.", {"parse_mode": "HTML"})] and active.thought_ids == [71]
     gateway._cleanup_thoughts(active)
     assert deleted == []
     gateway._app_notification("turn/completed", {"threadId": "thread", "turn": {"status": "completed"}})
@@ -363,7 +363,7 @@ def test_usage_command_reads_codex_account_limits_without_starting_a_turn(tmp_pa
     assert "25% consumido" in sent[0][1] and "75% disponível" in sent[0][1]
     assert "10% consumido" in sent[0][1] and "90% disponível" in sent[0][1]
     assert "private@example.test" not in sent[0][1]
-    assert sent[0][2] == {"protect_content": True, "parse_mode": "HTML"}
+    assert sent[0][2] == {"parse_mode": "HTML"}
     assert gateway.database.execute("SELECT COUNT(*) FROM execution_turns").fetchone()[0] == 0
 
 
@@ -513,7 +513,7 @@ def test_private_topic_ephemeral_controls_stay_in_the_active_topic(tmp_path):
     gateway = Gateway(Settings.load(tmp_path, data)); sent = []
     gateway.api = type("Api", (), {"send": lambda _self, chat, text, **values: sent.append((chat, text, values)) or {"message_id": 8}})()
     gateway._ephemeral("private:9:42", "controle")
-    assert sent == [(9, "controle", {"protect_content": True, "message_thread_id": 42})]
+    assert sent == [(9, "controle", {"message_thread_id": 42})]
 
 
 def test_config_command_keeps_execution_preferences_scoped_to_each_private_topic(tmp_path):
@@ -859,6 +859,40 @@ def test_untrusted_user_cannot_send_a_work_file_by_direct_path(tmp_path):
 
     assert json.loads(response["contentItems"][0]["text"])["stage"] == "authorization"
 
+
+
+def test_telegram_media_allows_copying_by_default_and_supports_explicit_protection(tmp_path):
+    image = tmp_path / "picture.png"; image.write_bytes(b"image")
+    requests = []
+
+    class Reply:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def read(self): return b'{"ok":true,"result":{"message_id":7}}'
+
+    def fake_urlopen(request, timeout):
+        requests.append(request.data)
+        return Reply()
+
+    with patch("onmyoji_daemon.telegram.urlopen", side_effect=fake_urlopen):
+        api = TelegramApi("token")
+        api.send_file("sendPhoto", 9, image, "photo")
+        api.send_file("sendPhoto", 9, image, "photo", protect_content=True)
+
+    assert b'name="protect_content"' not in requests[0]
+    assert b'name="protect_content"\r\n\r\ntrue' in requests[1]
+
+
+def test_ephemeral_controls_allow_copying_unless_explicitly_protected(tmp_path):
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data)); sent = []
+    gateway.api = type("Api", (), {"send": lambda _self, chat, text, **values: sent.append(values) or {"message_id": len(sent)}})()
+    gateway._schedule_delete = lambda *_args: None
+
+    gateway._ephemeral(9, "Copiável")
+    gateway._ephemeral(9, "Protegido sob demanda", protect_content=True)
+
+    assert sent == [{}, {"protect_content": True}]
 
 def test_media_upload_exposes_telegram_http_description(tmp_path):
     image = tmp_path / "picture.png"; image.write_bytes(b"image")

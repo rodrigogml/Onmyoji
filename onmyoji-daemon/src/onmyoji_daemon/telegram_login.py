@@ -33,7 +33,7 @@ class TelegramLogin:
         if not self.api:
             return None
         chat, topic = self._telegram_address(conversation)
-        receipts = self._send_agent_text(chat, text, protect_content=True, **topic)
+        receipts = self._send_agent_text(chat, text, **topic)
         return receipts[-1] if receipts else None
 
     def _login_release(self, session: dict[str, Any]) -> bool:
@@ -177,7 +177,7 @@ class TelegramLogin:
             # confirmado (4xx) permite recriar sem duplicar um envio incerto.
             if "direct_messages_topic_id" not in topic or getattr(error, "kind", None) != "not_sent":
                 raise
-            sent = self.api.send(address, text, reply_markup=keyboard, protect_content=True, **topic)
+            sent = self.api.send(address, text, reply_markup=keyboard, **topic)
             new_id = sent.get("message_id") if isinstance(sent, dict) else None
             if type(new_id) is not int:
                 raise RuntimeError("Telegram não confirmou o menu de login.")

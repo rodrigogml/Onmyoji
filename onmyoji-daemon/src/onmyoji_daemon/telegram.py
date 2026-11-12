@@ -343,11 +343,11 @@ class TelegramApi:
         return destination
     def send_file(self, method: str, chat_id: int, path: Path, field: str, caption: str = "", reply_to: int | None = None, **extra: Any) -> dict[str, Any]:
         boundary = "----Onmyoji" + secrets.token_hex(16); chunks: list[bytes] = []
-        values = {"chat_id": str(chat_id), "protect_content": "true"}
+        values = {"chat_id": str(chat_id)}
         if caption: values["caption"] = caption[:1024]
         if reply_to: values["reply_parameters"] = json.dumps({"message_id": reply_to})
         for key, value in extra.items():
-            if value is not None: values[key] = str(value)
+            if value is not None: values[key] = str(value).lower() if isinstance(value, bool) else str(value)
         for key, value in values.items(): chunks.extend((f"--{boundary}\r\n".encode(), f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode(), value.encode("utf-8"), b"\r\n"))
         chunks.extend((f"--{boundary}\r\n".encode(), f'Content-Disposition: form-data; name="{field}"; filename="{path.name}"\r\n'.encode(), b"Content-Type: application/octet-stream\r\n\r\n", path.read_bytes(), b"\r\n", f"--{boundary}--\r\n".encode()))
         request = Request(self.base + method, data=b"".join(chunks), headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
@@ -1068,7 +1068,7 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
             request = event.get("rpc_id", event.get("request_id", secrets.token_urlsafe(18)))
             if active.cancel_requested or active.suppressed: raise RuntimeError("Turno cancelado antes deste envio.")
             try:
-                sent = self.deliveries.text(self._owner(active), f"rpc:{active.process_epoch}:{request}:message", "additional", str(request), self.api, active.chat_id, text, protect_content=bool(arguments.get("protect_content", False)), **active.telegram_topic_values)
+                sent = self.deliveries.text(self._owner(active), f"rpc:{active.process_epoch}:{request}:message", "additional", str(request), self.api, active.chat_id, text, **({"protect_content": True} if arguments.get("protect_content") is True else {}), **active.telegram_topic_values)
             except DeliveryUncertain:
                 active.delivery_failed = True
                 return {"contentItems": [{"type": "inputText", "text": json.dumps({"sent": None, "uncertain": True, "retry_safe": False, "reason": "confirmation_missing"})}], "success": True}
@@ -1092,7 +1092,7 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
             if not self.api: raise RuntimeError("Gateway Telegram indisponível.")
             started = time.monotonic()
             try:
-                sent = self._tool_effect(active, "menu", {"question": rendered}, lambda: self.api.send(active.chat_id, rendered, parse_mode="HTML", reply_markup=keyboard, protect_content=bool(arguments.get("protect_content", False)), **active.telegram_topic_values))
+                sent = self._tool_effect(active, "menu", {"question": rendered}, lambda: self.api.send(active.chat_id, rendered, parse_mode="HTML", reply_markup=keyboard, **({"protect_content": True} if arguments.get("protect_content") is True else {}), **active.telegram_topic_values))
             except DeliveryUncertain:
                 return {"contentItems": [{"type": "inputText", "text": json.dumps({"sent": None, "selected": None, "uncertain": True, "retry_safe": False, "reason": "menu_confirmation_missing"})}], "success": True}
             self._diagnostic("menu.publish", stage="agent", duration_ms=int((time.monotonic() - started) * 1000))
@@ -1298,7 +1298,7 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
             if ephemeral:
                 receipts = [self._ephemeral(conversation_id, text)]
             else:
-                receipts = self._send_agent_text(telegram_chat_id, text, protect_content=True, **topic_values)
+                receipts = self._send_agent_text(telegram_chat_id, text, **topic_values)
             if generation != self._generation(conversation_id):
                 for receipt in receipts:
                     message_id = receipt.get("message_id") if isinstance(receipt, dict) else None
@@ -1647,7 +1647,7 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
             invalidate(previous)
             raise DeliverySuppressed("A conversa foi reiniciada antes de atualizar o controle.")
         if "direct_messages_topic_id" in topic_values:
-            sent = self.api.send(telegram_chat_id, text, protect_content=True, reply_markup=keyboard, **topic_values)
+            sent = self.api.send(telegram_chat_id, text, reply_markup=keyboard, **topic_values)
             message_id = sent.get("message_id") if isinstance(sent, dict) else None
             if not isinstance(message_id, int) or isinstance(message_id, bool): raise TelegramApiError("Telegram não retornou o identificador da nova mensagem de configuração.")
             with self.database_lock:
@@ -1843,8 +1843,9 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
     def _ephemeral(self, chat_id: int, text: str, seconds: float = 8, **values: Any) -> dict[str, Any]:
         assert self.api
         telegram_chat_id, topic_values = self._telegram_address(str(chat_id))
-        protect_content = bool(values.pop("protect_content", True))
-        message = self.api.send(telegram_chat_id, text, protect_content=protect_content, **topic_values, **values)
+        if values.pop("protect_content", False):
+            values["protect_content"] = True
+        message = self.api.send(telegram_chat_id, text, **topic_values, **values)
         message_id = message.get("message_id")
         if isinstance(message_id, int): self._schedule_delete(telegram_chat_id, message_id, seconds)
         return message
@@ -2106,9 +2107,9 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
                 with self.control_state_lock:
                     selected = self.totp_sessions.get(conversation_id)
                     return valid and (selected is None if cleared else selected is session and session.get("token") == token)
-        def publish(text: str, seconds: float = 8, *, protect: bool = True, cleared: bool = False) -> bool:
+        def publish(text: str, seconds: float = 8, *, cleared: bool = False) -> bool:
             if not current(cleared=cleared): return False
-            sent = self._ephemeral(conversation_id, text, seconds, protect_content=protect)
+            sent = self._ephemeral(conversation_id, text, seconds)
             identifier = sent.get("message_id") if isinstance(sent, dict) else None
             valid = current(cleared=cleared)
             if not valid and isinstance(identifier, int):
@@ -2146,7 +2147,7 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
                     session["phase"] = "delivering"
             self._delete_totp_messages(conversation_id, session)
             remaining = 30 - (int(time.time()) % 30)
-            if publish(code, remaining + 5, protect=False): publish(f"Expira em {remaining} segundos.", remaining + 5)
+            if publish(code, remaining + 5): publish(f"Expira em {remaining} segundos.", remaining + 5)
             self._clear_totp_session(conversation_id, expected_session=session)
         except Exception:
             self._record_error("Não foi possível obter o código do controle privado TOTP.")

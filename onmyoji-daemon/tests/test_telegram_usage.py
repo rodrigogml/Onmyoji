@@ -69,7 +69,7 @@ def test_usage_bot_suffix_and_private_topics_keep_the_reply_address(usage_gatewa
     assert deleted == [(9, 72)]
     assert len(sent) == 1 and sent[0]["chat"] == 9
     assert "100% disponível" in sent[0]["text"]
-    assert sent[0]["values"] == {"protect_content": True, "parse_mode": "HTML", **expected}
+    assert sent[0]["values"] == {"parse_mode": "HTML", **expected}
     assert [call[0] for call in calls] == ["account/read", "account/rateLimits/read"]
 
 
