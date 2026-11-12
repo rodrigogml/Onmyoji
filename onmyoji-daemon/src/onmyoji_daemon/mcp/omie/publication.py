@@ -144,21 +144,40 @@ def input_contract(operation: str) -> tuple[str, dict[str, Any]]:
             schema["properties"]["stage"] = {"type": "string", "minLength": 1}
             schema["required"] = ["stage"]
         elif operation.endswith(("_update_completed", "_update")):
+            ide = obj({"nIdReceb": {"type": "integer", "minimum": 1},
+                       "cChaveNfe": {"type": "string", "pattern": "^[0-9]{44}$"}})
+            ide["anyOf"] = [{"required": ["nIdReceb"]}, {"required": ["cChaveNfe"]}]
+            schema["properties"]["ide"] = ide
+            schema["anyOf"].append({"required": ["ide"]})
             info_fields = {
-                "purchase_category_code": {"type": "string", "minLength": 1, "maxLength": 20, "description": "Código Omie da categoria; infoAdicionais.cCategCompra."},
-                "bank_account_id": {"type": "integer", "minimum": 1, "description": "ID da conta corrente; infoAdicionais.nIdConta."},
-                "project_id": {"type": "integer", "minimum": 1, "description": "ID do projeto; infoAdicionais.nIdProjeto."},
-                "registration_date": {"type": "string", "pattern": "^[0-9]{2}/[0-9]{2}/[0-9]{4}$", "description": "Data de registro dd/mm/aaaa."},
-                "buyer_id": {"type": "integer", "minimum": 1, "description": "ID do comprador."},
+                "purchase_category_code": {"type": "string", "minLength": 1, "maxLength": 20},
+                "bank_account_id": {"type": "integer", "minimum": 1},
+                "project_id": {"type": "integer", "minimum": 1, "description": "ID numérico Omie, consulte projects_get com codInt para STRA36."},
+                "registration_date": {"type": "string", "pattern": "^[0-9]{2}/[0-9]{2}/[0-9]{4}$"},
+                "buyer_id": {"type": "integer", "minimum": 1},
+            }
+            native_info = {
+                "cCategCompra": info_fields["purchase_category_code"],
+                "nIdConta": info_fields["bank_account_id"],
+                "nIdProjeto": info_fields["project_id"],
+                "dRegistro": info_fields["registration_date"],
+                "nIdComprador": info_fields["buyer_id"],
             }
             schema["properties"].update(info_fields)
-            available = list(info_fields)
+            schema["properties"]["infoAdicionais"] = {**obj({**native_info, **info_fields}), "minProperties": 1}
+            schema["properties"]["additional_info"] = {**obj({**info_fields, **native_info}), "minProperties": 1}
+            available = [*info_fields, "infoAdicionais", "additional_info"]
             if operation.endswith("_update"):
                 department = obj({
-                    "cCodDepartamento": {"type": "string", "minLength": 1, "maxLength": 40, "description": "Código do departamento (texto, preserve zeros à esquerda)."},
+                    "cCodDepartamento": {"type": "string", "minLength": 1, "maxLength": 40},
                     "pDepartamento": {"type": "number", "exclusiveMinimum": 0, "maximum": 100},
-                    "vDepartamento": {"type": "number", "minimum": 0, "description": "Valor em reais; sem símbolo monetário."},
+                    "vDepartamento": {"type": "number", "minimum": 0},
                 }, ("cCodDepartamento", "pDepartamento"))
+                semantic_department = obj({
+                    "department_code": department["properties"]["cCodDepartamento"],
+                    "percentage": department["properties"]["pDepartamento"],
+                    "amount": department["properties"]["vDepartamento"],
+                }, ("department_code", "percentage"))
                 item_id = obj({
                     "nSequencia": {"type": "integer", "minimum": 1},
                     "cAcao": {"type": "string", "enum": ["NOVO", "ASSOCIAR-PRODUTO", "ASSOCIAR-PEDIDO", "IGNORAR", "EDITAR"]},
@@ -167,9 +186,12 @@ def input_contract(operation: str) -> tuple[str, dict[str, Any]]:
                     "itensIde": item_id,
                     "itensInfoAdicEditar": obj({"cCategoriaItem": {"type": "string", "minLength": 1, "maxLength": 20}}, ("cCategoriaItem",)),
                 }, ("itensIde",))
-                schema["properties"]["departments"] = {"type": "array", "minItems": 1, "items": department, "description": "Rateio; soma dos percentuais deve ser 100%. Somente AlterarRecebimento (não concluído)."}
-                schema["properties"]["items"] = {"anyOf": [item, {"type": "array", "minItems": 1, "items": item}], "description": "Itens (itensRecebimentoEditar). Não informe items vazio para alterar dados financeiros."}
-                available.extend(["departments", "items"])
+                schema["properties"]["departments"] = {"type": "array", "minItems": 1, "items": department}
+                schema["properties"]["departamentos"] = schema["properties"]["departments"]
+                schema["properties"]["department_allocations"] = {"type": "array", "minItems": 1, "items": {"anyOf": [department, semantic_department]}}
+                schema["properties"]["items"] = {"anyOf": [item, {"type": "array", "minItems": 1, "items": item}]}
+                schema["properties"]["itensRecebimentoEditar"] = schema["properties"]["items"]
+                available.extend(["departments", "departamentos", "department_allocations", "items", "itensRecebimentoEditar"])
             schema["allOf"] = [{"anyOf": [{"required": [key]} for key in available]}]
         return "body", schema
     if operation in {"incoming_invoices_list", "electronic_invoices_list"}:
@@ -191,7 +213,7 @@ NOTES = {
     "account_transactions_update": "Altera lançamento direto preservando document_type e document_number; exige id ou integration_id.",
     "account_transfers_create": "Cria uma transferência única entre contas diferentes por IncluirLancCC; não produza dois lançamentos independentes. category_code é a categoria de saída e será enviada em detalhes.cCodCateg; o tipo TRA e a conta de destino são definidos pelo conector.",
     "payables_update": "Para corrigir tipo de título pago, preserve os demais campos e consulte após alteração. Não recrie título nem cancele/repita baixa para trocar o tipo.",
-    "inbound_nfe_receipts_update": "Para recebimento não concluído, consulte primeiro omie.inbound_nfe_receipts_get e confira fornecedor e valor. Envie body.receipt_id e ao menos um campo de alteração: purchase_category_code, project_id, bank_account_id, registration_date, buyer_id, departments ou items. departments usa cCodDepartamento (código textual), pDepartamento e opcional vDepartamento. Não envie fornecedor nem valor como campos de edição. Omie exige infoAdicionais/departamentos/itens válidos, não um objeto items vazio.",
+    "inbound_nfe_receipts_update": "Consulte primeiro a NF-e. Aceita body.receipt_id ou ide, campos planos, additional_info/infoAdicionais, departments/departamentos/department_allocations e items. department_allocations usa department_code, percentage e amount. project_id exige ID numérico, não código STRA36. Não envie fornecedor nem valor. Consulte após atualizar.",
     "inbound_nfe_receipts_update_completed": "Somente para recebimentos já concluídos; permite infoAdicionais (purchase_category_code, project_id, bank_account_id, registration_date ou buyer_id). A API AlterarRecebimentoConcluido não aceita departments: consulte o recebimento e não altere o rateio por esta operação.",
 }
 

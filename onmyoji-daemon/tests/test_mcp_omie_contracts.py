@@ -239,6 +239,46 @@ class OmieContractRegressionTests(unittest.TestCase):
         done = build_params("inbound-nfe-receipts.update-completed", {"body": {"receipt_id": 1, "project_id": 8444062614}})
         self.assertEqual(done, {"ide": {"nIdReceb": 1}, "infoAdicionais": {"nIdProjeto": 8444062614}})
 
+    def test_receipt_native_and_semantic_aliases(self):
+        expected = {
+            "ide": {"nIdReceb": 1},
+            "infoAdicionais": {"cCategCompra": "2.01.03", "nIdProjeto": 8444062614},
+            "departamentos": [{"cCodDepartamento": "000123", "pDepartamento": 100, "vDepartamento": 2545.4}],
+        }
+        for body in (
+            {"ide": {"nIdReceb": 1}, "infoAdicionais": {"cCategCompra": "2.01.03", "nIdProjeto": 8444062614},
+             "departamentos": [{"cCodDepartamento": "000123", "pDepartamento": 100, "vDepartamento": 2545.4}]},
+            {"receipt_id": 1, "additional_info": {"purchase_category_code": "2.01.03", "project_id": 8444062614},
+             "department_allocations": [{"department_code": "000123", "percentage": 100, "amount": 2545.4}]},
+        ):
+            with self.subTest(body=body):
+                self.assertEqual(build_params("inbound-nfe-receipts.update", {"body": body}), expected)
+        self.assertEqual(build_params("inbound-nfe-receipts.update-completed", {"body": {
+            "ide": {"nIdReceb": 1}, "additional_info": {"project_id": 8444062614}
+        }}), {"ide": {"nIdReceb": 1}, "infoAdicionais": {"nIdProjeto": 8444062614}})
+
+    def test_receipt_aliases_reject_conflicts_and_invalid_values(self):
+        invalid = [
+            {"receipt_id": 1, "ide": {"nIdReceb": 1}, "project_id": 2},
+            {"receipt_id": 1, "project_id": 3, "additional_info": {"project_id": 2}},
+            {"receipt_id": 1, "infoAdicionais": {"nIdFornecedor": 2}},
+            {"receipt_id": 1, "additional_info": {"project_id": "STRA36"}},
+            {"receipt_id": 1, "department_allocations": [{"department_code": "D1", "amount": 2545.4}]},
+            {"receipt_id": 1, "departamentos": []},
+            {"receipt_id": 1, "departments": [{"cCodDepartamento": "D1", "pDepartamento": 100}],
+             "department_allocations": [{"department_code": "D2", "percentage": 100}]},
+        ]
+        for body in invalid:
+            with self.subTest(body=body), self.assertRaises(OmieError) as error:
+                build_params("inbound-nfe-receipts.update", {"body": body})
+            self.assertEqual(error.exception.code, "invalid_body")
+        for alias in ("department_allocations", "departamentos"):
+            with self.assertRaises(OmieError) as error:
+                build_params("inbound-nfe-receipts.update-completed", {"body": {
+                    "receipt_id": 1, alias: [{"cCodDepartamento": "D1", "pDepartamento": 100}]
+                }})
+            self.assertEqual(error.exception.code, "invalid_body")
+
     def test_inbound_nfe_receipt_rejects_unmapped_fields_or_empty_changes(self):
         invalid = [
             ("update", {"receipt_id": 1}),

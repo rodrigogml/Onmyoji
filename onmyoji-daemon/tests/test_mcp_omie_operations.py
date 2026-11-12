@@ -130,6 +130,17 @@ def test_receipt_update_publishes_financial_fields_and_rejects_unsupported_compl
             "departments": [{"cCodDepartamento": "000123", "pDepartamento": 100, "vDepartamento": 2545.4}],
         },
     })
+    Draft202012Validator(schema).validate({"confirm": True, "body": {
+        "ide": {"nIdReceb": 1}, "infoAdicionais": {"nIdProjeto": 3},
+        "departamentos": [{"cCodDepartamento": "000123", "pDepartamento": 100}]
+    }})
+    Draft202012Validator(schema).validate({"confirm": True, "body": {
+        "receipt_id": 1, "additional_info": {"project_id": 3},
+        "department_allocations": [{"department_code": "000123", "percentage": 100, "amount": 2545.4}]
+    }})
+    Draft202012Validator(completed["input_schema"]).validate({"confirm": True, "body": {
+        "ide": {"nIdReceb": 1}, "additional_info": {"project_id": 3}
+    }})
     for arguments in (
         {"confirm": True, "body": {"receipt_id": 1}},
         {"confirm": True, "body": {"receipt_id": 1, "items": {}}},

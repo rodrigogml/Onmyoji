@@ -192,8 +192,62 @@ def financial_params(operation: str, params: Mapping[str, Any], body: Mapping[st
     fail("unsupported_operation", "Operação financeira não permitida.")
 
 
+
+def _normalize_receipt_update_body(body: Mapping[str, Any]) -> dict[str, Any]:
+    """Aceita aliases e campos Omie, rejeitando ambiguidades e desconhecidos."""
+    normalized = dict(body)
+    keys = {
+        "cCategCompra": "purchase_category_code",
+        "nIdConta": "bank_account_id", "nIdProjeto": "project_id",
+        "dRegistro": "registration_date", "nIdComprador": "buyer_id",
+    }
+    keys.update({public: public for public in keys.values()})
+    for envelope in ("infoAdicionais", "additional_info"):
+        if envelope not in normalized:
+            continue
+        additional = normalized.pop(envelope)
+        if not isinstance(additional, Mapping) or not additional:
+            fail("invalid_body", f"{envelope} deve ser objeto não vazio.")
+        for key, value in additional.items():
+            public = keys.get(key)
+            if public is None:
+                fail("invalid_body", f"{envelope}.{key} não é editável.")
+            if public in normalized:
+                fail("invalid_body", f"{public} foi informado mais de uma vez.")
+            normalized[public] = value
+    for envelope in ("departamentos", "department_allocations"):
+        if envelope not in normalized:
+            continue
+        rows = normalized.pop(envelope)
+        if "departments" in normalized:
+            fail("invalid_body", "Rateio duplicado: use somente departments, departamentos ou department_allocations.")
+        if envelope == "department_allocations":
+            aliases = {"department_code": "cCodDepartamento", "percentage": "pDepartamento", "amount": "vDepartamento"}
+            native = {"cCodDepartamento", "pDepartamento", "vDepartamento"}
+            if not isinstance(rows, list):
+                fail("invalid_body", "department_allocations deve ser lista.")
+            result = []
+            for index, row in enumerate(rows):
+                if not isinstance(row, Mapping):
+                    fail("invalid_body", f"department_allocations[{index}] deve ser objeto.")
+                if set(row) <= set(aliases):
+                    result.append({aliases[k]: v for k, v in row.items()})
+                elif set(row) <= native:
+                    result.append(dict(row))
+                else:
+                    fail("invalid_body", f"department_allocations[{index}] tem campos inválidos.")
+            rows = result
+        normalized["departments"] = rows
+    if "itensRecebimentoEditar" in normalized:
+        if "items" in normalized:
+            fail("invalid_body", "items e itensRecebimentoEditar não podem coexistir.")
+        normalized["items"] = normalized.pop("itensRecebimentoEditar")
+    return normalized
+
+
 def _receipt_info_and_allocations(body: Mapping[str, Any], *, completed: bool) -> dict[str, Any]:
     """Monta somente tags de alteração documentadas para recebimentos de NF-e."""
+    body = _normalize_receipt_update_body(body)
     info_keys = {
         "purchase_category_code": "cCategCompra",
         "bank_account_id": "nIdConta",
@@ -201,7 +255,7 @@ def _receipt_info_and_allocations(body: Mapping[str, Any], *, completed: bool) -
         "registration_date": "dRegistro",
         "buyer_id": "nIdComprador",
     }
-    allowed = {"receipt_id", "access_key", *info_keys}
+    allowed = {"receipt_id", "access_key", "ide", *info_keys}
     if not completed:
         allowed.update({"departments", "items"})
     unknown = sorted(set(body) - allowed)
@@ -289,10 +343,17 @@ def nfe_params(operation: str, params: Mapping[str, Any], body: Mapping[str, Any
         identifier = {"nIdReceb": body["receipt_id"]} if isinstance(body.get("receipt_id"), int) else ({"cChaveNfe": body["access_key"]} if isinstance(body.get("access_key"), str) else {})
         if operation.endswith(".get"):
             identifier = {"nIdReceb": params["receipt_id"]} if isinstance(params.get("receipt_id"), int) else ({"cChaveNfe": params["access_key"]} if isinstance(params.get("access_key"), str) else {})
-        if not identifier: fail("missing_parameter", "receipt_id ou access_key é obrigatório.")
+        elif operation in {"inbound-nfe-receipts.update", "inbound-nfe-receipts.update-completed"} and "ide" in body:
+            if "receipt_id" in body or "access_key" in body:
+                fail("invalid_body", "Informe ide ou receipt_id/access_key, não ambos.")
+            raw = body["ide"]
+            if not isinstance(raw, Mapping) or not raw or set(raw) - {"nIdReceb", "cChaveNfe"}:
+                fail("invalid_body", "ide aceita somente nIdReceb e cChaveNfe.")
+            identifier = dict(raw)
+        if not identifier: fail("missing_parameter", "receipt_id, access_key ou ide é obrigatório.")
         if "nIdReceb" in identifier and (type(identifier["nIdReceb"]) is not int or identifier["nIdReceb"] < 1):
             fail("invalid_body", "receipt_id deve ser inteiro positivo.")
-        if "cChaveNfe" in identifier and not re.fullmatch(r"[0-9]{44}", identifier["cChaveNfe"]):
+        if "cChaveNfe" in identifier and (not isinstance(identifier["cChaveNfe"], str) or not re.fullmatch(r"[0-9]{44}", identifier["cChaveNfe"])):
             fail("invalid_body", "access_key deve ter 44 dígitos.")
         if operation in {"inbound-nfe-receipts.get", "inbound-nfe-receipts.complete", "inbound-nfe-receipts.reverse", "inbound-nfe-receipts.set-stage"}:
             if operation != "inbound-nfe-receipts.get":

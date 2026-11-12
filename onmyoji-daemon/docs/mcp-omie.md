@@ -227,6 +227,16 @@ alteração real. Para dados financeiros, utilize `purchase_category_code`,
 rateio em `departamentos`. Não envia mais `itensRecebimentoEditar: {}`
 quando somente dados financeiros forem solicitados.
 
+O MCP também aceita os nomes nativos `ide`, `infoAdicionais` e `departamentos`,
+ou os aliases `additional_info` e `department_allocations`. O rateio semântico
+usa `department_code`, `percentage` e `amount`; também são válidos os campos
+nativos na lista. Representações duplicadas de um mesmo campo são rejeitadas.
+
+`project_id`/`nIdProjeto` requer **ID numérico Omie**, não o código de integração
+como `STRA36`. Consulte `omie.projects_get` com `params.codInt` para obter
+esse ID. O departamento `Pisos` também exige seu código textual verdadeiro
+(obtenha-o com `omie.departments_list`), não o nome.
+
 Exemplo fictício, a ser enviado **apenas após consultar a NF-e e validar** seus
 dados e sua etapa:
 
