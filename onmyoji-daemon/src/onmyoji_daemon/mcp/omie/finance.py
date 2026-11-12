@@ -244,17 +244,44 @@ def _page(arguments: Mapping[str, Any], *, native: bool) -> dict[str, int]:
 
 
 def _department_schema() -> dict[str, Any]:
-    code = {"type": "string", "minLength": 1, "maxLength": 40, "pattern": r"\S"}
-    percent = {"type": "number", "exclusiveMinimum": 0, "maximum": 100}
-    value = {"type": "number", "minimum": 0}
-    return {"type": "array", "items": {"oneOf": [
-        {"type": "object", "properties": {"codigo": code, "percentual": percent, "valor": value},
-         "required": ["codigo"], "anyOf": [{"required": ["percentual"]}, {"required": ["valor"]}],
-         "additionalProperties": False},
-        {"type": "object", "properties": {"cCodDep": code, "nPerDep": percent, "nValDep": value},
-         "required": ["cCodDep"], "anyOf": [{"required": ["nPerDep"]}, {"required": ["nValDep"]}],
-         "additionalProperties": False},
-    ]}}
+    """Expõe só o formato semântico preferencial; o normalizador mantém legado."""
+    example = {"codigo": "8532594895", "percentual": 100}
+    return {
+        "type": "array",
+        "description": (
+            "Rateio por departamentos. Envie apenas objetos com codigo (texto) e "
+            "percentual (número), por exemplo [{\"codigo\":\"8532594895\",\"percentual\":100}]. "
+            "Mesmo se conter apenas dígitos, codigo precisa estar entre aspas. "
+            "Um departamento recebe percentual 100; com vários, a soma deve ser 100. "
+            "Não use cCodDep/nPerDep/nValDep nem valor nos itens; o MCP calcula os valores."
+        ),
+        "examples": [[example]],
+        "items": {
+            "type": "object",
+            "description": "Formato único da ferramenta: codigo textual e percentual numérico.",
+            "properties": {
+                "codigo": {
+                    "type": "string", "minLength": 1, "maxLength": 40, "pattern": r"\S",
+                    "description": (
+                        "Código do departamento SEMPRE como string, inclusive quando só contém números. "
+                        "Correto: \"8532594895\". Incorreto: 8532594895 (número)."
+                    ),
+                    "examples": ["8532594895"],
+                },
+                "percentual": {
+                    "type": "number", "exclusiveMinimum": 0, "maximum": 100,
+                    "description": (
+                        "Percentual destinado ao departamento. Para departamento único, use 100; "
+                        "com múltiplos departamentos, os percentuais devem somar 100."
+                    ),
+                    "examples": [100],
+                },
+            },
+            "required": ["codigo", "percentual"],
+            "additionalProperties": False,
+            "examples": [example],
+        },
+    }
 
 
 def _schema(spec: FinanceSpec, profiles: list[dict[str, str]]) -> dict[str, Any]:
@@ -389,7 +416,15 @@ class OmieFinanceFacade:
                 fields = list(IDENTIFIER_NAMES[spec.legacy.rsplit("_", 1)[0]])
                 description += " Informe exatamente um identificador em " + ("dados" if spec.writes else "filtros") + ": " + " ou ".join(fields) + "."
             if spec.legacy == "account_transactions_create":
-                description += " Exige codigo_integracao (texto de até 20 caracteres), conta_corrente_id, data, valor, categoria_codigo e tipo_documento em dados. O id é gerado pela Omie. Departamentos usam codigo com percentual e/ou valor; o MCP calcula o campo omitido e gera o rateio nativo."
+                description += " Exige codigo_integracao (texto de até 20 caracteres), conta_corrente_id, data, valor, categoria_codigo e tipo_documento em dados. O id é gerado pela Omie."
+            if spec.kind in {"transaction", "transfer"}:
+                description += (
+                    ' Para dados.departamentos use somente [{"codigo":"8532594895","percentual":100}]. '
+                    'codigo é TEXTO mesmo quando contém apenas dígitos (sempre entre aspas); '
+                    'percentual é NÚMERO e deve totalizar 100. '
+                    'Não use chaves técnicas cCodDep/nPerDep/nValDep ou valor no rateio; '
+                    'o MCP calcula o valor de cada departamento.'
+                )
             tools.append({"name": spec.name, "description": description + " Não use parâmetros técnicos da Omie.", "input_schema": _schema(spec, profiles)})
         return tools
 

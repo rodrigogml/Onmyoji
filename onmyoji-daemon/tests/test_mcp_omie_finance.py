@@ -944,20 +944,81 @@ def test_invalid_transaction_rateio_never_reaches_credentials(tmp_path, monkeypa
     request.assert_not_called()
 
 
-def test_transaction_rateio_schema_disallows_unknown_department_fields(tmp_path):
-    schema = next(tool["input_schema"] for tool in OmieFinanceFacade(Configuration(tmp_path)).definitions(
+@pytest.mark.parametrize("operation", [
+    TRANSACTION_CREATE,
+    TRANSACTION_UPDATE,
+    "omie.financeiro.transferencias.criar",
+])
+def test_rateio_schema_publico_expoe_apenas_formato_semantico(tmp_path, operation):
+    tool = next(tool for tool in OmieFinanceFacade(Configuration(tmp_path)).definitions(
         [{"name": "empresa", "description": "ERP"}],
-    ) if tool["name"] == TRANSACTION_CREATE)
-    validator = Draft202012Validator(schema)
+    ) if tool["name"] == operation)
+    schema = tool["input_schema"]
     Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+
+    departments = schema["properties"]["dados"]["properties"]["departamentos"]
+    item = departments["items"]
+    assert "oneOf" not in item and "anyOf" not in item
+    assert item["required"] == ["codigo", "percentual"]
+    assert set(item["properties"]) == {"codigo", "percentual"}
+    assert item["additionalProperties"] is False
+    assert departments["examples"] == [[{"codigo": "8532594895", "percentual": 100}]]
+    assert item["properties"]["codigo"]["type"] == "string"
+    assert item["properties"]["codigo"]["examples"] == ["8532594895"]
+    assert "texto" in tool["description"].lower()
+    assert '"codigo":"8532594895"' in tool["description"]
+
+    if operation == "omie.financeiro.transferencias.criar":
+        data = {
+            "codigo_integracao": "TR-20261112-3",
+            "conta_origem_id": 10, "conta_destino_id": 11,
+            "data": "12/11/2026", "valor": 9599, "categoria_codigo": "0.01.02",
+        }
+    else:
+        data = transaction_data()
+    def arguments(rows):
+        return {"confirmar": True, "dados": {**data, "departamentos": rows}}
+
+    validator.validate(arguments([{"codigo": "8532594895", "percentual": 100}]))
+    validator.validate(arguments([
+        {"codigo": "000123", "percentual": 40},
+        {"codigo": "8532594895", "percentual": 60},
+    ]))
     for row in (
-        {"codigo": "D1", "percentual": 100}, {"codigo": "D1", "valor": 123.45},
-        {"cCodDep": "D1", "nPerDep": 100}, {"cCodDep": "D1", "nValDep": 123.45},
+        {"codigo": 8532594895, "percentual": 100},
+        {"codigo": "8532594895", "valor": 9599},
+        {"cCodDep": "8532594895", "nValDep": 9599},
+        {"cCodDep": "8532594895", "nPerDep": 100},
+        {"codigo": "8532594895", "percentual": 100, "valor": 9599},
+        {"codigo": "8532594895", "percentual": 100, "outro": "N"},
+        {"codigo": "8532594895"},
+        {"codigo": "", "percentual": 100},
+        {"codigo": "8532594895", "percentual": 0},
+        {"codigo": "8532594895", "percentual": 101},
     ):
-        validator.validate({"confirmar": True, "dados": {**transaction_data(), "departamentos": [row]}})
-    assert not validator.is_valid({"confirmar": True, "dados": {
-        **transaction_data(), "departamentos": [{"codigo": "D1", "percentual": 100, "outro": "N"}],
-    }})
+        assert not validator.is_valid(arguments([row])), (operation, row)
+
+
+def test_rateio_legado_continua_aceito_pelo_normalizador_interno(tmp_path, monkeypatch):
+    _, request = mock_remote(monkeypatch, [
+        {"cCodStatus": "0", "nCodLanc": 9000000222},
+        {"cCodStatus": "0", "nCodLanc": 9000000223},
+    ])
+    facade = OmieFinanceFacade(Configuration(tmp_path))
+    for row in (
+        {"codigo": "8532594895", "valor": 9599},
+        {"cCodDep": "8532594895", "nValDep": 9599},
+    ):
+        facade.call(TRANSACTION_CREATE, {
+            "confirmar": True,
+            "dados": {**transaction_data(), "valor": 9599, "departamentos": [row]},
+        }, "empresa")
+    assert request.call_count == 2
+    for call in request.call_args_list:
+        assert call.args[4]["departamentos"] == [
+            {"cCodDep": "8532594895", "nPerDep": 100.0, "nValDep": 9599.0},
+        ]
 
 
 def test_transferencia_rateio_usa_mesma_traducao(tmp_path, monkeypatch):

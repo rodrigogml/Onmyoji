@@ -105,16 +105,24 @@ os tipos de documento aceitos pelo MCP e os limites específicos de cada campo.
 Ausência ou invalidade de campos obrigatórios gera erro com o nome público,
 por exemplo `dados.codigo_integracao`, antes de qualquer acesso externo.
 
-Em `dados.departamentos`, cada item aceita `codigo` (texto, até 40 caracteres)
-e ao menos um entre `percentual` e `valor`. Também aceita o formato nativo
-`cCodDep` e ao menos um entre `nPerDep` e `nValDep`. Assim, um único
-departamento pode ser informado só com `{"cCodDep":"DEP-1","nValDep":9599}`:
-o MCP calcula `nPerDep: 100` a partir do valor do lançamento. Para vários
-departamentos, valores explícitos devem cobrir todos os itens e somar o total;
-percentuais ausentes são derivados dos valores. Com percentuais informados sem
-valores, o MCP calcula os valores e ajusta os centavos no último departamento.
-Os percentuais devem totalizar 100%, com valores consistentes. Não misture nomes
-semânticos e nativos no mesmo item. A regra também vale para transferências.
+O schema público de `dados.departamentos` publica **um único formato**
+para criação/alteração de lançamentos e criação de transferências:
+
+```json
+{"departamentos":[{"codigo":"8532594895","percentual":100}]}
+```
+
+`codigo` é **sempre string**, mesmo quando contém apenas números; não envie
+`8532594895` sem aspas. `percentual` é numérico, positivo e até 100. Para
+um departamento, use `100`; para vários, a soma deve ser `100`. **Não**
+envie `valor`, `cCodDep`, `nPerDep` nem `nValDep` nos itens da tool
+pública. O MCP calcula o valor de cada departamento a partir do valor total
+`dados.valor`, ajustando os centavos no último item.
+
+Para compatibilidade com integrações antigas, o normalizador interno continua
+aceitando `codigo/valor` e `cCodDep/nPerDep/nValDep` quando chamado
+programaticamente. Esses formatos **não são apresentados no schema público**,
+para não confundir o agente.
 
 Após uma inclusão confirmada, a conferência usa `.consultar` pelo ID retornado
 ou pelo código de integração original. Em resposta incerta, consulte antes de
