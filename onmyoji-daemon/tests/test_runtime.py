@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import os
 import json
+import subprocess
 from pathlib import Path
 
-from onmyoji_daemon import runtime
+from onmyoji_daemon import management, runtime
 
 
 def write_system(root: Path, body: str) -> None:
@@ -45,3 +46,22 @@ def test_windows_python_commands_bypass_wmi_probe(monkeypatch) -> None:
     monkeypatch.setattr(runtime.os, "name", "nt")
     command = runtime._pip_command(Path("python.exe"), ["install", "example"])
     assert "platform.system" in command[4] and command[-2:] == ["install", "example"]
+
+
+def test_daemon_runtime_probe_covers_scheduler_dependencies(tmp_path: Path, monkeypatch) -> None:
+    """Agendamentos não devem ficar invisivelmente quebrados em runtimes antigos."""
+    executable = tmp_path / "python"
+    executable.touch()
+    calls = []
+
+    def incomplete_python(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 1, "", "No module named 'croniter'")
+
+    monkeypatch.setattr(management.subprocess, "run", incomplete_python)
+    assert management._runtime_ready(executable) is False
+    assert calls[0][1:4] == ["-I", "-B", "-c"]
+    assert "parsed('croniter')" in calls[0][-1]
+    assert "parsed('tzdata')" in calls[0][-1]
+    assert any(value.startswith("croniter>=") for value in management.runtime_requirements())
+    assert any(value.startswith("tzdata>=") for value in management.runtime_requirements())

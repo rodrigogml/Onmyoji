@@ -9,13 +9,12 @@ import sqlite3
 import threading
 import tomllib
 
+from . import SORT_FIELDS
 from .calendar import initial_at, instant, iso, latest_due, next_at, validate_rule
 from .contracts import validate_definition
 from ..agent_notification.contract import uuid7
 from ..rpc import RpcError
 from ..telegram_persistence import GatewayStore
-
-SORT_FIELDS = ("id", "status", "action", "expression", "timezone", "next_run_at", "created_at", "channel", "thread_policy", "last_result")
 
 
 class TaskRepository:

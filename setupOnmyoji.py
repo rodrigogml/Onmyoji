@@ -64,6 +64,8 @@ PYTHON_COMPONENTS = (
     ("pykeepass", "Base MCP", "Vault, OAuth e integrações com credenciais"),
     ("IMAPClient", "Base MCP", "MCP E-mail"),
     ("jsonschema", "Base MCP", "Validação de dados e schemas MCP"),
+    ("croniter", "Daemon", "Agendamentos e expressões cron"),
+    ("tzdata", "Daemon", "Fusos horários IANA dos agendamentos"),
     ("PyMuPDF", "Documentos", "MCP PDF e OCR"),
     ("pypdf", "Documentos", "MCP PDF"),
     ("reportlab", "Documentos", "MCP PDF"),
@@ -2534,7 +2536,7 @@ def scheduler_menu(root: Path) -> None:
     from datetime import datetime
     from zoneinfo import ZoneInfo
     from onmyoji_daemon.rpc import RpcError
-    from onmyoji_daemon.task_scheduler.repository import SORT_FIELDS
+    from onmyoji_daemon.task_scheduler import SORT_FIELDS
     sort, descending, offset = "next_run_at", False, 0
     labels = ("ID", "Status", "Ação", "Expressão", "Timezone", "Próxima execução", "Criado", "Canal", "Política de thread", "Último resultado")
     while True:
@@ -2669,6 +2671,8 @@ def daemon_menu(root: Path) -> None:
         print("    • aiohttp — comunicação HTTP do daemon e seus gateways.")
         print("    • cryptography — recursos criptográficos e certificados locais.")
         print("    • jsonschema — validação dos contratos de notificações do agente.")
+        print("    • croniter — cálculo das expressões dos agendamentos.")
+        print("    • tzdata — fusos horários IANA para agendamentos.")
         if os.name == "nt": print("    • pywin32 — integração opcional com Serviço do Windows.")
         print("\n  [4/4] Preparando o runtime e os componentes")
         note("O daemon instala automaticamente os componentes necessários no runtime único; a manutenção manual fica em Python e bibliotecas.")

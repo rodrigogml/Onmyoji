@@ -1,3 +1,4 @@
+import sys
 from unittest.mock import patch
 
 from .test_setup_onmyoji import MODULE
@@ -51,3 +52,10 @@ def test_scheduler_shows_schedule_timezone_and_exact_columns(tmp_path, capsys):
     assert "2026-11-10 09:00 -0300" in output
     for label in ("ID", "Status", "Ação", "Expressão", "Timezone", "Próxima execução", "Criado", "Canal", "Política de thread", "Último resultado"):
         assert label in output
+
+
+def test_schedule_menu_does_not_load_cron_dependencies(tmp_path):
+    """O menu de consulta deve abrir mesmo sem bibliotecas cron no Python do setup."""
+    with patch.dict(sys.modules, {"croniter": None, "onmyoji_daemon.task_scheduler.repository": None}):
+        with patch.object(MODULE, "local_daemon_rpc", return_value={"state": "stopped"}), patch.object(MODULE, "prompt", return_value="x"):
+            MODULE.scheduler_menu(tmp_path)
