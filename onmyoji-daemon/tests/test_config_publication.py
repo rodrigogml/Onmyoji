@@ -70,6 +70,25 @@ def test_shared_file_mode_restores_the_acl_mask_bits_requested_by_restrictive_cr
     assert path.stat().st_mode & 0o777 == 0o660
 
 
+
+@pytest.mark.skipif(os.name == "nt", reason="Modos POSIX são validados no Linux.")
+def test_shared_file_mode_does_not_chmod_file_with_correct_mode(tmp_path, monkeypatch):
+    profile = tmp_path / "configs" / "shikigami" / "linux-execution.json"
+    profile.parent.mkdir(parents=True)
+    profile.write_text('{"schema_version": 1, "mode": "dedicated", "installer_access": true}', encoding="utf-8")
+    path = tmp_path / "configs" / "mcp" / "vault.kdbx"
+    path.parent.mkdir()
+    path.write_bytes(b"encrypted")
+    path.chmod(0o660)
+
+    # Acesso pelo grupo não autoriza o instalador a executar chmod no arquivo
+    # pertencente ao usuário de serviço.
+    monkeypatch.setattr(Path, "chmod", lambda *_args, **_kwargs: pytest.fail("chmod não deve ser chamado"))
+    config_publication.apply_shared_file_mode(path)
+
+    assert path.stat().st_mode & 0o777 == 0o660
+
+
 def test_operational_mode_is_shared_only_for_dedicated_profile_with_installer_access(tmp_path, monkeypatch):
     profile = tmp_path / "configs" / "shikigami" / "linux-execution.json"
     profile.parent.mkdir(parents=True)

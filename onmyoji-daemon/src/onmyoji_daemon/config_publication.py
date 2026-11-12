@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import shutil
+import stat
 import tempfile
 import time
 
@@ -42,7 +43,7 @@ def normalize_instance_file(root: Path, path: Path) -> None:
     uma identidade dedicada sem compartilhamento.
     """
     mode = operational_file_mode(root)
-    if mode is not None and path.is_file():
+    if mode is not None and path.is_file() and stat.S_IMODE(path.stat().st_mode) != mode:
         path.chmod(mode)
 
 

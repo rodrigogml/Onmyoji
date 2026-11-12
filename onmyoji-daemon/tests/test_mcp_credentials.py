@@ -176,6 +176,48 @@ def test_entry_exists_lists_paths_without_reading_secret(tmp_path, monkeypatch):
     assert all("master-password" not in command for command, _ in calls)
 
 
+
+def test_readonly_keepass_commands_never_change_database_permissions(tmp_path, monkeypatch):
+    from onmyoji_daemon.mcp.credentials import keepass
+
+    database = tmp_path / "configs" / "mcp" / "vaults" / "default.kdbx"
+    vault = {"cli_command": ["keepassxc-cli"], "database": {"linux": str(database)}}
+    monkeypatch.setattr(keepass, "_platform_name", lambda: "linux")
+    monkeypatch.setattr(keepass.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=""))
+    monkeypatch.setattr(keepass, "apply_shared_file_mode", lambda *_args: pytest.fail("comando de leitura tentou executar chmod"))
+
+    for arguments in (
+        ["ls", "-q", "-R", "-f", "__DATABASE__"],
+        ["export", "-q", "--format", "xml", "__DATABASE__"],
+        ["attachment-export", "-q", "__DATABASE__", "entry", "name", str(tmp_path / "key")],
+    ):
+        KeePassCredentialResolver._run_write_command(vault, {}, arguments, "master-password")
+    KeePassCredentialResolver.validate_vault_access(vault, {}, "master-password")
+
+
+def test_mutating_keepass_command_normalizes_permissions_and_sanitizes_failures(tmp_path, monkeypatch):
+    from onmyoji_daemon.mcp.credentials import keepass
+
+    database = tmp_path / "configs" / "mcp" / "vaults" / "default.kdbx"
+    vault = {"cli_command": ["keepassxc-cli"], "database": {"linux": str(database)}}
+    monkeypatch.setattr(keepass, "_platform_name", lambda: "linux")
+    monkeypatch.setattr(keepass.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=""))
+    normalized = []
+    monkeypatch.setattr(keepass, "apply_shared_file_mode", normalized.append)
+
+    KeePassCredentialResolver._run_write_command(vault, {}, ["edit", "-q", "__DATABASE__", "entry"], "master-password", modified_database=True)
+    assert normalized == [database]
+
+    def permission_denied(_path):
+        raise PermissionError("detalhes internos do caminho do cofre")
+
+    monkeypatch.setattr(keepass, "apply_shared_file_mode", permission_denied)
+    with pytest.raises(CredentialError) as failure:
+        KeePassCredentialResolver._run_write_command(vault, {}, ["edit", "-q", "__DATABASE__", "entry"], "master-password", modified_database=True)
+    assert failure.value.code == "vault_permissions"
+    assert "detalhes internos" not in str(failure.value)
+
+
 def test_password_exists_checks_a_protected_field_without_returning_it(tmp_path, monkeypatch):
     write_config(tmp_path)
     resolver = KeePassCredentialResolver(tmp_path)

@@ -419,7 +419,7 @@ class KeePassCredentialResolver:
         return command, database_path, timeout
 
     @classmethod
-    def _run_write_command(cls, vault: dict[str, Any], defaults: dict[str, Any], arguments: list[str], password: str, extra_input: str = "") -> str:
+    def _run_write_command(cls, vault: dict[str, Any], defaults: dict[str, Any], arguments: list[str], password: str, extra_input: str = "", *, modified_database: bool = False) -> str:
         command, database_path, timeout = cls._command_settings(vault, defaults)
         try:
             resolved_arguments = [database_path if argument == "__DATABASE__" else argument for argument in arguments]
@@ -432,7 +432,11 @@ class KeePassCredentialResolver:
             raise CredentialError("vault_unavailable", "Não foi possível iniciar o KeePassXC.") from error
         if result.returncode:
             raise CredentialError("keepass_error", "KeePassXC recusou a alteração no cofre.")
-        apply_shared_file_mode(Path(database_path))
+        if modified_database:
+            try:
+                apply_shared_file_mode(Path(database_path))
+            except OSError as error:
+                raise CredentialError("vault_permissions", "Não foi possível ajustar as permissões do cofre KeePass após a gravação.") from error
         return result.stdout.rstrip("\r\n")
 
     @classmethod
@@ -474,7 +478,7 @@ class KeePassCredentialResolver:
             current.append(parent)
             group = "/".join(current)
             if group not in groups:
-                cls._run_write_command(vault, defaults, ["mkdir", "-q", "__DATABASE__", group], password)
+                cls._run_write_command(vault, defaults, ["mkdir", "-q", "__DATABASE__", group], password, modified_database=True)
                 groups.add(group)
 
     @classmethod
@@ -484,7 +488,7 @@ class KeePassCredentialResolver:
         else:
             flag = {"username": "--username", "url": "--url", "notes": "--notes"}[field]
             arguments, extra = ["add", "-q", "__DATABASE__", entry_path, flag, secret], ""
-        cls._run_write_command(vault, defaults, arguments, password, extra)
+        cls._run_write_command(vault, defaults, arguments, password, extra, modified_database=True)
 
     @classmethod
     def _edit_field(cls, vault: dict[str, Any], defaults: dict[str, Any], entry_path: str, password: str, field: str, secret: str) -> None:
@@ -493,7 +497,7 @@ class KeePassCredentialResolver:
         else:
             flag = {"username": "--username", "url": "--url", "notes": "--notes"}[field]
             arguments, extra = ["edit", "-q", "__DATABASE__", entry_path, flag, secret], ""
-        cls._run_write_command(vault, defaults, arguments, password, extra)
+        cls._run_write_command(vault, defaults, arguments, password, extra, modified_database=True)
 
     @staticmethod
     def validate_vault_access(vault: dict[str, Any], defaults: dict[str, Any], password: str) -> None:
@@ -520,4 +524,3 @@ class KeePassCredentialResolver:
             raise CredentialError("vault_unavailable", "Não foi possível acessar o KeePassXC.") from error
         if result.returncode:
             raise CredentialError("keepass_error", "KeePassXC recusou o acesso ao cofre.")
-        apply_shared_file_mode(Path(database_path))
