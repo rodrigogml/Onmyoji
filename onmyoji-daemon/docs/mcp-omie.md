@@ -233,9 +233,9 @@ usa `department_code`, `percentage` e `amount`; também são válidos os campos
 nativos na lista. Representações duplicadas de um mesmo campo são rejeitadas.
 
 `project_id`/`nIdProjeto` requer **ID numérico Omie**, não o código de integração
-como `STRA36`. Consulte `omie.projects_get` com `params.codInt` para obter
+como `STRA36`. Consulte `omie.financeiro.projetos.consultar` com `filtros.codigo_integracao` para obter
 esse ID. O departamento `Pisos` também exige seu código textual verdadeiro
-(obtenha-o com `omie.departments_list`), não o nome.
+(obtenha-o com `omie.financeiro.departamentos.listar`), não o nome.
 
 Exemplo fictício, a ser enviado **apenas após consultar a NF-e e validar** seus
 dados e sua etapa:

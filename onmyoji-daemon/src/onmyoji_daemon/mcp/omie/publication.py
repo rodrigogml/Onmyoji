@@ -152,7 +152,7 @@ def input_contract(operation: str) -> tuple[str, dict[str, Any]]:
             info_fields = {
                 "purchase_category_code": {"type": "string", "minLength": 1, "maxLength": 20},
                 "bank_account_id": {"type": "integer", "minimum": 1},
-                "project_id": {"type": "integer", "minimum": 1, "description": "ID numérico Omie, consulte projects_get com codInt para STRA36."},
+                "project_id": {"type": "integer", "minimum": 1, "description": "ID numérico Omie, consulte omie.financeiro.projetos.consultar com filtros.codigo_integracao para STRA36."},
                 "registration_date": {"type": "string", "pattern": "^[0-9]{2}/[0-9]{2}/[0-9]{4}$"},
                 "buyer_id": {"type": "integer", "minimum": 1},
             }
@@ -213,7 +213,7 @@ NOTES = {
     "account_transactions_update": "Altera lançamento direto preservando document_type e document_number; exige id ou integration_id.",
     "account_transfers_create": "Cria uma transferência única entre contas diferentes por IncluirLancCC; não produza dois lançamentos independentes. category_code é a categoria de saída e será enviada em detalhes.cCodCateg; o tipo TRA e a conta de destino são definidos pelo conector.",
     "payables_update": "Para corrigir tipo de título pago, preserve os demais campos e consulte após alteração. Não recrie título nem cancele/repita baixa para trocar o tipo.",
-    "inbound_nfe_receipts_update": "Consulte primeiro a NF-e. Aceita body.receipt_id ou ide, campos planos, additional_info/infoAdicionais, departments/departamentos/department_allocations e items. department_allocations usa department_code, percentage e amount. project_id exige ID numérico, não código STRA36. Não envie fornecedor nem valor. Consulte após atualizar.",
+    "inbound_nfe_receipts_update": "Consulte primeiro a NF-e. Aceita body.receipt_id ou ide, campos planos, additional_info/infoAdicionais, departments/departamentos/department_allocations e items. department_allocations usa department_code, percentage e amount. project_id exige ID numérico; para STRA36 use omie.financeiro.projetos.consultar com filtros.codigo_integracao. Não envie fornecedor nem valor. Consulte após atualizar.",
     "inbound_nfe_receipts_update_completed": "Somente para recebimentos já concluídos; permite infoAdicionais (purchase_category_code, project_id, bank_account_id, registration_date ou buyer_id). A API AlterarRecebimentoConcluido não aceita departments: consulte o recebimento e não altere o rateio por esta operação.",
 }
 
