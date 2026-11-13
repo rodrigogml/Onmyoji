@@ -33,6 +33,7 @@ from .telegram_work import RelatedWorkMonitor
 from .telegram_persistence import GatewayStore, GatewayPersistenceError, protect_legacy_gateway
 from .telegram_users import TelegramUserRegistry
 from .telegram_user_controls import TelegramUserControls, own_dm_sender, public_command_name
+from .telegram_user_menus import TelegramUserMenus
 from .telegram_process import ProcessRecoveryError
 from .telegram_delivery import GatewayDelivery, DeliveryOwner, DeliveryUncertain, DeliverySuppressed
 from .codex_capabilities import CapabilitySet
@@ -473,7 +474,7 @@ def under(path: Path, root: Path) -> bool:
     except ValueError: return False
 
 
-class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramChannels, TelegramUserControls):
+class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramChannels, TelegramUserControls, TelegramUserMenus):
     def __init__(self, settings: Settings):
         lease = GatewayStore.open_lease(settings.state_dir / "gateway-writer.lock")
         try:
@@ -491,6 +492,7 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
         self._status_lock = threading.RLock()
         self.control_state_lock = threading.RLock()
         self._init_user_controls()
+        self._init_users_menus()
         self._reset_usage_lock = threading.RLock()
         self._reset_usage_pending: dict[str, dict[str, Any]] = {}
         self._reset_usage_inflight = False
@@ -1558,10 +1560,11 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
             self._registration_command(command, text, sender, conversation_id)
             return
         if command == "/users":
-            if is_owner and (type(chat["id"]) is int and type(sender["id"]) is int):
-                self._registration_reply(conversation_id,
-                    "O menu de aprovação /users será disponibilizado na Fase 3. "
-                    "As solicitações recebidas estão registradas para avaliação.")
+            if (is_owner and verified_user_dm and "edited_message" not in update
+                    and type(message.get("text")) is str
+                    and not any(message.get(kind) for kind in
+                                ("photo", "voice", "audio", "document", "location", "venue"))):
+                self._users_menu_start(conversation_id, sender, text)
             return
         if not is_owner and command not in {"/new", "/resolver"}:
             return
@@ -2192,6 +2195,7 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
         self._observe_command_language(callback.get("from") or {})
         assert self.api
         sender = callback.get("from") or {}; message = callback.get("message") or {}; chat = message.get("chat") or {}; chat_id = sender.get("id")
+        if self._users_menu_callback(callback): return
         if self._registration_callback(callback): return
         if self._channel_callback(callback): return
         if chat.get("type") != "private" or not isinstance(chat_id, int) or chat_id not in self.contacts.owners(): return

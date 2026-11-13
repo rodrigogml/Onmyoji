@@ -358,3 +358,23 @@ def test_malformed_cursor_is_rejected_and_does_not_raise_decode_error(registry):
 def test_multiline_profile_metadata_is_invalid(registry):
     with pytest.raises(UserRegistryError):
         registry[0].register_from_dm(sender(first_name="sneaky\nname"), "41")
+
+def test_owner_only_status_counts_exclude_later_paired_contacts(registry):
+    users, _database, owners, _clock = registry
+    first = pending(users, 41)
+    pending(users, 42)
+    activated = users.set_roles(9, 41, ["CHAT_USER"], first.revision).user
+    counts = users.status_counts(9)
+    assert counts[RegistrationStatus.PENDING] == 1
+    assert counts[RegistrationStatus.ACTIVE] == 1
+    assert counts[RegistrationStatus.SUSPENDED] == 0
+    with pytest.raises(UserAccessDenied):
+        users.status_counts(41)
+    owners.add(42)
+    counts = users.status_counts(19)
+    assert counts[RegistrationStatus.PENDING] == 0
+    assert counts[RegistrationStatus.ACTIVE] == 1
+    users.set_status(9, 41, "SUSPENDED", activated.revision)
+    counts = users.status_counts(9)
+    assert counts[RegistrationStatus.ACTIVE] == 0
+    assert counts[RegistrationStatus.SUSPENDED] == 1

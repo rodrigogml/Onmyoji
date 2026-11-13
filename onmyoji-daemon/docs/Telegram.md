@@ -183,7 +183,7 @@ Telegram. `DM` significa conversa privada com o bot.
 | `/register` | Somente DM própria: informa que já é Owner. | Somente DM própria: solicita cadastro pendente, sem obter permissões nem iniciar Codex. |
 | `/status` | Somente DM própria: identifica a conta como Owner. | Somente DM própria: consulta apenas o próprio status e roles. |
 | `/unregister` | Somente DM própria: não altera o Owner. | Somente DM própria: confirma em menu efêmero a retirada do cadastro e revogação dos roles. |
-| `/users` | Somente DM própria: na Fase 2, informa que o menu de administração será ativado na Fase 3. | Não permitido. |
+| `/users` | Somente DM própria: menu com filtros, busca, paginação, aprovação de roles, suspensão, rejeição e reativação, com confirmações. | Não permitido. |
 | `/pair <PIN>` | Somente DM, com PIN temporário válido. | Somente DM, com PIN temporário válido: realiza o pareamento e concede o papel de owner. |
 
 A relação acima inclui `/pair`, embora ele não seja divulgado no menu permanente.
@@ -222,10 +222,26 @@ e pode ser sucedida por novo `/register`. Falhas de aviso ao Owner não anulam
 o registro. Os comandos são ignorados em grupos, DMs de terceiros, mensagens
 editadas e mensagens dirigidas a outro bot.
 
-A administração em `/users` só será implementada na Fase 3. Nesta fase,
-o comando Owner-only informa essa limitação; os pedidos ficam preservados em
-banco. Mensagens comuns de terceiros continuam sem acionar o agente, mesmo
-que um cadastro tenha sido aprovado diretamente no banco ou a flag esteja ativa.
+### Administração de usuários — Fase 3
+
+O Owner pode abrir `/users` na própria DM para visualizar pendentes, ativos,
+suspensos, rejeitados ou todos; cada categoria mostra registros paginados
+(8 por página). O comando `/users texto` procura pelo nome, @username ou ID.
+Na ficha, os roles `CHAT_USER` e `NOTIFY_TARGET` podem ser marcados de forma
+independente. **Salvar roles e ativar/reativar** exige ao menos um role; para
+remover todos, o Owner deve confirmar **Suspender**. **Rejeitar** também exige
+confirmação explícita. O menu não gerencia Owners pareados.
+
+Os botões contêm tokens temporários de uso único, associados ao Owner, à DM,
+à mensagem e à geração da conversa. A cada decisão, o Gateway confere a
+revisão SQLite vista pelo menu, evitando que dois Owners sobrescrevam a
+decisão um do outro. O menu expira após quinze minutos e é invalidado em
+reinícios. Uma notificação ao usuário é tentada após a transação, sem reverter
+o cadastro em caso de falha de transporte.
+
+Mensagens comuns de terceiros continuam sem acionar o agente, mesmo que
+o cadastro esteja ativo; a conversação somente será habilitada na Fase 4.
+A origem `NOTIFY_TARGET` não gera destinos de saída até a Fase 5.
 
 ## Menu de comandos do bot
 
@@ -243,7 +259,7 @@ comandos no chat privado de cada owner:
 | `/direcionar <texto>` | Orientar o turno em andamento. |
 | `/cancel` | Interromper o turno atual, preservando a fila. |
 | `/resolver` | Consultar e reconciliar solicitações sem confirmação. |
-| `/users` | Menu administrativo previsto para a Fase 3 (aviso na Fase 2). |
+| `/users` | Administrar solicitações, roles e suspensões, somente na DM do Owner. |
 | `/register` | Solicitar cadastro pendente. |
 | `/status` | Consultar o próprio cadastro. |
 | `/unregister` | Retirar cadastro após confirmação. |

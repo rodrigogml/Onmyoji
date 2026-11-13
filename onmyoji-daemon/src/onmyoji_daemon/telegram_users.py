@@ -485,6 +485,26 @@ class TelegramUserRegistry:
             return UserAuthority(identifier, owner, user.status if user else None,
                                  user.roles if user else (), user.revision if user else None, decision)
 
+    def status_counts(self, owner_id: int) -> dict[RegistrationStatus, int]:
+        """Owner-only counts, excluding any identities since promoted to Owner.
+
+        Uses the same SQLite lock and source of Owner identity as list_users.
+        No sender details or notification content are included.
+        """
+        with self.lock:
+            self._require_owner(owner_id)
+            excluded = sorted(self.owners())
+            condition = (" WHERE telegram_user_id NOT IN (" +
+                         ",".join("?" for _ in excluded) + ")") if excluded else ""
+            rows = self.db.execute(
+                "SELECT status, COUNT(*) FROM telegram_users" + condition + " GROUP BY status",
+                excluded,
+            ).fetchall()
+            counts = {state: 0 for state in RegistrationStatus}
+            for raw_status, amount in rows:
+                counts[RegistrationStatus(raw_status)] = int(amount)
+            return counts
+
     def list_users(
         self, owner_id: int, *, status: RegistrationStatus | str | None = None,
         cursor: str | None = None, query: str = "", limit: int = 20,

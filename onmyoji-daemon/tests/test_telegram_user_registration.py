@@ -148,7 +148,7 @@ def test_owner_controls_not_affected_and_registered_user_still_cannot_chat(gatew
     gateway._update(update(user_id=9, text='/register'))
     assert gateway.users.self_status(9) is None
     gateway._update(update(user_id=9, text='/users'))
-    assert 'Fase 3' in registered_messages(gateway, 9)[-1][1]
+    assert 'Administração de usuários' in registered_messages(gateway, 9)[-1][1]
     gateway._update(update())
     gateway.users.set_roles(9, 41, ['CHAT_USER'], 1)
     calls = []
