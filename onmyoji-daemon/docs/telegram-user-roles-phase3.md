@@ -1,13 +1,13 @@
 # Telegram — Fase 3: menu de gestão Owner-only
 
-Data: 2026-11-13. Versão de setup: `2026.11.13.0`. Gateway SQLite: schema **v5** (sem nova migração).
+Data: 2026-11-13. Versão de setup: `2026.11.13.1`. Gateway SQLite: schema **v5** (sem nova migração).
 
 ## O que está disponível
 
 O comando `/users`, **somente na DM do Owner pareado**, abre um menu com contagens
 e filtros de cadastros: pendentes, ativos, suspensos, rejeitados e todos.
 Cada listagem permite navegar em páginas de oito usuários. Para pesquisar por
-nome, `@username` ou ID do Telegram, usar `/users <texto>` na DM.
+nome, `@username` (com ou sem `@`) ou ID do Telegram, usar `/users <texto>` na DM.
 
 O detalhe apresenta nome público, ID, username, status, data da solicitação,
 DM registrada, revisão persistida e os dois roles, selecionáveis separadamente:

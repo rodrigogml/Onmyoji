@@ -95,6 +95,8 @@ class TelegramUserMenus:
         if base.casefold() != "/users" or (sep and (not expected or addressed.casefold() != expected.casefold())):
             return
         query = raw_query.strip()
+        if query.startswith("@") and len(query) > 1:
+            query = query[1:]  # Usernames in SQLite do not include Telegram @.
         if len(query) > MENU_MAX_QUERY or "\n" in query or "\r" in query:
             self._registration_reply(conversation_id, "Busca muito longa ou inválida. Use /users seguido de até 100 caracteres.")
             return

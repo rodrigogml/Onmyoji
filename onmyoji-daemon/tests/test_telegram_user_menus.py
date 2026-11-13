@@ -162,6 +162,8 @@ def test_filter_pagination_search_and_owner_exclusion(gateway):
     assert len(gateway._users_menu_sessions[9].item_ids) == 8
     open_menu(gateway, command="/users 41")
     assert gateway._users_menu_sessions[9].item_ids == (41,)
+    open_menu(gateway, command="/users @maria")
+    assert len(gateway._users_menu_sessions[9].item_ids) == 8
     gateway.contacts.add_owner({"id": 41, "first_name": "Nova Owner"})
     open_menu(gateway, command="/users 41")
     assert gateway._users_menu_sessions[9].item_ids == ()
