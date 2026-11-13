@@ -21,8 +21,9 @@ from .config_publication import write_instance_bytes, write_instance_text
 from .telegram_user_schema import migrate_telegram_users
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 NONTERMINAL = ("starting", "active", "interrupting", "reconciling", "uncertain")
+CONFIRMED_TERMINAL = ("completed", "completed_silent", "failed", "interrupted")
 
 
 class GatewayPersistenceError(RuntimeError):
@@ -88,23 +89,30 @@ class GatewayStore:
                 backup = Path(database_path).with_name(f"gateway-before-delegation-v{version}.sqlite3")
                 if not backup.exists():
                     self.backup(backup)
+            if version == 5:
+                self._migrate_operation_rpcs()
+                return
             if version == 4:
                 migrate_telegram_users(self.db)
+                self._migrate_operation_rpcs()
                 return
             if version == 3:
                 self._migrate_multiorigin()
                 migrate_telegram_users(self.db)
+                self._migrate_operation_rpcs()
                 return
             if version == 2:
                 self._migrate_structured_content()
                 self._migrate_multiorigin()
                 migrate_telegram_users(self.db)
+                self._migrate_operation_rpcs()
                 return
             if version == 1:
                 self._migrate_terminal_outputs()
                 self._migrate_structured_content()
                 self._migrate_multiorigin()
                 migrate_telegram_users(self.db)
+                self._migrate_operation_rpcs()
                 return
             columns = {row[1] for row in self.db.execute("PRAGMA table_info(inbox_items)")}
             for name, definition in (("source_key", "TEXT"), ("sequence", "INTEGER"), ("route", "TEXT NOT NULL DEFAULT 'auto'"), ("execution_id", "TEXT"), ("failure_reason", "TEXT")):
@@ -134,6 +142,12 @@ class GatewayStore:
             self._migrate_structured_content()
             self._migrate_multiorigin()
             migrate_telegram_users(self.db)
+            self._migrate_operation_rpcs()
+
+    def _migrate_operation_rpcs(self) -> None:
+        """Preserva a identidade de RPC mesmo depois do timeout do chamador."""
+        self.db.execute("CREATE TABLE input_operation_rpcs(operation_id TEXT PRIMARY KEY, process_epoch TEXT NOT NULL, rpc_id TEXT NOT NULL, UNIQUE(process_epoch,rpc_id))")
+        self.db.execute("INSERT INTO gateway_schema_migrations VALUES (6,?)", (time.time(),))
 
     def _migrate_multiorigin(self) -> None:
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(inbox_items)")}
@@ -176,8 +190,22 @@ class GatewayStore:
         with self.lock, self.db:
             # A operação é persistida antes de escrever no transporte. Sem ela,
             # a reserva interrompida não pode ter iniciado geração.
-            self.db.execute("UPDATE inbox_items SET state='pending',execution_id=NULL WHERE execution_id IN (SELECT e.execution_id FROM execution_turns e WHERE e.state='starting' AND NOT EXISTS (SELECT 1 FROM input_operations o WHERE o.execution_id=e.execution_id)) AND state='running'")
-            self.db.execute("UPDATE execution_turns SET state='terminal',result='not_sent',completed_at=? WHERE state='starting' AND NOT EXISTS (SELECT 1 FROM input_operations o WHERE o.execution_id=execution_turns.execution_id)", (time.time(),))
+            # bind() associa a thread antes de preparar o input e já usa active.
+            # A fronteira de envio é input_operations, não o nome desse estado.
+            # Inclui falsos positivos deixados por versões anteriores, mas não
+            # transforma cancelamentos ou uma geração antiga em trabalho novo.
+            unsent = """SELECT e.execution_id FROM execution_turns e
+                WHERE (e.state IN ('starting','active') OR e.state='uncertain' AND e.result='gateway_restarted')
+                AND NOT EXISTS (SELECT 1 FROM input_operations o WHERE o.execution_id=e.execution_id)"""
+            self.db.execute(f"""UPDATE inbox_items SET state='cancelled',failure_reason='recovery_cancelled'
+                WHERE state IN ('running','uncertain') AND execution_id IN ({unsent})
+                AND NOT EXISTS (SELECT 1 FROM execution_turns e JOIN conversations c ON c.chat_id=e.conversation_id
+                    WHERE e.execution_id=inbox_items.execution_id AND e.user_cancelled=0 AND e.generation=c.generation)""")
+            self.db.execute(f"""UPDATE inbox_items SET state='pending',execution_id=NULL,failure_reason=NULL
+                WHERE state IN ('running','uncertain') AND execution_id IN ({unsent})""")
+            self.db.execute(f"""UPDATE execution_turns SET state='terminal',
+                result=CASE WHEN user_cancelled=0 AND EXISTS (SELECT 1 FROM conversations c WHERE c.chat_id=execution_turns.conversation_id AND c.generation=execution_turns.generation) THEN 'not_sent' ELSE 'cancelled' END,
+                completed_at=? WHERE execution_id IN ({unsent})""", (time.time(),))
             self.db.execute("UPDATE input_operations SET state='uncertain', reason='gateway_restarted', updated_at=? WHERE state='dispatching'", (time.time(),))
             self.db.execute("UPDATE execution_turns SET state='uncertain', result='gateway_restarted' WHERE state IN ('starting','active','interrupting','reconciling')")
             self.db.execute("UPDATE inbox_items SET state='uncertain', failure_reason='gateway_restarted' WHERE state='running'")
@@ -191,6 +219,14 @@ class GatewayStore:
                     value = None
                 if isinstance(value, dict) and value.get("private_control"):
                     self.db.execute("UPDATE ingress_updates SET state='cancelled' WHERE source_key=?", (source,))
+            # A inbox comprova que a preparação já entregou seu conteúdo ao
+            # ledger. Recuperar esse handoff não repete preparação nem envio;
+            # toda decisão de execução continua nos estados da própria inbox.
+            self.db.execute("""UPDATE ingress_updates SET state='done',updated_at=?
+                WHERE state='uncertain' AND EXISTS (SELECT 1 FROM inbox_items i
+                    WHERE i.source_key=ingress_updates.source_key
+                    AND i.chat_id=ingress_updates.conversation_id
+                    AND i.generation=ingress_updates.generation)""", (time.time(),))
 
     def acquire_lease(self, path: Path) -> None:
         """Recusa outro escritor operacional, inclusive no mesmo processo."""
@@ -359,9 +395,27 @@ class GatewayStore:
             value["notification"] = True
         return value
 
-    def blocked(self, conversation: str) -> bool:
+    def block_reasons(self, conversation: str) -> dict[str, int]:
+        """Expõe as pendências reais, sem confundir entrega com execução incerta.
+
+        As contagens são por categoria e podem descrever a mesma solicitação.
+        Entregas incertas são informativas: seu replay é proibido, mas elas não
+        bloqueiam sozinhas o próximo turno, como no contrato anterior.
+        """
+        queries = {
+            "uncertain_executions": "SELECT COUNT(*) FROM execution_turns WHERE conversation_id=? AND state='uncertain'",
+            "reconciling_executions": "SELECT COUNT(*) FROM execution_turns WHERE conversation_id=? AND state='reconciling'",
+            "uncertain_inputs": "SELECT COUNT(*) FROM inbox_items WHERE chat_id=? AND state IN ('uncertain','uncertain_legacy')",
+            "uncertain_ingress": "SELECT COUNT(*) FROM ingress_updates WHERE conversation_id=? AND state='uncertain'",
+            "pending_deliveries": "SELECT COUNT(*) FROM execution_turns WHERE conversation_id=? AND state='terminal' AND delivery_state IN ('pending','sending','sent')",
+            "pending_receipts": "SELECT COUNT(*) FROM notification_receipts n JOIN inbox_items i ON i.id=n.inbox_id JOIN execution_turns e ON e.execution_id=i.execution_id WHERE i.chat_id=? AND n.execution_state IS NULL AND e.state='terminal'",
+            "uncertain_deliveries": "SELECT COUNT(*) FROM gateway_deliveries WHERE conversation_id=? AND state='uncertain'",
+        }
         with self.lock:
-            return bool(self.db.execute("SELECT 1 FROM execution_turns WHERE conversation_id=? AND (state IN ('uncertain','reconciling') OR state='terminal' AND delivery_state IN ('pending','sending','sent')) UNION ALL SELECT 1 FROM inbox_items WHERE chat_id=? AND state IN ('uncertain','uncertain_legacy') UNION ALL SELECT 1 FROM ingress_updates WHERE conversation_id=? AND state='uncertain' UNION ALL SELECT 1 FROM notification_receipts n JOIN inbox_items i ON i.id=n.inbox_id JOIN execution_turns e ON e.execution_id=i.execution_id WHERE i.chat_id=? AND n.execution_state IS NULL AND e.state='terminal' LIMIT 1", (conversation, conversation, conversation, conversation)).fetchone())
+            return {name: count for name, query in queries.items() if (count := int(self.db.execute(query, (conversation,)).fetchone()[0]))}
+
+    def blocked(self, conversation: str) -> bool:
+        return any(name != "uncertain_deliveries" for name in self.block_reasons(conversation))
 
     def reserve(self, conversation: str, generation: int, inbox: str, timeout: float) -> str:
         identifier = secrets.token_urlsafe(18)
@@ -375,7 +429,17 @@ class GatewayStore:
 
     def bind(self, execution: str, epoch: str, thread: str, turn: str | None = None) -> None:
         with self.lock, self.db:
-            self.db.execute("UPDATE execution_turns SET process_epoch=?,thread_id=?,turn_id=COALESCE(?,turn_id),state='active' WHERE execution_id=? AND state IN ('starting','active')", (epoch, thread, turn, execution))
+            row = self.db.execute("SELECT state,process_epoch,thread_id,turn_id FROM execution_turns WHERE execution_id=?", (execution,)).fetchone()
+            if not row or row[0] not in {"starting", "active", "uncertain", "reconciling", "interrupting"}:
+                return
+            if any(existing is not None and incoming is not None and existing != incoming for existing, incoming in zip(row[1:], (epoch, thread, turn))):
+                raise GatewayPersistenceError("A execução já possui outra identidade de processo, thread ou turno.")
+            # Progresso tardio pode confirmar a identidade após perder o ACK,
+            # mas não resolve sozinho a operação nem reabre estados terminais.
+            self.db.execute("""UPDATE execution_turns SET process_epoch=COALESCE(process_epoch,?),
+                thread_id=COALESCE(thread_id,?),turn_id=COALESCE(turn_id,?),
+                state=CASE WHEN state='starting' THEN 'active' ELSE state END
+                WHERE execution_id=?""", (epoch, thread, turn, execution))
 
     def operation(self, inbox: str, execution: str, method: str, turn: str | None) -> str:
         identifier = secrets.token_urlsafe(18)
@@ -386,26 +450,77 @@ class GatewayStore:
             self.db.execute("INSERT INTO input_operations VALUES (?,?,?,?,?,?,'dispatching',NULL,?,?)", (identifier, inbox, execution, method, turn, inbox, time.time(), time.time()))
         return identifier
 
-    def operation_result(self, operation: str, state: str, reason: str | None = None) -> None:
+    @staticmethod
+    def _rpc_key(process_epoch: str, rpc_id: int | str) -> str:
+        if not isinstance(process_epoch, str) or not process_epoch or type(rpc_id) not in {int, str} or isinstance(rpc_id, str) and not rpc_id:
+            raise GatewayPersistenceError("Identidade de RPC inválida.")
+        return json.dumps(rpc_id, ensure_ascii=True, separators=(",", ":"))
+
+    def record_operation_rpc(self, operation_id: str, process_epoch: str, rpc_id: int | str) -> None:
+        """Associa a RPC antes de escrevê-la, sem permitir troca de dono."""
+        key = self._rpc_key(process_epoch, rpc_id)
         with self.lock, self.db:
-            row = self.db.execute("SELECT inbox_id,execution_id,state FROM input_operations WHERE operation_id=?", (operation,)).fetchone()
+            row = self.db.execute("""SELECT o.state,e.process_epoch,i.state,e.result,e.user_cancelled,e.generation,c.generation
+                FROM input_operations o JOIN execution_turns e ON e.execution_id=o.execution_id
+                JOIN inbox_items i ON i.id=o.inbox_id JOIN conversations c ON c.chat_id=e.conversation_id
+                WHERE o.operation_id=?""", (operation_id,)).fetchone()
+            if not row or row[0] not in {"dispatching", "uncertain"} or row[1] != process_epoch or row[2] in {"cancelled", "failed"} or row[3] == "owner_discarded" or row[4] or row[5] != row[6]:
+                raise GatewayPersistenceError("Operação não está disponível para esta RPC.")
+            existing = self.db.execute("SELECT process_epoch,rpc_id FROM input_operation_rpcs WHERE operation_id=?", (operation_id,)).fetchone()
+            if existing:
+                if existing != (process_epoch, key):
+                    raise GatewayPersistenceError("A operação já possui outra identidade de RPC.")
+                return
+            if self.db.execute("SELECT 1 FROM input_operation_rpcs WHERE process_epoch=? AND rpc_id=?", (process_epoch, key)).fetchone():
+                raise GatewayPersistenceError("A RPC já pertence a outra operação.")
+            self.db.execute("INSERT INTO input_operation_rpcs VALUES (?,?,?)", (operation_id, process_epoch, key))
+
+    def operation_for_rpc(self, process_epoch: str, rpc_id: int | str) -> dict[str, Any] | None:
+        """Localiza o dono persistido pelo epoch e pelo tipo/valor do ID RPC.
+
+        Retorna também tombstones: o chamador pode diagnosticar uma resposta
+        tardia já resolvida, mas operation_result nunca ressuscita seu input.
+        """
+        key = self._rpc_key(process_epoch, rpc_id)
+        with self.lock:
+            row = self.db.execute("""SELECT o.operation_id,o.inbox_id,o.execution_id,o.method,o.expected_turn_id,o.state,
+                e.conversation_id,e.generation,r.process_epoch,e.thread_id,e.turn_id,e.state,e.result,e.user_cancelled
+                FROM input_operation_rpcs r JOIN input_operations o ON o.operation_id=r.operation_id
+                JOIN execution_turns e ON e.execution_id=o.execution_id
+                WHERE r.process_epoch=? AND r.rpc_id=? AND e.process_epoch=r.process_epoch""", (process_epoch, key)).fetchone()
+        names = ("operation_id", "inbox_id", "execution_id", "method", "expected_turn_id", "state", "conversation_id", "generation", "process_epoch", "thread_id", "turn_id", "execution_state", "result", "user_cancelled")
+        return dict(zip(names, row)) if row else None
+
+    def operation_result(self, operation: str, state: str, reason: str | None = None) -> None:
+        if state not in {"accepted", "rejected", "not_sent", "uncertain"}:
+            raise GatewayPersistenceError("Resultado de input inválido.")
+        with self.lock, self.db:
+            row = self.db.execute("""SELECT o.inbox_id,o.execution_id,o.state,o.method,
+                e.state,e.result,e.turn_id,i.state FROM input_operations o
+                JOIN execution_turns e ON e.execution_id=o.execution_id JOIN inbox_items i ON i.id=o.inbox_id
+                WHERE o.operation_id=?""", (operation,)).fetchone()
             if not row:
                 raise GatewayPersistenceError("Operação de input desconhecida.")
+            if row[2] in {"rejected", "not_sent", "resolved"} or row[7] in {"cancelled", "failed"} or row[5] == "owner_discarded":
+                return
             if row[2] == "accepted" and state != "accepted":
                 return
+            confirmed = row[4] == "terminal" and row[5] in CONFIRMED_TERMINAL and bool(row[6])
+            if row[3] == "turn/start" and confirmed:
+                state, reason = "accepted", "terminal_confirmed"
             self.db.execute("UPDATE input_operations SET state=?,reason=?,updated_at=? WHERE operation_id=?", (state, reason, time.time(), operation))
             inbox_state = {"accepted": "accepted", "rejected": "pending", "not_sent": "pending", "uncertain": "uncertain"}[state]
-            if state == "accepted" and self.db.execute("SELECT 1 FROM execution_turns WHERE execution_id=? AND state='terminal'", (row[1],)).fetchone():
+            if state == "accepted" and row[4] == "terminal":
                 inbox_state = "done"
             self.db.execute("UPDATE inbox_items SET state=?,failure_reason=?,execution_id=? WHERE id=? AND state!='cancelled'", (inbox_state, reason, row[1], row[0]))
             if state == "accepted":
                 self.db.execute("UPDATE ingress_updates SET state='done',updated_at=? WHERE source_key=(SELECT source_key FROM inbox_items WHERE id=?) AND state='uncertain'", (time.time(), row[0]))
-            if state == "uncertain":
-                self.db.execute("UPDATE execution_turns SET state='uncertain',result=? WHERE execution_id=?", (reason or "input_unknown", row[1]))
+            if state == "uncertain" and not confirmed:
+                self.db.execute("UPDATE execution_turns SET state='uncertain',result=? WHERE execution_id=? AND state!='terminal'", (reason or "input_unknown", row[1]))
 
     def terminal(self, execution: str, result: str) -> None:
         with self.lock, self.db:
-            self.db.execute("UPDATE execution_turns SET state='terminal',result=?,completed_at=? WHERE execution_id=? AND state!='uncertain'", (result, time.time(), execution))
+            self.db.execute("UPDATE execution_turns SET state='terminal',result=?,completed_at=? WHERE execution_id=? AND state NOT IN ('uncertain','terminal')", (result, time.time(), execution))
             self.db.execute("UPDATE inbox_items SET state='done' WHERE execution_id=? AND state='accepted'", (execution,))
 
     def save_terminal_output(self, execution: str, result: str, text: str | None, item: str, mode: str, delete_thoughts: bool) -> None:
@@ -415,7 +530,27 @@ class GatewayStore:
         o modelo. Incerteza de input adicional permanece na operação/inbox.
         """
         with self.lock, self.db:
-            self.db.execute("UPDATE execution_turns SET state='terminal',result=?,terminal_text=?,final_item_id=?,reply_mode=?,delete_thoughts=?,delivery_state=CASE WHEN delivery_state IN ('sent','done','uncertain','suppressed') THEN delivery_state ELSE ? END,completed_at=? WHERE execution_id=?", (result, text, item, mode, int(delete_thoughts), "pending" if text is not None else "suppressed", time.time(), execution))
+            previous = self.db.execute("SELECT state,result,turn_id,delivery_state FROM execution_turns WHERE execution_id=?", (execution,)).fetchone()
+            if previous and previous[0] == "terminal" and previous[1] == "owner_discarded":
+                return
+            if previous and previous[0] == "terminal" and previous[1] in CONFIRMED_TERMINAL and previous[2] and previous[3] is not None:
+                # Um callback repetido ou um histórico incompleto não pode
+                # substituir a resposta já confirmada e sua chave de entrega.
+                result = previous[1]
+            else:
+                self.db.execute("UPDATE execution_turns SET state='terminal',result=?,terminal_text=?,final_item_id=?,reply_mode=?,delete_thoughts=?,delivery_state=CASE WHEN delivery_state IN ('sent','done','uncertain','suppressed') THEN delivery_state ELSE ? END,completed_at=? WHERE execution_id=?", (result, text, item, mode, int(delete_thoughts), "pending" if text is not None else "suppressed", time.time(), execution))
+            if previous and previous[2] and result in CONFIRMED_TERMINAL:
+                # O término correlacionado comprova o início deste turno, mas
+                # não a aceitação de uma entrada adicional enviada por steer.
+                self.db.execute("""UPDATE input_operations SET state='accepted',reason='terminal_confirmed',updated_at=?
+                    WHERE execution_id=? AND method='turn/start' AND state IN ('dispatching','uncertain')
+                    AND inbox_id IN (SELECT id FROM inbox_items WHERE state NOT IN ('cancelled','failed'))""", (time.time(), execution))
+                self.db.execute("""UPDATE inbox_items SET state='accepted',failure_reason=NULL WHERE execution_id=?
+                    AND state IN ('running','uncertain') AND id IN
+                    (SELECT inbox_id FROM input_operations WHERE execution_id=? AND method='turn/start' AND state='accepted')""", (execution, execution))
+                self.db.execute("""UPDATE ingress_updates SET state='done',updated_at=? WHERE state='uncertain'
+                    AND source_key IN (SELECT i.source_key FROM inbox_items i JOIN input_operations o ON o.inbox_id=i.id
+                        WHERE o.execution_id=? AND o.method='turn/start' AND o.state='accepted')""", (time.time(), execution))
             self.db.execute("UPDATE inbox_items SET state='done' WHERE execution_id=? AND state='accepted'", (execution,))
 
     def fail_input(self, inbox: str, reason: str) -> None:
@@ -475,8 +610,15 @@ class GatewayStore:
             raise GatewayPersistenceError("Reconcilie efeitos externos e envie uma nova solicitação; não há retry cego.")
         with self.lock, self.db:
             self.db.execute("UPDATE execution_turns SET state='terminal',result='owner_discarded',completed_at=? WHERE conversation_id=? AND state IN ('uncertain','reconciling')", (time.time(), conversation))
-            self.db.execute("UPDATE inbox_items SET state='cancelled' WHERE chat_id=? AND state IN ('uncertain','uncertain_legacy')", (conversation,))
-            self.db.execute("UPDATE input_operations SET state='resolved',reason='owner_discarded' WHERE execution_id IN (SELECT execution_id FROM execution_turns WHERE conversation_id=?) AND state='uncertain'", (conversation,))
+            self.db.execute("""UPDATE inbox_items SET state='cancelled' WHERE chat_id=? AND
+                (state IN ('uncertain','uncertain_legacy') OR state IN ('running','accepted') AND execution_id IN
+                    (SELECT execution_id FROM execution_turns WHERE conversation_id=? AND result='owner_discarded')
+                 OR state='pending' AND id IN (SELECT o.inbox_id FROM input_operations o JOIN execution_turns e ON e.execution_id=o.execution_id
+                    WHERE e.conversation_id=? AND e.result='owner_discarded' AND o.state IN ('dispatching','uncertain')))""", (conversation, conversation, conversation))
+            self.db.execute("""UPDATE input_operations SET state='resolved',reason='owner_discarded' WHERE
+                execution_id IN (SELECT execution_id FROM execution_turns WHERE conversation_id=?) AND
+                (state='uncertain' OR state='dispatching' AND execution_id IN
+                    (SELECT execution_id FROM execution_turns WHERE conversation_id=? AND result='owner_discarded'))""", (conversation, conversation))
             self.db.execute("UPDATE ingress_updates SET state='cancelled' WHERE conversation_id=? AND state='uncertain'", (conversation,))
 
     def purge(self, now: float | None = None) -> dict[str, int]:
@@ -492,3 +634,4 @@ class GatewayStore:
             self.db.execute("UPDATE gateway_deliveries SET payload=NULL WHERE state IN ('sent','suppressed','failed') AND updated_at<? AND COALESCE(cleanup_state,'done')='done'", (cutoff,))
             self.db.execute("UPDATE execution_turns SET terminal_text=NULL WHERE state='terminal' AND delivery_state IN ('done','suppressed') AND completed_at<?", (cutoff,))
         return {"ingress": ingress, "inbox": inbox}
+

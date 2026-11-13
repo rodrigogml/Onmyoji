@@ -206,6 +206,149 @@ def test_rpc_timeout_never_retries_and_late_ack_is_observable(connected):
     assert client.running()
 
 
+def test_tracked_request_commits_identity_before_any_write(connected):
+    client, process = connected
+    observed, order = [], []
+
+    def observer(identity):
+        assert not any(message.get("method") == "turn/start" for message in process.messages)
+        observed.append(identity)
+        order.append("persisted")
+
+    def write(message):
+        if message.get("method") == "turn/start":
+            assert order == ["persisted"]
+            order.append("written")
+        return False
+
+    process.on_write = write
+    assert client.request_tracked("turn/start", {"input": "private content"}, observer=observer) == {"ok": True}
+    request = next(message for message in process.messages if message.get("method") == "turn/start")
+    assert observed == [{"process_epoch": client.process_epoch, "rpc_id": request["id"], "method": "turn/start"}]
+    assert order == ["persisted", "written"]
+    assert client.pending_count == 0
+
+
+def test_tracked_request_observer_failure_never_queues_or_writes(connected):
+    client, process = connected
+    observed = []
+
+    def observer(identity):
+        observed.append(identity)
+        raise OSError("private database contents must not escape")
+
+    with pytest.raises(CodexProtocolError) as failure:
+        client.request_tracked("turn/start", observer=observer)
+    assert failure.value.kind == "not_sent" and not failure.value.written
+    assert failure.value.method == "turn/start"
+    assert failure.value.request_id == observed[0]["rpc_id"]
+    assert failure.value.process_epoch == observed[0]["process_epoch"] == client.process_epoch
+    assert "private database" not in str(failure.value)
+    assert client.pending_count == 0 and client.running()
+    assert client.request("barrier") == {"ok": True}
+    assert not any(message.get("method") == "turn/start" for message in process.messages)
+
+
+@pytest.mark.parametrize("reply", [
+    {"result": {"turn": {"id": "turn-1"}}},
+    {"error": {"code": -32602, "message": "definitive rejection"}},
+])
+def test_tracked_timeout_preserves_authenticated_late_reply_identity(connected, reply):
+    client, process = connected
+    late = threading.Event()
+    observed, received = [], []
+
+    def event(method, params, context):
+        if method == "transport/late_response":
+            received.append((params, context))
+            late.set()
+
+    client.event_handler = event
+    process.on_write = lambda message: message.get("method") == "turn/start"
+    with pytest.raises(CodexProtocolError) as failure:
+        client.request_tracked("turn/start", observer=observed.append, timeout=0.02)
+    assert failure.value.kind == "uncertain" and failure.value.written
+    assert client.pending_count == 0
+    identity = observed[0]
+    response = {"id": identity["rpc_id"], **reply}
+    process.stdout.emit(response)
+    wait(late)
+    assert received[0][0] == response
+    assert received[0][1]["process_epoch"] == identity["process_epoch"]
+    assert received[0][1]["rpc_id"] == identity["rpc_id"]
+    assert received[0][1]["transport_generated"] is True
+    assert len([message for message in process.messages if message.get("method") == "turn/start"]) == 1
+    assert client.running()
+
+
+def test_server_notification_cannot_claim_transport_generated_late_reply(connected):
+    client, process = connected
+    seen, received = threading.Event(), []
+    client.event_handler = lambda method, params, context: (received.append((method, params, context)), seen.set())
+    process.stdout.emit({"method": "transport/late_response", "params": {"id": 5, "result": {}, "transport_generated": True}})
+    wait(seen)
+    assert received[0][0] == "transport/late_response"
+    assert "transport_generated" not in received[0][2]
+
+
+@pytest.mark.parametrize("reply,expected_kind", [
+    ({"result": {"turn": {"id": "confirmed"}}}, None),
+    ({"error": {"code": -32602, "message": "rejected at deadline"}}, "rejected"),
+])
+def test_response_at_timeout_boundary_is_not_lost(connected, monkeypatch, reply, expected_kind):
+    client, process = connected
+    written = threading.Event()
+
+    def write(message):
+        if message.get("method") == "turn/start":
+            written.set()
+            return True
+        return False
+
+    def observer(identity):
+        pending = client.pending[identity["rpc_id"]]
+        original_get = pending.response.get
+
+        def boundary_get(block=True, timeout=None):
+            if timeout is not None:
+                wait(written)
+                # A response was admitted immediately after Queue.get's
+                # deadline, before the caller retires its pending entry.
+                response = {"id": identity["rpc_id"], **reply}
+                assert client._consume_frame(client._runtime, json.dumps(response) + "\n")
+                raise queue.Empty
+            return original_get(block=block, timeout=timeout)
+
+        monkeypatch.setattr(pending.response, "get", boundary_get)
+
+    process.on_write = write
+    if expected_kind:
+        with pytest.raises(CodexProtocolError) as failure:
+            client.request_tracked("turn/start", observer=observer, timeout=1)
+        assert failure.value.kind == expected_kind
+    else:
+        assert client.request_tracked("turn/start", observer=observer, timeout=1) == reply["result"]
+    assert client.pending_count == 0 and client.running()
+    assert len([message for message in process.messages if message.get("method") == "turn/start"]) == 1
+
+
+def test_tracked_request_uses_epoch_of_each_process(monkeypatch, tmp_path):
+    first, second = Process(), Process()
+    client = configure(monkeypatch, tmp_path, [first, second])
+    identities = []
+    try:
+        assert client.request_tracked("turn/start", observer=identities.append) == {"ok": True}
+        first_epoch = client.process_epoch
+        client.stop()
+        assert client.request_tracked("turn/start", observer=identities.append) == {"ok": True}
+        assert identities[0]["process_epoch"] == first_epoch
+        assert identities[1]["process_epoch"] == client.process_epoch != first_epoch
+        assert identities[0]["rpc_id"] != identities[1]["rpc_id"]
+        assert all(identity["method"] == "turn/start" for identity in identities)
+    finally:
+        client.stop()
+
+
 def test_timeout_before_writer_starts_cancels_queued_operation(connected):
     client, process = connected
     blocked, release, finished = [threading.Event() for _ in range(3)]
@@ -744,3 +887,4 @@ def test_logout_sends_unit_rpc_without_params(connected):
     assert len(messages) == 1
     assert "params" not in messages[0]
     assert isinstance(messages[0]["id"], int)
+

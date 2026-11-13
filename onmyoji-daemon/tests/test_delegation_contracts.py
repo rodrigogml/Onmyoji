@@ -442,7 +442,8 @@ def test_channel_tool_from_known_child_is_not_authorized_by_spawn_relationship(c
 
 @pytest.mark.parametrize("method", ["turn/start", "turn/steer"])
 @pytest.mark.parametrize("marker_present", [False, True])
-def test_lost_ack_reconciles_only_persisted_history_without_restarting_input(contract_gateway, monkeypatch, method, marker_present):
+@pytest.mark.parametrize("history_method", ["thread/read", "thread/items/list"])
+def test_lost_ack_reconciles_only_persisted_history_without_restarting_input(contract_gateway, monkeypatch, method, marker_present, history_method):
     """História positiva recupera entrega; ausência conserva incerteza sem retry."""
     gateway = contract_gateway
     generation = gateway._generation("9")
@@ -464,11 +465,15 @@ def test_lost_ack_reconciles_only_persisted_history_without_restarting_input(con
     requests = []
     def request(name, params, **values):
         requests.append((name, params))
+        if name == "thread/items/list":
+            assert history_method == name
+            assert params == {"threadId": "thread", "limit": 100, "sortDirection": "desc"}
+            return {"data": [{"turnId": "turn", "item": item} for item in items], "nextCursor": None}
         if name != "thread/read":
             pytest.fail("Reconciliação não pode iniciar ou repetir input de modelo")
         assert params == {"threadId": "thread", "includeTurns": True}
         return history
-    gateway.capabilities = SimpleNamespace(supports=lambda feature: feature == "input_reconciliation")
+    gateway.capabilities = SimpleNamespace(supports=lambda feature: feature == "input_reconciliation", gates={"G2": {"history_method": history_method}})
     monkeypatch.setattr(gateway, "_app_client", lambda: SimpleNamespace(request=request))
     gateway._reconcile_conversation("9")
     gateway._restore_terminal_outputs()
@@ -479,7 +484,7 @@ def test_lost_ack_reconciles_only_persisted_history_without_restarting_input(con
         input_state = gateway.database.execute("SELECT state FROM inbox_items WHERE id=?", (inbox,)).fetchone()[0]
         assert gateway.database.execute("SELECT COUNT(*) FROM execution_turns").fetchone() == (1,)
         assert gateway.database.execute("SELECT codex_thread_id FROM conversations WHERE chat_id='9'").fetchone() == ("thread",)
-    assert all(name == "thread/read" for name, _params in requests)
+    assert all(name in {"thread/read", "thread/items/list"} for name, _params in requests)
     assert gateway._generation("9") == generation
     if marker_present:
         assert operation_row == ("accepted", "history_confirmed")
@@ -492,9 +497,89 @@ def test_lost_ack_reconciles_only_persisted_history_without_restarting_input(con
         assert len(requests) == previous_reads
     else:
         assert operation_row == ("uncertain", "ack_lost")
-        assert execution_row[0] == "uncertain" and input_state == "uncertain"
-        assert gateway.store.blocked("9") and gateway._contract_sent == []
+        assert input_state == "uncertain" and gateway.store.blocked("9")
+        if method == "turn/steer":
+            # O início já aceito identifica o turno concluído; a dúvida restante
+            # é somente a aceitação da correção, que nunca é reenviada.
+            assert execution_row == ("terminal", "turn", "history-final", "done")
+            assert len(gateway._contract_sent) == 1
+        else:
+            assert execution_row[0] == "uncertain" and gateway._contract_sent == []
         assert gateway.store.next_input("9", generation) is None
+
+
+@pytest.mark.parametrize("wrong_turn", [False, True])
+def test_certified_items_history_paginates_and_requires_exact_turn(contract_gateway, monkeypatch, wrong_turn):
+    gateway = contract_gateway
+    item, active = reserve_active(gateway)
+    # Simular uma RPC escrita sem ACK, antes de qualquer prova de aceitação.
+    gateway.database.execute("UPDATE input_operations SET state='uncertain',reason='ack_lost' WHERE execution_id=?", (active.execution_id,))
+    gateway.database.execute("UPDATE execution_turns SET state='uncertain',result='ack_lost' WHERE execution_id=?", (active.execution_id,))
+    gateway.database.execute("UPDATE inbox_items SET state='uncertain' WHERE id=?", (item["id"],))
+    gateway.database.commit()
+    gateway.capabilities = SimpleNamespace(supports=lambda feature: feature == "input_reconciliation", gates={"G2": {"history_method": "thread/items/list"}})
+    calls = []
+    def request(method, params, **_kwargs):
+        calls.append((method, params))
+        if method == "thread/items/list":
+            if "cursor" not in params:
+                return {"data": [], "nextCursor": "opaque-page-two"}
+            assert params["cursor"] == "opaque-page-two"
+            return {"data": [{"turnId": "different-turn" if wrong_turn else "turn", "item": {"type": "userMessage", "id": "user", "clientId": item["id"]}}], "nextCursor": None}
+        assert method == "thread/read"
+        return {"thread": {"id": "thread", "turns": [{"id": "turn", "status": "completed", "items": [{"type": "agentMessage", "id": "saved-final", "text": "resposta do turno exato"}]}]}}
+    monkeypatch.setattr(gateway, "_app_client", lambda: SimpleNamespace(request=request))
+    gateway._reconcile_conversation("9")
+    gateway._restore_terminal_outputs()
+    assert [method for method, _ in calls[:2]] == ["thread/items/list", "thread/items/list"]
+    assert not any(method in {"turn/start", "turn/steer"} for method, _ in calls)
+    if wrong_turn:
+        assert gateway.store.blocked("9") and gateway._contract_sent == []
+        assert not active.completed.is_set()
+    else:
+        assert not gateway.store.blocked("9") and active.completed.is_set()
+        assert len(gateway._contract_sent) == 1
+        assert active.recovered_answer == "resposta do turno exato"
+
+
+def test_acknowledged_turn_recovers_completion_without_optional_marker_capability(contract_gateway, monkeypatch):
+    gateway = contract_gateway
+    _item, active = reserve_active(gateway)
+    gateway.database.execute("UPDATE execution_turns SET state='uncertain',result='process_lost' WHERE execution_id=?", (active.execution_id,))
+    gateway.database.commit()
+    gateway.capabilities = SimpleNamespace(supports=lambda _feature: False, gates={})
+    calls = []
+    def request(method, params, **_kwargs):
+        calls.append(method)
+        assert method == "thread/read"
+        return {"thread": {"id": "thread", "turns": [{"id": "turn", "status": "completed", "items": [{"id": "known-final", "type": "agentMessage", "text": "conclusão confirmada"}]}]}}
+    monkeypatch.setattr(gateway, "_app_client", lambda: SimpleNamespace(request=request))
+    gateway._reconcile_conversation("9")
+    gateway._restore_terminal_outputs()
+    assert calls == ["thread/read"]
+    assert not gateway.store.blocked("9")
+    assert len(gateway._contract_sent) == 1
+
+
+def test_discard_during_history_read_cannot_resurrect_execution(contract_gateway, monkeypatch):
+    gateway = contract_gateway
+    item, active = reserve_active(gateway)
+    gateway.database.execute("UPDATE input_operations SET state='uncertain' WHERE execution_id=?", (active.execution_id,))
+    gateway.database.execute("UPDATE execution_turns SET state='uncertain',result='ack_lost' WHERE execution_id=?", (active.execution_id,))
+    gateway.database.execute("UPDATE inbox_items SET state='uncertain' WHERE id=?", (item["id"],))
+    gateway.database.commit()
+    gateway.capabilities = SimpleNamespace(supports=lambda _feature: True, gates={"G2": {"history_method": "thread/items/list"}})
+    def request(method, params, **_kwargs):
+        if method == "thread/items/list":
+            gateway.store.resolve("9", discard=True)
+            return {"data": [{"turnId": "turn", "item": {"type": "userMessage", "clientId": item["id"]}}], "nextCursor": None}
+        assert method == "thread/read"
+        return {"thread": {"id": "thread", "turns": [{"id": "turn", "status": "completed", "items": [{"id": "late", "type": "agentMessage", "text": "não publicar"}]}]}}
+    monkeypatch.setattr(gateway, "_app_client", lambda: SimpleNamespace(request=request))
+    gateway._reconcile_conversation("9")
+    gateway._restore_terminal_outputs()
+    assert gateway.database.execute("SELECT state,result,terminal_text FROM execution_turns WHERE execution_id=?", (active.execution_id,)).fetchone() == ("terminal", "owner_discarded", None)
+    assert gateway._contract_sent == [] and not gateway.store.blocked("9")
 
 
 @pytest.mark.parametrize("delete_at_finish", [False, True])
@@ -553,3 +638,4 @@ def test_multiple_final_items_preserve_history_and_select_last_with_honest_statu
     assert ("Resposta parcial" in text) == (status != "completed")
     assert gateway.database.execute("SELECT result,final_item_id,delivery_state FROM execution_turns WHERE execution_id=?", (active.execution_id,)).fetchone() == (status, "last-final", "done")
     assert gateway.database.execute("SELECT item_id,state FROM gateway_deliveries WHERE kind='final'").fetchall() == [("last-final", "sent")]
+

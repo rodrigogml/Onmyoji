@@ -25,9 +25,10 @@ from ..telegram_formatting import plain_text
 from ..telegram_persistence import GatewayPersistenceError
 from ..telegram_process import ProcessRecoveryError, record_process, recover_process, mark_stopped
 from ..telegram_commands import CONTROL_COMMANDS, REGISTERED_COMMANDS
+from .recovery import ExecutionRecovery
 
 
-class ExecutionGateway:
+class ExecutionGateway(ExecutionRecovery):
     """Máquina de estados integrada ao Gateway, com contratos de canal existentes."""
 
     def _channel_capability_instructions(self) -> str:
@@ -147,7 +148,7 @@ class ExecutionGateway:
         while not self.stop_event.wait(1):
             self.related_work.tick(enabled=self.settings.post_turn_results)
             with self.database_lock:
-                conversations = [row[0] for row in self.database.execute("SELECT DISTINCT conversation_id FROM execution_turns WHERE state='uncertain' LIMIT 16")]
+                conversations = [row[0] for row in self.database.execute("SELECT DISTINCT e.conversation_id FROM execution_turns e LEFT JOIN input_operations o ON o.execution_id=e.execution_id WHERE e.state IN ('uncertain','reconciling') OR o.state='uncertain' LIMIT 16")]
             for conversation in conversations:
                 self._reconcile_conversation(conversation)
                 if not self.store.blocked(conversation):
@@ -228,10 +229,10 @@ class ExecutionGateway:
             else:
                 self._update(update)
             self.store.ingress_state(source, "done")
-        except Exception:
+        except Exception as error:
             # Pode ter havido um controle/envio; não reproduzir após restart.
             self.store.ingress_state(source, "uncertain")
-            self._diagnostic("input.uncertain", reason="preparation_interrupted")
+            self._diagnostic("input.uncertain", reason="preparation_interrupted", stage="ingress", code=type(error).__name__)
         finally:
             if menu_stage:
                 self._diagnostic("menu.dispatch", stage=menu_stage, duration_ms=int((time.monotonic() - started) * 1000))
@@ -248,6 +249,8 @@ class ExecutionGateway:
             semaphore.release()
 
     def _recovery_control(self, conversation: str, argument: str) -> None:
+        self._reconcile_conversation(conversation)
+        self._restore_terminal_outputs()
         if argument == "descartar":
             with self.app_server_lock:
                 active = [active for active in self.app_turns.values() if active.conversation_id == conversation and not active.completed.is_set()]
@@ -278,13 +281,12 @@ class ExecutionGateway:
             for _thread, _epoch, execution in unresolved:
                 self._release_uncertain_permit(execution)
             self._wake_worker(conversation)
-            self._ephemeral(conversation, "Solicitações incertas descartadas localmente. Isso não desfaz envios ou ações externas. Confira esses efeitos antes de enviar uma nova solicitação.")
+            remaining = self.store.blocked(conversation)
+            message = "Solicitações incertas encerradas localmente. Isso não desfaz envios ou ações externas."
+            message += "\nAinda há pendências:\n" + self._recovery_status_text(conversation) if remaining else " A conversa está liberada para novas solicitações."
+            self._ephemeral(conversation, message, seconds=30)
             return
-        self._reconcile_conversation(conversation)
-        with self.database_lock:
-            turns = self.database.execute("SELECT COUNT(*) FROM execution_turns WHERE conversation_id=? AND state='uncertain'", (conversation,)).fetchone()[0]
-            deliveries = self.database.execute("SELECT COUNT(*) FROM gateway_deliveries WHERE conversation_id=? AND state='uncertain'", (conversation,)).fetchone()[0]
-        self._ephemeral(conversation, f"Estado: {turns} execuções e {deliveries} entregas sem confirmação. Não serão repetidas automaticamente. Confira os efeitos externos. Use /resolver descartar para liberar solicitações incertas sem reenviar; entregas incertas permanecem registradas.", seconds=30)
+        self._ephemeral(conversation, self._recovery_status_text(conversation), seconds=30)
 
     def _enqueue_related_result(self, conversation: str, generation: int, execution: str, work: str, attempt: int, result: dict[str, Any], key: str) -> None:
         """Aceita apenas dados de filho cujo pai/geração ainda autorizam entrega."""
@@ -459,7 +461,7 @@ class ExecutionGateway:
                 self.store.operation_result(operation, "not_sent", "generation_reset")
                 return
             params = {"threadId": active.thread_id, "expectedTurnId": active.turn_id, "input": inputs, "clientUserMessageId": item["id"]}
-            result = self.app_server.request("turn/steer", params)
+            result = self._request_input_operation(self.app_server, operation, "turn/steer", params)
             if result.get("turnId") != active.turn_id:
                 raise CodexProtocolError("Confirmação de steering divergente.", kind="uncertain")
             self.store.operation_result(operation, "accepted")
@@ -477,6 +479,8 @@ class ExecutionGateway:
                 observed = self.database.execute("SELECT state FROM input_operations WHERE operation_id=?", (operation,)).fetchone()
             if observed and observed[0] == "accepted":
                 self._diagnostic("input.accepted", input_id=item["id"], route="steer", reason="event_confirmed")
+                return
+            if observed and observed[0] in {"rejected", "not_sent", "resolved"}:
                 return
             if kind == "not_sent":
                 self.store.operation_result(operation, "not_sent", "transport_not_sent")
@@ -563,6 +567,8 @@ class ExecutionGateway:
             return None
         if active.user_cancelled:
             return "O turno foi cancelado. As mensagens ainda na fila foram preservadas. Efeitos externos já iniciados podem exigir conferência."
+        if hasattr(active, "recovered_answer"):
+            return active.recovered_answer
         if active.status == "completed":
             if getattr(active, "origin", "telegram") == "event":
                 return active.final_text or None
@@ -754,7 +760,7 @@ class ExecutionGateway:
                 active.suppressed = True
                 raise CodexProtocolError("Conversa reiniciada antes do início.", kind="not_sent")
             self._execution_local.failure_stage = "turn_start"
-            result = client.request("turn/start", params)
+            result = self._request_input_operation(client, active.operation_id, "turn/start", params)
             turn = result.get("turn", result)
             identifier = str(turn.get("id") or "") if isinstance(turn, dict) else ""
             if not identifier or (active.turn_id and identifier != active.turn_id):
@@ -805,9 +811,19 @@ class ExecutionGateway:
                         active.completed.set()
                         self.store.fail_input(active.inbox_id, "start_rejected")
                         self.store.terminal(active.execution_id, "not_started")
-                elif slot and not active.completed.is_set():
+                with self.database_lock:
+                    row = self.database.execute("SELECT state FROM input_operations WHERE operation_id=?", (active.operation_id,)).fetchone()
+                if row and row[0] in {"rejected", "not_sent"}:
+                    active.status = "failed"
+                    active.completed.set()
+                    self.store.fail_input(active.inbox_id, "start_rejected")
+                    self.store.terminal(active.execution_id, "not_started")
+                    if getattr(error, "kind", None) == row[0]:
+                        raise
+                    raise CodexProtocolError("O Codex não iniciou esta solicitação.", kind=row[0]) from error
+                if slot and not active.completed.is_set():
                     with self.database_lock, self.database:
-                        self.database.execute("UPDATE execution_turns SET state='uncertain',result='terminality_missing' WHERE execution_id=?", (slot.identifier,))
+                        self.database.execute("UPDATE execution_turns SET state='uncertain',result='terminality_missing' WHERE execution_id=? AND state IN ('starting','active','interrupting')", (slot.identifier,))
                 elif row and row[0] == "accepted" and active.completed.is_set() and active.status in {"completed", "interrupted", "failed"}:
                     self.store.terminal(slot.identifier, "completed_silent" if active.status == "completed" and active.silent_completion else active.status)
                     return self._terminal_answer(active), active.reply_mode
@@ -816,7 +832,10 @@ class ExecutionGateway:
             raise
         finally:
             with self.app_server_lock:
-                if self.app_turns.get(thread) is active:
+                # O leitor continua correlacionando eventos depois de um timeout.
+                # Uma conclusão tardia pode encerrar a reserva sem repetir input.
+                active.detached = not active.completed.is_set()
+                if not active.detached and self.app_turns.get(thread) is active:
                     self.app_turns.pop(thread, None)
                 self.last_app_activity = time.monotonic()
             # Entrega/cleanup pertencem ao fechamento em _turn_serial.
@@ -878,13 +897,12 @@ class ExecutionGateway:
 
     def _app_event(self, method: str, params: dict[str, Any], event: dict[str, Any] | None) -> None:
         self._login_event(method, params, event)
+        if method == "transport/late_response":
+            self._late_input_response(params, event)
+            return
         if method == "transport/lost":
             epoch = str((event or {}).get("process_epoch"))
             self.related_work.process_lost(epoch)
-            with self.app_server_lock:
-                uncertain = [execution for execution, owner_epoch in self._uncertain_permits.items() if owner_epoch == epoch]
-            for execution in uncertain:
-                self._release_uncertain_permit(execution)
             with self.app_server_lock:
                 active_turns = [active for active in self.app_turns.values() if active.process_epoch == epoch]
             for active in active_turns:
@@ -894,9 +912,17 @@ class ExecutionGateway:
                 active.failure_detail = "process_lost"
                 if active.inbox_id:
                     with self.database_lock, self.database:
-                        self.database.execute("UPDATE execution_turns SET state='uncertain',result='process_lost' WHERE execution_id=?", (active.execution_id,))
+                        self.database.execute("UPDATE execution_turns SET state='uncertain',result='process_lost' WHERE execution_id=? AND state!='terminal'", (active.execution_id,))
                 self._invalidate_menus(active)
-                active.completed.set()
+                with self.app_server_lock:
+                    active.completed.set()
+                    if getattr(active, "detached", False) and self.app_turns.get(active.thread_id) is active:
+                        self.app_turns.pop(active.thread_id, None)
+                self._diagnostic("transport.lost", execution_id=active.execution_id, reason=params.get("cause") or params.get("reason") or "process_lost")
+            with self.app_server_lock:
+                uncertain = [execution for execution, owner_epoch in self._uncertain_permits.items() if owner_epoch == epoch]
+            for execution in uncertain:
+                self._release_uncertain_permit(execution)
             return
         active = self._correlate(params, event)
         if not active:
@@ -918,7 +944,14 @@ class ExecutionGateway:
             self._invalidate_menus(active)
             if active.suppressed:
                 active.terminal_announced = True
-            active.completed.set()
+            with self.app_server_lock:
+                active.completed.set()
+                detached = getattr(active, "detached", False)
+                if detached and self.app_turns.get(active.thread_id) is active:
+                    self.app_turns.pop(active.thread_id, None)
+            self._release_uncertain_permit(active.execution_id)
+            if detached:
+                self._wake_worker(active.conversation_id)
             return
         if method != "item/completed" or active.completed.is_set() or active.suppressed or active.generation != self._generation(active.conversation_id):
             return
@@ -1131,11 +1164,11 @@ class ExecutionGateway:
             active = active or getattr(self._execution_local, "active", None)
             self._record_error(error)
             reason = error.reason if isinstance(error, ProcessRecoveryError) else error.kind if isinstance(error, CodexProtocolError) else "operational_failure"
-            self._diagnostic("turn.failed", stage=getattr(self._execution_local, "failure_stage", "preparation"), reason=reason)
+            self._diagnostic("turn.failed", stage=getattr(self._execution_local, "failure_stage", "preparation"), reason=reason, code=type(error).__name__, execution_id=active.execution_id if active else "unreserved", method=getattr(error, "method", "unknown"))
             if self.api and not notification and (not active or not active.suppressed):
                 message = self._public_turn_error(error)
                 if active and self.store.blocked(conversation):
-                    message = "O atendimento foi interrompido e há uma operação sem confirmação. Use /resolver para conferir o estado; não vou repeti-la automaticamente."
+                    message = self._recovery_error_text(conversation, error)
                 try:
                     if active:
                         self.deliveries.text(self._owner(active), f"{active.execution_id}:terminal-notice", "terminal", "notice", self.api, address, message, **topic)
@@ -1154,11 +1187,11 @@ class ExecutionGateway:
             self._execution_local.failure_stage = "preparation"
             typing_stop.set(); thread.join(timeout=1)
             if not permit_released:
-                if active and not active.completed.is_set() and self.app_server and self.app_server.running():
-                    with self.app_server_lock:
+                with self.app_server_lock:
+                    if active and not active.completed.is_set() and self.app_server and self.app_server.running():
                         self._uncertain_permits[active.execution_id] = active.process_epoch
-                else:
-                    self.work.release()
+                    else:
+                        self.work.release()
 
     def _release_uncertain_permit(self, execution: str) -> None:
         with self.app_server_lock:
@@ -1354,50 +1387,6 @@ class ExecutionGateway:
             return True
         return cancelled_pending or slot is not None or bool(children) or bool(deferred_parents)
 
-    def _reconcile_conversation(self, conversation: str) -> None:
-        if not self.capabilities.supports("input_reconciliation"):
-            return
-        with self.database_lock:
-            operations = self.database.execute("SELECT o.operation_id,o.client_message_id,e.thread_id,e.execution_id FROM input_operations o JOIN execution_turns e ON e.execution_id=o.execution_id WHERE e.conversation_id=? AND (o.state='uncertain' OR e.state='uncertain')", (conversation,)).fetchall()
-        for operation, marker, thread, execution in operations:
-            if not thread:
-                continue
-            try:
-                result = self._app_client().request("thread/read", {"threadId": thread, "includeTurns": True}, timeout=5)
-            except Exception:
-                continue
-            history = result.get("thread", {})
-            for turn in history.get("turns", []) if isinstance(history, dict) else []:
-                if not isinstance(turn, dict):
-                    continue
-                present = any(isinstance(item, dict) and item.get("type") == "userMessage" and item.get("clientId") == marker for item in turn.get("items", []))
-                if not present:
-                    continue
-                self.store.operation_result(operation, "accepted", "history_confirmed")
-                if turn.get("status") == "inProgress":
-                    with self.app_server_lock:
-                        current = self.app_turns.get(thread)
-                    if current and current.turn_id == turn.get("id") and not current.completed.is_set() and current.process_epoch == str(getattr(self.app_server, "process_epoch", "")):
-                        with self.database_lock, self.database:
-                            self.database.execute("UPDATE execution_turns SET state='active',result=NULL WHERE execution_id=? AND state='uncertain'", (execution,))
-                if turn.get("status") in {"completed", "interrupted", "failed"}:
-                    final_item = next((item for item in reversed(turn.get("items", [])) if isinstance(item, dict) and item.get("type") == "agentMessage" and item.get("phase") in {None, "final_answer"} and isinstance(item.get("text"), str)), {})
-                    final = final_item.get("text", "")
-                    with self.database_lock, self.database:
-                        owner = self.database.execute("SELECT e.generation,e.reply_mode,e.final_item_id,e.user_cancelled,COALESCE(i.origin,'telegram'),e.silent_completion FROM execution_turns e LEFT JOIN inbox_items i ON i.execution_id=e.execution_id WHERE e.execution_id=? LIMIT 1", (execution,)).fetchone()
-                        self.database.execute("UPDATE execution_turns SET turn_id=? WHERE execution_id=?", (turn.get("id"), execution))
-                    silent = bool(owner and owner[5] and turn["status"] == "completed")
-                    answer = None if silent else (final or (None if owner and owner[4] == "event" else "O agente concluiu o turno sem uma resposta textual.")) if turn["status"] == "completed" else "Resposta parcial; o turno foi interrompido ou falhou.\n\n" + final if final else "O agente não conseguiu concluir esta solicitação."
-                    if owner and owner[3]:
-                        answer = "O turno foi cancelado. As mensagens ainda na fila foram preservadas. Efeitos externos já iniciados podem exigir conferência."
-                    text = answer if owner and owner[0] == self._generation(conversation) else None
-                    item_id = (owner[2] if owner else None) or final_item.get("id") or "recovered-final"
-                    result = "completed_silent" if silent else turn["status"]
-                    self.store.save_terminal_output(execution, result, text, item_id, owner[1] or "text" if owner else "text", self._conversation_settings(conversation)["delete_thoughts"])
-                    self._release_uncertain_permit(execution)
-                # Ausência no histórico nunca é prova suficiente para repetir input.
-                break
-
     def _shutdown_execution(self) -> None:
         """Drena por prazo finito e conserva fronteiras sem confirmação.
 
@@ -1431,3 +1420,4 @@ class ExecutionGateway:
         except ProcessRecoveryError as error:
             self._diagnostic("process.stop_unconfirmed", reason=error.reason)
         self._recorded_process_epoch = None
+

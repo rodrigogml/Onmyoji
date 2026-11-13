@@ -754,3 +754,277 @@ def test_shutdown_never_starts_reserved_second_slot_and_preserves_unsent_queue(l
     finally:
         reopened.store.release_lease()
         reopened.database.close()
+
+
+def missing_start_ack(lab, *, rpc_id=701):
+    """Perde confirmação e turn/started, conservando a RPC realmente enviada."""
+    lab.gateway.work = threading.BoundedSemaphore(1)
+    observed = threading.Event()
+    captured = {}
+    original_emit = lab.client.emit
+
+    def delayed_started(method, *args, **kwargs):
+        if method != "turn/started":
+            original_emit(method, *args, **kwargs)
+
+    def lose_ack(params, turn):
+        slot = active_slot(lab)
+        active = slot.active
+        lab.gateway.store.record_operation_rpc(active.operation_id, lab.client.process_epoch, rpc_id)
+        captured.update(slot=slot, active=active, thread=params["threadId"], turn=turn)
+        observed.set()
+        raise CodexProtocolError("ACK inicial perdido no laboratório", kind="uncertain", method="turn/start", request_id=rpc_id, process_epoch=lab.client.process_epoch, written=True)
+
+    lab.client.emit = delayed_started
+    lab.client.on_start = lose_ack
+    inbox = submit(lab, "pedido com ACK perdido")
+    assert observed.wait(3)
+    assert captured["slot"].done.wait(3)
+    assert not lab.gateway.capabilities.supports("input_reconciliation")
+    assert lab.gateway.store.blocked("9")
+    assert not lab.gateway.work.acquire(blocking=False)
+    assert len(lab.client.wait_calls("turn/start")) == 1
+    return SimpleNamespace(inbox=inbox, rpc_id=rpc_id, **captured)
+
+
+def late_rpc(lab, pending, *, result=None, error=None, epoch=None, rpc_id=None, authenticated=True):
+    payload = {"id": pending.rpc_id if rpc_id is None else rpc_id}
+    if error is not None:
+        payload["error"] = error
+    else:
+        payload["result"] = result
+    context = {"process_epoch": epoch or lab.client.process_epoch, "transport_generated": authenticated}
+    lab.gateway._app_event("transport/late_response", payload, context)
+
+
+def test_late_start_acceptance_then_terminal_recovers_without_g2_or_replay(lab):
+    pending = missing_start_ack(lab)
+    late_rpc(lab, pending, result={"turn": {"id": pending.turn, "status": "inProgress"}})
+    assert lab.gateway.database.execute("SELECT state FROM input_operations WHERE inbox_id=?", (pending.inbox,)).fetchone() == ("accepted",)
+    # Aceitar a entrada não comprova conclusão nem autoriza um segundo turno.
+    assert not pending.active.completed.is_set()
+    assert not lab.gateway.work.acquire(blocking=False)
+    lab.client.item(pending.thread, "RESULTADO_TARDIO_UNICO")
+    lab.client.complete(pending.thread)
+    lab.gateway._restore_terminal_outputs()
+    lab.gateway._restore_terminal_outputs()
+
+    assert lab.gateway.database.execute("SELECT state,result FROM execution_turns WHERE execution_id=?", (pending.slot.identifier,)).fetchone() == ("terminal", "completed")
+    assert lab.gateway.database.execute("SELECT state FROM inbox_items WHERE id=?", (pending.inbox,)).fetchone() == ("done",)
+    assert sum("RESULTADO_TARDIO_UNICO" in message["text"] for message in lab.api.sent) == 1
+    assert not lab.gateway.store.blocked("9")
+    assert pending.slot.identifier not in lab.gateway._uncertain_permits
+    assert lab.gateway.work.acquire(blocking=False)
+    lab.gateway.work.release()
+    assert len(lab.client.wait_calls("turn/start")) == 1
+
+
+def test_late_progress_and_terminal_confirm_start_without_ack_or_g2(lab):
+    pending = missing_start_ack(lab)
+    lab.gateway._app_event("turn/started", {"threadId": pending.thread, "turnId": pending.turn, "turn": {"id": pending.turn, "status": "inProgress"}}, {"process_epoch": lab.client.process_epoch})
+    assert lab.gateway.database.execute("SELECT state,turn_id FROM execution_turns WHERE execution_id=?", (pending.slot.identifier,)).fetchone() == ("uncertain", pending.turn)
+    assert lab.gateway.database.execute("SELECT state FROM input_operations WHERE inbox_id=?", (pending.inbox,)).fetchone() == ("uncertain",)
+    lab.client.item(pending.thread, "FINAL_SEM_ACK_INICIAL")
+    lab.client.complete(pending.thread)
+    lab.gateway._restore_terminal_outputs()
+    lab.gateway._restore_terminal_outputs()
+
+    assert lab.gateway.database.execute("SELECT state,result,terminal_text FROM execution_turns WHERE execution_id=?", (pending.slot.identifier,)).fetchone() == ("terminal", "completed", "FINAL_SEM_ACK_INICIAL")
+    assert lab.gateway.database.execute("SELECT state FROM input_operations WHERE inbox_id=?", (pending.inbox,)).fetchone() == ("accepted",)
+    assert lab.gateway.database.execute("SELECT state FROM inbox_items WHERE id=?", (pending.inbox,)).fetchone() == ("done",)
+    assert sum("FINAL_SEM_ACK_INICIAL" in message["text"] for message in lab.api.sent) == 1
+    assert not lab.gateway.store.blocked("9")
+    assert lab.gateway.work.acquire(blocking=False)
+    lab.gateway.work.release()
+    assert len(lab.client.wait_calls("turn/start")) == 1
+
+
+def test_late_definitive_start_rejection_releases_without_g2_or_replay(lab):
+    pending = missing_start_ack(lab)
+    late_rpc(lab, pending, error={"code": -32602, "message": "Recusa definitiva fictícia"})
+    late_rpc(lab, pending, result={"turn": {"id": pending.turn, "status": "inProgress"}})
+
+    assert lab.gateway.database.execute("SELECT state,result FROM execution_turns WHERE execution_id=?", (pending.slot.identifier,)).fetchone() == ("terminal", "not_started")
+    assert lab.gateway.database.execute("SELECT state FROM input_operations WHERE inbox_id=?", (pending.inbox,)).fetchone() == ("rejected",)
+    assert lab.gateway.database.execute("SELECT state FROM inbox_items WHERE id=?", (pending.inbox,)).fetchone() == ("failed",)
+    assert not lab.gateway.store.blocked("9")
+    assert pending.thread not in lab.gateway.app_turns
+    assert pending.slot.identifier not in lab.gateway._uncertain_permits
+    assert lab.gateway.work.acquire(blocking=False)
+    lab.gateway.work.release()
+    assert len(lab.client.wait_calls("turn/start")) == 1
+
+
+def test_late_terminal_after_execution_timeout_is_saved_delivered_once_and_releases_permit(lab):
+    lab.gateway.settings = replace(lab.gateway.settings, turn_timeout=0.02, interrupt_grace_seconds=0.02)
+    lab.gateway.work = threading.BoundedSemaphore(1)
+    started = threading.Event()
+    captured = {}
+
+    def started_turn(params, _turn):
+        captured.update(slot=active_slot(lab), thread=params["threadId"])
+        started.set()
+
+    lab.client.on_start = started_turn
+    inbox = submit(lab, "execução cujo encerramento chega atrasado")
+    assert started.wait(3)
+    slot, thread = captured["slot"], captured["thread"]
+    lab.client.wait_calls("turn/interrupt")
+    assert slot.done.wait(3)
+    assert slot.active.detached
+    assert lab.gateway.app_turns[thread] is slot.active
+    assert not lab.gateway.work.acquire(blocking=False)
+    lab.client.item(thread, "FINAL_APOS_TIMEOUT")
+    lab.client.complete(thread)
+    lab.client.complete(thread)
+    lab.gateway._restore_terminal_outputs()
+    lab.gateway._restore_terminal_outputs()
+
+    assert lab.gateway.database.execute("SELECT state,terminal_text FROM execution_turns WHERE execution_id=?", (slot.identifier,)).fetchone() == ("terminal", "FINAL_APOS_TIMEOUT")
+    assert lab.gateway.database.execute("SELECT state FROM inbox_items WHERE id=?", (inbox,)).fetchone() == ("done",)
+    assert sum("FINAL_APOS_TIMEOUT" in message["text"] for message in lab.api.sent) == 1
+    assert thread not in lab.gateway.app_turns and slot.identifier not in lab.gateway._uncertain_permits
+    assert not lab.gateway.store.blocked("9")
+    assert lab.gateway.work.acquire(blocking=False)
+    lab.gateway.work.release()
+    assert len(lab.client.wait_calls("turn/start")) == 1
+
+
+@pytest.mark.parametrize("wrong", ["unauthenticated", "epoch", "rpc_id", "rpc_id_type", "turn_id"])
+def test_spoofed_or_mismatched_late_rpc_cannot_change_uncertain_operation(lab, wrong):
+    pending = missing_start_ack(lab)
+    values = {"result": {"turn": {"id": pending.turn, "status": "inProgress"}}}
+    if wrong == "unauthenticated":
+        values["authenticated"] = False
+    elif wrong == "epoch":
+        values["epoch"] = "another-process"
+    elif wrong == "rpc_id":
+        values["rpc_id"] = pending.rpc_id + 1
+    elif wrong == "rpc_id_type":
+        values["rpc_id"] = str(pending.rpc_id)
+    else:
+        # O evento de início também pode chegar depois do timeout. Sua prova
+        # de identidade deve impedir que o ACK seguinte troque o turno.
+        lab.gateway._app_event("turn/started", {"threadId": pending.thread, "turnId": pending.turn, "turn": {"id": pending.turn, "status": "inProgress"}}, {"process_epoch": lab.client.process_epoch})
+        assert pending.active.turn_id == pending.turn
+        values["result"]["turn"]["id"] = "unrelated-turn"
+    late_rpc(lab, pending, **values)
+
+    assert lab.gateway.database.execute("SELECT state FROM input_operations WHERE inbox_id=?", (pending.inbox,)).fetchone() == ("uncertain",)
+    assert lab.gateway.database.execute("SELECT state FROM execution_turns WHERE execution_id=?", (pending.slot.identifier,)).fetchone() == ("uncertain",)
+    assert not pending.active.completed.is_set()
+    assert not lab.gateway.work.acquire(blocking=False)
+    assert len(lab.client.wait_calls("turn/start")) == 1
+    late_rpc(lab, pending, result={"turn": {"id": pending.turn, "status": "inProgress"}})
+    lab.client.complete(pending.thread, "interrupted")
+    lab.gateway._restore_terminal_outputs()
+
+
+@pytest.mark.parametrize("invalid", ["empty_id", "null_id", "boolean_id", "null_error", "empty_error", "boolean_error_code", "result_and_error"])
+def test_invalid_late_rpc_shapes_cannot_resolve_or_crash_recovery(lab, invalid):
+    pending = missing_start_ack(lab)
+    payload = {"id": pending.rpc_id, "result": {"turn": {"id": pending.turn, "status": "inProgress"}}}
+    if invalid in {"empty_id", "null_id", "boolean_id"}:
+        payload["id"] = {"empty_id": "", "null_id": None, "boolean_id": True}[invalid]
+    else:
+        if invalid != "result_and_error":
+            payload.pop("result")
+        payload["error"] = {"null_error": None, "empty_error": {}, "boolean_error_code": {"code": True, "message": "inválida"}, "result_and_error": {"code": -32602, "message": "ambígua"}}[invalid]
+
+    lab.gateway._app_event("transport/late_response", payload, {"process_epoch": lab.client.process_epoch, "transport_generated": True})
+
+    assert lab.gateway.database.execute("SELECT state FROM input_operations WHERE inbox_id=?", (pending.inbox,)).fetchone() == ("uncertain",)
+    assert lab.gateway.database.execute("SELECT state FROM execution_turns WHERE execution_id=?", (pending.slot.identifier,)).fetchone() == ("uncertain",)
+    assert not pending.active.completed.is_set()
+    assert not lab.gateway.work.acquire(blocking=False)
+    assert len(lab.client.wait_calls("turn/start")) == 1
+    late_rpc(lab, pending, result={"turn": {"id": pending.turn, "status": "inProgress"}})
+    lab.client.complete(pending.thread, "interrupted")
+    lab.gateway._restore_terminal_outputs()
+
+
+@pytest.mark.parametrize("wrong", ["epoch", "turn_id"])
+def test_late_terminal_must_match_the_detached_execution(lab, wrong):
+    pending = missing_start_ack(lab)
+    late_rpc(lab, pending, result={"turn": {"id": pending.turn, "status": "inProgress"}})
+    event = {"process_epoch": lab.client.process_epoch if wrong != "epoch" else "old-process"}
+    turn = pending.turn if wrong != "turn_id" else "other-turn"
+    lab.gateway._app_event("turn/completed", {"threadId": pending.thread, "turnId": turn, "turn": {"id": turn, "status": "completed"}}, event)
+    assert not pending.active.completed.is_set()
+    assert lab.gateway.store.blocked("9")
+    assert not lab.gateway.work.acquire(blocking=False)
+    lab.client.complete(pending.thread, "interrupted")
+    lab.gateway._restore_terminal_outputs()
+
+
+def test_resolver_reports_pending_delivery_and_discard_does_not_claim_release(lab, monkeypatch):
+    inbox = submit(lab, "concluída aguardando envio", wake=False)
+    execution = lab.gateway.store.reserve("9", 0, inbox, 30)
+    lab.gateway.store.bind(execution, lab.client.process_epoch, "thread", "turn")
+    operation = lab.gateway.store.operation(inbox, execution, "turn/start", None)
+    lab.gateway.store.operation_result(operation, "accepted")
+    lab.gateway.store.save_terminal_output(execution, "completed", "Resposta já salva", "final", "text", False)
+    # A entrega ainda está ocupada; este teste cobre o relatório desse intervalo.
+    monkeypatch.setattr(lab.gateway, "_restore_terminal_outputs", lambda: None)
+    text = lab.gateway._recovery_error_text("9", RuntimeError("falha de entrega fictícia"))
+    assert "entrega da resposta" in text and "confirmação de início" not in text
+    lab.gateway._recovery_control("9", "")
+    report = lab.api.sent[-1]["text"]
+    assert "respostas concluídas aguardando entrega" in report
+    assert "0 execuções" not in report
+    lab.gateway._recovery_control("9", "descartar")
+    report = lab.api.sent[-1]["text"]
+    assert "Ainda há pendências" in report and "conversa está liberada" not in report
+    assert lab.gateway.store.blocked("9")
+    assert not any(method == "turn/start" for method, _ in lab.client.calls)
+
+
+def test_resolver_reports_interrupted_ingress_with_no_execution(lab):
+    lab.gateway._generation("9")
+    source, _ = lab.gateway.store.ingest("fixture", {"update_id": 901}, "9", 0)
+    lab.gateway.store.ingress_state(source, "uncertain")
+    lab.gateway._recovery_control("9", "")
+    report = lab.api.sent[-1]["text"]
+    assert "1 recebimentos interrompidos" in report
+    assert "0 execuções" not in report
+    assert lab.gateway.store.blocked("9")
+    lab.gateway._recovery_control("9", "descartar")
+    assert "conversa está liberada" in lab.api.sent[-1]["text"]
+    assert not lab.gateway.store.blocked("9")
+    assert not any(method == "turn/start" for method, _ in lab.client.calls)
+
+
+def test_discard_after_process_loss_ignores_late_rpc_and_terminal(lab):
+    pending = missing_start_ack(lab)
+    lab.client.alive = False
+    lab.gateway._app_event("transport/lost", {"reason": "fixture_process_lost"}, {"process_epoch": lab.client.process_epoch, "transport_generated": True})
+    lab.gateway.store.resolve("9", discard=True)
+    late_rpc(lab, pending, result={"turn": {"id": pending.turn, "status": "inProgress"}})
+    lab.client.item(pending.thread, "NAO_REVIVER_DESCARTADO")
+    lab.client.complete(pending.thread)
+    lab.gateway._restore_terminal_outputs()
+
+    assert lab.gateway.database.execute("SELECT state,result,terminal_text FROM execution_turns WHERE execution_id=?", (pending.slot.identifier,)).fetchone() == ("terminal", "owner_discarded", None)
+    assert lab.gateway.database.execute("SELECT state FROM inbox_items WHERE id=?", (pending.inbox,)).fetchone() == ("cancelled",)
+    assert not any("NAO_REVIVER_DESCARTADO" in message["text"] for message in lab.api.sent)
+    assert not lab.gateway.store.blocked("9")
+    assert len(lab.client.wait_calls("turn/start")) == 1
+
+
+def test_new_generation_suppresses_late_result_and_does_not_revive_old_input(lab):
+    pending = missing_start_ack(lab)
+    lab.gateway._new_conversation("9")
+    assert lab.gateway._generation("9") == 1 and pending.active.suppressed
+    late_rpc(lab, pending, result={"turn": {"id": pending.turn, "status": "inProgress"}})
+    lab.client.item(pending.thread, "RESULTADO_DA_GERACAO_ANTIGA")
+    lab.client.complete(pending.thread)
+    lab.gateway._restore_terminal_outputs()
+
+    old_input = lab.gateway.database.execute("SELECT generation,state FROM inbox_items WHERE id=?", (pending.inbox,)).fetchone()
+    assert old_input[0] == 0 and old_input[1] in {"done", "cancelled"}
+    assert not any("RESULTADO_DA_GERACAO_ANTIGA" in message["text"] for message in lab.api.sent)
+    assert lab.gateway.store.next_input("9", 1) is None
+    assert lab.gateway.work.acquire(blocking=False)
+    lab.gateway.work.release()
+    assert len(lab.client.wait_calls("turn/start")) == 1
+
