@@ -107,16 +107,24 @@ class CodexAppServer:
     permanecem disponíveis. Notificações da mesma thread preservam ordem.
     Overflow ou perda do transporte produz ``transport/lost`` e interrompe
     admissão daquele epoch; nenhuma falha de ACK causa retry automático.
+    ``notification_methods`` limita notificações remotas antes das filas; ``None``
+    mantém todas. Respostas, requisições e eventos locais de recuperação não
+    passam por esse filtro.
     """
 
     def __init__(self, settings: Any, *, event_limit: int = 1024, request_limit: int = 64,
                  event_workers: int = 4, request_workers: int | None = None,
-                 max_frame_bytes: int = 4 * 1024 * 1024, event_drain_timeout: float = 1):
+                 max_frame_bytes: int = 4 * 1024 * 1024, event_drain_timeout: float = 1,
+                 notification_methods: frozenset[str] | None = None):
         limits = (event_limit, request_limit, event_workers, max_frame_bytes) + (() if request_workers is None else (request_workers,))
         if any(isinstance(value, bool) or not isinstance(value, int) or value < 1 for value in limits):
             raise ValueError("App Server transport limits must be positive")
         if isinstance(event_drain_timeout, bool) or not isinstance(event_drain_timeout, (int, float)) or not math.isfinite(event_drain_timeout) or event_drain_timeout < 0:
             raise ValueError("App Server transport drain timeout must be finite and nonnegative")
+        if notification_methods is not None and (not isinstance(notification_methods, frozenset)
+                or any(not isinstance(method, str) or not method for method in notification_methods)):
+            raise ValueError("App Server notification methods must be a frozenset of nonempty strings or None")
+        self.notification_methods = notification_methods
         self.settings = settings
         self.process = self.reader = self.stderr_reader = None
         self.write_lock, self.pending_lock = threading.Lock(), threading.Lock()
@@ -464,7 +472,7 @@ class CodexAppServer:
                 return False
             if _rpc_id(request_id):
                 self._dispatch_request(runtime, request_id, message["method"], params, context)
-            else:
+            elif self.notification_methods is None or message["method"] in self.notification_methods:
                 self._dispatch_event(runtime, message["method"], params, context)
         else:
             self._lose(runtime, "invalid_envelope")

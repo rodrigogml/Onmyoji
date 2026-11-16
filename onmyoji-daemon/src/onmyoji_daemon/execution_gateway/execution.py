@@ -28,6 +28,11 @@ from ..telegram_commands import CONTROL_COMMANDS, REGISTERED_COMMANDS
 from .recovery import ExecutionRecovery
 
 
+_APP_NOTIFICATION_METHODS = frozenset({
+    "account/login/completed", "turn/started", "turn/completed", "item/completed",
+})
+
+
 class ExecutionGateway(ExecutionRecovery):
     """Máquina de estados integrada ao Gateway, com contratos de canal existentes."""
 
@@ -890,17 +895,19 @@ class ExecutionGateway(ExecutionRecovery):
             active.turn_id = turn
             if active.inbox_id:
                 self.store.bind(active.execution_id, active.process_epoch, active.thread_id, turn)
-        if active.suppressed or active.generation != self._generation(active.conversation_id):
-            # Terminalidade antiga ainda deve ser aceita para drenar recursos.
-            return active
+        # A correlação também admite terminalidade antiga para drenar recursos.
+        # Cada consumidor valida a geração antes de produzir efeitos no canal.
         return active
 
     def _app_event(self, method: str, params: dict[str, Any], event: dict[str, Any] | None) -> None:
-        self._login_event(method, params, event)
+        if method == "account/login/completed":
+            self._login_event(method, params, event)
+            return
         if method == "transport/late_response":
             self._late_input_response(params, event)
             return
         if method == "transport/lost":
+            self._login_event(method, params, event)
             epoch = str((event or {}).get("process_epoch"))
             self.related_work.process_lost(epoch)
             with self.app_server_lock:
@@ -923,6 +930,8 @@ class ExecutionGateway(ExecutionRecovery):
                 uncertain = [execution for execution, owner_epoch in self._uncertain_permits.items() if owner_epoch == epoch]
             for execution in uncertain:
                 self._release_uncertain_permit(execution)
+            return
+        if method not in _APP_NOTIFICATION_METHODS:
             return
         active = self._correlate(params, event)
         if not active:
@@ -1228,7 +1237,7 @@ class ExecutionGateway(ExecutionRecovery):
                     recover_process(self.store, self.settings.root, self.settings.executable)
                     self._diagnostic("app_server.restarted", reason="resources_changed")
             if not client:
-                client = CodexAppServer(self.settings)
+                client = CodexAppServer(self.settings, notification_methods=_APP_NOTIFICATION_METHODS)
                 self.app_server = client
             client.notification_handler = self._app_notification
             client.request_handler = self._app_server_request

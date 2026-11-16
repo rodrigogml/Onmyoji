@@ -399,6 +399,16 @@ tiver terminado, a próxima entrada inicia outro turno na mesma thread. Se o
 processo tiver parado, o Gateway inicializa a conexão, retoma a thread e só
 então inicia o turno. Retomar histórico sozinho não gera resposta.
 
+O transporte admite na fila somente as notificações que o Gateway consome:
+início e término de turno, itens concluídos e conclusão do login. Deltas de
+texto, saídas parciais de ferramentas e notificações legadas não utilizadas são
+descartados antes do enfileiramento e não consultam o banco. Respostas RPC,
+requisições de ferramentas e eventos locais de recuperação permanecem fora desse
+filtro. Isso evita que uma rajada de progresso interrompa o atendimento por
+saturação. Os eventos admitidos preservam ordem por thread e os limites de
+segurança do transporte. Veja a [validação de pressão de
+notificações](validation/telegram-notification-pressure.md).
+
 O checkpoint privado também registra PID, criação nativa, executável e epoch
 do App Server antes de iniciar geração. Após crash do Gateway, uma nova abertura
 reconcilia esse registro: encerra somente o órfão cuja identidade e instância
