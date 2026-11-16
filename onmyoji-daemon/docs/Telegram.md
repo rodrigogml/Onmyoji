@@ -174,6 +174,7 @@ Telegram. `DM` significa conversa privada com o bot.
 | `/config` | DM: abrir preferências; grupos: ajustar a janela de contexto com argumentos numéricos. | Não permitido. |
 | `/channel` | DM e grupos: cadastrar, identificar e gerenciar canais. | Não permitido, inclusive para solicitar cadastro. |
 | `/usage` | Somente DM (inclusive tópicos privados): consultar os limites e o consumo da conta Codex. | Não permitido; nenhuma informação da franquia é consultada ou enviada. |
+| `/resetusage` | Somente DM (inclusive tópicos privados): resgatar uma renovação extra mediante confirmação com código temporário. | Não permitido; não consulta nem consome créditos. |
 | `/login` | Somente DM (inclusive tópicos privados): menu de autenticação, status, informações da conta e logoff. | Não permitido. |
 | `/fila <texto>` | Somente DM: enfileirar uma entrada para o agente. | Não permitido. |
 | `/direcionar <texto>` | Somente DM: solicitar direcionamento, se o runtime permitir. | Não permitido. |
@@ -203,11 +204,16 @@ compor o contexto não confiável, mas não autorizam comandos de controle.
 O Gateway rejeita `/usage` fora da DM do owner antes de consultar
 `account/rateLimits/read`.
 
-A futura operação de consumo de renovação, `/resetusage`, deve seguir a mesma
-permissão de `/usage` e exigir confirmação explícita; ela ainda não é um
-comando implementado nem faz parte do catálogo atual. A orientação para
-`/resetusage` só deve aparecer na resposta de `/usage` depois que o comando
-estiver disponível.
+`/resetusage` fica restrito à DM do owner, inclusive tópicos privados, e inicia
+uma consulta de disponibilidade sem consumir créditos. Para usar uma renovação
+extra disponível, o owner precisa digitar `/resetusage confirmar <código>` com
+o código gerado pelo bot dentro de 2 minutos. `/resetusage cancelar` descarta
+a confirmação pendente. O Gateway consome exatamente um crédito pelo RPC
+`account/rateLimitResetCredit/consume` com chave de idempotência única e não
+repete a operação automaticamente após um resultado incerto. Rejeições de
+conta sem créditos e de janela sem elegibilidade não são tratadas como sucesso.
+Após consumo confirmado, o Gateway relê os limites; `/usage` continua sendo
+somente consulta, e o menu dos demais usuários continua sem `/resetusage`.
 
 ### Autocadastro de terceiros — Fase 2
 
@@ -254,6 +260,7 @@ comandos no chat privado de cada owner:
 | `/config` | Configurar a conversa atual. |
 | `/channel` | Gerenciar canal de envio. |
 | `/usage` | Consultar consumo e franquia do Codex. |
+| `/resetusage` | Resgatar uma renovação extra da franquia do Codex com confirmação. |
 | `/login` | Gerenciar login e conta Codex. |
 | `/fila <texto>` | Enfileirar uma mensagem. |
 | `/direcionar <texto>` | Orientar o turno em andamento. |
