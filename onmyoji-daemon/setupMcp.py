@@ -2366,7 +2366,7 @@ def memory_menu(config: McpConfiguration) -> None:
         elif choice == "2":
             value = ask("Quantidade máxima por busca (1 a 50)", str(data["max_results"]), True)
             if value is None: continue
-            if not value.isdigit() or not 1 <= int(value) <= 10: result(False, "Informe um número entre 1 e 10."); continue
+            if not value.isdigit() or not 1 <= int(value) <= 50: result(False, "Informe um número entre 1 e 50."); continue
             data["max_results"] = int(value)
             try: config.save_memory(data); result(True, "Limite de busca atualizado.")
             except McpConfigurationError as error: result(False, str(error))

@@ -4,7 +4,7 @@ A memória do Onmyōji conserva somente regras atuais capazes de orientar decis�
 
 ## Estado e armazenamento
 
-O único controle funcional fica em `configs/mcp/memory.toml`: habilitação e limite padrão de resultados por busca. Cada chamada pode solicitar de 1 a 10 resultados. Não há perfis. A base privada fica em `configs/mcp/memory/instructions.sqlite3`; somente o servidor MCP a acessa, independentemente do sandbox concedido ao agente.
+O único controle funcional fica em `configs/mcp/memory.toml`: habilitação e limite padrão de resultados por busca, configurável de 1 a 50 no setup MCP. Cada chamada pode solicitar de 1 a 50 resultados; quando `limit` não é informado, aplica-se o limite configurado. Não há perfis. A base privada fica em `configs/mcp/memory/instructions.sqlite3`; somente o servidor MCP a acessa, independentemente do sandbox concedido ao agente.
 
 Cada instrução contém `id`, `applies_when`, `instruction` e `keywords`. Não existem status, datas, origem, confiança, racionalidade, categoria, arquivo ou restauração. O servidor impede duas instruções com a mesma condição normalizada e atualiza o índice de busca na mesma transação da criação, revisão ou exclusão.
 

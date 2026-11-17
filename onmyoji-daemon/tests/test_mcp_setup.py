@@ -237,6 +237,68 @@ def test_integrations_menu_opens_memory_as_fifteenth_option(monkeypatch):
     module.integrations_menu(config); memory_menu.assert_called_once_with(config)
 
 
+@pytest.mark.parametrize("limit", [1, 11, 50])
+def test_memory_menu_saves_search_limit_within_advertised_range(monkeypatch, capsys, tmp_path, limit):
+    module = setup_module()
+    config = module.McpConfiguration(tmp_path)
+    config.save_memory({"schema_version": 1, "enabled": True, "max_results": 10})
+    answers = iter(["2", str(limit), "x"])
+    monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
+
+    module.memory_menu(config)
+
+    assert module.McpConfiguration(tmp_path).memory() == {"schema_version": 1, "enabled": True, "max_results": limit}
+    assert "Limite de busca atualizado." in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("value", ["0", "51", "-1", "1.5", "texto"])
+def test_memory_menu_rejects_invalid_search_limit_without_saving(monkeypatch, capsys, value):
+    module = setup_module()
+    config = mock_configuration()
+    config.memory.return_value = {"schema_version": 1, "enabled": True, "max_results": 10}
+    answers = iter(["2", value, "x"])
+    monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
+
+    module.memory_menu(config)
+
+    config.save_memory.assert_not_called()
+    assert config.memory.return_value["max_results"] == 10
+    assert "Informe um número entre 1 e 50." in capsys.readouterr().out
+
+
+def test_memory_menu_enter_keeps_current_search_limit_of_fifty(monkeypatch):
+    module = setup_module()
+    config = mock_configuration()
+    config.memory.return_value = {"schema_version": 1, "enabled": True, "max_results": 50}
+    answers = iter(["2", "", "x"])
+    labels = []
+
+    def answer(label):
+        labels.append(label)
+        return next(answers)
+
+    monkeypatch.setattr(module, "prompt", answer)
+
+    module.memory_menu(config)
+
+    config.save_memory.assert_called_once_with({"schema_version": 1, "enabled": True, "max_results": 50})
+    assert "Quantidade máxima por busca (1 a 50) [50]: " in labels
+
+
+@pytest.mark.parametrize("value", ["x", "\x1b"])
+def test_memory_menu_cancel_search_limit_without_saving(monkeypatch, value):
+    module = setup_module()
+    config = mock_configuration()
+    config.memory.return_value = {"schema_version": 1, "enabled": True, "max_results": 10}
+    answers = iter(["2", value, "x"])
+    monkeypatch.setattr(module, "prompt", lambda _label: next(answers))
+
+    module.memory_menu(config)
+
+    config.save_memory.assert_not_called()
+    assert config.memory.return_value["max_results"] == 10
+
+
 def test_spotify_removal_is_case_insensitive(monkeypatch, capsys):
     module = setup_module(); config = mock_configuration()
     profile = {"enabled": True, "description": "Música.", "credential_profile": "vault", "credential_entry_path": "APIs/Spotify/music", "client_id_field": "username", "refresh_token_field": "password", "callback_port": 8888}
