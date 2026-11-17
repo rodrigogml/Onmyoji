@@ -18,6 +18,20 @@ def test_composition_has_order_and_overlay(tmp_path):
     assert "Regra local." in bundle.text and "Resposta final: audio" in bundle.text
 
 
+def test_telegram_transcription_guidance_distinguishes_configuration_support_and_failure(tmp_path):
+    """A resposta explica o motivo recebido e evita pedir reenvio sem suporte."""
+    composer = InstructionComposer(tmp_path, tmp_path / "configs" / "daemon" / "services" / "telegram", "instructions.md")
+    telegram = composer.compose(identity="Exemplo", telegram=True)
+    local = composer.compose(identity="Exemplo", telegram=False)
+
+    assert "Para reason=not_configured, responda: O suporte a mensagens de áudio e transcrição não está configurado nesta instância. Envie a mensagem em texto." in telegram.text
+    assert "Para reason=unsupported" in telegram.text
+    assert "não sugira reenviar o áudio" in telegram.text
+    assert "Para reason=failed" in telegram.text
+    assert "sem presumir falta de configuração" in telegram.text
+    assert "[TELEGRAM — INDISPONIBILIDADE DA TRANSCRIÇÃO]" not in local.text
+
+
 def test_instruction_path_cannot_escape_authorized_root(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"
     with pytest.raises(InstructionError): InstructionComposer(tmp_path, data, "../outside.md").compose(identity="Exemplo", telegram=False)

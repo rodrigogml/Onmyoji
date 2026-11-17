@@ -568,3 +568,28 @@ selecionado pelo Gateway fica em `configs/mcp/eccovox.toml`; ao habilitar voz,
 o setup adiciona somente o staging do Telegram às raízes de leitura e escrita
 desse perfil. Assim, a integração não depende de uma skill e continua limitada
 aos arquivos transitórios do workspace.
+
+Mensagens de voz (`voice`) recebem uma transcrição automática ou um estado de
+indisponibilidade com motivo e código, preservados junto ao anexo e enviados ao
+agente tanto no início do turno quanto em entradas adicionais:
+
+| Motivo | Situação | Orientação de resposta |
+| --- | --- | --- |
+| `not_configured` | Nenhum perfil selecionado, perfil ausente/desabilitado ou configuração inválida (`profile_unavailable`, `invalid_config`). | “O suporte a mensagens de áudio e transcrição não está configurado nesta instância. Envie a mensagem em texto.” |
+| `unsupported` | O endpoint de transcrição do runtime responde HTTP 404, 405 ou 501 (`transcription_unsupported`). | Informar que a instância não oferece suporte à transcrição e pedir texto. |
+| `failed` | Falha de conexão, timeout, transcrição vazia, restrição de arquivo ou outra falha de processamento. | Informar a falha de transcrição e oferecer texto ou nova tentativa. |
+
+> [!IMPORTANT]
+> Reenviar áudio não resolve ausência de configuração ou suporte. O agente
+> recebe essa orientação explicitamente. `voice_reply.enabled` controla a
+> síntese das respostas; uma instância com perfil selecionado pode transcrever
+> mensagens mesmo quando responde somente em texto. Arquivos Telegram do tipo
+> `audio` continuam sendo anexos, sem transcrição automática.
+
+Para debug, consulte `state/daemon/services/telegram/gateway-status.json`.
+O evento `voice.transcription_unavailable` em `diagnostics` registra a etapa
+`transcription`, o motivo, o código do erro, a classe da exceção, o hash da
+conversa e, quando disponível, o status HTTP. `last_error_code` preserva o
+código EccoVox mais recente. O diagnóstico não inclui o conteúdo, o caminho
+do áudio, a URL do serviço nem o texto livre da exceção. O histórico conserva
+os últimos 100 eventos e os contadores acumulados por evento.

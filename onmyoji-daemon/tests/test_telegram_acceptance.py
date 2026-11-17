@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from onmyoji_daemon.codex_app_server import CodexProtocolError
+from onmyoji_daemon.mcp.eccovox import EccoVoxError, EccoVoxService
 from onmyoji_daemon.telegram import AppServerTurn, Gateway, Settings
 from onmyoji_daemon.telegram_delivery import DeliveryOwner, DeliveryUncertain
 from onmyoji_daemon.telegram_persistence import GatewayPersistenceError
@@ -502,8 +503,148 @@ def test_unavailable_voice_transcription_keeps_attachment_and_explicit_status(la
     entry = client.wait_starts(1)[0]
     attachment = json.loads(entry["params"]["input"][1]["text"])["telegram_attachment"]
     assert input_text(entry) == "Conferir esta voz"
-    assert attachment["transcription"] == {"status": "unavailable", "automatic": True}
+    assert attachment["transcription"] == {"status": "unavailable", "automatic": True, "reason": "failed", "code": "empty_transcription"}
     assert Path(attachment["local_path"]).is_file()
+
+
+@pytest.mark.parametrize("configuration, expected_code", [
+    ("gateway_profile_missing", "profile_unavailable"),
+    ("missing_file", "invalid_config"),
+    ("missing_profile", "profile_unavailable"),
+    ("disabled_profile", "profile_unavailable"),
+    ("invalid_profile", "invalid_config"),
+    ("invalid_toml", "invalid_config"),
+])
+def test_voice_without_configuration_reports_cause_and_keeps_attachment(laboratory, monkeypatch, configuration, expected_code):
+    """Configuração ausente não vira sugestão de reenviar áudio nem perde o anexo."""
+    gw, client, _api = laboratory()
+    if configuration != "gateway_profile_missing":
+        gw.settings = replace(gw.settings, voice_profile="fixture")
+    mcp = gw.settings.root / "configs" / "mcp" / "eccovox.toml"
+    if configuration not in {"gateway_profile_missing", "missing_file"}:
+        mcp.parent.mkdir(parents=True)
+        profile = "other" if configuration == "missing_profile" else "fixture"
+        enabled = "false" if configuration == "disabled_profile" else "true"
+        mcp.write_text("invalid = [" if configuration == "invalid_toml" else
+                       'schema_version=1\n[defaults]\nrequest_timeout_seconds=10\nmax_audio_bytes=1000\nmax_text_characters=1000\n'
+                       f'[profiles.{profile}]\nenabled={enabled}\nbase_url="http://example.invalid:8870"\nreadable_roots=[]\nwritable_roots=[]\n', encoding="utf-8")
+    network_calls = []
+    monkeypatch.setattr(EccoVoxService, "_request", lambda *_args: network_calls.append(True))
+
+    gw._receive_update(update(1, 9, voice={"file_id": "voice-private-identifier"}))
+    entry = client.wait_starts(1)[0]
+    attachment = json.loads(entry["params"]["input"][1]["text"])["telegram_attachment"]
+    expected = {"status": "unavailable", "automatic": True, "reason": "not_configured", "code": expected_code}
+    assert attachment["transcription"] == expected
+    assert Path(attachment["local_path"]).read_bytes() == b"fixture media"
+    retained = gw._attachment_rows(9)
+    assert len(retained) == 1 and retained[0]["transcription"] == expected
+    assert Path(retained[0]["archive_path"]).read_bytes() == b"fixture media"
+    assert network_calls == []
+    thread = next(params for method, params, _at in client.calls if method == "thread/start")
+    assert "suporte a mensagens de áudio e transcrição não está configurado" in thread["developerInstructions"]
+    assert "not_configured" in thread["developerInstructions"]
+    state_text = (gw.settings.state_dir / "gateway-status.json").read_text(encoding="utf-8")
+    state = json.loads(state_text)
+    event = next(row for row in state["diagnostics"] if row["event"] == "voice.transcription_unavailable")
+    assert event["stage"] == "transcription" and event["code"] == expected_code
+    assert state["last_error_code"] == expected_code
+    assert event["reason"] == "not_configured" and event["kind"] == "EccoVoxError"
+    assert event["conversation_hash"] and "conversation" not in event
+    assert "voice-private-identifier" not in state_text and str(gw.settings.root) not in state_text
+
+
+@pytest.mark.parametrize("error, expected_code, expected_reason", [
+    (EccoVoxError("runtime_error", "http://127.0.0.1:8870/private?token=secret", http_status=503), "runtime_error", "failed"),
+    (EccoVoxError("runtime_unavailable", "private runtime endpoint"), "runtime_unavailable", "failed"),
+    (EccoVoxError("timeout", "private runtime endpoint"), "timeout", "failed"),
+    (EccoVoxError("path_not_allowed", "private audio file"), "path_not_allowed", "failed"),
+    (EccoVoxError("invalid_request", "private audio file"), "invalid_request", "failed"),
+    (EccoVoxError("empty_transcription", "private audio file"), "empty_transcription", "failed"),
+    (EccoVoxError("transcription_unsupported", "private audio file"), "transcription_unsupported", "unsupported"),
+    (EccoVoxError("token=secret", "private audio file"), "operational_failure", "failed"),
+    (RuntimeError("private audio file token=secret"), "operational_failure", "failed"),
+])
+def test_voice_runtime_failures_keep_safe_diagnostics_and_distinct_reason(laboratory, monkeypatch, error, expected_code, expected_reason):
+    """Falhas de execução mantêm código útil sem expor o áudio ou detalhe bruto."""
+    gw, client, _api = laboratory()
+    gw.settings = replace(gw.settings, voice_profile="fixture")
+    def transcribe(*_args, **_kwargs):
+        raise error
+    monkeypatch.setattr(EccoVoxService, "transcribe", transcribe)
+
+    gw._receive_update(update(1, 9, "Conferir legenda", voice={"file_id": "voice-secret"}))
+    entry = client.wait_starts(1)[0]
+    attachment = json.loads(entry["params"]["input"][1]["text"])["telegram_attachment"]
+    assert attachment["transcription"] == {"status": "unavailable", "automatic": True, "reason": expected_reason, "code": expected_code}
+    assert input_text(entry) == "Conferir legenda"
+    assert Path(attachment["local_path"]).is_file()
+    state_text = (gw.settings.state_dir / "gateway-status.json").read_text(encoding="utf-8")
+    state = json.loads(state_text)
+    event = next(row for row in state["diagnostics"] if row["event"] == "voice.transcription_unavailable")
+    assert event["reason"] == expected_reason and event["code"] == expected_code
+    assert state["last_error_code"] == expected_code
+    assert event["stage"] == "transcription" and event["kind"] == type(error).__name__
+    if getattr(error, "http_status", None) is not None:
+        assert event["http_status"] == error.http_status
+    for sensitive in (str(error), "voice-secret", "Conferir legenda", "token=secret", str(gw.settings.root)):
+        assert sensitive not in state_text
+
+
+@pytest.mark.parametrize("transcript", [None, "", "   "])
+def test_empty_service_transcription_reports_empty_transcription(laboratory, monkeypatch, transcript):
+    """Resposta vazia do serviço não é promovida a transcrição disponível."""
+    gw, client, _api = laboratory()
+    gw.settings = replace(gw.settings, voice_profile="fixture")
+    monkeypatch.setattr(EccoVoxService, "transcribe", lambda *_args, **_kwargs: {"text": transcript})
+    gw._receive_update(update(1, 9, voice={"file_id": "fixture"}))
+    entry = client.wait_starts(1)[0]
+    attachment = json.loads(entry["params"]["input"][1]["text"])["telegram_attachment"]
+    assert attachment["transcription"] == {"status": "unavailable", "automatic": True, "reason": "failed", "code": "empty_transcription"}
+
+
+def test_voice_transcribes_with_output_voice_disabled_and_selected_profile(laboratory, monkeypatch):
+    """A preferência por respostas em texto não desabilita a transcrição de entrada."""
+    gw, client, _api = laboratory(voice=False)
+    gw.settings = replace(gw.settings, voice_profile="fixture")
+    calls = []
+    def transcribe(_service, profile, path):
+        calls.append((profile, Path(path).read_bytes()))
+        return {"text": "  Transcrição reconhecida  "}
+    monkeypatch.setattr(EccoVoxService, "transcribe", transcribe)
+    gw._receive_update(update(1, 9, voice={"file_id": "fixture"}))
+    entry = client.wait_starts(1)[0]
+    attachment = json.loads(entry["params"]["input"][1]["text"])["telegram_attachment"]
+    assert attachment["transcription"] == {"status": "available", "automatic": True, "text": "Transcrição reconhecida"}
+    assert calls == [("fixture", b"fixture media")]
+    assert gw._attachment_rows(9)[0]["transcription"] == attachment["transcription"]
+
+
+def test_unconfigured_voice_during_active_turn_steers_with_configuration_reason(laboratory):
+    """O motivo segue no steering, sem perder a entrada da conversa ativa."""
+    gw, client, _api = laboratory()
+    gw._receive_update(update(1, 9, "Inicial")); first = client.wait_starts(1)[0]
+    gw._receive_update(update(2, 9, voice={"file_id": "fixture"}))
+    steer = client.wait_steers(1)[0]
+    attachment = json.loads(steer["params"]["input"][1]["text"])["telegram_attachment"]
+    assert attachment["transcription"] == {"status": "unavailable", "automatic": True, "reason": "not_configured", "code": "profile_unavailable"}
+    assert steer["params"]["expectedTurnId"] == first["turn"]
+    assert len(client.starts) == 1
+
+
+def test_legacy_attachment_without_transcription_gets_reason_when_serialized(laboratory):
+    """Anexos retidos antes do novo contrato recebem o mesmo diagnóstico seguro."""
+    gw, _client, _api = laboratory()
+    attachments = gw._collect_attachments(9, {"message_id": 1, "voice": {"file_id": "fixture"}})
+    attachments[0].pop("transcription")
+    active = AppServerTurn(9, "fixture-thread", threading.Event(), conversation_id="9", generation=gw._generation(9))
+
+    inputs = gw._serialize_input(active, "Conferir legado", attachments)
+
+    attachment = json.loads(inputs[1]["text"])["telegram_attachment"]
+    assert attachment["transcription"] == {"status": "unavailable", "automatic": True, "reason": "not_configured", "code": "profile_unavailable"}
+    assert Path(attachment["local_path"]).read_bytes() == b"fixture media"
+    assert len(active.staging) == 1
 
 
 def test_poll_restarts_interrupted_batch_without_losing_or_duplicating_ingress(laboratory, monkeypatch):

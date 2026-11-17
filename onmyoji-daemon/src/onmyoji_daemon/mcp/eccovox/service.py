@@ -18,11 +18,12 @@ CONTENT_TYPES = {"mp3": {"audio/mpeg", "audio/mp3"}, "wav": {"audio/wav", "audio
 
 
 class EccoVoxError(ValueError):
-    """Erro sanitizado da integração EccoVox."""
+    """Erro sanitizado com código estável e status HTTP, quando disponível."""
 
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, *, http_status: int | None = None):
         super().__init__(message)
         self.code = code
+        self.http_status = http_status
 
 
 class _NoRedirect(request.HTTPRedirectHandler):
@@ -66,6 +67,11 @@ class EccoVoxService:
         return payload
 
     def transcribe(self, profile_name: str, audio_path: str, *, language: str | None = None, runtime_profile: str | None = None) -> dict[str, Any]:
+        """Transcreve áudio autorizado ou informa a indisponibilidade pelo código.
+
+        ``transcription_unsupported`` indica HTTP 404, 405 ou 501 no endpoint
+        de transcrição; os demais erros HTTP preservam ``runtime_error``.
+        """
         config = self._profile(profile_name)
         audio = self._contained(audio_path, config["readable_roots"], "audio_path", True)
         if audio.suffix.lower() not in ALLOWED_AUDIO_SUFFIXES:
@@ -118,11 +124,14 @@ class EccoVoxService:
     def _profile(self, name: str) -> dict[str, Any]:
         try:
             data = tomllib.loads(self.path.read_text(encoding="utf-8"))
-            profile = data.get("profiles", {}).get(name)
+            profiles = data.get("profiles", {})
             defaults = data.get("defaults", {})
-        except (OSError, tomllib.TOMLDecodeError) as exc:
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
             raise EccoVoxError("invalid_config", "Configuração MCP do EccoVox indisponível.") from exc
-        if not isinstance(profile, dict) or profile.get("enabled") is not True or not isinstance(defaults, dict):
+        if not isinstance(profiles, dict) or not isinstance(defaults, dict):
+            raise EccoVoxError("invalid_config", "Configuração MCP do EccoVox inválida.")
+        profile = profiles.get(name)
+        if not isinstance(profile, dict) or profile.get("enabled") is not True:
             raise EccoVoxError("profile_unavailable", "Perfil EccoVox indisponível.")
         try:
             base_url = str(profile["base_url"]).strip()
@@ -133,7 +142,7 @@ class EccoVoxService:
             readable = self._roots(profile["readable_roots"]); writable = self._roots(profile["writable_roots"])
             if not 1 <= timeout <= 300 or not 1 <= max_audio <= 104857600 or not 1 <= max_text <= 100000:
                 raise ValueError
-        except (KeyError, TypeError, ValueError) as exc:
+        except (OSError, KeyError, TypeError, ValueError, OverflowError, RuntimeError) as exc:
             raise EccoVoxError("invalid_config", "Perfil EccoVox inválido.") from exc
         voice = profile.get("voice", "")
         if not isinstance(voice, str) or len(voice) > 120:
@@ -144,12 +153,17 @@ class EccoVoxService:
         output_value = profile.get("default_output_directory", "")
         if not isinstance(output_value, str):
             raise EccoVoxError("invalid_config", "Perfil EccoVox inválido.")
-        if output_value.strip():
-            output_directory = Path(output_value).expanduser().resolve()
-        else:
-            output_directory = workspace(self.root) / ".onmyoji" / "eccovox" / "output"
-            if not any(output_directory.is_relative_to(root) for root in writable):
-                output_directory = writable[0] / ".onmyoji" / "eccovox" / "output"
+        try:
+            if output_value.strip():
+                output_directory = Path(output_value).expanduser().resolve()
+            else:
+                if not writable:
+                    raise ValueError
+                output_directory = workspace(self.root) / ".onmyoji" / "eccovox" / "output"
+                if not any(output_directory.is_relative_to(root) for root in writable):
+                    output_directory = writable[0] / ".onmyoji" / "eccovox" / "output"
+        except (OSError, TypeError, ValueError, RuntimeError) as exc:
+            raise EccoVoxError("invalid_config", "Pasta padrão de saída do EccoVox inválida.") from exc
         if not any(output_directory.is_relative_to(root) for root in writable):
             raise EccoVoxError("invalid_config", "A pasta padrão de saída do EccoVox não está autorizada para escrita.")
         return {"base_url": base_url.rstrip("/"), "timeout": timeout, "max_audio_bytes": max_audio, "max_text_characters": max_text, "voice": voice.strip() or None, "language": language.strip() or None, "default_output_directory": output_directory, "readable_roots": readable, "writable_roots": writable}
@@ -207,6 +221,9 @@ class EccoVoxService:
         try:
             with request.build_opener(_NoRedirect).open(query, timeout=config["timeout"]) as response:
                 return response.read(), response.headers.get_content_type()
-        except error.HTTPError as exc: raise EccoVoxError("runtime_error", f"EccoVox rejeitou a solicitação ({exc.code}).") from exc
+        except error.HTTPError as exc:
+            if endpoint == "/v1/audio/transcriptions" and exc.code in {404, 405, 501}:
+                raise EccoVoxError("transcription_unsupported", "O runtime EccoVox não oferece suporte à transcrição de áudio.", http_status=exc.code) from exc
+            raise EccoVoxError("runtime_error", f"EccoVox rejeitou a solicitação ({exc.code}).", http_status=exc.code) from exc
         except error.URLError as exc: raise EccoVoxError("runtime_unavailable", "EccoVox está indisponível.") from exc
         except TimeoutError as exc: raise EccoVoxError("timeout", "A solicitação ao EccoVox excedeu o tempo limite.") from exc

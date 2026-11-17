@@ -99,6 +99,16 @@ class InstructionComposer:
         if telegram:
             parts.append("[TELEGRAM — CONTRATO DE CANAL]\n" + self._read(self.resources / "telegram.md", MAX_SHIKIGAMI_BYTES))
             parts.append("[TELEGRAM — CAPACIDADES DO CANAL]\nMídia de saída: " + ("permitida." if outbound_media else "não disponível."))
+            parts.append(
+                "[TELEGRAM — INDISPONIBILIDADE DA TRANSCRIÇÃO]\n"
+                "Ao explicar uma transcrição com status=unavailable nos metadados telegram_attachment, use o motivo informado pelo Gateway. "
+                "Para reason=not_configured, responda: O suporte a mensagens de áudio e transcrição não está configurado nesta instância. Envie a mensagem em texto. "
+                "Para reason=unsupported, informe que o serviço desta instância não oferece suporte à transcrição de áudio e peça a mensagem em texto. "
+                "Nesses dois casos, não sugira reenviar o áudio, pois isso não resolve a indisponibilidade. "
+                "Para reason=failed, informe que houve uma falha ao transcrever esse áudio e ofereça enviar a mensagem em texto ou tentar novamente. "
+                "Se o motivo não estiver presente, informe apenas que a transcrição está indisponível, sem presumir falta de configuração. "
+                "Não afirme ter ouvido ou compreendido áudio sem uma transcrição disponível."
+            )
             sources.append("telegram.md")
         baseline = "\n\n".join(parts)
         overlay = ""
