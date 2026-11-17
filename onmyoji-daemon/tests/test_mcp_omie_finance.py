@@ -47,6 +47,7 @@ IDENTIFIER_METHODS = [
 ]
 TRANSACTION_CREATE = "omie.financeiro.lancamentos_conta.criar"
 TRANSACTION_UPDATE = "omie.financeiro.lancamentos_conta.alterar"
+DEPT_SET = "omie.financeiro.lancamentos_conta.definir_departamentos"
 
 
 def transaction_data():
@@ -902,7 +903,7 @@ def test_transaction_write_schemas_publish_exact_fields_and_required_identifiers
         assert properties["codigo_integracao"]["maxLength"] == 20
         assert set(properties["tipo_documento"]["enum"]) == set(DIRECT_DOCUMENT_TYPES)
     assert set(create_schema["properties"]["dados"]["properties"]) == expected_create
-    assert set(update_schema["properties"]["dados"]["properties"]) == expected_create | {"id"}
+    assert set(update_schema["properties"]["dados"]["properties"]) == (expected_create - {"departamentos"}) | {"id"}
     create.validate({"confirmar": True, "dados": base})
     assert not create.is_valid({"confirmar": True, "dados": {**base, "id": 9000000222}})
     for missing in base:
@@ -955,18 +956,24 @@ def test_invalid_transaction_data_never_reaches_credentials_or_http(tmp_path, mo
 
 def test_valid_direct_transaction_reaches_the_native_contract_without_unrelated_fields(tmp_path, monkeypatch):
     data = {**transaction_data(), "numero_documento": "DOC-1", "cliente_id": 8000000222, "projeto_id": 8000000333, "observacao": "Teste sintético", "departamentos": []}
-    response = {"nCodLanc": 9000000222, "departamentos": []}
-    _, request = mock_remote(monkeypatch, [response])
+    response = {"nCodLanc": 9000000222, "cCodStatus": "0"}
+    record = {"nCodLanc": 9000000222, "cCodIntLanc": "TEST-LANC-001", "departamentos": []}
+    _, request = mock_remote(monkeypatch, [response, record])
 
     result = OmieFinanceFacade(Configuration(tmp_path)).call(TRANSACTION_CREATE, {"confirmar": True, "dados": data}, "empresa")
 
-    request.assert_called_once_with({}, {}, "account_transactions", "IncluirLancCC", {
+    assert request.call_count == 2
+    assert request.call_args_list[0].args == ({}, {}, "account_transactions", "IncluirLancCC", {
         "cCodIntLanc": "TEST-LANC-001",
         "cabecalho": {"nCodCC": 8000000111, "dDtLanc": "15/11/2026", "nValorLanc": 123.45},
         "detalhes": {"cCodCateg": "2.01", "cTipo": "99999", "cNumDoc": "DOC-1", "nCodCliente": 8000000222, "nCodProjeto": 8000000333, "cObs": "Teste sintético"},
         "departamentos": [],
-    }, retries=0)
+    })
+    assert request.call_args_list[0].kwargs == {"retries": 0}
+    assert request.call_args_list[1].args == ({}, {}, "account_transactions", "ConsultaLancCC", {"cCodIntLanc": "TEST-LANC-001"})
     assert result["dados"] == [response]
+    assert result["verificacao"]["rateio_confirmado"] is True
+    assert result["departamentos"] == []
 
 
 @pytest.mark.parametrize("data", [
@@ -1011,12 +1018,18 @@ def test_transaction_update_preserves_either_or_both_identifiers(tmp_path, monke
 ])
 def test_transaction_rateio_is_normalized_before_omie(tmp_path, monkeypatch, rows, expected):
     data = {**transaction_data(), "valor": 9599, "departamentos": rows}
-    _, request = mock_remote(monkeypatch, [{"cCodStatus": "0", "nCodLanc": 9000000222}])
-    OmieFinanceFacade(Configuration(tmp_path)).call(
+    _, request = mock_remote(monkeypatch, [
+        {"cCodStatus": "0", "nCodLanc": 9000000222},
+        {"nCodLanc": 9000000222, "cCodIntLanc": "TEST-LANC-001", "departamentos": expected},
+    ])
+    result = OmieFinanceFacade(Configuration(tmp_path)).call(
         TRANSACTION_CREATE, {"confirmar": True, "dados": data}, "empresa",
     )
-    assert request.call_args.args[4]["departamentos"] == expected
-    assert request.call_args.args[4]["cabecalho"]["nValorLanc"] == 9599
+    assert request.call_count == 2
+    assert request.call_args_list[0].args[4]["departamentos"] == expected
+    assert request.call_args_list[0].args[4]["cabecalho"]["nValorLanc"] == 9599
+    assert request.call_args_list[1].args[3] == "ConsultaLancCC"
+    assert result["verificacao"]["rateio_confirmado"] is True
 
 
 @pytest.mark.parametrize("rows,expected", [
@@ -1029,28 +1042,36 @@ def test_transaction_rateio_is_normalized_before_omie(tmp_path, monkeypatch, row
 ])
 def test_transaction_rateio_com_valor_envia_somente_nValDep(tmp_path, monkeypatch, rows, expected):
     data = {**transaction_data(), "valor": 9599, "departamentos": rows}
-    _, request = mock_remote(monkeypatch, [{"cCodStatus": "0", "nCodLanc": 9000000222}])
+    _, request = mock_remote(monkeypatch, [
+        {"cCodStatus": "0", "nCodLanc": 9000000222},
+        {"nCodLanc": 9000000222, "cCodIntLanc": "TEST-LANC-001", "departamentos": expected},
+    ])
 
-    OmieFinanceFacade(Configuration(tmp_path)).call(
+    result = OmieFinanceFacade(Configuration(tmp_path)).call(
         TRANSACTION_CREATE, {"confirmar": True, "dados": data}, "empresa",
     )
 
-    assert request.call_args.args[4]["departamentos"] == expected
-    assert request.call_count == 1
+    assert request.call_args_list[0].args[4]["departamentos"] == expected
+    assert request.call_count == 2
+    assert request.call_args_list[1].args[3] == "ConsultaLancCC"
+    assert result["verificacao"]["rateio_confirmado"] is True
 
 
 def test_transaction_rateio_por_percentual_envia_somente_nPerDep(tmp_path, monkeypatch):
     data = {**transaction_data(), "departamentos": [
         {"codigo": "D1", "percentual": 50}, {"codigo": "D2", "percentual": 50},
     ]}
-    _, request = mock_remote(monkeypatch, [{"cCodStatus": "0", "nCodLanc": 9000000222}])
-    OmieFinanceFacade(Configuration(tmp_path)).call(
+    expected = [{"cCodDep": "D1", "nPerDep": 50}, {"cCodDep": "D2", "nPerDep": 50}]
+    _, request = mock_remote(monkeypatch, [
+        {"cCodStatus": "0", "nCodLanc": 9000000222},
+        {"nCodLanc": 9000000222, "cCodIntLanc": "TEST-LANC-001", "departamentos": expected},
+    ])
+    result = OmieFinanceFacade(Configuration(tmp_path)).call(
         TRANSACTION_CREATE, {"confirmar": True, "dados": data}, "empresa",
     )
-    assert request.call_args.args[4]["departamentos"] == [
-        {"cCodDep": "D1", "nPerDep": 50},
-        {"cCodDep": "D2", "nPerDep": 50},
-    ]
+    assert request.call_args_list[0].args[4]["departamentos"] == expected
+    assert request.call_count == 2
+    assert result["departamentos"] == [{"codigo": "D1", "percentual": 50.0}, {"codigo": "D2", "percentual": 50.0}]
 
 
 @pytest.mark.parametrize("rateio", [
@@ -1084,7 +1105,7 @@ def test_invalid_transaction_rateio_never_reaches_credentials(tmp_path, monkeypa
 
 @pytest.mark.parametrize("operation", [
     TRANSACTION_CREATE,
-    TRANSACTION_UPDATE,
+    DEPT_SET,
     "omie.financeiro.transferencias.criar",
 ])
 def test_rateio_schema_publico_expoe_apenas_formato_semantico(tmp_path, operation):
@@ -1113,6 +1134,8 @@ def test_rateio_schema_publico_expoe_apenas_formato_semantico(tmp_path, operatio
             "conta_origem_id": 10, "conta_destino_id": 11,
             "data": "12/11/2026", "valor": 9599, "categoria_codigo": "0.01.02",
         }
+    elif operation == DEPT_SET:
+        data = {"id": 9000000222}
     else:
         data = transaction_data()
     def arguments(rows):
@@ -1138,30 +1161,30 @@ def test_rateio_schema_publico_expoe_apenas_formato_semantico(tmp_path, operatio
         assert not validator.is_valid(arguments([row])), (operation, row)
 
 
-def test_rateio_legado_continua_aceito_pelo_normalizador_interno(tmp_path, monkeypatch):
+@pytest.mark.parametrize("row", [
+    {"codigo": "8532594895", "valor": 9599},
+    {"cCodDep": "8532594895", "nValDep": 9599},
+])
+def test_rateio_legado_continua_aceito_pelo_normalizador_interno(tmp_path, monkeypatch, row):
     _, request = mock_remote(monkeypatch, [
         {"cCodStatus": "0", "nCodLanc": 9000000222},
-        {"cCodStatus": "0", "nCodLanc": 9000000223},
+        {"nCodLanc": 9000000222, "cCodIntLanc": "TEST-LANC-001", "departamentos": [{"cCodDep": "8532594895", "nValDep": 9599}]},
     ])
-    facade = OmieFinanceFacade(Configuration(tmp_path))
-    for row in (
-        {"codigo": "8532594895", "valor": 9599},
-        {"cCodDep": "8532594895", "nValDep": 9599},
-    ):
-        facade.call(TRANSACTION_CREATE, {
-            "confirmar": True,
-            "dados": {**transaction_data(), "valor": 9599, "departamentos": [row]},
-        }, "empresa")
+    result = OmieFinanceFacade(Configuration(tmp_path)).call(TRANSACTION_CREATE, {
+        "confirmar": True,
+        "dados": {**transaction_data(), "valor": 9599, "departamentos": [row]},
+    }, "empresa")
     assert request.call_count == 2
-    for call in request.call_args_list:
-        assert call.args[4]["departamentos"] == [
-            {"cCodDep": "8532594895", "nValDep": 9599.0},
-        ]
+    assert request.call_args_list[0].args[4]["departamentos"] == [{"cCodDep": "8532594895", "nValDep": 9599.0}]
+    assert result["departamentos"] == [{"codigo": "8532594895", "valor": 9599.0}]
 
 
 def test_transferencia_rateio_usa_mesma_traducao(tmp_path, monkeypatch):
-    _, request = mock_remote(monkeypatch, [{"cCodStatus": "0", "nCodLanc": 9000000222}])
-    OmieFinanceFacade(Configuration(tmp_path)).call(
+    _, request = mock_remote(monkeypatch, [
+        {"cCodStatus": "0", "nCodLanc": 9000000222},
+        {"nCodLanc": 9000000222, "cCodIntLanc": "TR-20261112-1", "departamentos": [{"cCodDep": "8532594895", "nPerDep": 100}]},
+    ])
+    result = OmieFinanceFacade(Configuration(tmp_path)).call(
         "omie.financeiro.transferencias.criar",
         {"confirmar": True, "dados": {
             "codigo_integracao": "TR-20261112-1", "conta_origem_id": 10, "conta_destino_id": 11,
@@ -1169,14 +1192,18 @@ def test_transferencia_rateio_usa_mesma_traducao(tmp_path, monkeypatch):
             "departamentos": [{"codigo": "8532594895", "percentual": 100}],
         }}, "empresa",
     )
-    assert request.call_args.args[4]["departamentos"] == [
-        {"cCodDep": "8532594895", "nPerDep": 100},
-    ]
+    assert request.call_args_list[0].args[4]["departamentos"] == [{"cCodDep": "8532594895", "nPerDep": 100}]
+    assert request.call_count == 2
+    assert request.call_args_list[1].args[4] == {"cCodIntLanc": "TR-20261112-1"}
+    assert result["verificacao"]["rateio_confirmado"] is True
 
 
 def test_transferencia_com_valor_calcula_percentual(tmp_path, monkeypatch):
-    _, request = mock_remote(monkeypatch, [{"cCodStatus": "0", "nCodLanc": 9000000222}])
-    OmieFinanceFacade(Configuration(tmp_path)).call(
+    _, request = mock_remote(monkeypatch, [
+        {"cCodStatus": "0", "nCodLanc": 9000000222},
+        {"nCodLanc": 9000000222, "cCodIntLanc": "TR-20261112-2", "departamentos": [{"cCodDep": "8532594895", "nValDep": 9599}]},
+    ])
+    result = OmieFinanceFacade(Configuration(tmp_path)).call(
         "omie.financeiro.transferencias.criar",
         {"confirmar": True, "dados": {
             "codigo_integracao": "TR-20261112-2", "conta_origem_id": 10, "conta_destino_id": 11,
@@ -1184,15 +1211,14 @@ def test_transferencia_com_valor_calcula_percentual(tmp_path, monkeypatch):
             "departamentos": [{"cCodDep": "8532594895", "nValDep": 9599}],
         }}, "empresa",
     )
-    assert request.call_args.args[4]["departamentos"] == [
-        {"cCodDep": "8532594895", "nValDep": 9599.0},
-    ]
+    assert request.call_args_list[0].args[4]["departamentos"] == [{"cCodDep": "8532594895", "nValDep": 9599.0}]
+    assert request.call_count == 2
+    assert result["departamentos"] == [{"codigo": "8532594895", "valor": 9599.0}]
 
 
 
 @pytest.mark.parametrize("operation", [
     TRANSACTION_CREATE,
-    TRANSACTION_UPDATE,
     "omie.financeiro.transferencias.criar",
 ])
 @pytest.mark.parametrize("row,expected", [
@@ -1212,16 +1238,17 @@ def test_rateio_nunca_envia_percentual_e_valor_juntos_omie_727(tmp_path, monkeyp
         }
     else:
         data = {**transaction_data(), "valor": 9599}
-    responses = [{"nCodLanc": 9000000222}]
-    if operation == TRANSACTION_UPDATE:
-        responses.append({"nCodLanc": 9000000222, "cCodIntLanc": "TEST-LANC-001", "departamentos": [expected]})
+    responses = [
+        {"nCodLanc": 9000000222, "cCodStatus": "0"},
+        {"nCodLanc": 9000000222, "cCodIntLanc": data["codigo_integracao"], "departamentos": [expected]},
+    ]
     _, request = mock_remote(monkeypatch, responses)
 
     OmieFinanceFacade(Configuration(tmp_path)).call(
         operation, {"confirmar": True, "dados": {**data, "departamentos": [row]}}, "empresa",
     )
 
-    assert request.call_count == (2 if operation == TRANSACTION_UPDATE else 1)
+    assert request.call_count == 2
     departments = request.call_args_list[0].args[4]["departamentos"]
     assert departments == [expected]
     assert all(("nPerDep" in item) != ("nValDep" in item) for item in departments)
@@ -1267,65 +1294,86 @@ def test_financial_write_uncertainty_preserves_safe_cause_without_retry(tmp_path
     ("contas_receber", "receivables", "AlterarContaReceber", "ConsultarContaReceber"),
 ])
 def test_title_department_update_sends_only_distribution_and_confirms_persistence(tmp_path, monkeypatch, resource, endpoint, method, get_method):
-    """O título recebe distribuicao, mesmo que o chamador não reenvie valor ou dados de baixa."""
+    """A definição dedicada recebe distribuicao e confirma o título pago sem reenviar a baixa."""
     ack = {"codigo_status": "0", "descricao_status": "Alterado com sucesso"}
-    record = {"codigo_lancamento_omie": 12, "status_titulo": "PAGO", "origem": "BARP",
-              "distribuicao": [{"cCodDep": "000123", "nPerDep": 100, "nValDep": 220, "cDesDep": "Departamento"}]}
-    _, request = mock_remote(monkeypatch, [ack, record])
+    before = {"codigo_lancamento_omie": 12, "status_titulo": "PAGO", "id_origem": "BARP", "valor_documento": 220,
+              "data_vencimento": "15/11/2026", "codigo_cliente_fornecedor": 56, "codigo_categoria": "2.01",
+              "id_conta_corrente": 34, "distribuicao": []}
+    record = {**before, "distribuicao": [{"cCodDep": "000123", "nPerDep": 100, "nValDep": 220, "cDesDep": "Departamento"}]}
+    _, request = mock_remote(monkeypatch, [before, ack, record])
     facade = OmieFinanceFacade(Configuration(tmp_path))
-    name = f"omie.financeiro.{resource}.alterar"
+    name = f"omie.financeiro.{resource}.definir_departamentos"
     arguments = {"confirmar": True, "dados": {"id": 12, "departamentos": [{"codigo": "000123", "percentual": 100}]}}
     schema = next(tool["input_schema"] for tool in facade.definitions([{"name": "empresa"}]) if tool["name"] == name)
     Draft202012Validator(schema).validate(arguments)
 
     result = facade.call(name, arguments, "empresa")
 
-    assert result["dados"] == [ack]
-    assert result["verificacao"] == {"rateio_confirmado": True}
-    assert request.call_count == 2
-    assert request.call_args_list[0].args == ({}, {}, endpoint, method, {
+    assert result["alvo"] == {"recurso": resource, "id": 12}
+    assert result["departamentos"] == [{"codigo": "000123", "percentual": 100.0, "valor": 220.0}]
+    assert result["verificacao"]["rateio_confirmado"] is True
+    assert result["verificacao"]["campos_preservados"] is True
+    assert set(result["verificacao"]["campos_verificados"]) >= {
+        "codigo_cliente_fornecedor", "data_vencimento", "valor_documento", "codigo_categoria", "id_conta_corrente", "status_titulo",
+    }
+    assert "dados" not in result and "dados_omie" not in result
+    assert request.call_count == 3
+    assert request.call_args_list[1].args == ({}, {}, endpoint, method, {
         "codigo_lancamento_omie": 12, "distribuicao": [{"cCodDep": "000123", "nPerDep": 100}],
     })
-    assert request.call_args_list[0].kwargs == {"retries": 0}
-    assert request.call_args_list[1].args == ({}, {}, endpoint, get_method, {"codigo_lancamento_omie": 12})
-    assert request.call_args_list[1].kwargs == {"retries": None}
+    assert request.call_args_list[1].kwargs == {"retries": 0}
+    for index in (0, 2):
+        assert request.call_args_list[index].args == ({}, {}, endpoint, get_method, {"codigo_lancamento_omie": 12})
+        assert request.call_args_list[index].kwargs == {"retries": None}
 
 
 def test_account_department_update_accepts_only_identifier_and_departments(tmp_path, monkeypatch):
     ack = {"cCodStatus": "0", "nCodLanc": 9000000222}
-    record = {"nCodLanc": 9000000222, "departamentos": [{"cCodDep": "000123", "nPerDep": 100, "nValDep": 1000}],
-              "diversos": {"cOrigem": "BAXP", "nCodLancCP": 12}}
-    _, request = mock_remote(monkeypatch, [ack, record])
+    before = {"nCodLanc": 9000000222, "cabecalho": {"nCodCC": 34, "dDtLanc": "15/11/2026", "nValorLanc": 1000},
+              "detalhes": {"cCodCateg": "2.01", "cTipo": "FAT"},
+              "departamentos": [], "diversos": {"cOrigem": "EXTP", "nCodLancCP": 0, "nCodLancCR": 0}}
+    record = {**before, "departamentos": [{"cCodDep": "000123", "nPerDep": 100, "nValDep": 1000}]}
+    _, request = mock_remote(monkeypatch, [before, ack, record])
 
-    result = OmieFinanceFacade(Configuration(tmp_path)).call(TRANSACTION_UPDATE, {
+    result = OmieFinanceFacade(Configuration(tmp_path)).call(DEPT_SET, {
         "confirmar": True, "dados": {"id": 9000000222, "departamentos": [{"codigo": "000123", "percentual": 100}]},
     }, "empresa")
 
-    assert result["verificacao"] == {"rateio_confirmado": True}
+    assert result["alvo"] == {"recurso": "lancamentos_conta", "id": 9000000222}
+    assert result["departamentos"] == [{"codigo": "000123", "percentual": 100.0, "valor": 1000.0}]
+    assert result["verificacao"]["rateio_confirmado"] is True
+    assert result["verificacao"]["campos_preservados"] is True
+    assert set(result["verificacao"]["campos_verificados"]) >= {
+        "cabecalho.nCodCC", "cabecalho.dDtLanc", "cabecalho.nValorLanc", "detalhes.cCodCateg", "detalhes.cTipo", "diversos.cOrigem",
+    }
     assert [call.args[4] for call in request.call_args_list] == [
+        {"nCodLanc": 9000000222},
         {"nCodLanc": 9000000222, "departamentos": [{"cCodDep": "000123", "nPerDep": 100}]},
         {"nCodLanc": 9000000222},
     ]
-    assert [call.args[3] for call in request.call_args_list] == ["AlterarLancCC", "ConsultaLancCC"]
+    assert [call.args[3] for call in request.call_args_list] == ["ConsultaLancCC", "AlterarLancCC", "ConsultaLancCC"]
 
 
 @pytest.mark.parametrize("readback,code", [
-    ({"nCodLanc": 12, "departamentos": [], "diversos": {"cOrigem": "BAXP", "nCodLancCP": 34}}, "allocation_not_persisted"),
+    ({"nCodLanc": 12, "departamentos": [], "diversos": {"cOrigem": "EXTP", "nCodLancCP": 0, "nCodLancCR": 0}}, "allocation_not_persisted"),
     (OmieError("network_error", "Consulta indisponível."), "write_verification_failed"),
     ({"nCodLanc": 12}, "write_verification_failed"),
 ])
 def test_rateio_processing_ack_never_hides_missing_or_unknown_persistence(tmp_path, monkeypatch, readback, code):
-    _, request = mock_remote(monkeypatch, [{"cCodStatus": "0", "nCodLanc": 12}, readback])
+    before = {"nCodLanc": 12, "cabecalho": {"nCodCC": 34, "dDtLanc": "15/11/2026", "nValorLanc": 1000},
+              "detalhes": {"cCodCateg": "2.01", "cTipo": "FAT"}, "departamentos": [],
+              "diversos": {"cOrigem": "EXTP", "nCodLancCP": 0, "nCodLancCR": 0}}
+    _, request = mock_remote(monkeypatch, [before, {"cCodStatus": "0", "nCodLanc": 12}, readback])
 
     with pytest.raises(OmieError) as error:
-        OmieFinanceFacade(Configuration(tmp_path)).call(TRANSACTION_UPDATE, {
+        OmieFinanceFacade(Configuration(tmp_path)).call(DEPT_SET, {
             "confirmar": True, "dados": {"id": 12, "departamentos": [{"codigo": "000123", "percentual": 100}]},
         }, "empresa")
 
     assert error.value.code == code
     assert error.value.details["retryable"] is False
     assert error.value.details["escrita_processada"] is True
-    assert [call.args[3] for call in request.call_args_list] == ["AlterarLancCC", "ConsultaLancCC"]
+    assert [call.args[3] for call in request.call_args_list] == ["ConsultaLancCC", "AlterarLancCC", "ConsultaLancCC"]
 
 
 def test_partial_account_update_omits_other_fields_and_does_not_read_unrequested_allocation(tmp_path, monkeypatch):
@@ -1342,7 +1390,7 @@ def test_partial_account_update_omits_other_fields_and_does_not_read_unrequested
 
 
 @pytest.mark.parametrize("operation,fields", [
-    ("contas_pagar.alterar", {"id", "codigo_integracao", "cliente_fornecedor_id", "cliente_fornecedor_codigo_integracao", "data_vencimento", "valor", "categoria_codigo", "projeto_id", "observacao", "tipo_documento", "numero_documento", "departamentos"}),
+    ("contas_pagar.alterar", {"id", "codigo_integracao", "cliente_fornecedor_id", "cliente_fornecedor_codigo_integracao", "data_vencimento", "valor", "categoria_codigo", "projeto_id", "observacao", "tipo_documento", "numero_documento", "conta_corrente_id"}),
     ("contas_pagar.registrar_pagamento", {"id", "codigo_integracao", "conta_corrente_id", "valor", "data", "observacao"}),
     ("contas_pagar.cancelar_pagamento", {"id_baixa"}),
     ("transferencias.criar", {"codigo_integracao", "conta_origem_id", "conta_destino_id", "data", "valor", "categoria_codigo", "numero_documento", "observacao", "projeto_id", "departamentos"}),
@@ -1356,7 +1404,7 @@ def test_financial_write_schemas_publish_only_the_fields_their_adapters_translat
     Draft202012Validator.check_schema(schema)
     if operation.endswith("criar_lote"):
         item = schema["properties"]["dados"]["properties"]["titulos"]["items"]
-        assert "departamentos" in item["properties"]
+        assert "departamentos" not in item["properties"]
         assert "id_baixa" not in item["properties"]
         assert item["additionalProperties"] is False
 
@@ -1366,6 +1414,9 @@ def test_financial_write_schemas_publish_only_the_fields_their_adapters_translat
     ("criar_lote", {"id": 12}), ("criar_lote", {}),
     ("incluir_ou_alterar_lote", {}), ("incluir_ou_alterar_lote", {"id": 12}),
     ("incluir_ou_alterar_lote", {"id": 12, "departamentos": None}),
+    ("incluir_ou_alterar_lote", {"id": 12, "departamentos": [{"codigo": "000123", "percentual": 100}]}),
+    ("criar_lote", {"codigo_integracao": "TEST-TITLE-001", "cliente_fornecedor_id": 34, "data_vencimento": "15/11/2026",
+                    "valor": 1000, "categoria_codigo": "2.01", "departamentos": [{"codigo": "000123", "percentual": 100}]}),
 ])
 def test_batch_title_validation_rejects_incomplete_items_before_access(tmp_path, monkeypatch, resource, action, item):
     arguments = {"confirmar": True, "dados": {"lote": 1, "titulos": [item]}}
@@ -1421,24 +1472,24 @@ def test_title_business_rejection_stops_before_allocation_verification(tmp_path,
     monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.urlopen", request)
 
     with pytest.raises(OmieError) as error:
-        OmieFinanceFacade(Configuration(tmp_path)).call(f"omie.financeiro.{resource}.alterar", {
+        OmieFinanceFacade(Configuration(tmp_path)).call(f"omie.financeiro.{resource}.incluir_ou_alterar", {
             "confirmar": True, "dados": {"id": 12, "departamentos": [{"codigo": "000123", "percentual": 100}]},
         }, "empresa")
 
     assert error.value.code == "omie_api_error"
     assert error.value.details == {"retryable": False, "retry_after_seconds": 61, "remote_code": "10", "remote_description": "Titulo bloqueado"}
-    assert calls == ["AlterarContaPagar" if resource == "contas_pagar" else "AlterarContaReceber"]
+    assert calls == ["UpsertContaPagar" if resource == "contas_pagar" else "UpsertContaReceber"]
 
 
 @pytest.mark.parametrize("with_amount", [False, True])
 def test_duplicate_departments_are_rejected_before_any_write(tmp_path, monkeypatch, with_amount):
     profile, request = mock_remote(monkeypatch, [])
-    data = {"id": 12, "departamentos": [{"codigo": "000123", "percentual": 50}, {"codigo": "000123", "percentual": 50}]}
-    if with_amount:
-        data["valor"] = 100
+    departments = [{"codigo": "000123", "percentual": 50}, {"codigo": "000123", "percentual": 50}]
+    data = {**transaction_data(), "departamentos": departments} if with_amount else {"id": 12, "departamentos": departments}
+    operation = TRANSACTION_CREATE if with_amount else DEPT_SET
 
     with pytest.raises(OmieError) as error:
-        OmieFinanceFacade(Configuration(tmp_path)).call(TRANSACTION_UPDATE, {"confirmar": True, "dados": data}, "empresa")
+        OmieFinanceFacade(Configuration(tmp_path)).call(operation, {"confirmar": True, "dados": data}, "empresa")
 
     assert error.value.code == "invalid_parameter"
     assert "repetido" in str(error.value)
@@ -1468,3 +1519,94 @@ def test_refresh_is_not_a_write_parameter(tmp_path, monkeypatch, refresh):
     assert error.value.details["field"] == "atualizar_cache"
     profile.assert_not_called()
     request.assert_not_called()
+
+
+@pytest.mark.parametrize("resource,endpoint,method", [
+    ("contas_pagar", "payables", "AlterarContaPagar"),
+    ("contas_receber", "receivables", "AlterarContaReceber"),
+])
+def test_title_planned_account_is_published_and_translated_without_rewriting_payment(tmp_path, monkeypatch, resource, endpoint, method):
+    arguments = {"confirmar": True, "dados": {"id": 12, "conta_corrente_id": 34}}
+    facade = OmieFinanceFacade(Configuration(tmp_path))
+    name = f"omie.financeiro.{resource}.alterar"
+    schema = next(tool["input_schema"] for tool in facade.definitions([{"name": "empresa"}]) if tool["name"] == name)
+    Draft202012Validator(schema).validate(arguments)
+    _, request = mock_remote(monkeypatch, [{"codigo_status": "0"}])
+
+    facade.call(name, arguments, "empresa")
+
+    request.assert_called_once_with({}, {}, endpoint, method, {"codigo_lancamento_omie": 12, "id_conta_corrente": 34}, retries=0)
+    description = schema["properties"]["dados"]["properties"]["conta_corrente_id"]["description"]
+    assert "Não altera a conta de uma baixa" in description
+
+
+@pytest.mark.parametrize("resource", ["lancamentos_conta", "contas_pagar", "contas_receber"])
+def test_general_updates_refuse_allocation_and_point_to_the_dedicated_contract(tmp_path, monkeypatch, resource):
+    arguments = {"confirmar": True, "dados": {"id": 12, "departamentos": [{"codigo": "000123", "percentual": 100}]}}
+    facade = OmieFinanceFacade(Configuration(tmp_path))
+    name = f"omie.financeiro.{resource}.alterar"
+    schema = next(tool["input_schema"] for tool in facade.definitions([{"name": "empresa"}]) if tool["name"] == name)
+    assert not Draft202012Validator(schema).is_valid(arguments)
+    profile, request = mock_remote(monkeypatch, [])
+
+    with pytest.raises(OmieError) as error:
+        facade.call(name, arguments, "empresa")
+
+    assert error.value.code == "invalid_parameter"
+    assert error.value.details["field"] == "dados.departamentos"
+    assert error.value.details["use_instead"] == [f"omie.financeiro.{resource}.definir_departamentos"]
+    profile.assert_not_called()
+    request.assert_not_called()
+
+
+def test_linked_payment_is_refused_before_writing_with_actionable_title_arguments(tmp_path, monkeypatch):
+    before = {"nCodLanc": 12, "cabecalho": {"nCodCC": 34, "dDtLanc": "15/11/2026", "nValorLanc": 1000},
+              "detalhes": {"cCodCateg": "2.01", "cTipo": "FAT"}, "departamentos": [],
+              "diversos": {"cOrigem": "BAXP", "nCodLancCP": 56, "nCodLancCR": 0}}
+    _, request = mock_remote(monkeypatch, [before])
+
+    with pytest.raises(OmieError) as error:
+        OmieFinanceFacade(Configuration(tmp_path)).call(DEPT_SET, {
+            "confirmar": True, "dados": {"id": 12, "departamentos": [{"codigo": "000123", "percentual": 100}]},
+        }, "empresa")
+
+    assert error.value.code == "allocation_requires_source_title"
+    assert error.value.details["escrita_processada"] is False
+    assert error.value.details["suggested_tool"] == "omie.financeiro.contas_pagar.definir_departamentos"
+    assert error.value.details["suggested_arguments"] == {
+        "confirmar": True, "dados": {"id": 56, "departamentos": [{"codigo": "000123", "percentual": 100}], "lancamento_conta_id": 12},
+    }
+    request.assert_called_once_with({}, {}, "account_transactions", "ConsultaLancCC", {"nCodLanc": 12}, retries=None)
+
+
+@pytest.mark.parametrize("resource,endpoint,create_method,upsert_method,get_method", [
+    ("contas_pagar", "payables", "IncluirContaPagar", "UpsertContaPagar", "ConsultarContaPagar"),
+    ("contas_receber", "receivables", "IncluirContaReceber", "UpsertContaReceber", "ConsultarContaReceber"),
+])
+@pytest.mark.parametrize("action", ["criar", "incluir_ou_alterar"])
+def test_title_creation_and_upsert_confirm_allocation_before_returning_success(tmp_path, monkeypatch, resource, endpoint, create_method, upsert_method, get_method, action):
+    """As rotas unitárias restantes com rateio também exigem GET do objeto gravado."""
+    data = {"departamentos": [{"codigo": "000123", "percentual": 100}]}
+    if action == "criar":
+        data.update({"codigo_integracao": "TEST-TITLE-001", "cliente_fornecedor_id": 34,
+                     "data_vencimento": "15/11/2026", "valor": 1000, "categoria_codigo": "2.01"})
+        query = {"codigo_lancamento_integracao": "TEST-TITLE-001"}
+        method = create_method
+    else:
+        data["id"] = 12
+        query = {"codigo_lancamento_omie": 12}
+        method = upsert_method
+    record = {"codigo_lancamento_omie": 12, "codigo_lancamento_integracao": "TEST-TITLE-001",
+              "distribuicao": [{"cCodDep": "000123", "nPerDep": 100, "nValDep": 1000}]}
+    _, request = mock_remote(monkeypatch, [{"codigo_status": "0"}, record])
+
+    result = OmieFinanceFacade(Configuration(tmp_path)).call(f"omie.financeiro.{resource}.{action}", {
+        "confirmar": True, "dados": data,
+    }, "empresa")
+
+    assert [call.args[3] for call in request.call_args_list] == [method, get_method]
+    assert request.call_args_list[0].args[4]["distribuicao"] == [{"cCodDep": "000123", "nPerDep": 100}]
+    assert request.call_args_list[1].args == ({}, {}, endpoint, get_method, query)
+    assert result["verificacao"]["rateio_confirmado"] is True
+    assert result["departamentos"] == [{"codigo": "000123", "percentual": 100.0, "valor": 1000.0}]
+    assert "registro" not in result["verificacao"] and "dados_omie" not in result

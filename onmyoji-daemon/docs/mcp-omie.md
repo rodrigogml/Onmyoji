@@ -1,6 +1,6 @@
 # Omie no MCP interno
 
-A integração oferece 72 operações de cadastros, financeiro e NF-e. O servidor
+A integração oferece operações de cadastros, financeiro e NF-e. O servidor
 stdio publica os parâmetros aceitos e o contexto de uso nas próprias tools; o
 código não depende de scripts de integração nem expõe o cofre como ferramenta.
 
@@ -146,103 +146,159 @@ A obrigatoriedade da integração é uma regra do MCP e aparece no schema da too
 O código deve ser um texto estável de até 20 caracteres; guarde-o para consultar
 o resultado da inclusão. O ID é gerado pela Omie e não é um campo de criação.
 
-A alteração aceita uma atualização parcial: informe `id` ou
+A alteração geral aceita atualização parcial: informe `id` ou
 `codigo_integracao` e pelo menos um campo editável. Os dois identificadores
-podem ser enviados juntos. O MCP envia apenas os campos solicitados; para
-alterar o rateio, não é necessário repetir conta, data, valor, categoria ou
-tipo de documento. Campos omitidos permanecem fora da requisição, preservando
-os dados que não fazem parte da correção.
+podem ser enviados juntos. O MCP envia somente os campos solicitados.
+Para mudar apenas uma observação, por exemplo, informe o identificador e
+`observacao`; não reenvie valor, conta, data, categoria ou tipo de documento.
 
-Criação e alteração publicam somente os campos que conseguem traduzir, com os
-tipos de documento aceitos pelo MCP e os limites específicos de cada campo.
-Cada operação financeira de escrita tem seu próprio schema; um campo aceito
-em outra operação não passa a ser aceito automaticamente. Ausência ou
+**Rateio de um registro existente usa `definir_departamentos`.** As ferramentas
+`lancamentos_conta.alterar`, `contas_pagar.alterar` e `contas_receber.alterar`
+não publicam nem aceitam `dados.departamentos`. Se esse campo chegar à chamada,
+o MCP recusa antes do HTTP e indica a ferramenta específica da mesma família.
+A separação evita que um sucesso de processamento da edição geral seja
+interpretado como confirmação de que o rateio foi persistido.
+
+Em títulos a pagar e a receber, `dados.conta_corrente_id` é traduzido para
+`id_conta_corrente`: a **conta prevista do título**. Essa alteração não troca a
+conta usada por um pagamento ou recebimento já executado. Para ratear um título,
+use a ferramenta específica sem reenviar esse campo.
+
+Criações e inclusões ou alterações unitárias (`incluir_ou_alterar`) que
+aceitam `departamentos` continuam disponíveis, incluindo a criação de uma
+transferência. Quando o rateio é enviado, a operação confere sua persistência
+antes de apresentá-lo como confirmado. Lotes não aceitam `departamentos` nos
+itens: crie os registros primeiro e depois defina o rateio pelos IDs retornados.
+Um aceite de lote não confirma o estado final de cada distribuição.
+
+Cada escrita publica apenas os campos que consegue traduzir. Ausência ou
 invalidade de campos obrigatórios gera erro com o nome público, por exemplo
-`dados.codigo_integracao`, antes de qualquer acesso externo.
+`dados.codigo_integracao`, antes de acessar credenciais ou HTTP. Os nomes
+financeiros legados não são atalhos de execução: chamadas a esses nomes são
+recusadas com orientação para a fachada publicada.
 
-O schema público de `dados.departamentos` publica **um único formato** para
-lançamentos, títulos a pagar/receber e transferências que aceitam rateio:
+### Departamentos: cadastro e rateio são responsabilidades diferentes
 
-```json
-{"departamentos":[{"codigo":"8532594895","percentual":100}]}
-```
+`omie.financeiro.departamentos.listar` e `.consultar` identificam o cadastro
+do centro de custo. Alterar esse cadastro não atribui o departamento a um
+lançamento ou título. Para distribuir o valor de um registro já existente,
+use a ferramenta correspondente:
 
-`codigo` é **sempre string**, mesmo quando contém apenas números; não envie
-`8532594895` sem aspas. `percentual` é numérico, positivo e até 100. Para
-um departamento, use `100`; para vários, a soma deve ser `100`, sem repetir
-o código de um departamento. **Não**
-envie `valor`, `cCodDep`, `nPerDep` nem `nValDep` nos itens da tool
-pública. O MCP valida os percentuais e **envia à Omie somente `cCodDep` e
-`nPerDep`**. A API calcula o valor do departamento; enviar `nPerDep` junto com `nValDep` provoca
-`SOAP-ENV:Client-727` ("Preencha apenas a tag [nPerDep] ou [nValDep]!").
+| Objeto que precisa ser rateado | Ferramenta MCP | Contrato Omie utilizado |
+| --- | --- | --- |
+| Lançamento direto de conta corrente | `omie.financeiro.lancamentos_conta.definir_departamentos` | `AlterarLancCC`, com `departamentos`. |
+| Conta a pagar | `omie.financeiro.contas_pagar.definir_departamentos` | `AlterarContaPagar`, com `distribuicao`. |
+| Conta a receber | `omie.financeiro.contas_receber.definir_departamentos` | `AlterarContaReceber`, com `distribuicao`. |
 
-Em `lancamentos_conta`, o envelope nativo é `departamentos`; em
-`contas_pagar` e `contas_receber`, é `distribuicao`. O agente usa sempre
-`dados.departamentos` nessas operações da fachada. As operações específicas
-de rateio de contas a receber mantêm seu contrato próprio publicado.
+Essas ferramentas são operações semânticas do MCP, implementadas sobre as
+APIs publicadas pela Omie. Não existe um novo endpoint nativo inventado para
+rateio de baixas ou de contas a pagar.
 
-Para compatibilidade com integrações antigas, o normalizador interno continua
-aceitando `codigo/valor` e `cCodDep/nPerDep/nValDep` quando chamado
-programaticamente e houver os dados necessários à validação. Quando o chamador informar apenas o valor, o conector
-transmite `cCodDep` e `nValDep`; quando informar percentual (mesmo com
-valor consistente), transmite `cCodDep` e `nPerDep`. Nunca transmite ambas
-as tags no mesmo departamento. Esses formatos **não são apresentados no
-schema público**, para não confundir o agente.
+Cada chamada exige `confirmar: true` e, em `dados`, **exatamente um** entre
+`id` e `codigo_integracao`, mais a lista completa `departamentos` desejada.
+As ferramentas de títulos também aceitam `lancamento_conta_id`, opcional,
+para conferir um movimento vinculado. Campos de valor, conta, data, categoria,
+projeto, fornecedor, documento ou conciliação não pertencem a essa operação.
+A ferramenta compara os dados relevantes antes e depois para detectar
+alterações fora do rateio solicitado.
+Depois de resolver um código de integração, a escrita e a conferência usam
+o ID numérico identificado, mantendo o mesmo alvo durante a operação.
 
-Após uma inclusão confirmada, a conferência usa `.consultar` pelo ID retornado
-ou pelo código de integração original. Em resposta incerta, consulte antes de
-repetir a escrita. Referência dos campos nativos:
-[lançamentos de conta corrente da Omie](https://api.omie.com.br/docs/apis/financas/contacorrentelancamentos).
-
-### Rateio: alteração e confirmação de persistência
-
-Para corrigir somente departamentos, envie o identificador e o novo rateio,
-com `confirmar: true`. Exemplos fictícios, com um único perfil:
+O formato público do rateio é único:
 
 ```json
-{"tool":"omie.financeiro.lancamentos_conta.alterar","arguments":{"confirmar":true,"dados":{"id":9000000001,"departamentos":[{"codigo":"DEP-01","percentual":100}]}}}
-{"tool":"omie.financeiro.contas_pagar.alterar","arguments":{"confirmar":true,"dados":{"id":9000000002,"departamentos":[{"codigo":"DEP-01","percentual":100}]}}}
+{"departamentos":[{"codigo":"DEP-01","percentual":100}]}
 ```
 
-As alterações de lançamentos, contas a pagar e contas a receber que incluam
-`departamentos` consultam o mesmo objeto após a escrita. O retorno contém
-`verificacao.rateio_confirmado: true` somente quando o rateio lido confere
-com o solicitado. `departamentos: []` solicita a remoção do rateio e passa
-pela mesma conferência. O retorno `cCodStatus: "0"` da escrita, sozinho,
-não confirma a persistência da distribuição.
-Falhas de negócio são reconhecidas tanto em `cCodStatus`/`cDesStatus` dos
-lançamentos quanto em `codigo_status`/`descricao_status` dos títulos; uma
-rejeição não é tratada como processamento bem-sucedido.
+`codigo` é **texto**, inclusive quando contém apenas dígitos, e deve ser o
+código verdadeiro do cadastro. `percentual` é numérico, positivo e até 100.
+Com vários departamentos, os percentuais somam 100 e cada código aparece uma
+única vez. A lista **substitui o rateio completo**; `departamentos: []` solicita
+removê-lo, com a mesma conferência posterior. Não envie nomes de departamento
+como identificadores nem os campos nativos `cCodDep`, `nPerDep` ou `nValDep`.
 
-| Resultado da conferência | Comportamento |
+O MCP transmite `cCodDep` e `nPerDep`; a Omie calcula o valor distribuído.
+Em lançamentos, enviar percentual e valor simultaneamente pode provocar
+`SOAP-ENV:Client-727`. Formatos legados por valor continuam restritos aos
+normalizadores internos quando houver os dados necessários à validação;
+não são formatos adicionais da tool pública.
+
+Exemplos fictícios, com um único perfil:
+
+```json
+{"tool":"omie.financeiro.lancamentos_conta.definir_departamentos","arguments":{"confirmar":true,"dados":{"id":9000000001,"departamentos":[{"codigo":"DEP-01","percentual":100}]}}}
+{"tool":"omie.financeiro.contas_pagar.definir_departamentos","arguments":{"confirmar":true,"dados":{"id":9000000002,"lancamento_conta_id":9000000003,"departamentos":[{"codigo":"DEP-01","percentual":100}]}}}
+```
+
+### Baixas vinculadas e confirmação do resultado
+
+A ferramenta de conta corrente consulta o lançamento antes de escrever.
+Quando encontra vínculo com uma conta a pagar ou receber em
+`diversos.nCodLancCP`/`nCodLancCR`, ou origem de baixa `BAXP`/`BAXR`, recusa a
+alteração direta e orienta a chamada ao título correspondente. O diagnóstico
+inclui o ID e os argumentos sugeridos quando o vínculo é conhecido.
+**Essa restrição é uma decisão do contrato MCP**, não uma alegação de que a
+Omie proíba todo rateio em baixas. Ela evita tentar corrigir um registro
+derivado como se fosse um lançamento independente.
+
+O MCP não redireciona uma escrita ao título automaticamente: um título pode
+ter mais de uma baixa, e a mudança da distribuição da origem pode afetar
+outros movimentos. Use o título e o movimento corretos na chamada indicada.
+Nas ferramentas de títulos, `lancamento_conta_id` faz a validação desse vínculo
+**antes da gravação**, além da conferência de propagação depois dela.
+Um ID de movimento sem vínculo correspondente é recusado antes de alterar o
+título.
+
+A gravação do título envia somente seu identificador e `distribuicao`; não
+cancela, recria ou refaz pagamento ou recebimento. O status `PAGO` e a origem
+`BARP` não são tratados como proibições automáticas. `BARP` significa conta a
+pagar importada por código de barras; `BAXP` significa pagamento de conta a
+pagar. São informações distintas.
+
+O resultado de rateio apresenta `alvo`, `departamentos` **observados**,
+`verificacao` e `versao_mcp`. `verificacao.rateio_confirmado` indica a
+comparação da distribuição persistida; `verificacao.campos_preservados`
+informa a conferência dos demais campos relevantes. O aceite nativo é
+exibido somente quando `incluir_dados_omie: true` for solicitado para auditoria.
+O texto `cDesStatus` ou `descricao_status` da API não substitui essas
+verificações.
+`verificacao.campos_verificados` explicita os campos comparados entre o estado
+inicialmente consultado e a conferência. A pré-consulta pode aproveitar o cache
+válido; diferenças não provam que o MCP causou uma alteração externa. Respostas
+sem os dados financeiros mínimos são recusadas antes de escrever.
+Para auditoria, `dados_omie.requisicao` contém o método e os parâmetros nativos
+efetivamente enviados, sem credenciais. Nenhum corpo HTTP autenticado é gravado
+em log por esse fluxo.
+
+| Situação | Resultado do MCP |
 | --- | --- |
-| Rateio confirmado | A operação retorna o sucesso da escrita com `verificacao.rateio_confirmado: true`. |
-| Consulta concluída com rateio diferente | Retorna `allocation_not_persisted`, sem afirmar que o objetivo foi cumprido. |
-| Consulta não concluída ou resposta inconclusiva | Retorna `write_verification_failed`; o resultado do rateio exige nova consulta. |
+| Rateio e preservação dos dados conferidos | Retorna o alvo, os departamentos observados e a verificação confirmada. |
+| Consulta concluída, mas rateio diferente do solicitado | Retorna `allocation_not_persisted`. |
+| Consulta de confirmação falhou ou trouxe resposta inconclusiva | Retorna `write_verification_failed`, com o prazo seguro quando disponível. |
+| Outros campos relevantes diferem entre as consultas | Retorna `allocation_side_effect_detected`, com os campos observados; não faz compensação automática. |
+| Título confirmado, mas movimento vinculado divergente ou inconclusivo | Retorna `allocation_propagation_not_confirmed`, descrevendo o resultado parcial; não declara a tarefa inteira concluída. |
 
-Os dois erros de conferência informam `escrita_processada: true` e
-`retryable: false`. A escrita não é repetida automaticamente. Consulte o
-cadastro antes de decidir a próxima ação; repetir um payload mais completo
-não é uma correção para uma distribuição que a Omie não manteve.
+O retorno da conferência não repete a escrita automaticamente. Quando houve
+processamento, o diagnóstico mantém essa informação; consulte o estado atual
+antes de decidir qualquer nova gravação. Se a origem foi confirmada e somente
+a propagação continua pendente, não reenvie a definição do título para tentar
+forçar uma atualização do movimento. As consultas seguem o cache compartilhado,
+a invalidação por escrita e a janela remota de elegibilidade.
 
-Um lançamento de conta corrente pode apontar para o título de origem em
-`diversos.nCodLancCP` ou `diversos.nCodLancCR`. Se a conferência do movimento
-divergir, o diagnóstico orienta a consulta do título vinculado; o MCP não
-redireciona a escrita automaticamente para outro objeto. Ao corrigir o
-rateio de um título já pago ou recebido, confira também o movimento
-correspondente: a confirmação do título não garante propagação para uma
-baixa existente. Não cancele nem refaça pagamentos para corrigir rateio.
+> [!IMPORTANT]
+> O catálogo atual da Omie descontinuou em 21/10/2026 os métodos nativos
+> `IncluirDistribuicaoDepartamento`, `AlterarDistribuicaoDepartamento` e
+> `ExcluirDistribuicaoDepartamento`. As antigas tools MCP
+> `contas_receber.criar_rateio_departamento`, `.alterar_rateio_departamento`
+> e `.excluir_rateio_departamento` deixam de ser publicadas e não são atalhos
+> de execução. Use `contas_receber.definir_departamentos` com a lista completa;
+> para remover o rateio, envie `[]`.
 
-> [!NOTE]
-> `BARP` identifica uma conta a pagar importada por código de barras;
-> `BAXP` identifica o pagamento de uma conta a pagar. Essas origens e o status
-> financeiro não demonstram, por si, que o rateio será aceito ou ignorado.
-> O contrato de `AlterarLancCC` admite departamentos; não há garantia pública
-> de propagação entre o título e sua baixa já existente.
-
-Referências: [campos do título a pagar](https://app.omie.com.br/api/v1/financas/contapagar/),
-[origens dos movimentos financeiros](https://app.omie.com.br/api/v1/financas/mf/)
-e [rateio de lançamentos na conciliação](https://ajuda.omie.com.br/pt-BR/articles/5222014-atualizacao-em-lote-de-lancamentos-na-conciliacao-de-contas-correntes).
+Referências: [lançamentos de conta corrente](https://api.omie.com.br/docs/apis/financas/contacorrentelancamentos),
+[contas a pagar](https://api.omie.com.br/docs/apis/financas/contapagar),
+[contas a receber](https://api.omie.com.br/docs/apis/financas/contareceber),
+[descontinuações do catálogo](https://api.omie.com.br/docs/novidades)
+e [rateio na conciliação](https://ajuda.omie.com.br/pt-BR/articles/5222014-atualizacao-em-lote-de-lancamentos-na-conciliacao-de-contas-correntes).
 
 ### Conta corrente e período
 
@@ -469,7 +525,7 @@ e [webhooks](https://api.omie.com.br/docs/webhooks).
 | Tipos de documento | Catálogo sem paginação; consulta por código de até cinco caracteres. |
 | Departamentos, projetos, categorias e contas | Campos permitidos, limites e identificadores de cada ação. Paginação de cadastros aceita nomes simplificados ou nativos. |
 | Lançamentos e transferências | A fachada `omie.financeiro` converte campos semânticos para `cabecalho`, `detalhes` e `transferencia`; origem e destino diferentes. `transferencias.criar` exige a categoria de saída, fixa `cTipo` como `TRA` e cria uma única transferência por `IncluirLancCC`. |
-| Contas a pagar/receber | Preserva tipos de documento, baixas, conciliação, distribuição e lotes. Linha digitável somente em contas a pagar, texto não vazio de até 70 caracteres sem reformatação. |
+| Contas a pagar/receber | Edição parcial de títulos, conta prevista, baixas e lotes com contratos próprios. Rateio de registro existente usa `definir_departamentos`; não refaz baixa. Linha digitável somente em contas a pagar, texto não vazio de até 70 caracteres sem reformatação. |
 | Recebimentos e NF-e | Converte identificadores, etapa, itens e informações financeiras para os envelopes específicos da Omie. |
 
 ### Correção dos recebimentos de NF-e
@@ -563,5 +619,6 @@ incompleta ou inconsistente. Se não houver correspondência, inclui com
 
 Falhas locais, do cofre, de rede, de HTTP e de negócio geram erros sanitizados;
 o conteúdo de exceções externas e as credenciais não são devolvidos ao agente.
-Os testes cobrem os contratos das 72 operações e usam respostas simuladas: não
+Os testes cobrem os contratos nativos, os schemas publicados e os fluxos de rateio,
+com respostas simuladas: não
 criam títulos, pagamentos, notas nem cadastros em uma conta Omie real.

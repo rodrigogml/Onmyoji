@@ -7,7 +7,8 @@ from ..configuration import McpConfiguration
 from ...state_layout import SETUP_VERSION
 from .service import CACHE_READ_DESCRIPTION, OPERATIONS, OmieService
 from .publication import description, input_contract
-from .finance import OmieFinanceFacade
+from .exception import OmieError
+from .finance import OmieFinanceFacade, SPECS
 
 
 FINANCE_LEGACY_OPERATIONS = {
@@ -46,8 +47,21 @@ class OmieToolRegistry:
             raise ValueError("Os argumentos da tool Omie devem ser um objeto JSON.")
         profile = self._profile(profiles, arguments)
         if name.startswith("omie.financeiro."):
-            return OmieFinanceFacade(self.configuration).call(name, arguments, profile)
+            try:
+                result = OmieFinanceFacade(self.configuration).call(name, arguments, profile)
+            except OmieError as error:
+                error.details.setdefault("versao_mcp", SETUP_VERSION)
+                raise
+            return {**result, "versao_mcp": SETUP_VERSION}
         operation = name.removeprefix("omie.") if name.startswith("omie.") else ""
+        if operation in FINANCE_LEGACY_OPERATIONS:
+            alternatives = [spec.name for spec in SPECS if spec.legacy == operation]
+            if operation.startswith("receivables_department_allocation_"):
+                alternatives = ["omie.financeiro.contas_receber.definir_departamentos"]
+            raise OmieError(
+                "tool_unavailable", "Este nome financeiro não é publicado. Renove tools/list e use as operações omie.financeiro; nenhuma chamada foi enviada à Omie.",
+                {"retryable": False, "use_instead": alternatives, "versao_mcp": SETUP_VERSION},
+            )
         if profile and operation in OPERATIONS:
             return OmieService(self.configuration.root).invoke(profile, operation, arguments)
         raise ValueError("Tool Omie indisponível.")

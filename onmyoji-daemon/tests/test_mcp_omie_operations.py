@@ -1,4 +1,4 @@
-"""Exercita os 72 contratos Omie pelo serviço e pela publicação MCP."""
+"""Exercita contratos nativos Omie e a publicação semântica do MCP."""
 from __future__ import annotations
 
 from unittest.mock import Mock
@@ -10,6 +10,7 @@ from onmyoji_daemon.mcp.omie.service import OPERATIONS, OmieError, OmieService
 from onmyoji_daemon.mcp.omie.tools import OmieToolRegistry
 from onmyoji_daemon.mcp.omie.finance import SPECS
 from onmyoji_daemon.mcp.omie.tools import FINANCE_LEGACY_OPERATIONS
+from onmyoji_daemon.state_layout import SETUP_VERSION
 
 
 def operation_cases():
@@ -42,7 +43,6 @@ def operation_cases():
     add("payables_pay receivables_receive", "body", {"codigo_lancamento": 1, "codigo_conta_corrente": 2, "valor": 100, "data": "25/10/2026"})
     add("payables_payment_cancel receivables_receipt_cancel receivables_receipt_reconcile receivables_receipt_unreconcile", "body", {"codigo_baixa": 1})
     add("payables_create_batch payables_upsert_batch receivables_create_batch receivables_upsert_batch", "body", {"lote": 1, "titles": [title]})
-    add("receivables_department_allocation_create receivables_department_allocation_update receivables_department_allocation_delete", "body", {"chave_lancamento": 1, "distribuicao": [{"cCodDep": "D1", "nPerDep": 100}]})
     add("inbound_nfe_receipts_list", "params", {"nPagina": 1, "nRegistrosPorPagina": 10})
     add("inbound_nfe_receipts_get", "params", {"receipt_id": 1})
     add("inbound_nfe_receipts_delete", "body", {"receipt_id": 1})
@@ -61,9 +61,9 @@ CASES = operation_cases()
 WRITES = [name for name, spec in OPERATIONS.items() if spec[2]]
 
 
-def test_catalog_and_validation_cover_the_same_72_operations():
-    assert len(OPERATIONS) == 72
-    assert len(WRITES) == 46
+def test_catalog_and_validation_cover_the_same_69_native_operations():
+    assert len(OPERATIONS) == 69
+    assert len(WRITES) == 43
     assert set(CASES) == set(OPERATIONS) == set(OPERATION_NAMES)
 
 
@@ -189,7 +189,7 @@ def test_multiple_profiles_require_selection_and_expose_context():
     for tool in tools[1:]:
         assert "profile" in tool["input_schema"]["required"]
     with pytest.raises(ValueError, match="Perfil Omie indisponível"):
-        registry.call("omie.projects_get", {"params": {"codInt": "P1"}})
+        registry.call("omie.customers_get", {"params": {"codigo_cliente_omie": 1}})
 
 
 @pytest.mark.parametrize("operation", sorted(set(CASES) - FINANCE_LEGACY_OPERATIONS))
@@ -237,11 +237,81 @@ def test_invalid_family_contracts_prevent_configuration_vault_and_network(operat
         service.invoke("example", operation, {**arguments, "confirm": True})
 
 
-def test_registry_dispatches_selected_profile_without_legacy_scripts(tmp_path, monkeypatch):
+def test_registry_dispatches_selected_profile_for_a_published_operation(tmp_path, monkeypatch):
     profiles = [{"name": "a", "description": "ERP A"}, {"name": "b", "description": "ERP B"}]
-    invocation = Mock(return_value={"data": {"codigo": 1}})
+    invocation = Mock(return_value={"data": {"codigo_cliente_omie": 1}})
     monkeypatch.setattr(OmieService, "invoke", invocation)
     registry = OmieToolRegistry(Configuration(profiles, tmp_path))
-    arguments = {"profile": "b", "params": {"codInt": "P1"}}
-    assert registry.call("omie.projects_get", arguments) == {"data": {"codigo": 1}}
-    invocation.assert_called_once_with("b", "projects_get", arguments)
+    arguments = {"profile": "b", "params": {"codigo_cliente_omie": 1}}
+    assert registry.call("omie.customers_get", arguments)["data"] == {"codigo_cliente_omie": 1}
+    invocation.assert_called_once_with("b", "customers_get", arguments)
+
+
+@pytest.mark.parametrize("name,alternatives", [
+    ("omie.projects_get", {"omie.financeiro.projetos.consultar"}),
+    ("omie.payables_update", {"omie.financeiro.contas_pagar.alterar", "omie.financeiro.contas_pagar.definir_departamentos"}),
+    ("omie.account_transactions_get", {"omie.financeiro.lancamentos_conta.consultar"}),
+    ("omie.account_transactions_create", {"omie.financeiro.lancamentos_conta.criar"}),
+    ("omie.account_transactions_update", {"omie.financeiro.lancamentos_conta.alterar", "omie.financeiro.lancamentos_conta.definir_departamentos"}),
+    ("omie.receivables_department_allocation_create", {"omie.financeiro.contas_receber.definir_departamentos"}),
+    ("omie.receivables_department_allocation_update", {"omie.financeiro.contas_receber.definir_departamentos"}),
+    ("omie.receivables_department_allocation_delete", {"omie.financeiro.contas_receber.definir_departamentos"}),
+    ("omie.financeiro.contas_receber.criar_rateio_departamento", {"omie.financeiro.contas_receber.definir_departamentos"}),
+    ("omie.financeiro.contas_receber.alterar_rateio_departamento", {"omie.financeiro.contas_receber.definir_departamentos"}),
+    ("omie.financeiro.contas_receber.excluir_rateio_departamento", {"omie.financeiro.contas_receber.definir_departamentos"}),
+])
+def test_hidden_financial_tools_are_rejected_before_profile_vault_or_http(tmp_path, monkeypatch, name, alternatives):
+    """Nomes antigos não contornam o contrato publicado e orientam uma chamada válida."""
+    profile = Mock(side_effect=AssertionError("Não carregar perfil de API para um nome oculto."))
+    credential = Mock(side_effect=AssertionError("Não acessar o cofre para um nome oculto."))
+    request = Mock(side_effect=AssertionError("Não executar HTTP para um nome oculto."))
+    invocation = Mock(side_effect=AssertionError("Não invocar um contrato financeiro oculto."))
+    monkeypatch.setattr(OmieService, "_profile", profile)
+    monkeypatch.setattr(OmieService, "invoke", invocation)
+    monkeypatch.setattr(OmieService, "invoke_financial", invocation)
+    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.KeePassCredentialResolver.resolve", credential)
+    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.urlopen", request)
+    registry = OmieToolRegistry(Configuration([{"name": "empresa", "description": "ERP"}], tmp_path))
+    published = {tool["name"] for tool in registry.definitions()}
+    assert name not in published
+
+    with pytest.raises(OmieError) as error:
+        registry.call(name, {"confirm": True, "confirmar": True, "params": {}, "body": {}, "dados": {}})
+
+    assert error.value.code == "tool_unavailable"
+    assert error.value.details["retryable"] is False
+    assert error.value.details["versao_mcp"] == SETUP_VERSION
+    assert alternatives <= set(error.value.details["use_instead"])
+    assert set(error.value.details["use_instead"]) <= published
+    profile.assert_not_called()
+    credential.assert_not_called()
+    request.assert_not_called()
+    invocation.assert_not_called()
+
+
+def test_department_definitions_replace_the_retired_distribution_catalog():
+    registry = OmieToolRegistry(Configuration([{"name": "empresa", "description": "ERP"}]))
+    published = {tool["name"] for tool in registry.definitions()}
+    assert {
+        "omie.financeiro.lancamentos_conta.definir_departamentos",
+        "omie.financeiro.contas_pagar.definir_departamentos",
+        "omie.financeiro.contas_receber.definir_departamentos",
+    } <= published
+    retired = {
+        "receivables_department_allocation_create",
+        "receivables_department_allocation_update",
+        "receivables_department_allocation_delete",
+    }
+    assert not retired & set(OPERATIONS)
+    assert not retired & set(OPERATION_NAMES)
+    for operation in retired:
+        assert "omie." + operation not in published
+
+
+@pytest.mark.parametrize("operation", [
+    "receivables_department_allocation_create", "receivables_department_allocation_update", "receivables_department_allocation_delete",
+])
+def test_retired_distribution_operations_have_no_publishable_input_contract(operation):
+    from onmyoji_daemon.mcp.omie.publication import input_contract
+    with pytest.raises(ValueError, match="descontinuadas"):
+        input_contract(operation)

@@ -220,7 +220,9 @@ def test_old_cache_does_not_confirm_allocation_after_a_write_that_did_not_persis
         if method == "AlterarLancCC":
             departments[0] = []
             return {"cCodStatus": "0", "nCodLanc": 12}
-        return {"nCodLanc": 12, "departamentos": deepcopy(departments[0])}
+        return {"nCodLanc": 12, "cabecalho": {"nCodCC": 34, "dDtLanc": "15/11/2026", "nValorLanc": 1000},
+                "detalhes": {"cCodCateg": "2.01", "cTipo": "FAT"}, "departamentos": deepcopy(departments[0]),
+                "diversos": {"cOrigem": "EXTP", "nCodLancCP": 0, "nCodLancCR": 0}}
 
     calls = install_http(monkeypatch, clock, handler)
     invoke(tmp_path)
@@ -231,7 +233,7 @@ def test_old_cache_does_not_confirm_allocation_after_a_write_that_did_not_persis
         root = tmp_path
 
     with pytest.raises(OmieError) as error:
-        OmieFinanceFacade(Configuration()).call("omie.financeiro.lancamentos_conta.alterar", {
+        OmieFinanceFacade(Configuration()).call("omie.financeiro.lancamentos_conta.definir_departamentos", {
             "confirmar": True, "dados": {"id": 12, "departamentos": [{"codigo": "D1", "percentual": 100}]},
         }, "synthetic")
 
@@ -242,10 +244,20 @@ def test_old_cache_does_not_confirm_allocation_after_a_write_that_did_not_persis
 
 
 def test_a_concurrent_write_makes_allocation_confirmation_inconclusive(tmp_path, monkeypatch, clock):
-    def handler(method, _params):
+    allocation_written = [False]
+
+    def handler(method, params):
         if method == "ConsultaLancCC":
+            if not allocation_written[0]:
+                return {"nCodLanc": 12, "cabecalho": {"nCodCC": 34, "dDtLanc": "15/11/2026", "nValorLanc": 1000},
+                        "detalhes": {"cCodCateg": "2.01", "cTipo": "FAT"}, "departamentos": [],
+                        "diversos": {"cOrigem": "EXTP", "nCodLancCP": 0, "nCodLancCR": 0}}
             invoke(tmp_path, "AlterarLancCC", {"nCodLanc": 12, "detalhes": {"cObs": "Another correction"}})
-            return {"nCodLanc": 12, "departamentos": [{"cCodDep": "D1", "nPerDep": 100}]}
+            return {"nCodLanc": 12, "cabecalho": {"nCodCC": 34, "dDtLanc": "15/11/2026", "nValorLanc": 1000},
+                    "detalhes": {"cCodCateg": "2.01", "cTipo": "FAT"}, "departamentos": [{"cCodDep": "D1", "nPerDep": 100}],
+                    "diversos": {"cOrigem": "EXTP", "nCodLancCP": 0, "nCodLancCR": 0}}
+        if "departamentos" in params:
+            allocation_written[0] = True
         return {"nCodLanc": 12, "cCodStatus": "0"}
 
     calls = install_http(monkeypatch, clock, handler)
@@ -256,14 +268,14 @@ def test_a_concurrent_write_makes_allocation_confirmation_inconclusive(tmp_path,
         root = tmp_path
 
     with pytest.raises(OmieError) as error:
-        OmieFinanceFacade(Configuration()).call("omie.financeiro.lancamentos_conta.alterar", {
+        OmieFinanceFacade(Configuration()).call("omie.financeiro.lancamentos_conta.definir_departamentos", {
             "confirmar": True, "dados": {"id": 12, "departamentos": [{"codigo": "D1", "percentual": 100}]},
         }, "synthetic")
 
     assert error.value.code == "write_verification_failed"
     assert error.value.details["cause_code"] == "omie_read_invalidated"
     assert error.value.details["escrita_processada"] is True
-    assert [call[0] for call in calls] == ["AlterarLancCC", "ConsultaLancCC", "AlterarLancCC"]
+    assert [call[0] for call in calls] == ["ConsultaLancCC", "AlterarLancCC", "ConsultaLancCC", "AlterarLancCC"]
     assert ResponseCache(tmp_path, APP_KEY).get("account_transactions", "ConsultaLancCC", {"nCodLanc": 12}) is None
 
 

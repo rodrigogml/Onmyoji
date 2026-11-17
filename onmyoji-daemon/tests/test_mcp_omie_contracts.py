@@ -244,8 +244,14 @@ class OmieContractRegressionTests(unittest.TestCase):
         self.assertEqual(title["codigo_lancamento_integracao"], "P-1")
         payment = build_params("receivables.receive", {"body": {"codigo_lancamento": 1, "codigo_conta_corrente": 2, "valor": 100, "data": "20/08/2026"}})
         self.assertEqual(payment["codigo_conta_corrente"], 2)
-        allocation = build_params("receivables.department-allocation.create", {"body": {"chave_lancamento": 1, "distribuicao": [{"cCodDep": "D1", "nPerDep": 100}]}})
-        self.assertEqual(allocation["chave_lancamento"], 1)
+        allocation = build_params("receivables.update", {"body": {"codigo_lancamento_omie": 1, "distribuicao": [{"cCodDep": "D1", "nPerDep": 100}]}})
+        self.assertEqual(allocation, {"codigo_lancamento_omie": 1, "distribuicao": [{"cCodDep": "D1", "nPerDep": 100}]})
+
+    def test_retired_department_methods_cannot_build_native_requests(self):
+        for action in ("create", "update", "delete"):
+            with self.subTest(action=action), self.assertRaises(OmieError) as error:
+                build_params("receivables.department-allocation." + action, {"body": {"chave_lancamento": 1, "distribuicao": []}})
+            self.assertEqual(error.exception.code, "unsupported_operation")
 
     def test_inbound_nfe_receipt_update_financial_data_and_allocation(self):
         body = {

@@ -41,6 +41,12 @@ def test_stdio_publishes_omie_and_rejects_invalid_call_without_vault(tmp_path):
                 assert "filtros.id" in projects.description
                 assert "Contrato MCP Omie" in projects.description
                 assert projects.input_schema["properties"]["atualizar_cache"]["type"] == "boolean"
+                names = {tool.name for tool in tools}
+                assert {f"omie.financeiro.{resource}.definir_departamentos" for resource in ("lancamentos_conta", "contas_pagar", "contas_receber")} <= names
+                assert "omie.financeiro.contas_receber.alterar_rateio_departamento" not in names
+                title = next(tool for tool in tools if tool.name == "omie.financeiro.contas_pagar.alterar")
+                assert "departamentos" not in title.input_schema["properties"]["dados"]["properties"]
+                assert "conta_corrente_id" in title.input_schema["properties"]["dados"]["properties"]
                 result = await session.call_tool("omie.document_types_get", {"params": {"codigo": 123}})
                 assert result.is_error is True
                 assert "nonexistent" not in str(result.content)
@@ -56,6 +62,17 @@ def test_stdio_publishes_omie_and_rejects_invalid_call_without_vault(tmp_path):
                 assert result.is_error is True
                 assert "dados.observacao" in str(result.content)
                 assert "use_instead" in str(result.content)
+                assert "nonexistent" not in str(result.content)
+                result = await session.call_tool("omie.financeiro.contas_pagar.alterar", {
+                    "dados": {"id": 12, "departamentos": [{"codigo": "D1", "percentual": 100}]}, "confirmar": True,
+                })
+                assert result.is_error is True
+                assert "omie.financeiro.contas_pagar.definir_departamentos" in str(result.content)
+                assert "versao_mcp" in str(result.content)
+                assert "nonexistent" not in str(result.content)
+                result = await session.call_tool("omie.payables_update", {"body": {"codigo_lancamento_omie": 12}, "confirm": True})
+                assert result.is_error is True
+                assert "tool_unavailable" in str(result.content)
                 assert "nonexistent" not in str(result.content)
 
     asyncio.run(check())

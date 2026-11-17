@@ -12,6 +12,7 @@ from math import isfinite
 from typing import Any, Mapping
 
 from .allocation import verify_department_allocation
+from .department_allocation import define_departments
 from .contracts import DIRECT_DOCUMENT_TYPES, build_params, normalize_account_departments, normalize_percentage_departments
 from .exception import OmieError
 from .service import CACHE_READ_DESCRIPTION, OmieService
@@ -95,9 +96,9 @@ SPECS += [
     FinanceSpec("omie.financeiro.contas_receber.cancelar_recebimento", "receivables_receipt_cancel", "Cancela um recebimento pelo identificador da baixa.", True, kind="receipt"),
     FinanceSpec("omie.financeiro.contas_receber.conciliar_recebimento", "receivables_receipt_reconcile", "Concilia um recebimento pelo identificador da baixa.", True, kind="receipt"),
     FinanceSpec("omie.financeiro.contas_receber.desconciliar_recebimento", "receivables_receipt_unreconcile", "Desconcilia um recebimento pelo identificador da baixa.", True, kind="receipt"),
-    FinanceSpec("omie.financeiro.contas_receber.criar_rateio_departamento", "receivables_department_allocation_create", "Cria o rateio por departamento de uma conta a receber.", True, kind="allocation"),
-    FinanceSpec("omie.financeiro.contas_receber.alterar_rateio_departamento", "receivables_department_allocation_update", "Altera o rateio por departamento de uma conta a receber.", True, kind="allocation"),
-    FinanceSpec("omie.financeiro.contas_receber.excluir_rateio_departamento", "receivables_department_allocation_delete", "Exclui o rateio por departamento de uma conta a receber.", True, kind="allocation"),
+    FinanceSpec("omie.financeiro.lancamentos_conta.definir_departamentos", "account_transactions_update", "Substitui o rateio de um lançamento direto e retorna os departamentos efetivamente consultados. Para baixa vinculada a título, orienta o método do título antes de escrever.", True, kind="department_set"),
+    FinanceSpec("omie.financeiro.contas_pagar.definir_departamentos", "payables_update", "Substitui o rateio de uma conta a pagar, inclusive paga, sem alterar o pagamento. Pode conferir também um lançamento vinculado com lancamento_conta_id.", True, kind="department_set"),
+    FinanceSpec("omie.financeiro.contas_receber.definir_departamentos", "receivables_update", "Substitui o rateio de uma conta a receber sem refazer o recebimento. Pode conferir também um lançamento vinculado com lancamento_conta_id.", True, kind="department_set"),
     FinanceSpec("omie.financeiro.lancamentos_conta.consultar", "account_transactions_get", "Consulta um lançamento de conta corrente.", kind="get"),
     FinanceSpec("omie.financeiro.lancamentos_conta.criar", "account_transactions_create", "Cria um lançamento direto de conta corrente.", True, kind="transaction"),
     FinanceSpec("omie.financeiro.lancamentos_conta.alterar", "account_transactions_update", "Altera um lançamento direto de conta corrente.", True, kind="transaction"),
@@ -130,12 +131,11 @@ TITLE_NAMES = {
     "cliente_fornecedor_id": "codigo_cliente_fornecedor", "cliente_fornecedor_codigo_integracao": "codigo_cliente_fornecedor_integracao",
     "data_vencimento": "data_vencimento", "valor": "valor_documento", "categoria_codigo": "codigo_categoria",
     "projeto_id": "codigo_projeto", "observacao": "observacao", "tipo_documento": "codigo_tipo_documento",
-    "numero_documento": "numero_documento", "departamentos": "distribuicao",
+    "numero_documento": "numero_documento", "conta_corrente_id": "id_conta_corrente", "departamentos": "distribuicao",
 }
 TITLE_REQUIRED = ("codigo_integracao", "cliente_fornecedor_id", "data_vencimento", "valor", "categoria_codigo")
 PAYMENT_NAMES = {"id": "codigo_lancamento", "codigo_integracao": "codigo_lancamento_integracao", "conta_corrente_id": "codigo_conta_corrente", "valor": "valor", "data": "data", "observacao": "observacao"}
 TRANSFER_NAMES = {"codigo_integracao": "integration_id", "conta_origem_id": "source_account_id", "conta_destino_id": "destination_account_id", "data": "date", "valor": "amount", "categoria_codigo": "category_code", "numero_documento": "document_number", "observacao": "note", "projeto_id": "project_id", "departamentos": "departments"}
-ALLOCATION_NAMES = {"id": "codigo_lancamento_omie", "chave": "chave_lancamento", "distribuicao": "distribuicao"}
 
 
 def _invalid(field: str, message: str, *, use_instead: list[str] | None = None) -> None:
@@ -205,7 +205,19 @@ def _identifier_params(spec: FinanceSpec, data: Mapping[str, Any], field: str) -
 
 
 def _transaction_names(spec: FinanceSpec) -> dict[str, str]:
-    return {key: value for key, value in TRANSACTION_NAMES.items() if key != "id" or spec.legacy.endswith("_update")}
+    return {key: value for key, value in TRANSACTION_NAMES.items()
+            if (key != "id" or spec.legacy.endswith("_update"))
+            and (key != "departamentos" or not spec.legacy.endswith("_update"))}
+
+
+def _rateio_tool(spec: FinanceSpec) -> str:
+    resource = spec.name.split(".")[2]
+    return f"omie.financeiro.{resource}.definir_departamentos"
+
+
+def _separate_allocation(spec: FinanceSpec, data: Mapping[str, Any], *, field: str = "dados.departamentos") -> None:
+    if "departamentos" in data:
+        _invalid(field, "rateio de registros existentes tem operação própria; use " + _rateio_tool(spec) + " com identificador e departamentos. Nenhuma alteração foi enviada.", use_instead=[_rateio_tool(spec)])
 
 
 def _transaction_required(spec: FinanceSpec) -> tuple[str, ...]:
@@ -320,22 +332,40 @@ def _schema(spec: FinanceSpec, profiles: list[dict[str, str]]) -> dict[str, Any]
             "projeto_id": {"type": "integer", "minimum": 1}, "observacao": {"type": "string"}, "tipo_documento": {"type": "string", "minLength": 1}, "numero_documento": {"type": "string", "maxLength": 20},
             "lote": {"type": "integer", "minimum": 1}, "titulos": {"type": "array", "minItems": 1, "items": {"type": "object"}},
             "conta_corrente_id": {"type": "integer", "minimum": 1}, "data": date, "id_baixa": {"type": "integer", "minimum": 1},
-            "chave": {"type": "integer", "minimum": 1}, "distribuicao": {"type": "array", "minItems": 1, "items": {"type": "object"}},
             "cliente_id": {"type": "integer", "minimum": 1}, "departamentos": _department_schema(),
             "conta_origem_id": {"type": "integer", "minimum": 1}, "conta_destino_id": {"type": "integer", "minimum": 1},
         }
         data_schema: dict[str, Any] = {"type": "object", "properties": data_properties, "description": "Dados semânticos da operação; campos fora do contrato são recusados.", "additionalProperties": False}
         fields = {
             "title": TITLE_NAMES, "payment": PAYMENT_NAMES, "receipt": {"id_baixa": "codigo_baixa"},
-            "transfer": TRANSFER_NAMES, "batch": {"lote": "lote", "titulos": "titles"}, "allocation": ALLOCATION_NAMES,
+            "transfer": TRANSFER_NAMES, "batch": {"lote": "lote", "titulos": "titles"},
         }.get(spec.kind)
         if fields is not None:
             data_schema["properties"] = {field: data_properties[field] for field in fields}
+        if spec.kind == "title" and spec.legacy.endswith("_update"):
+            data_schema["properties"].pop("departamentos")
+        if spec.kind == "title":
+            data_schema["properties"]["conta_corrente_id"] = {
+                "type": "integer", "minimum": 1,
+                "description": "Conta prevista do título (id_conta_corrente). Não altera a conta de uma baixa já executada.",
+            }
+        if spec.kind == "department_set":
+            identifiers = _identifier_schema(spec)
+            data_schema = {
+                "type": "object", "properties": {**identifiers["properties"], "departamentos": _department_schema()},
+                "required": ["departamentos"], "oneOf": identifiers["oneOf"], "additionalProperties": False,
+                "description": "Substituição integral do rateio; [] remove todos os departamentos. Envie somente o identificador e o rateio desejado.",
+            }
+            if spec.legacy != "account_transactions_update":
+                data_schema["properties"]["lancamento_conta_id"] = {
+                    "type": "integer", "minimum": 1,
+                    "description": "Lançamento de conta corrente a conferir depois da alteração do título. O vínculo é validado antes da escrita. Sem esse campo, a confirmação abrange somente o título.",
+                }
         if spec.kind == "title" and spec.legacy.endswith("_create"):
             data_schema["required"] = list(TITLE_REQUIRED)
         elif spec.kind == "title":
             data_schema["anyOf"] = [{"required": ["id"]}, {"required": ["codigo_integracao"]}]
-            data_schema["allOf"] = [{"anyOf": [{"required": [field]} for field in TITLE_NAMES if field not in {"id", "codigo_integracao"}]}]
+            data_schema["allOf"] = [{"anyOf": [{"required": [field]} for field in data_schema["properties"] if field not in {"id", "codigo_integracao"}]}]
         elif spec.kind == "payment":
             data_schema["required"] = ["conta_corrente_id", "valor", "data"]
             data_schema["anyOf"] = [{"required": ["id"]}, {"required": ["codigo_integracao"]}]
@@ -343,12 +373,12 @@ def _schema(spec: FinanceSpec, profiles: list[dict[str, str]]) -> dict[str, Any]
         elif spec.kind == "transfer": data_schema["required"] = ["codigo_integracao", "conta_origem_id", "conta_destino_id", "data", "valor", "categoria_codigo"]
         elif spec.kind == "batch":
             data_schema["required"] = ["lote", "titulos"]
-            item = {"type": "object", "properties": {field: data_properties[field] for field in TITLE_NAMES}, "additionalProperties": False}
+            item = {"type": "object", "properties": {field: data_properties[field] for field in TITLE_NAMES if field != "departamentos"}, "additionalProperties": False}
             if spec.legacy.endswith("_create_batch"):
                 item["required"] = list(TITLE_REQUIRED)
             else:
                 item["anyOf"] = [{"required": ["id"]}, {"required": ["codigo_integracao"]}]
-                item["allOf"] = [{"anyOf": [{"required": [field]} for field in TITLE_NAMES if field not in {"id", "codigo_integracao"}]}]
+                item["allOf"] = [{"anyOf": [{"required": [field]} for field in item["properties"] if field not in {"id", "codigo_integracao"}]}]
             data_schema["properties"]["titulos"] = {"type": "array", "minItems": 1, "items": item}
         elif spec.kind == "get":
             data_schema = _identifier_schema(spec)
@@ -409,7 +439,7 @@ def _translate_title(data: Mapping[str, Any], *, create: bool) -> dict[str, Any]
             _invalid("dados", "informe id ou codigo_integracao para identificar o título.")
         if not set(data) - {"id", "codigo_integracao"}:
             _invalid("dados", "informe ao menos um campo a alterar além do identificador.")
-    for field in ("id", "cliente_fornecedor_id", "projeto_id"):
+    for field in ("id", "cliente_fornecedor_id", "projeto_id", "conta_corrente_id"):
         if field in data:
             _positive_id(data[field], f"dados.{field}")
     for field in ("codigo_integracao", "cliente_fornecedor_codigo_integracao", "categoria_codigo", "tipo_documento", "numero_documento"):
@@ -446,11 +476,20 @@ class OmieFinanceFacade:
                 description += " Em dados, codigo é o ID numérico (use filtros.id), codInt é o código de integração e nome é o nome do projeto. Textos como STRB15 podem estar somente em nome; use filtros.codigo_integracao apenas quando o valor estiver confirmado em codInt."
             if spec.legacy == "account_transactions_create":
                 description += " Exige codigo_integracao (texto de até 20 caracteres), conta_corrente_id, data, valor, categoria_codigo e tipo_documento em dados. O id é gerado pela Omie."
-            if spec.legacy == "account_transactions_update":
-                description += " Aceita alteração parcial: informe id ou codigo_integracao e somente os campos a alterar. Para rateio, bastam identificador e departamentos; não reenvie conta, data, valor ou tipo_documento que não pretende alterar."
-            if spec.legacy in {"account_transactions_update", "payables_update", "receivables_update"}:
-                description += " Quando departamentos é enviado, o MCP consulta o cadastro após a escrita e só confirma persistência em verificacao.rateio_confirmado. Se o rateio divergir ou a consulta falhar, retorna erro sem repetir a escrita; não cancele nem repita uma baixa para alterar classificação."
-            if spec.kind in {"transaction", "transfer", "title"}:
+            if spec.kind == "transaction" and spec.legacy == "account_transactions_update":
+                description += " Aceita alteração parcial: informe id ou codigo_integracao e somente os campos a alterar. Não reenvie conta, data, valor ou tipo_documento que não pretende alterar."
+            general_update = spec.kind in {"transaction", "title"} and spec.legacy.endswith("_update")
+            if general_update:
+                description += " Para trocar departamentos, use " + _rateio_tool(spec) + "; esta alteração geral não aceita rateio."
+            if spec.kind == "title" and spec.legacy.endswith("_upsert"):
+                description += " Para definir somente o rateio de um título existente, prefira " + _rateio_tool(spec) + ". A conferência desta inclusão/alteração abrange o título, sem confirmar propagação para baixas."
+            if spec.kind == "department_set":
+                description += " Retorna alvo, departamentos observados e verificacao, nunca somente o código de processamento. Departamentos são uma substituição completa, não uma inclusão incremental. Não cancele nem refaça uma baixa."
+                if spec.legacy == "account_transactions_update":
+                    description += " Para BAXP/BAXR, prefira a tool definir_departamentos do título de origem; a recusa fornece o ID e os argumentos quando o vínculo é conhecido."
+                else:
+                    description += " Informe lancamento_conta_id quando o objetivo também abranger uma baixa já existente; sem ele, a confirmação cobre apenas o título."
+            if spec.kind in {"transaction", "transfer", "title", "department_set"} and not general_update:
                 description += (
                     ' Para dados.departamentos use somente [{"codigo":"8532594895","percentual":100}]. '
                     'codigo é TEXTO mesmo quando contém apenas dígitos (sempre entre aspas); '
@@ -465,8 +504,19 @@ class OmieFinanceFacade:
 
     def call(self, name: str, arguments: Mapping[str, Any], profile: str) -> dict[str, Any]:
         spec = BY_NAME.get(name)
+        if name in {f"omie.financeiro.contas_receber.{action}_rateio_departamento" for action in ("criar", "alterar", "excluir")}:
+            raise OmieError(
+                "tool_unavailable", "Os métodos nativos antigos de distribuição foram descontinuados. Use omie.financeiro.contas_receber.definir_departamentos com a lista completa desejada; [] remove o rateio.",
+                {"retryable": False, "use_instead": ["omie.financeiro.contas_receber.definir_departamentos"]},
+            )
         if spec is None: raise ValueError("Tool financeira Omie indisponível.")
         if not isinstance(arguments, Mapping): raise OmieError("invalid_parameter", "Os argumentos devem ser um objeto JSON.")
+        if "incluir_dados_omie" in arguments and type(arguments["incluir_dados_omie"]) is not bool:
+            _invalid("incluir_dados_omie", "deve ser booleano.")
+        if spec.writes:
+            unknown = set(arguments) - {"profile", "dados", "confirmar", "incluir_dados_omie", "atualizar_cache"}
+            if unknown:
+                _invalid(sorted(unknown)[0], "não pertence ao contrato desta escrita; campos do objeto devem estar em dados.")
         refresh = arguments.get("atualizar_cache", False)
         if type(refresh) is not bool or (spec.writes and "atualizar_cache" in arguments):
             _invalid("atualizar_cache", "deve ser booleano e pertence somente às leituras.")
@@ -478,12 +528,19 @@ class OmieFinanceFacade:
             legacy = {**legacy, "params": {**legacy["params"], "nPagina": 1, "nRegPorPagina": 50}}
         service = OmieService(self.configuration.root)
         verification = None
+        verified_record = None
+        if spec.kind == "department_set":
+            return define_departments(
+                service, profile, spec.legacy.rsplit("_", 1)[0], legacy["identifier"], legacy["departments"],
+                movement_id=legacy.get("movement_id"), include_native=arguments.get("incluir_dados_omie") is True,
+            )
         if spec.writes:
-            verify_allocation = spec.legacy in {"account_transactions_update", "payables_update", "receivables_update"} and "departamentos" in _object(arguments, "dados")
+            verify_allocation = spec.kind in {"transaction", "title", "transfer"} and "departamentos" in _object(arguments, "dados")
             parameters = build_params(spec.legacy, legacy) if verify_allocation else None
             response = service.invoke_financial(profile, spec.legacy, legacy, writes=True)
             if parameters is not None:
-                verification = verify_department_allocation(service, profile, spec.legacy, parameters)
+                verification = verify_department_allocation(service, profile, spec.legacy, parameters, include_observed=True)
+                verified_record = verification.pop("registro")
         else:
             response = service.invoke_financial(profile, spec.legacy, legacy, writes=False)
             if spec.collect_pages or account is not None:
@@ -492,7 +549,10 @@ class OmieFinanceFacade:
                 response = self._filter_account_transactions(response, account, arguments)
         result = self._normalize(spec, response, arguments.get("incluir_dados_omie") is True)
         if verification is not None:
+            result["departamentos"] = verification.pop("departamentos")
             result["verificacao"] = verification
+            if arguments.get("incluir_dados_omie") is True:
+                result["dados_omie"] = {"requisicao": parameters, "processamento": response, "registro": verified_record}
         if not spec.writes and (metadata := service.cache_metadata()) is not None:
             result["cache"] = metadata
         return result
@@ -501,6 +561,22 @@ class OmieFinanceFacade:
         if spec.writes:
             if arguments.get("confirmar") is not True: raise OmieError("confirmation_required", "Operações de escrita exigem confirmar=true.", {"retryable": False})
             data = _object(arguments, "dados")
+            if spec.kind == "department_set":
+                allowed = {"id", "codigo_integracao", "departamentos"}
+                if spec.legacy != "account_transactions_update":
+                    allowed.add("lancamento_conta_id")
+                unknown = set(data) - allowed
+                if unknown:
+                    _invalid(f"dados.{sorted(unknown)[0]}", "esta operação altera somente o rateio; não envie outros dados do lançamento ou pagamento.")
+                if "departamentos" not in data:
+                    _invalid("dados.departamentos", "informe a lista completa desejada; [] solicita remover o rateio.")
+                identifier = _identifier_params(spec, {key: value for key, value in data.items() if key in {"id", "codigo_integracao"}}, "dados")
+                departments = normalize_percentage_departments(data["departamentos"])
+                if "lancamento_conta_id" in data:
+                    _positive_id(data["lancamento_conta_id"], "dados.lancamento_conta_id")
+                return {"identifier": identifier, "departments": departments, **({"movement_id": data["lancamento_conta_id"]} if "lancamento_conta_id" in data else {})}
+            if spec.kind in {"transaction", "title"} and spec.legacy.endswith("_update"):
+                _separate_allocation(spec, data)
             if spec.kind == "get":
                 return {"params": _identifier_params(spec, data, "dados")}
             if spec.kind == "title":
@@ -510,11 +586,12 @@ class OmieFinanceFacade:
                 titles = data.get("titulos")
                 if type(data.get("lote")) is not int or not isinstance(titles, list) or not titles: _invalid("dados", "exige lote e titulos não vazios.")
                 if not all(isinstance(item, Mapping) for item in titles): _invalid("dados.titulos", "deve conter apenas objetos JSON.")
+                for index, item in enumerate(titles):
+                    _separate_allocation(spec, item, field=f"dados.titulos[{index}].departamentos")
                 return {"body": {"lote": data["lote"], "titles": [_translate_title(item, create=spec.legacy.endswith("_create_batch")) for item in titles]}}
             if spec.kind == "payment":
                 return {"body": self._map(data, PAYMENT_NAMES)}
             if spec.kind == "receipt": return {"body": self._map(data, {"id_baixa": "codigo_baixa"})}
-            if spec.kind == "allocation": return {"body": self._map(data, ALLOCATION_NAMES)}
             if spec.kind == "transaction":
                 return {"body": _transaction_body(spec, data)}
             if spec.kind == "transfer":

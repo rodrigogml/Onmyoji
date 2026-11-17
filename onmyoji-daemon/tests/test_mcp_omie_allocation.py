@@ -16,9 +16,15 @@ AMOUNT = [{"cCodDep": "000123", "nValDep": 1000}]
 
 
 @pytest.mark.parametrize("operation,read_operation,field,id_key,integration_key", [
+    ("account_transactions_create", "account_transactions_get", "departamentos", "nCodLanc", "cCodIntLanc"),
     ("account_transactions_update", "account_transactions_get", "departamentos", "nCodLanc", "cCodIntLanc"),
+    ("account_transfers_create", "account_transactions_get", "departamentos", "nCodLanc", "cCodIntLanc"),
+    ("payables_create", "payables_get", "distribuicao", "codigo_lancamento_omie", "codigo_lancamento_integracao"),
     ("payables_update", "payables_get", "distribuicao", "codigo_lancamento_omie", "codigo_lancamento_integracao"),
+    ("payables_upsert", "payables_get", "distribuicao", "codigo_lancamento_omie", "codigo_lancamento_integracao"),
+    ("receivables_create", "receivables_get", "distribuicao", "codigo_lancamento_omie", "codigo_lancamento_integracao"),
     ("receivables_update", "receivables_get", "distribuicao", "codigo_lancamento_omie", "codigo_lancamento_integracao"),
+    ("receivables_upsert", "receivables_get", "distribuicao", "codigo_lancamento_omie", "codigo_lancamento_integracao"),
 ])
 @pytest.mark.parametrize("by_integration", [False, True])
 def test_verification_reads_the_same_object_once_and_prefers_omie_id(operation, read_operation, field, id_key, integration_key, by_integration):
@@ -100,13 +106,17 @@ def test_invalid_total_prevents_confirming_paired_percentage_and_amount(total):
     assert error.value.details["reason"] == "invalid_response_allocation"
 
 
-@pytest.mark.parametrize("expected,actual", [
-    (PERCENTAGE, []), ([], PERCENTAGE),
-    (PERCENTAGE, [{"cCodDep": "123", "nPerDep": 100}]),
-    (PERCENTAGE, [{"cCodDep": "000123", "nPerDep": 99.999998}]),
-    (AMOUNT, [{"cCodDep": "000123", "nValDep": 999.98}]),
+@pytest.mark.parametrize("expected,actual,requested,observed", [
+    (PERCENTAGE, [], [{"codigo": "000123", "percentual": 100}], []),
+    ([], PERCENTAGE, [], [{"codigo": "000123", "percentual": 100}]),
+    (PERCENTAGE, [{"cCodDep": "123", "nPerDep": 100}],
+     [{"codigo": "000123", "percentual": 100}], [{"codigo": "123", "percentual": 100}]),
+    (PERCENTAGE, [{"cCodDep": "000123", "nPerDep": 99.999998}],
+     [{"codigo": "000123", "percentual": 100}], [{"codigo": "000123", "percentual": 99.999998}]),
+    (AMOUNT, [{"cCodDep": "000123", "nValDep": 999.98}],
+     [{"codigo": "000123", "valor": 1000}], [{"codigo": "000123", "valor": 999.98}]),
 ])
-def test_different_valid_allocation_is_not_reported_as_success(expected, actual):
+def test_different_valid_allocation_is_not_reported_as_success(expected, actual, requested, observed):
     service = Mock()
     service.invoke_financial.return_value = {"nCodLanc": 12, "departamentos": actual}
     with pytest.raises(OmieError) as error:
@@ -117,6 +127,7 @@ def test_different_valid_allocation_is_not_reported_as_success(expected, actual)
     assert error.value.details == {
         "operation": "account_transactions_update", "field": "dados.departamentos",
         "retryable": False, "escrita_processada": True, "reason": "allocation_mismatch",
+        "departamentos_solicitados": requested, "departamentos_observados": observed,
     }
     service.invoke_financial.assert_called_once()
 
@@ -137,7 +148,7 @@ def test_mismatch_explains_the_linked_title_without_writing_it(native_key, publi
     assert error.value.code == "allocation_not_persisted"
     assert error.value.details[public_key] == 9000000333
     assert error.value.details["origem"] == "BAXP"
-    assert error.value.details["suggested_tool"] == f"omie.financeiro.{resource}.alterar"
+    assert error.value.details["suggested_tool"] == f"omie.financeiro.{resource}.definir_departamentos"
     assert error.value.details["suggested_title_id"] == 9000000333
     assert "dados.id=9000000333" in str(error.value)
     assert "Não cancele nem repita a baixa" in str(error.value)
@@ -169,7 +180,7 @@ def test_invalid_source_metadata_does_not_create_title_guidance(source):
         verify_department_allocation(service, "empresa", "account_transactions_update", {
             "nCodLanc": 12, "departamentos": PERCENTAGE,
         })
-    assert set(error.value.details) == {"operation", "field", "retryable", "escrita_processada", "reason"}
+    assert set(error.value.details) == {"operation", "field", "retryable", "escrita_processada", "reason", "departamentos_solicitados", "departamentos_observados"}
     assert "sensitive" not in str(error.value.as_dict())
 
 
@@ -335,3 +346,70 @@ def test_unverifiable_write_parameters_do_not_make_a_query(operation, parameters
     assert error.value.code == "write_verification_failed"
     assert error.value.details["reason"] == reason
     service.invoke_financial.assert_not_called()
+
+
+@pytest.mark.parametrize("expected,actual,observed", [
+    (PERCENTAGE, [{"cCodDep": "000123", "nPerDep": "99.999999", "cDesDep": "Nome do ERP"}],
+     [{"codigo": "000123", "percentual": 99.999999}]),
+    (AMOUNT, [{"cCodDep": "000123", "nValDep": "1000.00"}],
+     [{"codigo": "000123", "valor": 1000.0}]),
+    (PERCENTAGE, [{"cCodDep": "000123", "nPerDep": 100, "nValDep": 1000}],
+     [{"codigo": "000123", "percentual": 100.0, "valor": 1000.0}]),
+    (PERCENTAGE, [{"cCodDep": "000123", "nPerDep": 100, "nValDep": 0}],
+     [{"codigo": "000123", "percentual": 100.0, "valor": 0.0}]),
+    ([], [], []),
+])
+def test_observed_result_contains_the_consulted_allocation_and_internal_record(expected, actual, observed):
+    """O resumo vem do GET, inclusive diferenças aceitas pela tolerância; não ecoa o pedido."""
+    record = {"nCodLanc": 12, "departamentos": actual, "detalhes": {"cObs": "Dado interno do ERP"}}
+    original = deepcopy(record)
+    service = Mock()
+    service.invoke_financial.return_value = record
+
+    result = verify_department_allocation(service, "empresa", "account_transactions_update", {
+        "nCodLanc": 12, "departamentos": expected,
+    }, include_observed=True)
+
+    assert result == {"rateio_confirmado": True, "departamentos": observed, "registro": original}
+    assert result["registro"] is not record
+    assert record == original
+    assert all(type(value) is float for item in result["departamentos"] for key, value in item.items() if key != "codigo")
+    service.invoke_financial.assert_called_once_with("empresa", "account_transactions_get", {"params": {"nCodLanc": 12}}, writes=False)
+
+
+def test_mismatch_details_expose_only_minimal_allocation_values():
+    service = Mock()
+    service.invoke_financial.return_value = {
+        "nCodLanc": 12, "departamentos": [{"cCodDep": "D2", "nPerDep": 100, "nValDep": 1000, "cDesDep": "SECRET"}],
+        "detalhes": {"cObs": "SECRET"}, "private": "SECRET",
+    }
+
+    with pytest.raises(OmieError) as error:
+        verify_department_allocation(service, "empresa", "account_transactions_update", {
+            "nCodLanc": 12, "departamentos": PERCENTAGE,
+        }, include_observed=True)
+
+    assert error.value.details["departamentos_solicitados"] == [{"codigo": "000123", "percentual": 100.0}]
+    assert error.value.details["departamentos_observados"] == [{"codigo": "D2", "percentual": 100.0, "valor": 1000.0}]
+    assert "registro" not in error.value.details
+    assert "SECRET" not in str(error.value.as_dict())
+
+
+@pytest.mark.parametrize("expected,actual,include_observed,reason", [
+    ([{"cCodDep": "000123", "nValDep": "1e400"}], AMOUNT, False, "invalid_expected_allocation"),
+    (AMOUNT, [{"cCodDep": "000123", "nValDep": "1e400"}], False, "invalid_response_allocation"),
+    (PERCENTAGE, [{"cCodDep": "000123", "nPerDep": 100, "nValDep": "1e400"}], True, "invalid_response_allocation"),
+    (PERCENTAGE, [{"cCodDep": "000123", "nPerDep": 100, "nValDep": "1e-400"}], True, "invalid_response_allocation"),
+])
+def test_unrepresentable_allocation_values_are_inconclusive_instead_of_exposing_infinity_or_underflow(expected, actual, include_observed, reason):
+    service = Mock()
+    service.invoke_financial.return_value = {"nCodLanc": 12, "departamentos": actual}
+
+    with pytest.raises(OmieError) as error:
+        verify_department_allocation(service, "empresa", "account_transactions_update", {
+            "nCodLanc": 12, "departamentos": expected,
+        }, include_observed=include_observed)
+
+    assert error.value.code == "write_verification_failed"
+    assert error.value.details["reason"] == reason
+    assert error.value.details["cause_code"] == "unrepresentable_department_value"

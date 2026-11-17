@@ -7,15 +7,22 @@ não substitui a conferência do estado persistido.
 from __future__ import annotations
 
 from decimal import Decimal, DecimalException
+from math import isfinite
 from typing import Any, Mapping
 
 from .exception import OmieError
 
 
 _OPERATIONS = {
+    "account_transactions_create": ("account_transactions_get", "departamentos", "nCodLanc", "cCodIntLanc"),
     "account_transactions_update": ("account_transactions_get", "departamentos", "nCodLanc", "cCodIntLanc"),
+    "account_transfers_create": ("account_transactions_get", "departamentos", "nCodLanc", "cCodIntLanc"),
+    "payables_create": ("payables_get", "distribuicao", "codigo_lancamento_omie", "codigo_lancamento_integracao"),
     "payables_update": ("payables_get", "distribuicao", "codigo_lancamento_omie", "codigo_lancamento_integracao"),
+    "payables_upsert": ("payables_get", "distribuicao", "codigo_lancamento_omie", "codigo_lancamento_integracao"),
+    "receivables_create": ("receivables_get", "distribuicao", "codigo_lancamento_omie", "codigo_lancamento_integracao"),
     "receivables_update": ("receivables_get", "distribuicao", "codigo_lancamento_omie", "codigo_lancamento_integracao"),
+    "receivables_upsert": ("receivables_get", "distribuicao", "codigo_lancamento_omie", "codigo_lancamento_integracao"),
 }
 _TOLERANCES = {"nPerDep": Decimal("0.000001"), "nValDep": Decimal("0.01")}
 
@@ -48,6 +55,21 @@ def _allocation(rows: Any) -> dict[str, dict[str, Decimal]]:
         if not numbers or numbers.get("nPerDep", Decimal(0)) > 100:
             raise ValueError("invalid_department_values")
         result[code] = numbers
+    return result
+
+
+def _semantic_allocation(allocation: Mapping[str, Mapping[str, Decimal]]) -> list[dict[str, Any]]:
+    """Expõe apenas códigos e números observados, sem campos descritivos do ERP."""
+    result = []
+    for code, values in allocation.items():
+        department: dict[str, Any] = {"codigo": code}
+        for native, public in (("nPerDep", "percentual"), ("nValDep", "valor")):
+            if native in values:
+                number = float(values[native])
+                if not isfinite(number) or (number == 0 and values[native] != 0):
+                    raise ValueError("unrepresentable_department_value")
+                department[public] = number
+        result.append(department)
     return result
 
 
@@ -90,7 +112,7 @@ def _linked_diagnostics(record: Mapping[str, Any]) -> tuple[dict[str, Any], str]
             linked.append((identifier, resource, label))
     if len(linked) == 1:
         identifier, resource, label = linked[0]
-        tool = f"omie.financeiro.{resource}.alterar"
+        tool = f"omie.financeiro.{resource}.definir_departamentos"
         details["suggested_tool"] = tool
         details["suggested_title_id"] = identifier
         return details, (
@@ -103,7 +125,9 @@ def _linked_diagnostics(record: Mapping[str, Any]) -> tuple[dict[str, Any], str]
     return details, ""
 
 
-def verify_department_allocation(service: Any, profile: str, operation: str, native_parameters: Mapping[str, Any]) -> dict[str, bool]:
+def verify_department_allocation(
+    service: Any, profile: str, operation: str, native_parameters: Mapping[str, Any], *, include_observed: bool = False,
+) -> dict[str, Any]:
     """Confirma o rateio solicitado usando uma única consulta do objeto alterado.
 
     Recebe os parâmetros nativos já enviados pela escrita. Prefere o ID Omie ao
@@ -112,6 +136,10 @@ def verify_department_allocation(service: Any, profile: str, operation: str, nat
     A ordem dos departamentos e os campos descritivos não afetam a comparação.
     Quando a consulta retorna percentual e valor juntos e informa o total do
     objeto, os dois precisam ser consistentes entre si até R$ 0,01.
+    Com ``include_observed=true``, retorna também ``departamentos`` com os
+    valores semânticos efetivamente consultados e ``registro`` com o objeto
+    nativo para uso interno. O chamador decide se pode expor esse registro.
+    Números desse resumo são finitos e os códigos textuais são preservados.
 
     Lança ``allocation_not_persisted`` quando uma consulta válida diverge da
     solicitação. Lança ``write_verification_failed`` quando a consulta falha ou
@@ -197,10 +225,25 @@ def verify_department_allocation(service: Any, profile: str, operation: str, nat
                 if difference > _TOLERANCES[key]:
                     matches = False
     if not matches:
+        try:
+            requested = _semantic_allocation(expected)
+        except ValueError as error:
+            inconclusive("invalid_expected_allocation", cause_code=str(error))
+        try:
+            observed = _semantic_allocation(actual)
+        except ValueError as error:
+            inconclusive("invalid_response_allocation", cause_code=str(error))
         raise OmieError(
             "allocation_not_persisted",
             "A Omie confirmou o processamento da escrita, mas o rateio consultado não corresponde ao solicitado. "
             "Confira o estado atual antes de repetir qualquer escrita." + guidance,
-            {**details, "reason": "allocation_mismatch"},
+            {**details, "reason": "allocation_mismatch", "departamentos_solicitados": requested, "departamentos_observados": observed},
         )
-    return {"rateio_confirmado": True}
+    result: dict[str, Any] = {"rateio_confirmado": True}
+    if include_observed:
+        try:
+            result["departamentos"] = _semantic_allocation(actual)
+        except ValueError as error:
+            inconclusive("invalid_response_allocation", cause_code=str(error))
+        result["registro"] = dict(record)
+    return result

@@ -66,9 +66,6 @@ OPERATION_NAMES = {
     "receivables_receipt_cancel": "receivables.receipt.cancel",
     "receivables_receipt_reconcile": "receivables.receipt.reconcile",
     "receivables_receipt_unreconcile": "receivables.receipt.unreconcile",
-    "receivables_department_allocation_create": "receivables.department-allocation.create",
-    "receivables_department_allocation_update": "receivables.department-allocation.update",
-    "receivables_department_allocation_delete": "receivables.department-allocation.delete",
     "receivables_create_batch": "receivables.create-batch",
     "receivables_upsert_batch": "receivables.upsert-batch",
     "inbound_nfe_receipts_list": "inbound-nfe-receipts.list",
@@ -305,20 +302,10 @@ def financial_params(operation: str, params: Mapping[str, Any], body: Mapping[st
     if operation.endswith(".list"):
         return pagination(params, LIST_FIELDS)
     if operation.endswith(".get") or operation.endswith(".delete"):
-        if operation.startswith("receivables.department-allocation."):
-            allocation = copy_fields(body, {"chave_lancamento", "codigo_lancamento_omie", "distribuicao"})
-            if not (set(allocation) & {"chave_lancamento", "codigo_lancamento_omie"}):
-                fail("invalid_body", "A chave do título é obrigatória.")
-            return allocation
         key = copy_fields(params, TITLE_KEYS)
         if not key:
             fail("missing_parameter", "A chave do título é obrigatória.")
         return key
-    if operation.startswith("receivables.department-allocation."):
-        allocation = copy_fields(body, {"chave_lancamento", "codigo_lancamento_omie", "distribuicao"})
-        if not (set(allocation) & {"chave_lancamento", "codigo_lancamento_omie"}) or not isinstance(allocation.get("distribuicao"), list):
-            fail("invalid_body", "A chave do título e distribuicao são obrigatórias.")
-        return allocation
     if operation.endswith(".create") or operation.endswith(".update") or operation.endswith(".upsert"):
         title = title_body(operation, body)
         if operation.endswith(".create") and not {"codigo_lancamento_integracao", "codigo_cliente_fornecedor", "data_vencimento", "valor_documento", "codigo_categoria"} <= set(title):
