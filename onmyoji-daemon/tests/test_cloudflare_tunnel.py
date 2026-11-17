@@ -596,7 +596,7 @@ def test_process_failure_is_sanitized_and_reports_separate_readiness(tmp_path, m
 
 
 def test_operations_reject_concurrent_mutations_and_sanitize_unknown_failure(tmp_path):
-    manager = TunnelOperations(tmp_path, tmp_path / "configs" / "tunnel")
+    manager = TunnelOperations(tmp_path, tmp_path / "state" / "tunnel")
     entered, release = threading.Event(), threading.Event()
     def work(progress):
         progress("verificando")
@@ -616,7 +616,7 @@ def test_operations_reject_concurrent_mutations_and_sanitize_unknown_failure(tmp
 
 
 def test_operations_mark_unfinished_work_interrupted_after_restart(tmp_path):
-    path = tmp_path / "configs" / "tunnel" / "operations.json"
+    path = tmp_path / "state" / "tunnel" / "operations.json"
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps({"schema_version": 1, "operations": {"old": {"operation_id": "old", "state": "running"}}}), encoding="utf-8")
     manager = TunnelOperations(tmp_path, path.parent)
@@ -630,7 +630,7 @@ def test_operations_mark_unfinished_work_interrupted_after_restart(tmp_path):
 
 
 def test_operations_succeed_and_preserve_result_after_restart(tmp_path):
-    manager = TunnelOperations(tmp_path, tmp_path / "configs" / "tunnel")
+    manager = TunnelOperations(tmp_path, tmp_path / "state" / "tunnel")
     operation = manager.start("configure", lambda progress: {"configured": True})
     result = wait_operation(manager, operation)
     assert result["state"] == "succeeded" and result["result"] == {"configured": True}

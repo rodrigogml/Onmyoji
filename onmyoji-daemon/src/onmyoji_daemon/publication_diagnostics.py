@@ -13,6 +13,7 @@ from typing import Any, Callable
 from .mcp.credentials import CredentialError, KeePassCredentialResolver
 from .rpc import call
 from .runtime import python as runtime_python
+from .state_layout import cloudflare_tunnel_state_path
 from .supervisor import endpoint
 
 
@@ -44,7 +45,7 @@ def _operation_check(path: Path, token: str = "") -> dict[str, str] | None:
     except FileNotFoundError:
         return None
     except (OSError, ValueError):
-        return {"state": "error", "label": label, "detail": "O histórico local das operações está ilegível ou possui formato inválido.", "action": "Confira configs/daemon/services/cloudflare-tunnel/operations.json e os logs do Cloudflare Tunnel antes de repetir a operação."}
+        return {"state": "error", "label": label, "detail": "O histórico local das operações está ilegível ou possui formato inválido.", "action": "Confira state/daemon/services/cloudflare-tunnel/operations.json e os logs do Cloudflare Tunnel antes de repetir a operação."}
     if not records:
         return None
     publications = [item for item in records if str(item.get("operation", "")).startswith(("provision", "recover", "adopt")) or item.get("operation") == "rollback-publication"]
@@ -162,7 +163,7 @@ def diagnose(root: Path, progress: Callable[[str], None] | None = None) -> list[
             add("error", label, "Falha na consulta de estado: " + _detail(error, address[2]), "Reinicie esse serviço e consulte seus logs no diagnóstico do Daemon.")
 
     step("Conferindo o resultado da última operação administrativa da Cloudflare.")
-    operation = _operation_check(services_dir / "cloudflare-tunnel" / "operations.json", address[2] if address else "")
+    operation = _operation_check(cloudflare_tunnel_state_path(root) / "operations.json", address[2] if address else "")
     if operation is not None:
         checks.append(operation)
 

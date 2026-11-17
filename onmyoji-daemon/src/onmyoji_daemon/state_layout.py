@@ -13,8 +13,8 @@ import subprocess
 from pathlib import Path
 
 
-LAYOUT_VERSION = 1
-SETUP_VERSION = "2026.11.17.10"
+LAYOUT_VERSION = 2
+SETUP_VERSION = "2026.11.17.11"
 
 
 class StateLayoutError(RuntimeError):
@@ -35,6 +35,10 @@ def daemon_runtime_path(root: Path) -> Path:
 
 def telegram_state_path(root: Path) -> Path:
     return state_path(root, "daemon", "services", "telegram")
+
+
+def cloudflare_tunnel_state_path(root: Path) -> Path:
+    return state_path(root, "daemon", "services", "cloudflare-tunnel")
 
 
 def _read_version(root: Path) -> dict:
@@ -102,8 +106,8 @@ def migrate(root: Path) -> list[str]:
     if version == LAYOUT_VERSION:
         return []
     if _active(root):
-        raise StateLayoutError("Pare o daemon antes da primeira migração de estado; nenhum arquivo foi movido.")
-    moves = (
+        raise StateLayoutError("Pare o daemon antes de migrar o estado; nenhum arquivo foi movido.")
+    legacy_moves = (
         (root / "configs" / "daemon" / "runtime", daemon_runtime_path(root)),
         (root / "configs" / "daemon" / "services" / "telegram" / "state", telegram_state_path(root)),
         (root / "configs" / "daemon" / "services" / "task-scheduler" / "state", state_path(root, "daemon", "services", "task-scheduler")),
@@ -116,6 +120,10 @@ def migrate(root: Path) -> list[str]:
         (root / "configs" / "mcp" / "email" / "submissions.sqlite3", state_path(root, "mcp", "email", "submissions.sqlite3")),
         (root / "configs" / "mcp" / "email" / "submissions.sqlite3-wal", state_path(root, "mcp", "email", "submissions.sqlite3-wal")),
         (root / "configs" / "mcp" / "email" / "submissions.sqlite3-shm", state_path(root, "mcp", "email", "submissions.sqlite3-shm")),
+    )
+    moves = (legacy_moves if version < 1 else ()) + (
+        (root / "configs" / "daemon" / "services" / "cloudflare-tunnel" / "operations.json",
+         cloudflare_tunnel_state_path(root) / "operations.json"),
     )
     moved = [str(source.relative_to(root)) for source, destination in moves if _move(source, destination)]
     marker = {"layout_version": LAYOUT_VERSION, "setup_version": SETUP_VERSION}

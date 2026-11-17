@@ -20,8 +20,8 @@ class TunnelOperations:
     inesperadas são convertidas em ``operation_failed`` sem incluir seus dados.
     """
 
-    def __init__(self, root: Path, data_dir: Path):
-        self.root, self.path = root, data_dir / "operations.json"
+    def __init__(self, root: Path, state_dir: Path):
+        self.root, self.path = root, state_dir / "operations.json"
         self.lock = threading.RLock()
         self.closed = False
         self.active: str | None = None

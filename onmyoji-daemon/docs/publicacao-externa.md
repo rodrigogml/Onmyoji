@@ -72,6 +72,7 @@ e as [permissões do API Token para Tunnel e DNS](https://developers.cloudflare.
 | Reservas de listeners | `configs/daemon/services/gateway/listeners.sqlite3` |
 | Certificados privados do Gateway | `configs/daemon/services/gateway/tls/` |
 | Identidade, origem e referências KeePass do Tunnel | `configs/daemon/services/cloudflare-tunnel/tunnel.toml` |
+| Histórico e resultados das operações do Tunnel | `state/daemon/services/cloudflare-tunnel/operations.json` |
 | Versões gerenciadas do executável | `configs/daemon/services/cloudflare-tunnel/bin/versions/`, salvo diretório personalizado |
 | Checkpoints da migração | `configs/daemon/services/cloudflare-tunnel/migration.json` |
 | Prévias e backups de recuperação remota | `configs/daemon/services/cloudflare-tunnel/publication-recovery/<preview_id>.json` |
@@ -241,6 +242,15 @@ Provisionamento, configuração RPC e instalação retornam uma operação com
 `operation_id`. Consulte `cloudflare-tunnel operation-status <id>`; a opção
 `--wait` acompanha instalação, atualização, rollback do binário e provisionamento.
 Uma operação interrompida não é reaplicada automaticamente após reinício.
+
+O histórico registra estado, progresso, horários, resultados e erros, incluindo
+`activate` a cada início do conector, mesmo sem alteração da configuração do
+túnel. Esses dados ficam em `state/`; `operations.json` não é configuração.
+O setup aplica o layout de estado v2 com o daemon parado e move o arquivo legado
+de `configs/daemon/services/cloudflare-tunnel/` preservando seu histórico.
+Destinos existentes não são sobrescritos; resolva o conflito indicado pelo setup
+antes de iniciar os serviços atualizados. O serviço recusa iniciar com histórico
+legado em `configs/` (`legacy_operation_state`) e orienta executar o setup.
 
 O CLI configura localmente quando o serviço está parado. Com o Tunnel em
 execução, a configuração passa pela mesma fila de operações e o CLI acompanha

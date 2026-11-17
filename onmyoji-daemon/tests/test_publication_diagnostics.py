@@ -152,7 +152,7 @@ def test_cli_diagnostic_runs_without_required_daemon_endpoint(tmp_path, monkeypa
 
 
 def write_operations(root: Path, operations: dict) -> Path:
-    path = root / "configs" / "daemon" / "services" / "cloudflare-tunnel" / "operations.json"
+    path = root / "state" / "daemon" / "services" / "cloudflare-tunnel" / "operations.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"schema_version": 1, "operations": operations}), encoding="utf-8")
     return path
@@ -287,7 +287,7 @@ def test_invalid_operation_history_is_actionable_and_other_checks_continue(tmp_p
     path.write_text(body, encoding="utf-8")
     checks = by_label(diagnostics.diagnose(tmp_path))
     assert checks["Última operação Cloudflare"]["state"] == "error"
-    assert "operations.json" in checks["Última operação Cloudflare"]["action"]
+    assert "state/daemon/services/cloudflare-tunnel/operations.json" in checks["Última operação Cloudflare"]["action"]
     assert "Conexão Cloudflare" in checks
     assert path.read_text(encoding="utf-8") == body
 

@@ -8,6 +8,7 @@ import threading
 from typing import Any
 
 from ..mcp.credentials import CredentialError, KeePassCredentialResolver
+from ..state_layout import cloudflare_tunnel_state_path
 from .client import CloudflareClient, gateway_ingress
 from .configuration import TunnelConfiguration, TunnelDefinition, validate_origin
 from .exception import TunnelError
@@ -23,15 +24,19 @@ class TunnelService:
     O Supervisor conclui a contenção do processo e fornece a origem HTTPS do
     Gateway antes de ``activate``. Uma morte inesperada do conector termina o
     wrapper com falha; a recuperação pertence ao Supervisor, sem outro watchdog.
+    O histórico fica em ``state/``. Um histórico legado em ``configs/`` lança
+    ``legacy_operation_state`` até o setup migrá-lo com o daemon parado.
     """
 
     def __init__(self, root: Path, data_dir: Path, credentials: KeePassCredentialResolver | None = None):
         self.root, self.data_dir = root.resolve(), data_dir.resolve()
         if not self.data_dir.is_relative_to(self.root / "configs"):
-            raise TunnelError("invalid_data_directory", "O estado persistente do Tunnel deve permanecer em configs/.")
+            raise TunnelError("invalid_data_directory", "A configuração do Tunnel deve permanecer em configs/.")
+        if (self.data_dir / "operations.json").exists():
+            raise TunnelError("legacy_operation_state", "O histórico do Tunnel ainda está em configs/. Pare o daemon e execute setupOnmyoji.py para migrá-lo para state/ antes de iniciar o serviço.")
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.configuration = TunnelConfiguration(self.root, self.data_dir, credentials)
-        self.operations = TunnelOperations(self.root, self.data_dir)
+        self.operations = TunnelOperations(self.root, cloudflare_tunnel_state_path(self.root))
         self.stopped, self.failed = threading.Event(), threading.Event()
         self.closing = threading.Event()
         self.state_lock, self.start_lock = threading.RLock(), threading.Lock()

@@ -190,6 +190,51 @@ def test_activation_is_idempotent_and_does_not_persist_tokens(service):
     assert "runtime-private" not in persisted and "api-private" not in persisted
 
 
+@pytest.mark.parametrize("destination_exists", [False, True])
+def test_service_requires_setup_before_using_legacy_operation_history(tmp_path, destination_exists):
+    directory = tmp_path / "configs/daemon/services/cloudflare-tunnel"
+    directory.mkdir(parents=True)
+    legacy = directory / "operations.json"
+    legacy.write_bytes(b"legacy history")
+    destination = tmp_path / "state/daemon/services/cloudflare-tunnel/operations.json"
+    if destination_exists:
+        destination.parent.mkdir(parents=True)
+        destination.write_bytes(b"current history")
+
+    with pytest.raises(TunnelError) as caught:
+        TunnelService(tmp_path, directory)
+
+    assert caught.value.code == "legacy_operation_state"
+    assert "setupOnmyoji.py" in str(caught.value)
+    assert legacy.read_bytes() == b"legacy history"
+    assert destination.exists() is destination_exists
+    if destination_exists:
+        assert destination.read_bytes() == b"current history"
+    assert not (directory / "tunnel.toml").exists()
+
+
+def test_activation_after_restart_keeps_configuration_and_records_history_in_state(service):
+    tunnel, resolver, client, ca = service
+    confirm_existing_origin(tunnel, ca)
+    settings = tunnel.configuration.path.read_bytes()
+    first = wait_operation(tunnel, activate(tunnel, ca))
+    assert first["state"] == "succeeded"
+    tunnel.close()
+
+    restarted = TunnelService(tunnel.root, tunnel.data_dir, resolver)
+    try:
+        assert restarted.operations.status(first["operation_id"]) == first
+        second = wait_operation(restarted, activate(restarted, ca))
+        assert second["state"] == "succeeded"
+        assert second["operation_id"] != first["operation_id"]
+        assert restarted.operations.path == tunnel.root / "state/daemon/services/cloudflare-tunnel/operations.json"
+        assert restarted.configuration.path.read_bytes() == settings
+        assert set(restarted.data_dir.iterdir()) == {restarted.configuration.path}
+        assert len(restarted.operations.records) == 2
+    finally:
+        restarted.close()
+
+
 def test_activation_requires_explicit_valid_ca_and_never_skips_remote_provisioning(service):
     tunnel, resolver, client, ca = service
     with pytest.raises(TunnelError):
