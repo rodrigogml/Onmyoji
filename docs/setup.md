@@ -13,6 +13,13 @@ python shikigami-skills/<nome-da-skill>/setupSkill.py
 
 O menu principal oferece **K. KeePass**, antes de **C. Codex-CLI**, para criar ou associar cofres KDBX, administrar seus perfis e testar o acesso. O cofre é compartilhado pelas funcionalidades do Onmyōji, incluindo daemon e integrações MCP; abrir esse menu não instala nem exige o SDK MCP. Os perfis existentes continuam em `configs/mcp/credentials.toml`, e os cofres criados pelo setup continuam em `configs/mcp/vaults/`, preservando as referências já configuradas.
 
+A senha mestra usa o Windows Credential Manager no Windows. No Linux com conta dedicada, o setup usa um arquivo local protegido, sem depender da sessão D-Bus do instalador. Na conta atual, quando o provedor de senhas da sessão não estiver disponível ou desbloqueado, o roteiro permite tentar novamente, usar um arquivo local protegido ou cancelar. A alternativa só é registrada no perfil depois de salvar a senha com sucesso.
+
+> [!IMPORTANT]
+> Os arquivos em `configs/mcp/secrets/` contêm a senha mestra e são protegidos pelas permissões do sistema de arquivos. O compartilhamento com o grupo privado da instância só é aplicado quando previsto na configuração operacional. Essa área é local e nunca deve ser incluída no Git; as senhas não são exibidas no diagnóstico.
+
+Se a criação do KDBX terminar, mas a gravação da senha falhar, preserve o arquivo criado. Em **K. KeePass > 1. Criar perfil**, informe o mesmo nome, como `default`: ao escolher **Criar cofre KDBX local**, o setup detecta `configs/mcp/vaults/default.kdbx` e oferece associá-lo. Também é possível escolher diretamente **Associar arquivo KDBX existente** e informar esse caminho. A associação valida a senha mestra antes de registrar o perfil e não sobrescreve o cofre.
+
 O menu KeePass também pode ser aberto diretamente, sem preparar os componentes MCP:
 
 ```text

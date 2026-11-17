@@ -9,8 +9,10 @@ import hashlib
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import tomllib
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -26,7 +28,8 @@ from setupOnmyoji import Ui, alert, flow_choice, flow_heading, install_linux_pac
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from onmyoji_daemon.mcp.configuration import McpConfiguration, McpConfigurationError
-from onmyoji_daemon.config_publication import apply_shared_file_mode
+from onmyoji_daemon.config_publication import apply_shared_file_mode, operational_file_mode
+from onmyoji_daemon.linux_service import load_execution_profile
 from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialResolver
 from onmyoji_daemon.mcp.todoist import TodoistError, TodoistService
 from onmyoji_daemon.mcp.omie import OmieError, OmieService
@@ -263,54 +266,144 @@ def store_windows_password(target: str, password: str) -> None:
     if not ctypes.windll.advapi32.CredWriteW(ctypes.byref(credential), 0): raise OSError("Não foi possível salvar a credencial Windows.")
 
 
+def protected_password_auth(name: str, root: Path) -> dict[str, str]:
+    """Retorna o destino privado da senha mestra, estável por instância e perfil."""
+    filename = hashlib.sha256(f"{instance_identity(root)}\0{name}".encode("utf-8")).hexdigest() + ".secret"
+    return {"mode": "protected_file", "path": str(root.resolve() / "configs" / "mcp" / "secrets" / filename)}
+
+
 def profile_auth(name: str, root: Path = ROOT) -> dict:
+    """Seleciona um provedor compatível com a identidade operacional do cofre.
+
+    Contas dedicadas usam arquivo protegido, sem depender do D-Bus herdado do
+    instalador. A sessão do usuário atual pode usar o Secret Service disponível;
+    a gravação confirma seu funcionamento e oferece alternativa se ele falhar.
+    """
     identity = instance_identity(root)
     target = f"{identity}/MCP/KeePass/{name}"
     linux_command = ["secret-tool", "lookup", "service", "shikigami-mcp", "shikigami", identity, "profile", name]
     if os.name == "nt":
         target = ask("Destino no Windows Credential Manager", target, True)
         return {"windows": {"mode": "windows_credential_manager", "target": target or ""}, "linux": {"mode": "command", "command": linux_command}}
-    if shutil.which("secret-tool") and os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
+    if load_execution_profile(root).get("mode") != "dedicated" and shutil.which("secret-tool") and os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
         linux = {"mode": "command", "command": linux_command}
     else:
-        filename = hashlib.sha256(f"{identity}\0{name}".encode("utf-8")).hexdigest() + ".secret"
-        linux = {"mode": "protected_file", "path": str(root.resolve() / "configs" / "mcp" / "secrets" / filename)}
+        linux = protected_password_auth(name, root)
     return {"windows": {"mode": "windows_credential_manager", "target": target}, "linux": linux}
 
 
-def store_protected_password(path: Path, password: str) -> None:
-    """Persiste o segredo para as duas contas autorizadas da instância."""
-    directory = path.parent
-    directory.mkdir(parents=True, exist_ok=True)
-    directory.chmod(0o2770)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(path, flags, 0o660)
+def store_protected_password(path: Path, password: str, root: Path = ROOT) -> None:
+    """Publica a senha local sem alterar o segredo anterior em uma falha de gravação.
+
+    O destino precisa estar em ``configs/mcp/secrets`` da instância, sem links.
+    A política operacional define acesso exclusivo ou pelo grupo compartilhado;
+    arquivos temporários permanecem privados em ``tmp`` até a troca atômica.
+
+    Raises:
+        OSError: Se o destino for inseguro, as permissões não puderem ser aplicadas
+            ou a publicação falhar. O arquivo anterior permanece intacto.
+    """
+    root = root.resolve()
+    allowed = root / "configs" / "mcp" / "secrets"
+    expanded = path.expanduser()
+    destination = Path(os.path.abspath(expanded if expanded.is_absolute() else root / expanded))
     try:
-        os.fchmod(descriptor, 0o660)
-        os.write(descriptor, password.encode("utf-8"))
-    finally:
-        os.close(descriptor)
+        relative = destination.relative_to(allowed)
+    except ValueError as error:
+        raise OSError("O arquivo da senha precisa pertencer à pasta de segredos da instância.") from error
+    if not relative.parts:
+        raise OSError("Informe um arquivo dentro da pasta de segredos da instância.")
+    for directory in reversed(destination.parents):
+        if directory != root and directory.is_relative_to(root) and directory.is_symlink():
+            raise OSError("A pasta de segredos não pode conter links simbólicos.")
+
+    def validate_destination() -> None:
+        try:
+            current = destination.lstat()
+        except FileNotFoundError:
+            return
+        if not stat.S_ISREG(current.st_mode) or current.st_nlink != 1:
+            raise OSError("O arquivo da senha precisa ser regular e não pode possuir links.")
+
+    validate_destination()
+    shared = operational_file_mode(root) == 0o660
+    file_mode = 0o660 if shared else 0o600
+    directory_mode = 0o2770 if shared else 0o700
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    for directory in (allowed, *(allowed.joinpath(*relative.parts[:index]) for index in range(1, len(relative.parts)))):
+        if stat.S_IMODE(directory.stat().st_mode) != directory_mode:
+            directory.chmod(directory_mode)
+    parent_group = destination.parent.stat().st_gid
+    temporary_root = root / "tmp"
+    if temporary_root.is_symlink():
+        raise OSError("A pasta temporária da instância não pode ser um link simbólico.")
+    temporary_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="keepass-password-", dir=temporary_root) as temporary:
+        descriptor, temporary_name = tempfile.mkstemp(prefix="password-", dir=temporary)
+        staging = Path(temporary_name)
+        try:
+            if os.name == "posix":
+                if os.fstat(descriptor).st_gid != parent_group:
+                    os.fchown(descriptor, -1, parent_group)
+                os.fchmod(descriptor, file_mode)
+            with os.fdopen(descriptor, "wb") as output:
+                descriptor = None
+                output.write(password.encode("utf-8"))
+                output.flush()
+                os.fsync(output.fileno())
+            validate_destination()
+            os.replace(staging, destination)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
 
 
 def save_password(name: str, auth: dict, root: Path = ROOT, password: str | None = None) -> bool:
-    """Grava a senha no cofre do sistema, solicitando-a somente se necessário."""
+    """Grava a senha e permite escolher um arquivo protegido se o Secret Service falhar.
+
+    A alternativa Linux reutiliza a senha já informada e só muda ``auth`` depois
+    de gravar com sucesso. Cancelamentos e erros preservam a autenticação atual.
+    Diagnósticos identificam provedor e categoria da falha, sem sua saída bruta.
+    """
     if password is None:
         password = getpass.getpass(Ui.text("› Senha mestra KeePass (não será exibida): ", Ui.violet, Ui.bold))
     if not password: return False
-    try:
-        if os.name == "nt": store_windows_password(auth["windows"]["target"], password)
-        elif auth["linux"].get("mode") == "protected_file":
-            store_protected_password(Path(auth["linux"]["path"]), password)
-        else:
-            identity = instance_identity(root)
-            subprocess.run(["secret-tool", "store", f"--label={identity} MCP KeePass {name}", "service", "shikigami-mcp", "shikigami", identity, "profile", name], input=password + "\n", text=True, check=True, timeout=20, capture_output=True)
-        result(True, "Senha mestra salva no provedor do sistema operacional.")
+    configured = copy.deepcopy(auth)
+    while True:
+        provider = "Windows Credential Manager" if os.name == "nt" else "arquivo protegido" if configured["linux"].get("mode") == "protected_file" else "Secret Service"
+        try:
+            if os.name == "nt":
+                store_windows_password(configured["windows"]["target"], password)
+            elif configured["linux"].get("mode") == "protected_file":
+                store_protected_password(Path(configured["linux"]["path"]), password, root=root)
+            else:
+                identity = instance_identity(root)
+                subprocess.run(["secret-tool", "store", f"--label={identity} MCP KeePass {name}", "service", "shikigami-mcp", "shikigami", identity, "profile", name], input=password + "\n", text=True, check=True, timeout=20, capture_output=True)
+        except (OSError, subprocess.SubprocessError) as error:
+            if isinstance(error, subprocess.TimeoutExpired):
+                detail = "tempo limite excedido"
+            elif isinstance(error, PermissionError):
+                detail = "permissão negada; confira a conta proprietária e as permissões da instância"
+            elif isinstance(error, FileNotFoundError):
+                detail = "ferramenta ou caminho indisponível"
+            elif isinstance(error, subprocess.CalledProcessError):
+                detail = f"o serviço não aceitou a gravação (código {error.returncode}); verifique se está disponível e desbloqueado nesta conta"
+            else:
+                detail = "falha de acesso ao provedor" + (f" (erro {error.errno})" if isinstance(error, OSError) and error.errno is not None else "")
+            result(False, f"Não foi possível salvar a senha mestra em {provider}: {detail}.")
+            if provider != "Secret Service":
+                return False
+            selected = flow_choice("Armazenamento da senha mestra", ["Tentar novamente no provedor do sistema", "Usar arquivo local protegido", "Cancelar"], "Usar arquivo local protegido")
+            if selected == "Tentar novamente no provedor do sistema":
+                continue
+            if selected == "Usar arquivo local protegido":
+                configured["linux"] = protected_password_auth(name, root)
+                continue
+            return False
+        if os.name != "nt":
+            auth["linux"] = configured["linux"]
+        result(True, f"Senha mestra salva em {provider}.")
         return True
-    except (OSError, subprocess.SubprocessError):
-        result(False, "Não foi possível salvar a senha no provedor do sistema operacional.")
-        return False
 
 
 def keepassxc_command_available(command: list[str]) -> bool:
@@ -452,13 +545,22 @@ def create_vault_profile(config: McpConfiguration) -> None:
     platform = "windows" if os.name == "nt" else "linux"
     database = str(config.root / "configs" / "mcp" / "vaults" / f"{name}.kdbx") if origin.startswith("Criar") else ask(f"Arquivo KDBX no {platform}", required=True)
     if not database: return
+    creating = origin.startswith("Criar")
+    if creating and Path(database).exists():
+        note(f"Já existe um cofre em {database}; ele pode ser associado a este perfil sem ser sobrescrito.")
+        selected = flow_choice("Cofre local já existente", ["Associar o cofre existente", "Cancelar"], "Associar o cofre existente")
+        if selected != "Associar o cofre existente":
+            return
+        creating = False
     command = scope_flatpak_to_database(command, database)
     auth = profile_auth(name, config.root)
     if os.name != "nt" and auth.get("linux", {}).get("mode") == "command" and not ensure_linux_secret_tool(): return
     roots = ask("Raízes de entradas permitidas, separadas por ; (vazio = todas)", "")
+    if roots is None:
+        return
     data["vaults"][name] = {"cli_command": command, "database": {"windows": database if platform == "windows" else "", "linux": database if platform == "linux" else ""}}
     data["profiles"][name] = {"vault": name, "allowed_entry_roots": [item.strip() for item in (roots or "").split(";") if item.strip()], "auth": auth}
-    if origin.startswith("Criar"):
+    if creating:
         password = getpass.getpass(Ui.text("› Senha mestra do novo vault (não será exibida): ", Ui.violet, Ui.bold))
         confirm = getpass.getpass(Ui.text("› Repita a senha mestra: ", Ui.violet, Ui.bold))
         if not password or password != confirm: result(False, "Senhas não conferem; nada foi salvo."); return
@@ -525,7 +627,13 @@ def manage_vault_profile(config: McpConfiguration, name: str) -> None:
         elif action == "3": profile["auth"] = profile_auth(name, config.root)
         elif action == "4": profile["allowed_entry_roots"] = [item.strip() for item in (ask("Raízes separadas por ;", ";".join(profile["allowed_entry_roots"])) or "").split(";") if item.strip()]
         elif action == "5":
-            save_password(name, profile["auth"], config.root)
+            previous_auth = copy.deepcopy(profile["auth"])
+            if save_password(name, profile["auth"], config.root) and profile["auth"] != previous_auth:
+                try:
+                    config.save_credentials(data)
+                except McpConfigurationError as error:
+                    profile["auth"] = previous_auth
+                    result(False, str(error))
             continue
         elif action == "6":
             try: KeePassCredentialResolver(config.root).test_profile_access(name); result(True, "Acesso ao cofre confirmado.")
