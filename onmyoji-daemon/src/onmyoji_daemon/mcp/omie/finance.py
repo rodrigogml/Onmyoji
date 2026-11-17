@@ -12,7 +12,7 @@ from math import isfinite
 from typing import Any, Mapping
 
 from .allocation import verify_department_allocation
-from .category_allocation import define_categories, normalize_categories
+from .category_allocation import check_categories, define_categories, normalize_categories
 from .department_allocation import define_departments
 from .contracts import DIRECT_DOCUMENT_TYPES, build_params, normalize_account_departments, normalize_percentage_departments
 from .exception import OmieError
@@ -91,6 +91,7 @@ for resource, legacy, label in (("contas_pagar", "payables", "contas a pagar"), 
     ]
 
 SPECS += [
+    FinanceSpec("omie.financeiro.contas_pagar.conferir_categorias", "payables_get", "Confere as categorias do título e de suas baixas sem gravar dados. Use após uma escrita já processada para consultar o estado atual, sem repetir a gravação. Lê título, CP e BXCP; quando as categorias da baixa são omitidas, consulta o lançamento vinculado por ConsultaLancCC. Informe exatamente um identificador em filtros e a lista categorias_esperadas. As leituras são sempre remotas e respeitam o cooldown da Omie.", kind="category_check"),
     FinanceSpec("omie.financeiro.contas_pagar.definir_categorias", "payables_update", "Solicita à Omie a substituição integral do rateio de categorias e só confirma o resultado após conferir título, todas as baixas e a preservação de pagamento, desconto e conciliação. Um aceite sem persistência não confirma a alteração.", True, kind="category_set"),
     FinanceSpec("omie.financeiro.contas_pagar.registrar_pagamento", "payables_pay", "Registra o pagamento de uma conta a pagar.", True, kind="payment"),
     FinanceSpec("omie.financeiro.contas_pagar.cancelar_pagamento", "payables_payment_cancel", "Cancela um pagamento pelo identificador da baixa.", True, kind="receipt"),
@@ -422,6 +423,10 @@ def _schema(spec: FinanceSpec, profiles: list[dict[str, str]]) -> dict[str, Any]
         properties["dados"] = data_schema
         properties["confirmar"] = {"type": "boolean", "const": True, "description": "Deve ser true para confirmar a escrita."}
         required = ["dados", "confirmar"]
+    elif spec.kind == "category_check":
+        properties["filtros"] = _identifier_schema(spec)
+        properties["categorias_esperadas"] = _category_schema()
+        required = ["filtros", "categorias_esperadas"]
     elif spec.kind != "catalog":
         filters: dict[str, Any] = {}
         if spec.period:
@@ -564,6 +569,11 @@ class OmieFinanceFacade:
         service = OmieService(self.configuration.root)
         verification = None
         verified_record = None
+        if spec.kind == "category_check":
+            return check_categories(
+                service, profile, legacy["identifier"], legacy["categories"],
+                include_native=arguments.get("incluir_dados_omie") is True,
+            )
         if spec.kind == "category_set":
             return define_categories(
                 service, profile, legacy["identifier"], legacy["categories"],
@@ -652,6 +662,21 @@ class OmieFinanceFacade:
                         data["departamentos"], data.get("valor"), field="dados.departamentos", error_code="invalid_parameter",
                     )
                 return {"body": body}
+        if spec.kind == "category_check":
+            unknown = set(arguments) - {"profile", "filtros", "categorias_esperadas", "incluir_dados_omie", "atualizar_cache"}
+            if unknown:
+                _invalid(sorted(unknown)[0], "esta conferência é somente leitura; informe filtros e categorias_esperadas, sem dados de escrita ou paginação.")
+            if "categorias_esperadas" not in arguments:
+                _invalid("categorias_esperadas", "informe a lista completa de categorias que devem ser conferidas.")
+            identifier = _identifier_params(spec, _object(arguments, "filtros"), "filtros")
+            try:
+                categories = normalize_categories(arguments["categorias_esperadas"])
+            except OmieError as error:
+                details = dict(error.details)
+                if isinstance(details.get("field"), str):
+                    details["field"] = details["field"].replace("dados.categorias", "categorias_esperadas", 1)
+                raise OmieError(error.code, str(error).replace("dados.categorias", "categorias_esperadas"), details) from error
+            return {"identifier": identifier, "categories": categories}
         if not spec.paginated:
             for field in ("pagina", "tamanho_pagina"):
                 if field in arguments:

@@ -368,13 +368,124 @@ def _observed(rows: Any, total: Decimal, *, payment: bool, processed: bool,
 
 
 def _matches(expected: list[dict[str, Any]], observed: list[dict[str, Any]]) -> bool:
-    actual = {row["codigo"]: _number(row["percentual"]) for row in observed}
-    return set(actual) == {row["codigo_categoria"] for row in expected} and all(
-        abs(actual[row["codigo_categoria"]] - _number(row["percentual"])) <= _PERCENT_TOLERANCE for row in expected
-    )
+    actual = {row["codigo"]: row for row in observed}
+    if set(actual) != {row["codigo_categoria"] for row in expected}:
+        return False
+    value_only = any("percentual" not in row for row in observed)
+    total = sum((_number(row["valor"]) for row in observed), Decimal(0)) if value_only else Decimal(0)
+    if value_only and total == 0 and len(observed) > 1:
+        return False
+    for row in expected:
+        found = actual[row["codigo_categoria"]]
+        if "percentual" in found:
+            if abs(_number(found["percentual"]) - _number(row["percentual"])) > _PERCENT_TOLERANCE:
+                return False
+        elif abs(_number(found["valor"]) - total * _number(row["percentual"]) / 100) > _CENT:
+            return False
+    return True
 
 
-def _payment_result(identifier: int, row: Mapping[str, Any], categories: list[dict[str, Any]] | None) -> dict[str, Any]:
+def _categories_omitted(record: Mapping[str, Any]) -> bool:
+    return "categorias" not in record or record["categorias"] is None or record["categorias"] == []
+
+
+def _linked_categories(service: Any, profile: str, title_id: int, payment_id: int,
+                       payment: Mapping[str, Any], processed: bool,
+                       observations: dict[str, Any]) -> list[dict[str, Any]]:
+    """Lê o rateio do lançamento vinculado quando BXCP não fornece a coleção.
+
+    Confere movimento, título de origem, conta e magnitude do valor contra a
+    baixa. A data do lançamento precisa ser válida, sem presumir igualdade com
+    a data do pagamento. Dados de conciliação presentes precisam concordar com
+    BXCP. ``linked_movement_mismatch`` recusa contradições; coleção ausente
+    continua inconclusiva, sem inferência pela categoria escalar.
+    Percentuais omitidos podem ser conferidos por valores até um centavo.
+    Não altera o lançamento nem o pagamento.
+    """
+    details = payment["detalhes"]
+    movement_id = details["nCodMovCC"]
+    context = {"operation": "account_transactions_get", "tipo_movimento": "BXCP",
+               "id_baixa": payment_id, "lancamento_conta_id": movement_id}
+
+    def invalid(reason: str, field: str) -> None:
+        _invalid_observation(processed, reason, field=field, **context)
+
+    try:
+        record = _read(service, profile, "account_transactions_get", {"nCodLanc": movement_id}, processed)
+        if not isinstance(record, Mapping) or type(record.get("nCodLanc")) is not int or record["nCodLanc"] != movement_id:
+            invalid("linked_movement_mismatch", "nCodLanc")
+        header, source, classification = record.get("cabecalho"), record.get("diversos"), record.get("detalhes")
+        if not isinstance(header, Mapping) or not isinstance(source, Mapping) or not isinstance(classification, Mapping):
+            invalid("invalid_linked_movement", "lancamento")
+        if type(source.get("nCodLancCP")) is not int or source["nCodLancCP"] != title_id:
+            invalid("linked_movement_mismatch", "diversos.nCodLancCP")
+        if source.get("cNatureza") not in (None, "", "P"):
+            invalid("linked_movement_mismatch", "diversos.cNatureza")
+        receivable = source.get("nCodLancCR")
+        if receivable is not None and not (type(receivable) is int and receivable == 0):
+            invalid("linked_movement_mismatch", "diversos.nCodLancCR")
+        if type(header.get("nCodCC")) is not int or header["nCodCC"] != details["nCodCC"]:
+            invalid("linked_movement_mismatch", "cabecalho.nCodCC")
+        total = abs(_number(details["nValorMovCC"]))
+        amount = _remote_number(header, "nValorLanc", processed, field="cabecalho.nValorLanc", operation="account_transactions_get", movement_kind="BXCP")
+        if abs(abs(amount) - total) > _CENT:
+            invalid("linked_movement_mismatch", "cabecalho.nValorLanc")
+        if not _date(header.get("dDtLanc")):
+            invalid("invalid_linked_movement_date", "cabecalho.dDtLanc")
+        for account_key, payment_key in (("dDtConc", "dDtConcilia"), ("cHrConc", "cHrConcilia"), ("cUsConc", "cUsConcilia")):
+            if account_key in source and (source[account_key] or None) != (details.get(payment_key) or None):
+                invalid("linked_movement_mismatch", "diversos." + account_key)
+        observations.setdefault("lancamentos", []).append(deepcopy(dict(record)))
+        rows = classification.get("aCodCateg")
+        if not isinstance(rows, list) or not rows:
+            invalid("missing_categories", "detalhes.aCodCateg")
+        result: list[dict[str, Any]] = []
+        codes: set[str] = set()
+        for index, row in enumerate(rows):
+            path = f"detalhes.aCodCateg[{index}]"
+            if not isinstance(row, Mapping):
+                invalid("invalid_category", path)
+            code = row.get("cCodCateg")
+            if not isinstance(code, str) or not code.strip() or len(code) > 20 or code in codes:
+                invalid("invalid_category_code", path + ".cCodCateg")
+            item: dict[str, Any] = {"codigo": code}
+            if "nPerc" in row:
+                percent = _remote_number(row, "nPerc", processed, field=path + ".nPerc", operation="account_transactions_get", movement_kind="BXCP")
+                if not 0 < percent <= 100:
+                    invalid("invalid_category_percentage", path + ".nPerc")
+                item["percentual"] = float(percent)
+            if "nValor" in row:
+                value = _remote_number(row, "nValor", processed, field=path + ".nValor", operation="account_transactions_get", movement_kind="BXCP")
+                if value < 0 or "percentual" in item and abs(total * _number(item["percentual"]) / 100 - value) > _CENT:
+                    invalid("inconsistent_category_amount", path + ".nValor")
+                item["valor"] = float(value)
+            if len(item) == 1:
+                invalid("missing_category_values", path)
+            codes.add(code)
+            result.append(item)
+        if all("valor" in row for row in result):
+            if abs(sum((_number(row["valor"]) for row in result), Decimal(0)) - total) > _CENT:
+                invalid("incomplete_category_amounts", "detalhes.aCodCateg")
+        elif any("percentual" not in row for row in result):
+            invalid("incomplete_category_values", "detalhes.aCodCateg")
+        if all("percentual" in row for row in result) and abs(sum((_number(row["percentual"]) for row in result), Decimal(0)) - 100) > _PERCENT_TOLERANCE:
+            invalid("incomplete_category_percentages", "detalhes.aCodCateg")
+        return result
+    except OmieError as error:
+        raise OmieError(error.code, str(error), {**context, **error.details}) from error
+
+
+def _payment_categories(service: Any, profile: str, title_id: int, payment_id: int,
+                        payment: Mapping[str, Any], processed: bool,
+                        observations: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
+    if _categories_omitted(payment):
+        return _linked_categories(service, profile, title_id, payment_id, payment, processed, observations), "account_transactions_get"
+    return _observed(payment["categorias"], abs(_number(payment["detalhes"]["nValorMovCC"])),
+                     payment=True, processed=processed, movement_kind="BXCP", payment_id=payment_id), "financial_movements_list"
+
+
+def _payment_result(identifier: int, row: Mapping[str, Any], categories: list[dict[str, Any]] | None,
+                    source: str = "financial_movements_list") -> dict[str, Any]:
     details = row["detalhes"]
     return {
         "id_baixa": identifier, "lancamento_conta_id": details["nCodMovCC"], "conta_corrente_id": details["nCodCC"],
@@ -382,8 +493,76 @@ def _payment_result(identifier: int, row: Mapping[str, Any], categories: list[di
         "desconto": float(_payment_number(details, "nDesconto", True)), "juros": float(_payment_number(details, "nJuros", True)), "multa": float(_payment_number(details, "nMulta", True)),
         "conciliacao": {"conciliado": bool(details.get("dDtConcilia")), "data": details.get("dDtConcilia"),
                         "hora": details.get("cHrConcilia"), "usuario": details.get("cUsConcilia")},
-        "categorias": categories,
+        "categorias": categories, "fonte_categorias": source,
     }
+
+
+def _category_request(identifier: Mapping[str, Any], categories: list[dict[str, Any]], include_native: bool) -> list[dict[str, Any]]:
+    if not isinstance(identifier, Mapping) or len(identifier) != 1 or not set(identifier) <= {_TITLE_ID, _INTEGRATION_ID}:
+        raise _error("invalid_parameter", "Informe exatamente um identificador do título.", field="dados")
+    key, value = next(iter(identifier.items()))
+    valid = type(value) is int and value > 0 if key == _TITLE_ID else isinstance(value, str) and bool(value.strip()) and len(value) <= 60
+    if not valid or type(include_native) is not bool:
+        raise _error("invalid_parameter", "Identificador ou controle de auditoria inválido.", field="dados")
+    if not isinstance(categories, list) or any(not isinstance(row, Mapping) or set(row) != {"codigo_categoria", "percentual"} for row in categories):
+        raise _error("invalid_parameter", "Categorias nativas inválidas.", field="dados.categorias")
+    return normalize_categories([{"codigo": row["codigo_categoria"], "percentual": row["percentual"]} for row in categories])
+
+
+def check_categories(service: Any, profile: str, identifier: Mapping[str, Any], categories: list[dict[str, Any]], *, include_native: bool = False) -> dict[str, Any]:
+    """Confere o estado atual sem gravar nem repetir uma alteração anterior.
+
+    Lê título, resumo financeiro e baixas. Quando BXCP omite categorias, lê o
+    lançamento de conta corrente e comprova o vínculo antes de usar seu rateio.
+    A ausência da coleção em CP fica explícita, sem inventar sua classificação.
+    ``conforme_esperado`` depende do título, de todas as baixas e das coleções
+    adicionais efetivamente retornadas. Divergências não provocam escrita.
+    Erros de classificação ficam em ``falhas_conferencia``; leituras financeiras
+    essenciais inconclusivas lançam ``category_allocation_preflight_failed``.
+    Esta leitura não atesta preservação entre dois instantes.
+    """
+    expected = _category_request(identifier, categories, include_native)
+    title = _title(service, profile, identifier, False)
+    observations: dict[str, Any] = {"registro": title}
+    financial, payments = _financial_state(service, profile, title, False, observations)
+    failures: list[dict[str, Any]] = []
+
+    def observe(record: Mapping[str, Any], total: Decimal, *, payment: bool = False, kind: str | None = None) -> list[dict[str, Any]] | None:
+        try:
+            return _observed(record.get("categorias"), total, payment=payment, processed=False,
+                             movement_kind=kind, present="categorias" in record)
+        except OmieError as error:
+            failures.append(error.as_dict())
+            return None
+
+    observed = observe(title, _number(title["valor_documento"]))
+    available = not _categories_omitted(financial)
+    financial_categories = observe(financial, _number(title["valor_documento"]), payment=True, kind="CP") if available else None
+    payment_results = []
+    for payment_id, row in payments.items():
+        source = "account_transactions_get" if _categories_omitted(row) else "financial_movements_list"
+        try:
+            allocation, source = _payment_categories(service, profile, title[_TITLE_ID], payment_id, row, False, observations)
+        except OmieError as error:
+            failures.append(error.as_dict())
+            allocation = None
+        payment_results.append(_payment_result(payment_id, row, allocation, source))
+    title_matches = observed is not None and _matches(expected, observed) and (
+        len(expected) != 1 or title.get("codigo_categoria") == expected[0]["codigo_categoria"]
+    )
+    financial_matches = financial_categories is not None and _matches(expected, financial_categories)
+    payments_match = all(row["categorias"] is not None and _matches(expected, row["categorias"]) for row in payment_results)
+    result: dict[str, Any] = {
+        "alvo": {"recurso": "contas_pagar", "id": title[_TITLE_ID]}, "categorias": observed,
+        "categorias_financeiro": financial_categories, "baixas": payment_results,
+        "verificacao": {"titulo_confirmado": title_matches, "titulo_financeiro_confirmado": financial_matches,
+                         "categorias_financeiro_disponiveis": available, "baixas_confirmadas": payments_match},
+        "conforme_esperado": title_matches and payments_match and (not available or financial_matches) and not failures,
+        "falhas_conferencia": failures, "somente_leitura": True, "versao_mcp": SETUP_VERSION,
+    }
+    if include_native:
+        result["dados_omie"] = observations
+    return result
 
 
 def define_categories(service: Any, profile: str, identifier: Mapping[str, Any], categories: list[dict[str, Any]], *, include_native: bool = False) -> dict[str, Any]:
@@ -409,15 +588,7 @@ def define_categories(service: Any, profile: str, identifier: Mapping[str, Any],
     escalar. Divergências observadas e efeitos colaterais têm prioridade sobre
     a ausência de classificação em outro objeto.
     """
-    if not isinstance(identifier, Mapping) or len(identifier) != 1 or not set(identifier) <= {_TITLE_ID, _INTEGRATION_ID}:
-        raise _error("invalid_parameter", "Informe exatamente um identificador do título.", field="dados")
-    key, value = next(iter(identifier.items()))
-    valid = type(value) is int and value > 0 if key == _TITLE_ID else isinstance(value, str) and bool(value.strip()) and len(value) <= 60
-    if not valid or type(include_native) is not bool:
-        raise _error("invalid_parameter", "Identificador ou controle de auditoria inválido.", field="dados")
-    if not isinstance(categories, list) or any(not isinstance(row, Mapping) or set(row) != {"codigo_categoria", "percentual"} for row in categories):
-        raise _error("invalid_parameter", "Categorias nativas inválidas.", field="dados.categorias")
-    expected = normalize_categories([{"codigo": row["codigo_categoria"], "percentual": row["percentual"]} for row in categories])
+    expected = _category_request(identifier, categories, include_native)
     before = _title(service, profile, identifier, False)
     query = {_TITLE_ID: before[_TITLE_ID]}
     financial_before, payments_before = _financial_state(service, profile, before, False)
@@ -426,7 +597,8 @@ def define_categories(service: Any, profile: str, identifier: Mapping[str, Any],
         body["codigo_categoria"] = expected[0]["codigo_categoria"]
     audit = {"call": "AlterarContaPagar", "param": [body]}
     target = {"recurso": "contas_pagar", "id": before[_TITLE_ID]}
-    flags = {"titulo_confirmado": False, "titulo_financeiro_confirmado": False, "baixas_confirmadas": False, "campos_preservados": False}
+    flags = {"titulo_confirmado": False, "titulo_financeiro_confirmado": False, "categorias_financeiro_disponiveis": False,
+             "baixas_confirmadas": False, "campos_preservados": False}
     category_errors: list[OmieError] = []
     observations: dict[str, Any] = {}
     observed = None
@@ -459,11 +631,17 @@ def define_categories(service: Any, profile: str, identifier: Mapping[str, Any],
             len(expected) != 1 or after.get("codigo_categoria") == expected[0]["codigo_categoria"]
         )
         financial_after, payments_after = _financial_state(service, profile, after, True, observations)
-        financial_categories = observe(financial_after, _number(after["valor_documento"]), payment=True, kind="CP")
+        flags["categorias_financeiro_disponiveis"] = not _categories_omitted(financial_after)
+        financial_categories = observe(financial_after, _number(after["valor_documento"]), payment=True, kind="CP") if flags["categorias_financeiro_disponiveis"] else None
         flags["titulo_financeiro_confirmado"] = financial_categories is not None and _matches(expected, financial_categories)
         for payment_id, row in payments_after.items():
-            allocation = observe(row, abs(_number(row["detalhes"]["nValorMovCC"])), payment=True, kind="BXCP", payment_id=payment_id)
-            payments.append(_payment_result(payment_id, row, allocation))
+            source = "account_transactions_get" if _categories_omitted(row) else "financial_movements_list"
+            try:
+                allocation, source = _payment_categories(service, profile, after[_TITLE_ID], payment_id, row, True, observations)
+            except OmieError as error:
+                category_errors.append(error)
+                allocation = None
+            payments.append(_payment_result(payment_id, row, allocation, source))
         flags["baixas_confirmadas"] = all(row["categorias"] is not None and _matches(expected, row["categorias"]) for row in payments)
         changed = []
         if not _same(_snapshot(before, title=True), _snapshot(after, title=True)):

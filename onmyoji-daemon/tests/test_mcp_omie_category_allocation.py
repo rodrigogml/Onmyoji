@@ -767,17 +767,38 @@ def test_missing_category_collection_keeps_its_origin_and_still_checks_financial
     else:
         record["categorias"] = collection
     original = deepcopy(responses)
+    if group == "BXCP":
+        failure = OmieError("omie_http_error", "Consulta do lançamento indisponível", {"http_status": 503})
+        responses.append(failure)
+        original.append(failure)
     service = Mock()
     service.invoke_financial.side_effect = responses
+
+    if group == "CP":
+        result = define_categories(service, "empresa", IDENTIFIER, CATEGORIES, include_native=include_native)
+        assert result["verificacao"]["titulo_confirmado"] is True
+        assert result["verificacao"]["titulo_financeiro_confirmado"] is False
+        assert result["verificacao"]["categorias_financeiro_disponiveis"] is False
+        assert result["verificacao"]["baixas_confirmadas"] is True
+        assert result["verificacao"]["campos_preservados"] is True
+        assert result["categorias_financeiro"] is None
+        assert responses == original
+        assert len(service.invoke_financial.call_args_list) == 7
+        assert sum(call.kwargs["writes"] for call in service.invoke_financial.call_args_list) == 1
+        assert ("dados_omie" in result) is include_native
+        if include_native:
+            assert result["dados_omie"]["financeiro"] == original[5]["movimentos"][0]
+        return
 
     with pytest.raises(OmieError) as raised:
         define_categories(service, "empresa", IDENTIFIER, CATEGORIES, include_native=include_native)
 
     error = raised.value
     assert error.code == "category_allocation_verification_failed"
-    assert error.details["reason"] == "missing_categories"
-    assert error.details["field"] == "categorias"
-    assert error.details["operation"] == operation
+    assert error.details["reason"] == ("query_failed" if group == "BXCP" else "missing_categories")
+    if group != "BXCP":
+        assert error.details["field"] == "categorias"
+    assert error.details["operation"] == ("account_transactions_get" if group == "BXCP" else operation)
     if kind is None:
         assert "tipo_movimento" not in error.details
     else:
@@ -789,7 +810,7 @@ def test_missing_category_collection_keeps_its_origin_and_still_checks_financial
     assert error.details["escrita_processada"] is True
     assert error.details["retryable"] is False
     assert error.details["verificacao"]["campos_preservados"] is True
-    assert len(service.invoke_financial.call_args_list) == 7
+    assert len(service.invoke_financial.call_args_list) == (8 if group == "BXCP" else 7)
     assert sum(call.kwargs["writes"] for call in service.invoke_financial.call_args_list) == 1
     assert responses == original
     assert ("dados_omie" in error.details) is include_native
@@ -806,6 +827,7 @@ def test_missing_collections_are_reported_together_without_claiming_any_category
     del responses[4]["categorias"]
     responses[5]["movimentos"][0]["categorias"] = []
     responses[6]["movimentos"][0]["categorias"] = None
+    responses.append(OmieError("omie_http_error", "Consulta do lançamento indisponível", {"http_status": 503}))
     service = Mock()
     service.invoke_financial.side_effect = responses
 
@@ -815,20 +837,20 @@ def test_missing_collections_are_reported_together_without_claiming_any_category
     details = raised.value.details
     assert raised.value.code == "category_allocation_verification_failed"
     failures = details["falhas_conferencia"]
-    assert len(failures) == 3
+    assert len(failures) == 2
     assert all(failure["code"] == "category_allocation_verification_failed" for failure in failures)
     assert [(failure["details"]["operation"], failure["details"].get("tipo_movimento")) for failure in failures] == [
-        ("payables_get", None), ("financial_movements_list", "CP"), ("financial_movements_list", "BXCP"),
+        ("payables_get", None), ("account_transactions_get", "BXCP"),
     ]
-    assert failures[2]["details"]["id_baixa"] == 78
+    assert failures[1]["details"]["id_baixa"] == 78
     assert details["categorias_titulo"] is None
     assert details["categorias_financeiro"] is None
     assert details["baixas"][0]["categorias"] is None
     assert details["verificacao"] == {
-        "titulo_confirmado": False, "titulo_financeiro_confirmado": False,
+        "titulo_confirmado": False, "titulo_financeiro_confirmado": False, "categorias_financeiro_disponiveis": False,
         "baixas_confirmadas": False, "campos_preservados": True,
     }
-    assert len(service.invoke_financial.call_args_list) == 7
+    assert len(service.invoke_financial.call_args_list) == 8
     assert sum(call.kwargs["writes"] for call in service.invoke_financial.call_args_list) == 1
 
 
@@ -885,7 +907,8 @@ def test_observed_legacy_title_takes_precedence_over_missing_financial_categorie
     ]
     assert details["categorias_financeiro"] is None
     assert details["baixas"][0]["categorias"][1]["codigo"] == "2.07.01"
-    assert details["falhas_conferencia"][0]["details"]["tipo_movimento"] == "CP"
+    assert not details.get("falhas_conferencia")
+    assert details["verificacao"]["categorias_financeiro_disponiveis"] is False
     assert details["verificacao"]["campos_preservados"] is True
     assert len(service.invoke_financial.call_args_list) == 7
     assert sum(call.kwargs["writes"] for call in service.invoke_financial.call_args_list) == 1
@@ -895,6 +918,7 @@ def test_observed_legacy_financial_title_takes_precedence_over_missing_payment_c
     responses = successful_responses()
     responses[5] = page(financial_record(payment=False))
     del responses[6]["movimentos"][0]["categorias"]
+    responses.append(OmieError("omie_http_error", "Consulta do lançamento indisponível", {"http_status": 503}))
     service = Mock()
     service.invoke_financial.side_effect = responses
 
@@ -910,7 +934,7 @@ def test_observed_legacy_financial_title_takes_precedence_over_missing_payment_c
     assert details["categorias_financeiro"][1]["codigo"] == "2.07.01"
     assert details["baixas"][0]["categorias"] is None
     assert details["falhas_conferencia"][0]["details"]["id_baixa"] == 78
-    assert len(service.invoke_financial.call_args_list) == 7
+    assert len(service.invoke_financial.call_args_list) == 8
     assert sum(call.kwargs["writes"] for call in service.invoke_financial.call_args_list) == 1
 
 

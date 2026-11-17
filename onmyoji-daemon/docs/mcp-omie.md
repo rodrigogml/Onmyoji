@@ -212,6 +212,18 @@ registro financeiro do título e o resumo do pagamento. Não exige que o agente
 descubra previamente o ID de cada baixa. Cada baixa identificada é conferida
 por seu `nCodBaixa`, sem confundi-lo
 com o identificador do título ou do movimento de conta corrente.
+Quando `ListarMovimentos` omite `categorias` de uma baixa `BXCP`, ou a retorna
+como `null` ou lista vazia, a conferência consulta o lançamento vinculado por
+`ConsultaLancCC`, usando `nCodMovCC`. Lê o rateio em `detalhes.aCodCateg` e
+valida o ID do movimento, o título de origem, a conta efetiva e o valor da
+baixa. Dados de conciliação retornados também são confrontados. Essa consulta
+não edita o lançamento nem refaz o pagamento.
+Se o rateio do lançamento contiver somente `nValor`, a comparação usa os
+valores por código e o líquido da baixa, com tolerância de R$ 0,01. Nessa
+representação, a comparação usa valores sem reconstruir percentuais a partir
+dos centavos. A ausência da coleção `aCodCateg` continua
+inconclusiva: a categoria escalar não comprova a distribuição completa.
+
 As consultas usam a data de emissão efetiva do título para evitar a janela
 padrão de 30 dias da Omie. Se essa data estiver ausente ou inválida, ou se a
 soma das baixas não conferir com o resumo financeiro do título, a operação
@@ -257,7 +269,15 @@ significa confirmado e `false` significa não confirmado. Nos erros, as
 coleções `categorias_titulo`, `categorias_financeiro` e
 `baixas[i].categorias` usam `null` quando a conferência ficou inconclusiva.
 Uma coleção ausente não significa distribuição vazia nem remoção confirmada
-de categorias.
+de categorias. `verificacao.categorias_financeiro_disponiveis` distingue a
+presença da distribuição no registro `CP`. Se esse endpoint não fornecer a coleção, a
+classificação pode ser conferida no título e em todas as baixas sem exigir
+que `CP` repita a mesma informação. O MCP não copia categorias do título para
+apresentá-las como uma leitura de `CP`.
+Cada baixa informa `fonte_categorias`: `financial_movements_list` indica a
+leitura no movimento financeiro; `account_transactions_get` indica a consulta
+ao lançamento vinculado. Na auditoria, `dados_omie.lancamentos` contém os
+lançamentos consultados cujo vínculo foi validado.
 As falhas de conferência são reunidas em `details.falhas_conferencia`, como
 objetos com `code`, `message` e `details`. O diagnóstico de uma coleção
 ausente identifica `field: categorias`, a operação e, em movimentos
@@ -344,8 +364,50 @@ comportamento com o suporte Omie ou em um ambiente de teste da API. A interface
 do ERP também pode ser utilizada se permitir o ajuste. Não repita a escrita
 para tentar forçar a propagação, nem cancele a baixa automaticamente.
 
-Referências: [contas a pagar](https://app.omie.com.br/api/v1/financas/contapagar/)
-e [movimentos financeiros](https://app.omie.com.br/api/v1/financas/mf/).
+#### Conferir categorias sem uma nova gravação
+
+Após uma escrita processada cujo rateio não foi confirmado, use
+`omie.financeiro.contas_pagar.conferir_categorias`. Essa ferramenta é somente
+leitura: consulta título, resumo financeiro e baixas, incluindo o lançamento
+vinculado quando a lista de movimentos omitir sua distribuição. Ela não
+chama `AlterarContaPagar` nem altera baixa, desconto ou conciliação.
+
+Informe `filtros` com exatamente um entre `id` e `codigo_integracao` e a lista
+completa `categorias_esperadas` no nível principal. A lista usa os mesmos
+códigos e percentuais da definição de categorias. Não envie `confirmar`,
+`dados`, `pagina` nem `tamanho_pagina`. `incluir_dados_omie` e
+`atualizar_cache` são controles booleanos opcionais; a conferência exige
+leituras remotas e respeita o cooldown da Omie.
+
+Exemplo fictício para conferir uma categoria única, sem escrever:
+
+```json
+{"tool":"omie.financeiro.contas_pagar.conferir_categorias","arguments":{"filtros":{"id":9000000002},"categorias_esperadas":[{"codigo":"2.01.03","percentual":100}],"incluir_dados_omie":true,"atualizar_cache":true}}
+```
+
+O retorno informa `conforme_esperado`, as categorias observadas,
+`baixas[i].fonte_categorias` e eventuais falhas em `falhas_conferencia`.
+Uma baixa cujo rateio só contém valores retorna `codigo` e `valor`, sem
+inventar `percentual`. Se a coleção de `CP` estiver ausente,
+`verificacao.categorias_financeiro_disponiveis` é `false`; a confirmação do
+título e de todas as baixas pode ser suficiente para `conforme_esperado`,
+sem exigir `titulo_financeiro_confirmado: true` para uma coleção não fornecida.
+
+Os valores de pagamento, desconto e conciliação são os observados nas
+consultas. Essa leitura não inclui `verificacao.campos_preservados`: não
+comprova preservação entre dois instantes nem substitui a comparação anterior
+e posterior feita por uma operação de escrita. Leituras financeiras
+essenciais inconclusivas retornam erro de conferência, sem escrita.
+
+Na validação da versão `2026.11.17.10`, o título permaneceu com o rateio
+anterior após `AlterarContaPagar`. Para acompanhar esse caso, a próxima ação é
+`conferir_categorias`, sem uma nova chamada de definição. O payload de escrita
+continua baseado no contrato já publicado; a conferência por outro endpoint
+não presume que uma nova tentativa de gravação resolverá a divergência.
+
+Referências: [contas a pagar](https://app.omie.com.br/api/v1/financas/contapagar/),
+[movimentos financeiros](https://app.omie.com.br/api/v1/financas/mf/) e
+[lançamentos de conta corrente](https://app.omie.com.br/api/v1/financas/contacorrentelancamentos/).
 
 ### Departamentos: cadastro e rateio são responsabilidades diferentes
 

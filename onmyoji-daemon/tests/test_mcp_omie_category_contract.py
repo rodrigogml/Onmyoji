@@ -223,6 +223,7 @@ def test_replacement_reaches_native_contract_and_confirms_discounted_reconciled_
 
     assert result["verificacao"] == {
         "titulo_confirmado": True, "titulo_financeiro_confirmado": True,
+        "categorias_financeiro_disponiveis": True,
         "baixas_confirmadas": True, "campos_preservados": True, "quantidade_baixas": 1,
     }
     assert result["baixas"][0]["id_baixa"] == 78
