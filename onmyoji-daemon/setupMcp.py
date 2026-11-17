@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+from uuid import uuid4
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -378,7 +379,9 @@ def save_password(name: str, auth: dict, root: Path = ROOT, password: str | None
                 store_protected_password(Path(configured["linux"]["path"]), password, root=root)
             else:
                 identity = instance_identity(root)
-                subprocess.run(["secret-tool", "store", f"--label={identity} MCP KeePass {name}", "service", "shikigami-mcp", "shikigami", identity, "profile", name], input=password + "\n", text=True, check=True, timeout=20, capture_output=True)
+                lookup = configured["linux"].get("command", [])
+                attributes = lookup[2:] if len(lookup) >= 2 and Path(lookup[0]).name == "secret-tool" and lookup[1] == "lookup" else ["service", "shikigami-mcp", "shikigami", identity, "profile", name]
+                subprocess.run(["secret-tool", "store", f"--label={identity} MCP KeePass {name}", *attributes], input=password + "\n", text=True, check=True, timeout=20, capture_output=True)
         except (OSError, subprocess.SubprocessError) as error:
             if isinstance(error, subprocess.TimeoutExpired):
                 detail = "tempo limite excedido"
@@ -533,6 +536,126 @@ def ensure_linux_secret_tool() -> bool:
     return ready
 
 
+def recreation_auth(name: str, root: Path, auth: dict) -> tuple[str, dict]:
+    """Separa a nova senha do provedor anterior durante a recriação do cofre."""
+    storage_name = f"{name}-recreated-{uuid4().hex}"
+    selected = copy.deepcopy(auth)
+    selected["windows"]["target"] = str(selected["windows"].get("target", name)) + "/" + storage_name
+    if selected["linux"].get("mode") == "protected_file":
+        selected["linux"] = protected_password_auth(storage_name, root)
+    else:
+        identity = instance_identity(root)
+        selected["linux"]["command"] = ["secret-tool", "lookup", "service", "shikigami-mcp", "shikigami", identity, "profile", storage_name]
+    return storage_name, selected
+
+
+def discard_recreated_password(auth: dict) -> None:
+    """Remove somente o destino exclusivo de uma recriação que não foi publicada."""
+    if os.name == "nt":
+        import ctypes
+        ctypes.windll.advapi32.CredDeleteW(auth["windows"]["target"], 1, 0)
+    elif auth["linux"].get("mode") == "protected_file":
+        Path(auth["linux"]["path"]).unlink(missing_ok=True)
+    else:
+        subprocess.run(["secret-tool", "clear", *auth["linux"]["command"][2:]], capture_output=True, timeout=20, check=False)
+
+
+def recreate_vault_profile(config: McpConfiguration, data: dict, name: str, password: str) -> bool:
+    """Prepara um novo cofre e senha antes de substituir o arquivo confirmado.
+
+    A criação e os backups ficam em ``tmp``. Uma falha de publicação restaura
+    o cofre e a configuração; a senha anterior nunca é substituída. Se uma
+    restauração falhar, seu backup é mantido e o caminho é informado ao operador.
+    """
+    platform = "windows" if os.name == "nt" else "linux"
+    database = Path(data["vaults"][name]["database"][platform])
+    temporary = None
+    replaced = False
+    storage_attempted = False
+    committed = False
+    configuration_attempted = False
+    keep_backup = False
+    backup = None
+    credentials_backup = None
+    credentials_existed = config.credentials_path.exists()
+    storage_name, auth = recreation_auth(name, config.root, data["profiles"][name]["auth"])
+    try:
+        original = database.stat()
+        original_identity = (original.st_dev, original.st_ino, original.st_size, original.st_mtime_ns)
+        temporary_root = config.root / "tmp"
+        if temporary_root.is_symlink():
+            raise OSError("A pasta temporária não pode ser um link simbólico.")
+        temporary_root.mkdir(parents=True, exist_ok=True)
+        temporary = Path(tempfile.mkdtemp(prefix="keepass-recreate-", dir=temporary_root))
+        candidate = temporary / "new.kdbx"
+        backup = temporary / "previous.kdbx"
+        if credentials_existed:
+            credentials_backup = temporary / "credentials.toml"
+            shutil.copy2(config.credentials_path, credentials_backup)
+            if os.name == "posix" and credentials_backup.stat().st_gid != config.credentials_path.stat().st_gid:
+                os.chown(credentials_backup, -1, config.credentials_path.stat().st_gid)
+        command = scope_flatpak_to_database(data["vaults"][name]["cli_command"], str(candidate))
+        made = subprocess.run([*command, "db-create", "--set-password", str(candidate)], input=password + "\n" + password + "\n", text=True, timeout=60, capture_output=True)
+        if made.returncode:
+            result(False, keepassxc_creation_error(made))
+            return False
+        if not candidate.is_file():
+            result(False, "KeePassXC informou sucesso, mas o novo cofre não foi criado.")
+            return False
+        candidate_vault = copy.deepcopy(data["vaults"][name])
+        candidate_vault["cli_command"] = command
+        candidate_vault["database"][platform] = str(candidate)
+        KeePassCredentialResolver.validate_vault_access(candidate_vault, data.get("defaults", {}), password)
+        with candidate.open("r+b") as prepared:
+            os.fsync(prepared.fileno())
+        if os.name == "posix":
+            if candidate.stat().st_gid != database.parent.stat().st_gid:
+                os.chown(candidate, -1, database.parent.stat().st_gid)
+            candidate.chmod(operational_file_mode(config.root) or 0o600)
+        storage_attempted = True
+        if not save_password(storage_name, auth, config.root, password):
+            return False
+        data["profiles"][name]["auth"] = auth
+        current = database.stat()
+        if database.is_symlink() or not database.is_file() or current.st_nlink != 1 or (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns) != original_identity:
+            raise OSError("O destino da recriação não é um arquivo regular exclusivo.")
+        shutil.copy2(database, backup)
+        if os.name == "posix" and backup.stat().st_gid != original.st_gid:
+            os.chown(backup, -1, original.st_gid)
+        os.replace(candidate, database)
+        replaced = True
+        configuration_attempted = True
+        config.save_credentials(data)
+        committed = True
+        result(True, "Cofre anterior excluído e novo cofre criado; perfil salvo.")
+        return True
+    except (OSError, subprocess.SubprocessError, CredentialError, McpConfigurationError):
+        try:
+            if replaced:
+                os.replace(backup, database)
+            if configuration_attempted and credentials_backup is not None and credentials_backup.is_file():
+                os.replace(credentials_backup, config.credentials_path)
+            elif configuration_attempted and not credentials_existed:
+                config.credentials_path.unlink(missing_ok=True)
+        except OSError:
+            keep_backup = True
+            result(False, f"A recriação falhou e a restauração precisa ser concluída a partir do backup em {temporary}.")
+        else:
+            result(False, "Não foi possível concluir a recriação; o cofre anterior foi preservado.")
+        return False
+    finally:
+        if storage_attempted and not committed and not keep_backup:
+            try:
+                discard_recreated_password(auth)
+            except (OSError, subprocess.SubprocessError, AttributeError):
+                alert("A senha da tentativa interrompida permanece no provedor; o perfil anterior continua vigente.")
+        if temporary is not None and not keep_backup:
+            try:
+                shutil.rmtree(temporary)
+            except OSError:
+                alert(f"Os arquivos temporários da tentativa permanecem em {temporary}; remova-os após conferir o resultado.")
+
+
 def create_vault_profile(config: McpConfiguration) -> None:
     data = config.credentials()
     name = ask_new_profile_name("Nome do perfil de vault", data["profiles"])
@@ -546,14 +669,31 @@ def create_vault_profile(config: McpConfiguration) -> None:
     database = str(config.root / "configs" / "mcp" / "vaults" / f"{name}.kdbx") if origin.startswith("Criar") else ask(f"Arquivo KDBX no {platform}", required=True)
     if not database: return
     creating = origin.startswith("Criar")
+    recreating = False
     if creating and Path(database).exists():
         note(f"Já existe um cofre em {database}; ele pode ser associado a este perfil sem ser sobrescrito.")
-        selected = flow_choice("Cofre local já existente", ["Associar o cofre existente"], "Associar o cofre existente")
-        if selected != "Associar o cofre existente":
+        selected = flow_choice("Cofre local já existente", ["Associar o cofre existente", "Excluir e criar um novo cofre"], "Associar o cofre existente")
+        if selected == "Excluir e criar um novo cofre":
+            destination = Path(database)
+            allowed_directory = config.root.resolve() / "configs" / "mcp" / "vaults"
+            if destination.resolve().parent != allowed_directory or destination.is_symlink() or not destination.is_file() or destination.stat().st_nlink != 1:
+                result(False, "A recriação exige um arquivo KDBX regular, sem links.")
+                return
+            if any(Path(vault.get("database", {}).get(platform, "")).resolve() == destination.resolve() for vault in data["vaults"].values() if vault.get("database", {}).get(platform)):
+                result(False, "Esse cofre já está configurado na instância. Gerencie os perfis existentes antes de recriá-lo.")
+                return
+            note("Esta opção exclui definitivamente todas as entradas do cofre existente e cria um cofre vazio com uma nova senha.")
+            if prompt("Excluir o cofre existente e criar um novo? [s/N]: ").strip().casefold() not in {"s", "sim"}:
+                return
+            recreating = True
+        elif selected == "Associar o cofre existente":
+            creating = False
+        else:
             return
-        creating = False
     command = scope_flatpak_to_database(command, database)
     auth = profile_auth(name, config.root)
+    if os.name == "nt" and not auth.get("windows", {}).get("target"):
+        return
     if os.name != "nt" and auth.get("linux", {}).get("mode") == "command" and not ensure_linux_secret_tool(): return
     roots = ask("Raízes de entradas permitidas, separadas por ; (vazio = todas)", "")
     if roots is None:
@@ -564,6 +704,9 @@ def create_vault_profile(config: McpConfiguration) -> None:
         password = getpass.getpass(Ui.text("› Senha mestra do novo vault (não será exibida): ", Ui.violet, Ui.bold))
         confirm = getpass.getpass(Ui.text("› Repita a senha mestra: ", Ui.violet, Ui.bold))
         if not password or password != confirm: result(False, "Senhas não conferem; nada foi salvo."); return
+        if recreating:
+            recreate_vault_profile(config, data, name, password)
+            return
         try:
             if Path(database).exists():
                 result(False, f"Já existe um arquivo em {database}. Associe esse KDBX como cofre existente ou escolha outro nome de perfil.")

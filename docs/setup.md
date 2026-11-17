@@ -18,7 +18,9 @@ A senha mestra usa o Windows Credential Manager no Windows. No Linux com conta d
 > [!IMPORTANT]
 > Os arquivos em `configs/mcp/secrets/` contêm a senha mestra e são protegidos pelas permissões do sistema de arquivos. O compartilhamento com o grupo privado da instância só é aplicado quando previsto na configuração operacional. Essa área é local e nunca deve ser incluída no Git; as senhas não são exibidas no diagnóstico.
 
-Se a criação do KDBX terminar, mas a gravação da senha falhar, preserve o arquivo criado. Em **K. KeePass > 1. Criar perfil**, informe o mesmo nome, como `default`: ao escolher **Criar cofre KDBX local**, o setup detecta `configs/mcp/vaults/default.kdbx` e oferece associá-lo. Também é possível escolher diretamente **Associar arquivo KDBX existente** e informar esse caminho. A associação valida a senha mestra antes de registrar o perfil e não sobrescreve o cofre.
+Se a criação do KDBX terminar, mas a gravação da senha falhar, preserve o arquivo criado. Em **K. KeePass > 1. Criar perfil**, informe o mesmo nome, como `default`: ao escolher **Criar cofre KDBX local**, o setup detecta `configs/mcp/vaults/default.kdbx` e oferece **1. Associar o cofre existente**, **2. Excluir e criar um novo cofre** e **X. Cancelar**. Enter adota a associação. Também é possível escolher diretamente **Associar arquivo KDBX existente** e informar esse caminho; a associação valida a senha mestra antes de registrar o perfil.
+
+A opção **2** informa a perda das entradas do cofre anterior e exige confirmação com padrão **s/N**, além da nova senha mestra e sua repetição. Cofres já configurados em outros perfis não podem ser recriados por esse roteiro. O arquivo original é preservado enquanto o novo cofre e o armazenamento da senha são preparados; se a criação ou a publicação do perfil falhar, o cofre anterior é restaurado. Se a restauração for impedida, o setup preserva o backup e informa seu caminho para recuperação.
 
 O menu KeePass também pode ser aberto diretamente, sem preparar os componentes MCP:
 
