@@ -1480,6 +1480,7 @@ def configure_python_runtime(root: Path, data: dict[str, object]) -> dict[str, o
         flow_heading("Instalação inicial", "Runtime Python do Shikigami")
         print("  1. Ambiente isolado — cria /venv na raiz da instância.")
         print("  2. Python global — instala dependências no interpretador selecionado.")
+        note("O modo global permite atualizar bibliotecas compartilhadas com o sistema operacional.")
         default_mode = "2" if data.get("python_mode") == "global" else "1"
         mode = prompt(f"Opção [{default_mode}]: ").strip().casefold() or default_mode
         if mode in {"x", "\x1b"}: return None
@@ -2199,6 +2200,7 @@ def _configure_python_runtime(root: Path, data: dict[str, object]) -> dict[str, 
     flow_heading("Python e bibliotecas", "Runtime único do Shikigami")
     print("  1. Ambiente isolado — cria e usa /venv na raiz da instância.")
     print("  2. Python global — instala e usa componentes no interpretador escolhido.")
+    note("O modo global permite atualizar bibliotecas compartilhadas com o sistema operacional.")
     default = "1" if data["python_mode"] == "isolated" else "2"
     mode = prompt(f"Modo [{default}]: ").strip().casefold() or default
     if mode in {"x", "\x1b"}:

@@ -79,7 +79,7 @@ def is_isolated(root: Path) -> bool:
 
 
 def _environment() -> dict[str, str]:
-    environment = {key: value for key, value in os.environ.items() if key.upper() not in {"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE", "PIP_TARGET", "PIP_PREFIX", "PIP_USER"}}
+    environment = {key: value for key, value in os.environ.items() if key.upper() not in {"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE", "PIP_TARGET", "PIP_PREFIX", "PIP_USER", "PIP_BREAK_SYSTEM_PACKAGES"}}
     environment.update(PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1")
     return environment
 
@@ -138,9 +138,19 @@ def run_with_progress(command: list[str], *, environment: dict[str, str], timeou
 
 
 def ensure(root: Path, requirements: list[str], probe: str, progress: Callable[[str], None] | None = None) -> str:
-    """Prepara o runtime selecionado e instala requisitos no mesmo interpretador."""
+    """Prepara o runtime selecionado e instala requisitos no mesmo interpretador.
+
+    A seleção global permite ao pip instalar em Python protegido por PEP 668;
+    essa permissão existe somente no ambiente do processo de instalação.
+    O modo isolado nunca recebe essa permissão, mesmo quando herdada do terminal.
+
+    Raises:
+        RuntimeError: Se a configuração for inválida, o interpretador não existir
+            ou a criação, instalação ou validação das dependências falhar.
+    """
     executable = python(root)
-    if is_isolated(root) and not executable.is_file():
+    isolated = is_isolated(root)
+    if isolated and not executable.is_file():
         source = base_python(root)
         if not source.is_file():
             raise RuntimeError("O Python-base configurado para criar /venv não existe.")
@@ -155,11 +165,16 @@ def ensure(root: Path, requirements: list[str], probe: str, progress: Callable[[
     if not executable.is_file():
         raise RuntimeError("O Python global configurado não existe.")
     if requirements:
+        environment = _environment()
+        if not isolated:
+            environment["PIP_BREAK_SYSTEM_PACKAGES"] = "1"
+            if progress:
+                progress("Modo global: a instalação pode atualizar bibliotecas do sistema, inclusive em Python protegido por PEP 668.")
         if progress:
             progress("Instalando dependências no runtime único do Shikigami.")
         command = _pip_command(executable, ["install", "--disable-pip-version-check", "--no-input", "--upgrade", *requirements])
         try:
-            code, detail = run_with_progress(command, environment=_environment(), timeout=600, stage="Instalando dependências no runtime único do Shikigami.", progress=progress)
+            code, detail = run_with_progress(command, environment=environment, timeout=600, stage="Instalando dependências no runtime único do Shikigami.", progress=progress)
         except RuntimeError as error:
             raise RuntimeError("Não foi possível instalar dependências no runtime do Shikigami.") from error
         if code:
