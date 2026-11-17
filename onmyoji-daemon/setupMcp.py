@@ -393,7 +393,7 @@ def save_password(name: str, auth: dict, root: Path = ROOT, password: str | None
             result(False, f"Não foi possível salvar a senha mestra em {provider}: {detail}.")
             if provider != "Secret Service":
                 return False
-            selected = flow_choice("Armazenamento da senha mestra", ["Tentar novamente no provedor do sistema", "Usar arquivo local protegido", "Cancelar"], "Usar arquivo local protegido")
+            selected = flow_choice("Armazenamento da senha mestra", ["Tentar novamente no provedor do sistema", "Usar arquivo local protegido"], "Usar arquivo local protegido")
             if selected == "Tentar novamente no provedor do sistema":
                 continue
             if selected == "Usar arquivo local protegido":
@@ -520,7 +520,7 @@ def ensure_linux_secret_tool() -> bool:
     if os.name == "nt" or shutil.which("secret-tool"):
         return True
     result(False, "secret-tool não está disponível; ele é necessário para salvar a senha mestra com segurança.")
-    selected = flow_choice("Provedor de segredos não encontrado", ["Instalar o provedor do sistema", "Cancelar"], "Instalar o provedor do sistema")
+    selected = flow_choice("Provedor de segredos não encontrado", ["Instalar o provedor do sistema"], "Instalar o provedor do sistema")
     if selected != "Instalar o provedor do sistema":
         return False
     installed = install_linux_packages("provedor seguro de senhas", {
@@ -548,7 +548,7 @@ def create_vault_profile(config: McpConfiguration) -> None:
     creating = origin.startswith("Criar")
     if creating and Path(database).exists():
         note(f"Já existe um cofre em {database}; ele pode ser associado a este perfil sem ser sobrescrito.")
-        selected = flow_choice("Cofre local já existente", ["Associar o cofre existente", "Cancelar"], "Associar o cofre existente")
+        selected = flow_choice("Cofre local já existente", ["Associar o cofre existente"], "Associar o cofre existente")
         if selected != "Associar o cofre existente":
             return
         creating = False

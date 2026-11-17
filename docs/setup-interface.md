@@ -29,7 +29,7 @@ Use `flow_choice()` para escolhas enumeradas internas. Ele não cria uma tela no
 › Opção [1]:
 ```
 
-`X` sempre interrompe a etapa atual e retorna ao contexto imediatamente anterior; nunca significa confirmar, apagar ou outra ação.
+`X` sempre interrompe a etapa atual e retorna ao contexto imediatamente anterior; nunca significa confirmar, apagar ou outra ação. `flow_choice()` já apresenta essa alternativa: não inclua `Cancelar` ou `Voltar` entre as opções numeradas para encerrar a mesma etapa.
 
 ## Entradas livres e confirmações
 

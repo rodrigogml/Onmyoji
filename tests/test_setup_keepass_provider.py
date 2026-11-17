@@ -86,21 +86,20 @@ def test_secret_service_failure_can_use_protected_file_without_reasking_the_pass
     assert stored[0][1] == "master-value"
     assert stored[0][0].is_relative_to(tmp_path / "configs" / "mcp" / "secrets")
     assert auth["linux"] == {"mode": "protected_file", "path": str(stored[0][0])}
-    assert choices[0][1] == ["Tentar novamente no provedor do sistema", "Usar arquivo local protegido", "Cancelar"]
+    assert choices[0][1] == ["Tentar novamente no provedor do sistema", "Usar arquivo local protegido"]
     assert choices[0][2] == "Usar arquivo local protegido"
     output = capsys.readouterr().out
     assert "master-value" not in output
     assert "Traceback" not in output
 
 
-@pytest.mark.parametrize("cancel", [None, "Cancelar"])
-def test_cancelled_provider_recovery_preserves_authentication_and_does_not_write(tmp_path, monkeypatch, linux, cancel):
+def test_cancelled_provider_recovery_preserves_authentication_and_does_not_write(tmp_path, monkeypatch, linux):
     auth = command_auth()
     original = copy.deepcopy(auth)
     def unavailable(*_args, **_kwargs):
         raise subprocess.CalledProcessError(1, ["secret-tool"])
     monkeypatch.setattr(MODULE.subprocess, "run", unavailable)
-    monkeypatch.setattr(MODULE, "flow_choice", lambda *_args: cancel)
+    monkeypatch.setattr(MODULE, "flow_choice", lambda *_args: None)
     monkeypatch.setattr(MODULE, "store_protected_password", lambda *_args, **_kwargs: pytest.fail("Cancelamento não grava outro backend."))
 
     assert MODULE.save_password("default", auth, tmp_path, "master-value") is False
@@ -228,10 +227,9 @@ def test_orphan_database_can_be_associated_without_recreating_or_reconfirming_it
     assert data["vaults"]["default"]["database"]["linux"] == str(database)
 
 
-@pytest.mark.parametrize("cancel", [None, "Cancelar"])
-def test_cancelled_orphan_recovery_does_not_ask_for_a_password_or_change_the_database(tmp_path, monkeypatch, linux, cancel):
+def test_cancelled_orphan_recovery_does_not_ask_for_a_password_or_change_the_database(tmp_path, monkeypatch, linux):
     config, database = orphan_configuration(tmp_path)
-    prepare_orphan_flow(monkeypatch, {}, ["Criar cofre KDBX local", cancel])
+    prepare_orphan_flow(monkeypatch, {}, ["Criar cofre KDBX local", None])
     monkeypatch.setattr(MODULE.getpass, "getpass", lambda *_args: pytest.fail("O cancelamento precede a senha."))
     monkeypatch.setattr(MODULE, "save_password", lambda *_args: pytest.fail("O cancelamento não salva credenciais."))
 

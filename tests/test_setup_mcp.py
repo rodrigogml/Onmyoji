@@ -230,7 +230,7 @@ class McpSetupTests(unittest.TestCase):
         config.credentials.return_value = {"defaults": {}, "vaults": {}, "profiles": {}}
         database = config.root / "configs" / "mcp" / "vaults" / "principal.kdbx"
 
-        with patch.object(MODULE, "ask_new_profile_name", return_value="principal"), patch.object(MODULE, "flow_choice", side_effect=["Criar cofre KDBX local", "Cancelar"]), patch.object(MODULE, "select_keepassxc_command", return_value=["keepassxc-cli"]), patch.object(MODULE, "ensure_linux_secret_tool", return_value=True), patch.object(MODULE, "ask", return_value=""), patch.object(MODULE, "profile_auth", return_value={}), patch.object(MODULE.getpass, "getpass") as getpass, patch.object(MODULE.Path, "exists", return_value=True), patch.object(MODULE.subprocess, "run") as run:
+        with patch.object(MODULE, "ask_new_profile_name", return_value="principal"), patch.object(MODULE, "flow_choice", side_effect=["Criar cofre KDBX local", None]), patch.object(MODULE, "select_keepassxc_command", return_value=["keepassxc-cli"]), patch.object(MODULE, "ensure_linux_secret_tool", return_value=True), patch.object(MODULE, "ask", return_value=""), patch.object(MODULE, "profile_auth", return_value={}), patch.object(MODULE.getpass, "getpass") as getpass, patch.object(MODULE.Path, "exists", return_value=True), patch.object(MODULE.subprocess, "run") as run:
             MODULE.create_vault_profile(config)
 
         run.assert_not_called()
