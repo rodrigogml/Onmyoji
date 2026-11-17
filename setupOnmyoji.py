@@ -2725,6 +2725,82 @@ def test_agent_with_runtime_repair(run_test, repair_runtime) -> bool:
     return tested.returncode == 0
 
 
+def request_telegram_pairing(root: Path, execute, *, timeout: float = 30.0, progress=None) -> tuple[dict | None, str]:
+    """Aguarda supervisor e gateway antes de solicitar um único PIN de pareamento.
+
+    ``execute`` roda o CLI no runtime e na identidade operacional da instância.
+    Consultas de prontidão podem ser repetidas até o prazo; a solicitação do PIN
+    nunca é repetida automaticamente. O retorno distingue indisponibilidade do
+    controle local, Telegram desabilitado, falha do gateway e erro no pareamento.
+    Diagnósticos externos são sanitizados e o PIN só sai no resultado válido.
+    """
+    prefix = [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root)]
+
+    def safe_detail(value: str) -> str:
+        value = re.sub(r"(?i)(https?://api\.telegram\.org/bot)[^/\s]+", r"\1[redacted]", value)
+        value = re.sub(r"(?i)\b(token|password|secret|pin|api[_-]?key|access[_-]?token)\b[\"']?\s*[:=]\s*[\"']?[^\s,}\"']+", r"\1=[redacted]", value)
+        value = re.sub(r"(?i)\bbearer\s+\S+", "Bearer [redacted]", value)
+        return " ".join(value.split())[-500:]
+
+    def detail(completed) -> str:
+        return safe_detail(completed.stderr or completed.stdout or f"O comando terminou com código {completed.returncode}.")
+
+    def decoded(completed):
+        try:
+            return json.loads(completed.stdout)
+        except (ValueError, TypeError):
+            return None
+
+    deadline = time.monotonic() + timeout
+    next_notice = 0.0
+    supervisor_seen = False
+    last_detail = "O controle local ainda não respondeu."
+    try:
+        while True:
+            supervisor = execute([*prefix, "list-services"])
+            if supervisor.returncode == 0:
+                supervisor_seen = True
+                services = decoded(supervisor)
+                if not isinstance(services, list):
+                    return None, "O daemon respondeu, mas a lista de serviços recebida é inválida. Consulte o diagnóstico do daemon."
+                telegram = next((service for service in services if isinstance(service, dict) and service.get("name") == "telegram"), None)
+                if telegram is None:
+                    return None, "O daemon respondeu, mas não registrou o gateway Telegram nesta instância. Consulte o diagnóstico do daemon."
+                state = telegram.get("state")
+                if state == "failed":
+                    reason = safe_detail(str(telegram.get("last_error") or "o serviço terminou sem informar a causa"))
+                    return None, "O daemon está respondendo, mas o gateway Telegram falhou. " + reason + " Consulte o diagnóstico do Telegram."
+                if state != "running" and telegram.get("enabled") is not True:
+                    return None, "O daemon está respondendo, mas o gateway Telegram está desabilitado. Ative-o em Gateway Telegram > 1. Gateway Telegram antes de parear um owner."
+                if state == "running":
+                    status = execute([*prefix, "telegram", "status"])
+                    information = decoded(status)
+                    if status.returncode == 0 and isinstance(information, dict) and information.get("listener") == "running":
+                        break
+                    last_detail = detail(status) if status.returncode else "O gateway ainda não confirmou o listener em execução."
+                else:
+                    last_detail = f"O gateway Telegram ainda está no estado {safe_detail(str(state or 'desconhecido'))}."
+            else:
+                last_detail = detail(supervisor)
+            now = time.monotonic()
+            if now >= deadline:
+                subject = "O daemon respondeu, mas não foi possível confirmar o gateway Telegram pronto" if supervisor_seen else "Não foi possível confirmar a comunicação com o daemon desta instância"
+                return None, f"{subject} em até {timeout:g} segundos. {last_detail} Consulte o diagnóstico do daemon e do Telegram."
+            if progress and now >= next_notice:
+                progress("Aguardando o controle local e a inicialização do gateway Telegram.")
+                next_notice = now + 5
+            time.sleep(min(0.3, deadline - now))
+        requested = execute([*prefix, "telegram", "pair-request"])
+        if requested.returncode:
+            return None, "O daemon e o gateway Telegram responderam, mas não foi possível solicitar o pareamento. " + detail(requested)
+        payload = decoded(requested)
+        if not isinstance(payload, dict) or not isinstance(payload.get("pin"), str) or not re.fullmatch(r"[0-9]{6}", payload["pin"]):
+            return None, "O daemon e o gateway Telegram responderam, mas o código de pareamento recebido é inválido."
+        return payload, ""
+    except (OSError, subprocess.SubprocessError) as error:
+        return None, "Não foi possível executar o controle local do pareamento. " + safe_detail(str(error))
+
+
 def daemon_menu(root: Path) -> None:
     project = root / "onmyoji-daemon"
     script = project / "setupDaemon.py"
@@ -2876,10 +2952,20 @@ def daemon_menu(root: Path) -> None:
         """Aguarda o módulo Telegram responder após iniciar ou reiniciar o daemon."""
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
-            status = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "telegram", "status"], quiet=True)
-            if status.returncode == 0: return True
+            status = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "telegram", "status"], quiet=True, use_runtime=True)
+            try:
+                ready = json.loads(status.stdout)
+            except (ValueError, TypeError):
+                ready = None
+            if status.returncode == 0 and isinstance(ready, dict) and ready.get("listener") == "running": return True
             time.sleep(0.3)
         return False
+
+    def pairing_request() -> dict | None:
+        payload, message = request_telegram_pairing(root, lambda arguments: command(arguments, quiet=True, use_runtime=True), progress=note)
+        if payload is None:
+            result(False, message)
+        return payload
 
     def sync_telegram_commands() -> bool:
         """Confirma o catálogo atual para todos os owners na configuração local."""
@@ -2919,8 +3005,18 @@ def daemon_menu(root: Path) -> None:
         note(f"{reason} só entra em vigor no gateway após reiniciar o daemon.")
         answer = prompt("O daemon está em execução; reiniciar agora para efetivar a alteração? [S/n]: ").strip().casefold()
         if answer not in {"", "s", "sim"}: result(False, f"{reason} foi salva, mas o gateway continua com a configuração anterior até o próximo reinício."); return
-        if service_installed(): privileged_service_action("service-restart")
-        elif lifecycle("process-stop"): lifecycle("process-start")
+        restarted = privileged_service_action("service-restart") if service_installed() else (lifecycle("process-stop") and lifecycle("process-start"))
+        if not restarted:
+            return
+        if not wait_for_daemon_ready():
+            result(False, "O reinício foi solicitado, mas o controle local do daemon ainda não respondeu. Consulte o diagnóstico do daemon.")
+            return
+        try:
+            enabled = json.loads((root / "configs" / "daemon" / "services.json").read_text(encoding="utf-8")).get("telegram", {}).get("enabled") is True
+        except (OSError, ValueError, AttributeError):
+            enabled = False
+        if enabled and not wait_for_telegram_ready():
+            result(False, "O daemon voltou a responder, mas o gateway Telegram ainda não está pronto. Consulte o diagnóstico do Telegram antes de parear um owner.")
 
     def service_running() -> bool:
         status = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "service-status"], quiet=True)
@@ -3616,11 +3712,10 @@ def daemon_menu(root: Path) -> None:
                 tested = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-telegram"], quiet=True, use_runtime=True)
                 result(tested.returncode == 0, (tested.stdout or tested.stderr).strip())
             elif choice == "4":
-                request = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "telegram", "pair-request"], quiet=True)
-                if request.returncode != 0: result(False, "Inicie o daemon e habilite o Telegram antes de parear um owner."); continue
-                try: pin = json.loads(request.stdout)["pin"]
-                except (json.JSONDecodeError, KeyError): result(False, "Não foi possível gerar o código de pareamento."); continue
-                result(True, f"Envie /pair {pin} em uma DM para o bot. O código expira em 5 minutos e só pode ser usado uma vez.")
+                request = pairing_request()
+                if request is None:
+                    continue
+                result(True, f"Envie /pair {request['pin']} em uma DM para o bot. O código expira em 5 minutos e só pode ser usado uma vez.")
             elif choice == "6":
                 if totp_enabled:
                     changed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "set-totp"], quiet=True)
@@ -3813,12 +3908,10 @@ def daemon_menu(root: Path) -> None:
         result(True, "Gateway Telegram em execução e respondendo.")
 
         print("\n  8. Parear o primeiro owner")
-        request = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "telegram", "pair-request"], quiet=True)
-        if request.returncode != 0:
-            result(False, "Inicie ou reinicie o daemon com o Telegram habilitado antes de parear um owner."); return
-        try: pin = json.loads(request.stdout)["pin"]
-        except (json.JSONDecodeError, KeyError): result(False, "Não foi possível gerar o código de pareamento."); return
-        note(f"Envie /pair {pin} em uma DM para o bot. O código expira em cinco minutos.")
+        request = pairing_request()
+        if request is None:
+            return
+        note(f"Envie /pair {request['pin']} em uma DM para o bot. O código expira em cinco minutos.")
         prompt("Depois de enviar o comando, pressione Enter para verificar o pareamento: ")
         checks = validation()
         owner = next((check for check in checks if check.get("label") == "Owners pareados"), {})

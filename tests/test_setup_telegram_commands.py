@@ -57,6 +57,10 @@ def run_setup(tmp_path, monkeypatch, response, *, returncode=0, wizard=False, lo
             output = {"exists": True, "message": "Credencial configurada."}
         elif "pair-request" in arguments:
             output = {"pin": "123456"}
+        elif "list-services" in arguments:
+            output = [{"name": "telegram", "enabled": True, "state": "running"}]
+        elif arguments[-2:] == ["telegram", "status"]:
+            output = {"listener": "running"}
         elif "validation-json" in arguments:
             output = [{"label": "Owners pareados", "state": "ok", "detail": "1 owner pareado."}]
         return subprocess.CompletedProcess(arguments, code, stdout=json.dumps(output), stderr="")

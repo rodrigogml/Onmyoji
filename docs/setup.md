@@ -66,6 +66,13 @@ Após a escolha do perfil de vault MCP, sugira a entrada de credencial no format
 
 Quando uma skill oferecer teste de perfil, ele deve selecionar um perfil existente e executar somente uma operação de leitura mínima. O resultado deve confirmar a autenticação ou descrever a falha sem imprimir credenciais, tokens nem a resposta completa da API.
 
+## Prontidão do daemon e do Telegram
+
+O serviço do sistema operacional, o controle local do supervisor e o gateway Telegram têm estados distintos. Quando o setup aplica uma alteração com reinício do daemon, aguarda o controle da instância e, se habilitado, o Telegram. O pareamento aguarda o gateway responder antes de solicitar o PIN e apresenta o motivo operacional quando essa prontidão não é confirmada, incluindo gateway desabilitado, falha de inicialização ou erro de comunicação. As consultas do pareamento usam o mesmo `CODEX_HOME`, runtime Python e conta operacional da instância.
+
+> [!NOTE]
+> O teste controlado do Codex App Server confirma a execução do agente. Ele não confirma que o supervisor ou o gateway Telegram estejam disponíveis para pareamento. Para preparar o gateway, use **Daemon > Telegram > Gateway Telegram**; veja os [estados de inicialização e pareamento](../onmyoji-daemon/docs/Telegram.md#inicialização-e-pareamento).
+
 ## Protocolo de discovery e perfis
 
 Todo `setupSkill.py` em `shikigami-skills/` aceita `--action describe --json` e retorna, no mínimo, os campos `id`, `title` e `description`. O configurador geral usa somente esses campos para descobrir e exibir a skill. Campos adicionais são opcionais e não fazem parte do contrato consumido pelo setup central.

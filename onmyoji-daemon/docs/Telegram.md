@@ -4,6 +4,30 @@ O Gateway Telegram recebe mensagens e anexos, inicia o Codex App Server quando
 necessário e encaminha a conversa ao agente com o mesmo contexto de execução
 configurado para a instância.
 
+## Inicialização e pareamento
+
+O pareamento depende do gateway Telegram, além do processo principal do daemon.
+Os estados abaixo confirmam etapas diferentes:
+
+| Verificação | O que confirma |
+| --- | --- |
+| Serviço ativo no sistema operacional | O processo principal foi iniciado pelo gerenciador de serviços. |
+| Controle local do supervisor respondendo | O daemon desta instância aceita consultas e comandos. |
+| Gateway Telegram em execução e respondendo | O módulo está disponível para solicitar um PIN de pareamento. |
+| Teste controlado do Codex App Server aprovado | O agente executou um turno no contexto configurado. |
+
+O supervisor atende o controle local enquanto inicia os serviços habilitados.
+Assim, um módulo ainda inicializando não impede consultar os demais estados.
+O setup aguarda a prontidão do Telegram antes de solicitar o PIN; gateway
+desabilitado, falha do módulo e erro de acesso ao controle têm diagnósticos
+próprios, sem serem resumidos como daemon desligado.
+
+Use **Daemon > Telegram > Gateway Telegram** para preparar a ativação e
+**Owners e comandos > Parear owner** para solicitar o código. As consultas
+precisam usar a mesma instância (`CODEX_HOME`) e conta operacional que executa
+o Shikigami. Um teste do App Server aprovado, isoladamente, não confirma o
+estado do gateway nem explica uma falha de pareamento.
+
 ## Localização fixa
 
 O Gateway recebe pontos fixos nativos do Telegram mesmo sem texto e entrega

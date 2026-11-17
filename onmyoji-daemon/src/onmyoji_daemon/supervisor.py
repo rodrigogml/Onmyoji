@@ -135,6 +135,9 @@ class Supervisor:
     def _start(self, name: str) -> dict[str, Any]:
         service = self.services[name]
         if service.process and service.process.poll() is None: return self.status(name)
+        if self.stop_event.is_set():
+            service.state = "stopped"
+            return self.status(name)
         service.intentional_stop = False
         if service.process_group:
             try:
@@ -199,6 +202,8 @@ class Supervisor:
         """Agenda nova inicialização após falha transitória de serviço habilitado."""
         now = time.monotonic()
         for name, service in self.services.items():
+            if self.stop_event.is_set():
+                return
             state = self.status(name)
             if not service.enabled or state["state"] != "failed" or now < self.next_recovery_at.get(name, 0):
                 continue
@@ -306,18 +311,53 @@ class Supervisor:
                 pass
 
     def run_forever(self) -> None:
-        self._acquire_lock(); self._endpoint(); self._save_state()
-        for name, service in self.services.items():
-            if service.enabled: self.start(name)
-        threading.Thread(target=self._recover_enabled_services, daemon=True).start()
+        """Atende RPC enquanto os serviços habilitados ainda estão inicializando.
+
+        Serviços pendentes são publicados como ``starting``. Uma parada recebida
+        durante a inicialização impede a partida dos próximos serviços; a limpeza
+        aguarda o serviço em preparação antes de encerrar seus processos.
+        """
+        self._acquire_lock()
+        rpc_errors: list[Exception] = []
+
+        def serve_rpc() -> None:
+            try:
+                self.rpc.serve_forever(self.stop_event)
+            except Exception as error:
+                rpc_errors.append(error)
+            finally:
+                self.stop_event.set()
+
+        rpc_thread = threading.Thread(target=serve_rpc, name="onmyoji-rpc", daemon=True)
+        recovery_thread = threading.Thread(target=self._recover_enabled_services, name="onmyoji-recovery", daemon=True)
         publication_thread = threading.Thread(target=self._reconcile_publications, name="onmyoji-publications", daemon=True)
-        publication_thread.start()
-        try: self.rpc.serve_forever(self.stop_event)
+        started_threads: list[threading.Thread] = []
+        try:
+            for service in self.services.values():
+                if service.enabled:
+                    service.state = "starting"
+            self._endpoint(); self._save_state()
+            rpc_thread.start()
+            started_threads.append(rpc_thread)
+            for name, service in self.services.items():
+                if self.stop_event.is_set():
+                    break
+                if service.enabled:
+                    self.start(name)
+            if not self.stop_event.is_set():
+                for thread in (recovery_thread, publication_thread):
+                    thread.start()
+                    started_threads.append(thread)
+            self.stop_event.wait()
+            if rpc_errors:
+                raise rpc_errors[0]
         finally:
             self.stop_event.set()
-            publication_thread.join(timeout=5)
+            self.rpc.close()
+            for thread in started_threads:
+                thread.join(timeout=5)
             for name in self.services: self.stop(name)
-            self.endpoint_file.unlink(missing_ok=True); self.process_file.unlink(missing_ok=True); self.lock_file.unlink(missing_ok=True); self.rpc.close()
+            self.endpoint_file.unlink(missing_ok=True); self.process_file.unlink(missing_ok=True); self.lock_file.unlink(missing_ok=True)
 
 
 def endpoint(onmyoji_root: Path) -> tuple[str, int, str]:
