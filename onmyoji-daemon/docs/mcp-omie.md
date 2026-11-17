@@ -39,7 +39,9 @@ consulta por período aceita exclusivamente `data_inicial` e `data_final` para
 sua finalidade; não use nomes internos da Omie como `dtPagInicial`. Listagens
 paginadas recebem `pagina` e `tamanho_pagina` (máximo 50) e retornam `paginacao` com
 `proxima_pagina`. Defina `incluir_dados_omie: true` apenas quando os campos
-nativos forem indispensáveis para auditoria.
+nativos forem indispensáveis para auditoria. Todas as leituras publicadas,
+incluindo cadastros e NF-e, aceitam `atualizar_cache: true` para exigir uma
+leitura remota elegível; esse controle não ignora os intervalos da Omie.
 
 ### Tipos de documento: catálogo sem paginação
 
@@ -262,14 +264,11 @@ e da página solicitadas; os campos nativos são preservados, com a paginação
 recalculada. Sem filtro de conta, cada chamada continua consultando somente
 uma página da Omie.
 
-Quando um filtro de conta é usado, a primeira consulta completa é mantida por
-até **5 minutos em cache de memória** (até 6 períodos/perfis e até 25 mil
-lançamentos por consulta). Páginas públicas seguintes e outras contas no mesmo
-período reutilizam o conjunto já validado, sem refazer todas as requisições
-nativas. Erros e consultas parciais nunca entram no cache. Consultas distintas
-ou expiradas fazem nova leitura; operações financeiras de escrita invalidam o
-cache do perfil, inclusive quando a resposta da escrita é incerta. Reiniciar o
-daemon também limpa esse cache.
+As páginas nativas bem-sucedidas usam o [cache compartilhado](#consumo-cache-e-cooldown)
+das leituras Omie. Páginas públicas seguintes e outras contas no mesmo período
+podem reutilizar essas respostas dentro da validade do cache, sem refazer as
+requisições nativas. A conferência da população e a filtragem da conta continuam
+obrigatórias: uma página armazenada não representa, sozinha, todo o período.
 
 Essa filtragem exige percorrer o período completo na primeira consulta não
 armazenada; use o período necessário à tarefa. Uma página remota sem lançamentos da conta
@@ -321,51 +320,148 @@ código HTTP e descrição remota sanitizada quando disponíveis. Esse
 resultado exige consulta antes de repetir. Nenhuma operação aceita endpoint,
 método Omie ou credenciais fornecidos pelo agente.
 
-Erros de contrato HTTP 500 não recebem retry automático. Excepcionalmente,
-o HTTP 500 com a descrição da Omie "Já existe uma requisição desse método
-sendo executada" recebe até `max_retries` novas tentativas **somente em
-consultas**, com atrasos de 2, 4 e até 8 segundos. Esgotadas as tentativas,
-a tool devolve `omie_busy` com `retry_after_seconds: 10` e aplica cooldown
-temporário antes de permitir nova consulta. Nunca ocorre retry de escrita
-nesse cenário. HTTP 425 também interrompe as tentativas: a Omie documenta
-bloqueio temporário após requisições incorretas repetidas. O MCP registra o cooldown de 30 minutos para a combinação
-App Key + método em `state/mcp/omie/cooldowns.json`, identificada somente por
-hash (sem credenciais), para impedir novas chamadas mesmo após reiniciar o
-daemon. Revise os parâmetros antes de retomar; reduzir o intervalo de datas não
-corrige um campo rejeitado.
+### Consumo, cache e cooldown
 
-O controle de tráfego do daemon serializa requisições da mesma App Key + método,
-inclusive entre processos que utilizam a **mesma raiz de instalação**,
-por meio de travas locais em `state/mcp/omie/method-locks/` com nomes hash
-sem credenciais ou dados financeiros. No Windows, a espera pela trava não lê
-nem altera o byte protegido por outra chamada. A disputa entre processos
-aguarda até 60 segundos; ao esgotar esse prazo, retorna `omie_local_busy` com
-`retry_after_seconds: 3`. Falhas de preparação ou aquisição da trava retornam
-`omie_local_lock_error`; nenhuma dessas falhas realiza uma chamada à Omie.
-Se a liberação falhar após uma operação concluída, o erro inclui
-`phase: "release"`; nas escritas financeiras, retorna `outcome_unknown` para
-orientar a consulta do resultado antes de qualquer repetição. Se a operação
-já falhou, a falha de liberação preserva o diagnóstico original.
-Também usa janela móvel para evitar rajadas e aplica por padrão intervalo mínimo de
-0,35 segundo entre chamadas desse método, limite preventivo de 180 chamadas
-por minuto por método e 900 por minuto por processo. Há margem em relação aos
-limites padrão publicados pela Omie. Para contas Trial/FIT (60 chamadas/minuto),
-ajuste os defaults do perfil MCP para valores mais conservadores:
+O intervalo mínimo entre chamadas distintas não substitui a proteção contra
+consultas redundantes. A Omie documenta uma janela de 60 segundos para consultar
+novamente o mesmo ID. Uma nova chamada com erro durante essa janela pode
+reiniciá-la; na décima requisição incorreta para IP + App Key + método,
+o serviço pode impor HTTP 425 por 30 minutos.
+
+O MCP coordena leituras, consumo e cooldown entre threads do gateway, CLIs e
+processos MCP que usam a **mesma raiz de instalação**. O estado compartilhado
+fica em `state/mcp/omie/traffic.sqlite3` e `responses.sqlite3`, fora das fontes
+versionadas. Contadores e prazos continuam válidos após reiniciar um processo.
+A coordenação usa a identidade da aplicação, não somente o nome do perfil:
+perfis com a mesma App Key compartilham seus limites. Credenciais não são
+gravadas no cache nem usadas em texto puro como nomes de arquivo.
+
+O cache de leituras bem-sucedidas tem validade padrão de **61 segundos**:
+a janela oficial de 60 segundos mais um segundo de margem local.
+A chave distingue aplicação, endpoint, método e parâmetros nativos em formato
+canônico; paginação e filtros diferentes não se confundem. Essa janela permite
+reutilizar uma resposta recente em outra chamada ou processo sem consultar
+novamente a Omie. Erros não são armazenados como respostas bem-sucedidas.
+Os dados do cache são privados da instalação e podem conter informações do ERP.
+
+Cada leitura retorna `cache` no nível principal, junto aos dados:
+
+```json
+{"cache":{"reutilizado":true,"consultado_em":"2026-11-17T15:00:00+00:00","valido_ate":"2026-11-17T15:01:01+00:00"}}
+```
+
+Os horários são UTC. Em uma resposta composta por várias páginas,
+`consultado_em` indica a consulta mais antiga, `valido_ate` a menor validade e
+`reutilizado` é `true` somente quando todas as páginas vieram do cache. Para
+exigir atualização, use o controle no nível principal, por exemplo:
+
+```json
+{"tool":"omie.financeiro.lancamentos_conta.consultar","arguments":{"filtros":{"id":9000000001},"atualizar_cache":true}}
+```
+
+`atualizar_cache` não pertence a `filtros` ou `params` e não se aplica às
+escritas. Ele impede o aproveitamento da resposta armazenada, aguarda a
+janela preventiva restante e então consulta a Omie. O cache não é uma promessa
+de atualização em tempo real do ERP.
+
+Escritas invalidam as leituras afetadas por meio de uma geração compartilhada,
+inclusive quando o resultado é incerto. A invalidação remove a possibilidade
+de aproveitar uma resposta anterior, mas **preserva o prazo de elegibilidade
+da consulta remota**. Alterar um registro não autoriza consultar o mesmo ID
+novamente antes da janela da Omie. A confirmação posterior à gravação exige
+dados obtidos depois da escrita; o cache anterior não comprova persistência.
+
+Quando uma leitura precisa aguardar a janela preventiva restante, o MCP pode
+esperar localmente por até 65 segundos, em intervalos curtos, antes do HTTP.
+Isso evita provocar um erro remoto apenas para descobrir que ainda era cedo.
+Um bloqueio remoto de 30 minutos é respeitado e devolvido como `omie_cooldown`
+com o prazo restante; a tool não fica presa durante todo esse bloqueio. Não
+repita chamadas em sequência nem troque os filtros apenas para contornar o
+prazo. Um resultado de cache válido continua representando a leitura anterior,
+não uma nova verificação na Omie.
+As esperas Omie não ocupam o loop do servidor MCP. Consultas com cache válido
+podem ser atendidas enquanto outra chamada aguarda. Se um processo for
+interrompido, reservas persistentes preservam o timeout da requisição e a
+janela de repetição antes de autorizar outro envio.
+
+> [!IMPORTANT]
+> Rejeições locais como `dados.conciliado` ou `dados.observacoes` não pertencem
+> à chamada HTTP e não consomem a cota da Omie. Para texto do lançamento, use
+> `dados.observacao`; `lancamentos_conta.alterar` não oferece um campo para
+> definir a conciliação. Desde `2026.11.17.2`, essa alteração aceita somente
+> identificador e os campos que precisam mudar. Se ainda exigir
+> `dados.conta_corrente_id` ao alterar apenas a observação, confira a versão
+> instalada, atualize a base, reinicie os processos MCP existentes e renove
+> `tools/list` no cliente. Esse sintoma é compatível com uma instância antiga;
+> o relatório, sozinho, não identifica a versão efetivamente em execução.
+
+Os limites oficiais também se aplicam às chamadas com parâmetros diferentes:
+
+| Escopo | Limite documentado pela Omie |
+| --- | --- |
+| IP | 960 chamadas por minuto. |
+| IP + App Key + método | 240 por minuto e até quatro simultâneas; alguns métodos permitem somente uma. |
+| Aplicativo Trial | 60 por minuto e 100 por dia. |
+| Aplicativo FIT | 60 por minuto e 500 por dia. |
+
+O MCP mantém margem preventiva por padrão: intervalo mínimo de 0,35 segundo,
+180 chamadas por minuto por método e 900 por minuto no conjunto compartilhado
+da instalação. O nome histórico `process_requests_per_minute` continua aceito,
+mas o contador passa a abranger os processos coordenados. Para Trial/FIT,
+configure também a quota por aplicação; limitar cada método isoladamente não
+garante o limite do aplicativo. Outras instalações ou integrações que saem pelo
+mesmo IP precisam de coordenação externa: o MCP não observa seu tráfego.
+
+Os defaults ficam em `configs/mcp/omie.toml`. O exemplo abaixo mantém margem
+para um aplicativo Trial; para FIT, pode-se adotar `app_requests_per_day = 450`:
 
 ```toml
 [defaults]
 min_request_interval_seconds = 1.1
 method_requests_per_minute = 55
 process_requests_per_minute = 900
+app_requests_per_minute = 55
+app_requests_per_day = 90
+cache_ttl_seconds = 61
 ```
 
-HTTP 429 respeita `Retry-After` (segundos ou data HTTP) e utiliza backoff
-exponencial sem repetir escrita automaticamente. Aguardas superiores a 8 segundos
-são expostas como cooldown, sem prender a execução da tool no tempo de espera.
-As janelas móveis de ritmo ainda são compartilhadas apenas no mesmo processo;
-a exclusão mútua por método também abrange processos da mesma instalação.
-Outras instalações e integrações no mesmo IP precisam de coordenação externa. O cache é local ao processo e não substitui a
-conferência de dados atualizados antes de operações sensíveis.
+`app_requests_per_minute` e `app_requests_per_day` são opcionais e aceitam
+inteiros positivos; ausentes, não acrescentam uma quota por aplicação às
+proteções gerais. `cache_ttl_seconds` aceita de 61 a 300 segundos; aumentar
+esse valor prolonga o reaproveitamento de dados e a possível defasagem de
+mudanças externas. Para atualização pontual, use `atualizar_cache`.
+Salvar ou editar perfis pelo setup preserva esses defaults quando informados;
+opções opcionais removidas não são reinseridas automaticamente.
+
+Erros de contrato não recebem retry automático. HTTP 429 respeita
+`Retry-After`, quando presente; respostas de redundância ou método ocupado
+não são reenviadas rapidamente. Os prazos são compartilhados para evitar que
+outro CLI reinicie a janela. Escritas nunca recebem retry automático.
+Se a conferência posterior de uma escrita ficar bloqueada, o erro
+`write_verification_failed` preserva `retry_after_seconds` e o motivo seguro
+em `cause_reason`. Aguarde esse prazo antes de consultar novamente; a escrita
+já processada não deve ser repetida apenas por falta de conferência.
+
+Para manter uma base local atualizada, prefira carga inicial paginada e, depois,
+listagens incrementais pelos filtros de alteração disponíveis na operação.
+Para conferir um registro conhecido, use sua consulta individual e aproveite
+o cache. Não refaça a listagem completa apenas para reler um único objeto.
+Os limites específicos de 50 registros dos endpoints financeiros prevalecem
+sobre a recomendação geral de até 100 registros por página.
+
+Webhooks permitem invalidar ou atualizar o cadastro que mudou e consultar o
+detalhe indicado pelo evento. A Omie publica eventos de lançamentos, títulos,
+baixas, rateios e cadastros. Esta integração não configura um receptor de
+webhooks: mudanças feitas fora do MCP só são percebidas em uma nova leitura
+elegível ou por uma integração de eventos configurada separadamente. TTL e
+escritas próprias não oferecem detecção instantânea de alterações externas.
+
+Referências oficiais:
+[limites de consumo](https://ajuda.omie.com.br/pt-BR/articles/8112984-limites-de-consumo-da-api-do-omie),
+[boas práticas e listagens incrementais](https://ajuda.omie.com.br/pt-BR/articles/12607801-boas-praticas-de-integracao-com-as-apis-do-omie),
+[características das APIs](https://ajuda.omie.com.br/pt-BR/articles/5412721-caracteristicas-e-recomendacoes-das-apis-do-omie),
+[tratamento de erros](https://ajuda.omie.com.br/pt-BR/articles/8001888-tratando-os-erros-de-api)
+e [webhooks](https://api.omie.com.br/docs/webhooks).
 
 | Família | Comportamento preservado |
 | --- | --- |

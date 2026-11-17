@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+from math import isfinite
 import os
 from pathlib import Path
 import tempfile
@@ -689,11 +690,32 @@ class McpConfiguration:
                 raise McpConfigurationError("Operações Todoist legadas inválidas.")
 
     def _validate_omie(self, data: dict[str, Any]) -> None:
+        """Recusa limites Omie inválidos antes de publicar a configuração.
+
+        As opções de consumo e cache são opcionais; sua ausência conserva os
+        padrões do serviço. Valores booleanos não substituem números. Lança
+        ``McpConfigurationError`` com o campo inválido, sem expor credenciais.
+        """
         if data.get("schema_version") != 1 or not isinstance(data.get("defaults"), dict) or not isinstance(data.get("profiles"), dict):
             raise McpConfigurationError("Estrutura de perfis Omie inválida.")
         defaults = data["defaults"]
-        if not isinstance(defaults.get("timeout_seconds"), int) or defaults["timeout_seconds"] <= 0 or not isinstance(defaults.get("max_retries"), int) or defaults["max_retries"] < 0:
-            raise McpConfigurationError("Timeout ou tentativas Omie inválidos.")
+        if type(defaults.get("timeout_seconds")) is not int or not 1 <= defaults["timeout_seconds"] <= 3500:
+            raise McpConfigurationError("defaults.timeout_seconds Omie deve ser um inteiro de 1 a 3500.")
+        if type(defaults.get("max_retries")) is not int or defaults["max_retries"] < 0:
+            raise McpConfigurationError("defaults.max_retries Omie deve ser um inteiro maior ou igual a zero.")
+        for field, maximum in (("method_requests_per_minute", 240), ("process_requests_per_minute", 960), ("app_requests_per_minute", 960)):
+            if field in defaults and (type(defaults[field]) is not int or not 1 <= defaults[field] <= maximum):
+                raise McpConfigurationError(f"defaults.{field} Omie deve ser um inteiro de 1 a {maximum}.")
+        if "app_requests_per_day" in defaults and (type(defaults["app_requests_per_day"]) is not int or defaults["app_requests_per_day"] < 1):
+            raise McpConfigurationError("defaults.app_requests_per_day Omie deve ser um inteiro positivo.")
+        if "min_request_interval_seconds" in defaults:
+            interval = defaults["min_request_interval_seconds"]
+            if type(interval) not in (int, float) or (isinstance(interval, float) and not isfinite(interval)) or interval < 0:
+                raise McpConfigurationError("defaults.min_request_interval_seconds Omie deve ser um número finito maior ou igual a zero.")
+        if "cache_ttl_seconds" in defaults:
+            ttl = defaults["cache_ttl_seconds"]
+            if type(ttl) not in (int, float) or (isinstance(ttl, float) and not isfinite(ttl)) or not 61 <= ttl <= 300:
+                raise McpConfigurationError("defaults.cache_ttl_seconds Omie deve ser um número finito de 61 a 300.")
         for name, profile in data["profiles"].items():
             _profile_name(name)
             if not isinstance(profile, dict) or type(profile.get("enabled")) is not bool:
@@ -928,8 +950,12 @@ class McpConfiguration:
 
     @staticmethod
     def _render_omie(data: dict[str, Any]) -> str:
+        """Preserva limites e cache informados sem materializar opções ausentes."""
         defaults = data["defaults"]
         lines = ["schema_version = 1", "", "[defaults]", f"timeout_seconds = {defaults['timeout_seconds']}", f"max_retries = {defaults['max_retries']}"]
+        for field in ("min_request_interval_seconds", "method_requests_per_minute", "process_requests_per_minute", "app_requests_per_minute", "app_requests_per_day", "cache_ttl_seconds"):
+            if field in defaults:
+                lines.append(f"{field} = {defaults[field]}")
         for name, profile in sorted(data["profiles"].items()):
             lines += ["", f"[profiles.{name}]", f"enabled = {'true' if profile['enabled'] else 'false'}", f"description = {_quote(profile['description'])}", f"credential_profile = {_quote(profile['credential_profile'])}", f"credential_entry_path = {_quote(profile['credential_entry_path'])}", f"app_key_field = {_quote(profile['app_key_field'])}", f"app_secret_field = {_quote(profile['app_secret_field'])}"]
         return "\n".join(lines) + "\n"

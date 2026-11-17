@@ -192,6 +192,84 @@ def test_failed_readback_is_inconclusive_and_preserves_only_the_safe_cause(failu
     service.invoke_financial.assert_called_once()
 
 
+@pytest.mark.parametrize("code,source_details,expected", [
+    ("omie_cooldown", {"retry_after_seconds": 1800, "reason": "remote_cooldown", "http_status": 425},
+     {"retry_after_seconds": 1800, "cause_reason": "remote_cooldown", "http_status": 425}),
+    ("omie_rate_limited", {"retry_after_seconds": 90000, "reason": "application_daily_limit"},
+     {"retry_after_seconds": 90000, "cause_reason": "application_daily_limit"}),
+    ("omie_busy", {"retry_after_seconds": 61, "reason": "same_method_in_progress", "http_status": 500},
+     {"retry_after_seconds": 61, "cause_reason": "same_method_in_progress", "http_status": 500}),
+    ("omie_read_invalidated", {"retry_after_seconds": 61}, {"retry_after_seconds": 61}),
+    ("omie_cooldown", {"retry_after_seconds": 1, "reason": "r" * 128, "http_status": 100},
+     {"retry_after_seconds": 1, "cause_reason": "r" * 128, "http_status": 100}),
+    ("omie_busy", {"http_status": 599}, {"http_status": 599}),
+])
+def test_readback_preserves_safe_wait_information_without_repeating_the_write(code, source_details, expected):
+    service = Mock()
+    service.invoke_financial.side_effect = OmieError(code, "SECRET response body", {
+        **source_details, "body": "SECRET", "remote_description": "SECRET", "app_secret": "SECRET",
+    })
+
+    with pytest.raises(OmieError) as error:
+        verify_department_allocation(service, "empresa", "account_transactions_update", {
+            "nCodLanc": 12, "departamentos": PERCENTAGE,
+        })
+
+    assert error.value.code == "write_verification_failed"
+    assert error.value.details == {
+        "operation": "account_transactions_update", "field": "dados.departamentos", "retryable": False,
+        "escrita_processada": True, "reason": "query_failed", "cause_code": code, **expected,
+    }
+    if "retry_after_seconds" in expected:
+        assert f"({expected['retry_after_seconds']} segundos)" in str(error.value)
+        assert "antes de consultar novamente" in str(error.value)
+    else:
+        assert "Aguarde o intervalo" not in str(error.value)
+    assert "não repita a escrita" in str(error.value)
+    assert "SECRET" not in str(error.value.as_dict())
+    service.invoke_financial.assert_called_once()
+    assert service.invoke_financial.call_args.kwargs == {"writes": False}
+
+
+@pytest.mark.parametrize("source_details", [
+    {"retry_after_seconds": value} for value in (None, False, True, 0, -1, 1.5, "1800", [], {})
+] + [
+    {"http_status": value} for value in (None, False, True, 99, 600, 425.0, "425", [], {})
+] + [
+    {"reason": value} for value in (None, False, 123, "", " ", "r" * 129, "line\nbreak", [], {})
+])
+def test_invalid_wait_diagnostics_are_omitted_without_hiding_processing_state(source_details):
+    service = Mock()
+    service.invoke_financial.side_effect = OmieError("omie_cooldown", "SECRET", source_details)
+
+    with pytest.raises(OmieError) as error:
+        verify_department_allocation(service, "empresa", "account_transactions_update", {
+            "nCodLanc": 12, "departamentos": PERCENTAGE,
+        })
+
+    assert error.value.details == {
+        "operation": "account_transactions_update", "field": "dados.departamentos", "retryable": False,
+        "escrita_processada": True, "reason": "query_failed", "cause_code": "omie_cooldown",
+    }
+    assert "Aguarde o intervalo" not in str(error.value)
+    assert "SECRET" not in str(error.value.as_dict())
+    service.invoke_financial.assert_called_once()
+
+
+def test_non_object_cause_details_do_not_escape_as_public_diagnostics():
+    service = Mock()
+    service.invoke_financial.side_effect = OmieError("omie_cooldown", "SECRET", ["SECRET"])
+
+    with pytest.raises(OmieError) as error:
+        verify_department_allocation(service, "empresa", "account_transactions_update", {
+            "nCodLanc": 12, "departamentos": PERCENTAGE,
+        })
+
+    assert error.value.details["cause_code"] == "omie_cooldown"
+    assert error.value.details["escrita_processada"] is True
+    assert "SECRET" not in str(error.value.as_dict())
+
+
 @pytest.mark.parametrize("record,reason", [
     (None, "invalid_response"), ([], "invalid_response"), ({}, "response_identifier_missing"),
     ({"nCodLanc": 12}, "missing_allocation"),

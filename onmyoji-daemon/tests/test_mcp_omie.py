@@ -121,6 +121,11 @@ def test_customer_inclusion_timeout_is_never_retried(tmp_path, monkeypatch):
 
 
 def test_network_retry_remains_available_for_reads(tmp_path, monkeypatch):
+    import onmyoji_daemon.mcp.omie.traffic as traffic
+    clock = [10000.0]
+    monkeypatch.setattr(traffic, "time", lambda: clock[0])
+    monkeypatch.setattr(traffic, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(traffic, "sleep", lambda delay: clock.__setitem__(0, clock[0] + delay))
     write_config(tmp_path)
     calls = []
     def request(*_args, **_kwargs):
@@ -172,53 +177,41 @@ def test_same_method_lock_is_shared_between_gate_instances(tmp_path):
     assert locks[0].stat().st_size <= 1
 
 
-def test_http_500_same_method_busy_retries_only_read(tmp_path, monkeypatch):
+def test_http_500_busy_is_not_retried_and_corrected_next_call_waits(tmp_path, monkeypatch):
+    import onmyoji_daemon.mcp.omie.traffic as traffic
+
     calls, delays = [], []
+    clock = [10000.0]
+    monkeypatch.setattr(traffic, "time", lambda: clock[0])
+    monkeypatch.setattr(traffic, "monotonic", lambda: clock[0])
+    def advance(seconds):
+        delays.append(seconds)
+        clock[0] += seconds
+    monkeypatch.setattr(traffic, "sleep", advance)
     text = "Já existe uma requisição desse método sendo executada e você pode tentar novamente em alguns instantes."
     def request(*_args, **_kwargs):
-        calls.append(True)
+        calls.append(clock[0])
         if len(calls) == 1:
-            raise HTTPError("https://app.omie.com.br/", 500, "other request", {},
-                            BytesIO(json.dumps({"faultstring": text}).encode("utf-8")))
+            raise HTTPError("https://app.omie.com.br/", 500, "sensitive", {},
+                            BytesIO(json.dumps({"description": text, "private": "SECRET"}).encode("utf-8")))
         return Response()
     monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.urlopen", request)
-    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.time.sleep", delays.append)
-    result = OmieService(tmp_path, Credentials())._request(
-        {"credential_profile": "vault", "credential_entry_path": "APIs/Omie",
-         "app_key_field": "username", "app_secret_field": "password"},
-        {"max_retries": 2}, "account_transactions", "ListarLancCC", {},
-    )
-    assert result["pagina"] == 1
-    assert len(calls) == 2
-    assert delays == [2.0]
-
-
-def test_http_500_same_method_busy_exhaustion_pauses_without_leaking_body(tmp_path, monkeypatch):
-    calls, delays = [], []
-    text = "Já existe uma requisição desse método sendo executada e você pode tentar novamente em alguns instantes."
-    def request(*_args, **_kwargs):
-        calls.append(True)
-        raise HTTPError("https://app.omie.com.br/", 500, "sensitive", {},
-                        BytesIO(json.dumps({"description": text, "private": "SECRET"}).encode("utf-8")))
-    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.urlopen", request)
-    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.time.sleep", delays.append)
     profile = {"credential_profile": "vault", "credential_entry_path": "APIs/Omie",
                "app_key_field": "username", "app_secret_field": "password"}
     service = OmieService(tmp_path, Credentials())
+
     with pytest.raises(OmieError) as error:
         service._request(profile, {"max_retries": 2}, "account_transactions", "ListarLancCC", {})
+
     assert error.value.code == "omie_busy"
-    assert error.value.details == {
-        "http_status": 500, "reason": "same_method_in_progress",
-        "retryable": False, "retry_after_seconds": 10,
-    }
-    assert delays == [2.0, 4.0]
-    assert len(calls) == 3
+    assert error.value.details["retry_after_seconds"] == 61
+    assert error.value.details["reason"] == "same_method_in_progress"
+    assert len(calls) == 1 and delays == []
     assert "SECRET" not in str(error.value.as_dict())
-    with pytest.raises(OmieError) as blocked:
-        service._request(profile, {"max_retries": 2}, "account_transactions", "ListarLancCC", {})
-    assert blocked.value.code == "omie_cooldown"
-    assert len(calls) == 3
+    assert service._request(profile, {"max_retries": 2}, "account_transactions", "ListarLancCC", {})["pagina"] == 1
+    assert len(calls) == 2 and calls[1] - calls[0] >= 61
+    assert all(delay <= 1 for delay in delays)
+
 
 
 def test_http_500_same_method_busy_is_never_retried_for_write(tmp_path, monkeypatch):
@@ -250,7 +243,7 @@ def test_http_500_is_not_retried(tmp_path, monkeypatch):
     with pytest.raises(OmieError) as error:
         OmieService(tmp_path, Credentials())._request({"credential_profile": "vault", "credential_entry_path": "APIs/Omie", "app_key_field": "username", "app_secret_field": "password"}, {"max_retries": 2}, "departments", "ListarDepartamentos", {})
     assert error.value.code == "omie_http_error"
-    assert error.value.details == {"http_status": 500, "retryable": False}
+    assert error.value.details == {"http_status": 500, "retryable": False, "retry_after_seconds": 61}
     assert len(calls) == 1
 
 
@@ -267,23 +260,28 @@ def test_http_425_stops_without_retry_or_sleep_and_preserves_diagnostic(tmp_path
     with pytest.raises(OmieError) as error:
         OmieService(tmp_path, Credentials())._request({"credential_profile": "vault", "credential_entry_path": "APIs/Omie", "app_key_field": "username", "app_secret_field": "password"}, {"max_retries": 2}, "account_transactions", "ListarLancCC", {})
     assert error.value.code == "omie_http_error"
-    assert error.value.details == {"http_status": 425, "retryable": False, "remote_code": "blocked", "remote_description": "API bloqueada temporariamente"}
+    assert error.value.details == {"http_status": 425, "retryable": False, "retry_after_seconds": 1800, "remote_code": "blocked", "remote_description": "API bloqueada temporariamente"}
     assert "bloqueio temporário" in str(error.value)
     assert "sensitive" not in str(error.value)
     assert len(calls) == 1
 
 
 @pytest.mark.parametrize("status", [429, 502, 503, 504])
-def test_transient_http_errors_remain_retryable_for_reads(tmp_path, monkeypatch, status):
+def test_http_failure_does_not_repeat_during_the_remote_error_window(tmp_path, monkeypatch, status):
     calls = []
     def request(*_args, **_kwargs):
         calls.append(True)
-        if len(calls) == 1: raise HTTPError("https://app.omie.com.br/", status, "temporary", {}, None)
-        return Response()
+        raise HTTPError("https://app.omie.com.br/", status, "temporary", {}, None)
     monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.urlopen", request)
-    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.time.sleep", lambda _seconds: None)
-    result = OmieService(tmp_path, Credentials())._request({"credential_profile": "vault", "credential_entry_path": "APIs/Omie", "app_key_field": "username", "app_secret_field": "password"}, {"max_retries": 1}, "departments", "ListarDepartamentos", {})
-    assert result["pagina"] == 1 and len(calls) == 2
+    with pytest.raises(OmieError) as error:
+        OmieService(tmp_path, Credentials())._request(
+            {"credential_profile": "vault", "credential_entry_path": "APIs/Omie", "app_key_field": "username", "app_secret_field": "password"},
+            {"max_retries": 2}, "departments", "ListarDepartamentos", {},
+        )
+    assert error.value.code == "omie_http_error"
+    assert error.value.details["retry_after_seconds"] == 61
+    assert calls == [True]
+
 
 
 def test_http_failure_exposes_sanitized_omie_diagnostic(tmp_path, monkeypatch):
@@ -340,7 +338,7 @@ def test_missing_project_identifies_lookup_and_guides_discovery_without_retry(
     assert error.value.details == {
         **({"http_status": 500} if http_status else {}),
         "remote_code": "SOAP-ENV:Client-9000", "remote_description": description.strip(),
-        "retryable": False, "reason": "project_not_found_for_identifier", "field": field,
+        "retryable": False, "retry_after_seconds": 61, "reason": "project_not_found_for_identifier", "field": field,
         "suggested_tool": "omie.financeiro.projetos.listar", "suggested_filter": "filtros.nome",
     }
     assert label in str(error.value)
@@ -410,7 +408,7 @@ def test_write_lock_failure_distinguishes_before_request_from_after_request(tmp_
     requests = []
 
     @contextmanager
-    def serialize(*_args):
+    def serialize(*_args, **_kwargs):
         if phase == "acquire":
             raise OmieError("omie_local_lock_error", "Trava indisponível.", {"retryable": False})
         yield
@@ -455,7 +453,7 @@ def test_http_425_persists_cooldown_across_service_instances(tmp_path, monkeypat
     with pytest.raises(OmieError) as first:
         OmieService(tmp_path, Credentials())._request(profile, {"max_retries": 0}, "account_transactions", "ListarLancCC", {})
     assert first.value.details["http_status"] == 425
-    assert (tmp_path / "state" / "mcp" / "omie" / "cooldowns.json").exists()
+    assert (tmp_path / "state" / "mcp" / "omie" / "traffic.sqlite3").exists()
 
     with pytest.raises(OmieError) as second:
         OmieService(tmp_path, Credentials())._request(profile, {"max_retries": 0}, "account_transactions", "ListarLancCC", {})

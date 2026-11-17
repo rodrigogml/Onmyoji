@@ -4,6 +4,40 @@ from onmyoji_daemon.mcp.server import McpApplication, create_server, main
 from onmyoji_daemon.mcp.telegram.tools import TelegramToolRegistry
 
 
+def test_omie_waits_do_not_block_the_mcp_event_loop(tmp_path, monkeypatch):
+    """Uma espera Omie ocorre em thread e permite atender outras mensagens MCP."""
+    import asyncio
+    from threading import Event
+    from types import SimpleNamespace
+    import mcp.server
+
+    handlers = {}
+    class Server:
+        def __init__(self, *_args, **kwargs): handlers.update(kwargs)
+    monkeypatch.setattr(mcp.server, "Server", Server)
+    server = create_server(tmp_path)
+    started, release = Event(), Event()
+
+    class Omie:
+        def call(self, *_args):
+            started.set()
+            assert release.wait(timeout=3), "A espera deve permitir que o loop libere a operação."
+            return {"dados": []}
+    server.document_application.omie = Omie()
+
+    async def check():
+        pending = asyncio.create_task(handlers["on_call_tool"](None, SimpleNamespace(name="omie.financeiro.projetos.listar", arguments={})))
+        try:
+            assert await asyncio.wait_for(asyncio.to_thread(started.wait, 1), timeout=2)
+            await asyncio.wait_for(asyncio.sleep(0), timeout=0.2)
+            assert not pending.done()
+        finally:
+            release.set()
+        result = await pending
+        assert result.is_error is not True
+    asyncio.run(check())
+
+
 class Registry:
     def definitions(self): return [{"name": "todoist.list_tasks"}]
     def call(self, name, arguments): return {"name": name, "arguments": arguments}

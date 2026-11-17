@@ -109,7 +109,7 @@ def test_document_catalog_schema_requires_no_filters_or_pagination(tmp_path, mul
     schema = tool["input_schema"]
     Draft202012Validator.check_schema(schema)
     validator = Draft202012Validator(schema)
-    assert set(schema["properties"]) == ({"incluir_dados_omie", "profile"} if multiple_profiles else {"incluir_dados_omie"})
+    assert set(schema["properties"]) == ({"incluir_dados_omie", "atualizar_cache", "profile"} if multiple_profiles else {"incluir_dados_omie", "atualizar_cache"})
     arguments = {"profile": "filial"} if multiple_profiles else {}
     validator.validate(arguments)
     validator.validate({**arguments, "incluir_dados_omie": True})
@@ -396,14 +396,14 @@ def test_account_filter_collects_native_pages_before_public_pagination(tmp_path,
     assert result["dados_omie"]["listaLancamentos"] == [rows[99]]
 
 
-def test_account_pagination_reuses_cached_native_pages_and_separates_periods(tmp_path, monkeypatch):
+def test_account_pagination_uses_native_pages_without_a_second_process_local_cache(tmp_path, monkeypatch):
     rows = [transaction(identifier, 12 if identifier in (1, 51) else 99) for identifier in range(1, 52)]
     pages = [
         native_page(1, 2, 51, rows[:50]),
         native_page(2, 2, 51, rows[50:]),
         native_page(1, 1, 1, [transaction(100, 12)]),
     ]
-    _, remote = mock_remote(monkeypatch, deepcopy(pages))
+    _, remote = mock_remote(monkeypatch, deepcopy([*pages[:2], *pages[:2], pages[2]]))
     facade = OmieFinanceFacade(Configuration(tmp_path))
     arguments = {"filtros": {**PERIOD, "conta_corrente_id": 12}, "tamanho_pagina": 1}
 
@@ -411,46 +411,25 @@ def test_account_pagination_reuses_cached_native_pages_and_separates_periods(tmp
     second = facade.call(ACCOUNT_QUERY, {**arguments, "pagina": 2}, "empresa")
     assert [item["nCodLanc"] for item in first["dados"]] == [1]
     assert [item["nCodLanc"] for item in second["dados"]] == [51]
-    assert remote.call_count == 2  # Não refaz 2025 ao mudar de página.
+    assert remote.call_count == 4  # O serviço decide o reaproveitamento compartilhado de cada página.
 
     different_period = {**arguments, "filtros": {**PERIOD, "data_final": "29/11/2026", "conta_corrente_id": 12}}
     last = facade.call(ACCOUNT_QUERY, different_period, "empresa")
     assert [item["nCodLanc"] for item in last["dados"]] == [100]
-    assert remote.call_count == 3
+    assert remote.call_count == 5
 
 
-def test_account_cache_expires_and_financial_writes_invalidate_it(tmp_path, monkeypatch):
-    import onmyoji_daemon.mcp.omie.finance as finance
+def test_explicit_refresh_reaches_every_native_page_before_account_filtering(tmp_path, monkeypatch):
+    pages = [native_page(1, 2, 2, [transaction(1, 12)]), native_page(2, 2, 2, [transaction(2, 12)])]
+    _, request = mock_remote(monkeypatch, deepcopy(pages))
+    # O acesso HTTP é falso; a tradução e a coleta das páginas são reais.
+    arguments = {"filtros": {**PERIOD, "conta_corrente_id": 12}, "atualizar_cache": True}
 
-    clock = [100.0]
-    monkeypatch.setattr(finance, "monotonic", lambda: clock[0])
-    calls = []
+    result = OmieFinanceFacade(Configuration(tmp_path)).call(ACCOUNT_QUERY, arguments, "empresa")
 
-    def invoke(_self, _profile, operation, _arguments, *, writes):
-        calls.append((operation, writes))
-        if writes:
-            return {"nCodLanc": 9001}
-        return native_page(1, 1, 1, [transaction(len(calls), 12)])
+    assert [row["nCodLanc"] for row in result["dados"]] == [1, 2]
+    assert [call.kwargs for call in request.call_args_list] == [{"retries": None, "fresh": True}, {"retries": None, "fresh": True}]
 
-    monkeypatch.setattr(OmieService, "invoke_financial", invoke)
-    facade = OmieFinanceFacade(Configuration(tmp_path))
-    args = {"filtros": {**PERIOD, "conta_corrente_id": 12}}
-    assert facade.call(ACCOUNT_QUERY, args, "empresa")["dados"][0]["nCodLanc"] == 1
-    assert facade.call(ACCOUNT_QUERY, args, "empresa")["dados"][0]["nCodLanc"] == 1
-    assert len(calls) == 1
-
-    clock[0] += 301
-    assert facade.call(ACCOUNT_QUERY, args, "empresa")["dados"][0]["nCodLanc"] == 2
-    assert len(calls) == 2
-
-    facade.call(TRANSACTION_UPDATE, {"confirmar": True, "dados": {**transaction_data(), "id": 9001}}, "empresa")
-    assert facade.call(ACCOUNT_QUERY, args, "empresa")["dados"][0]["nCodLanc"] == 4
-    assert calls == [
-        ("account_transactions_list", False),
-        ("account_transactions_list", False),
-        ("account_transactions_update", True),
-        ("account_transactions_list", False),
-    ]
 
 
 def test_transactions_without_account_fetch_only_the_requested_page(tmp_path, monkeypatch):
@@ -1447,7 +1426,7 @@ def test_title_business_rejection_stops_before_allocation_verification(tmp_path,
         }, "empresa")
 
     assert error.value.code == "omie_api_error"
-    assert error.value.details == {"retryable": False, "remote_code": "10", "remote_description": "Titulo bloqueado"}
+    assert error.value.details == {"retryable": False, "retry_after_seconds": 61, "remote_code": "10", "remote_description": "Titulo bloqueado"}
     assert calls == ["AlterarContaPagar" if resource == "contas_pagar" else "AlterarContaReceber"]
 
 
@@ -1463,5 +1442,29 @@ def test_duplicate_departments_are_rejected_before_any_write(tmp_path, monkeypat
 
     assert error.value.code == "invalid_parameter"
     assert "repetido" in str(error.value)
+    profile.assert_not_called()
+    request.assert_not_called()
+
+
+@pytest.mark.parametrize("value", [None, "true", 1, []])
+def test_refresh_control_rejects_invalid_types_before_access(tmp_path, monkeypatch, value):
+    profile, request = mock_remote(monkeypatch, [])
+    with pytest.raises(OmieError) as error:
+        OmieFinanceFacade(Configuration(tmp_path)).call("omie.financeiro.projetos.consultar", {
+            "filtros": {"id": 12}, "atualizar_cache": value,
+        }, "empresa")
+    assert error.value.details["field"] == "atualizar_cache"
+    profile.assert_not_called()
+    request.assert_not_called()
+
+
+@pytest.mark.parametrize("refresh", [False, True])
+def test_refresh_is_not_a_write_parameter(tmp_path, monkeypatch, refresh):
+    profile, request = mock_remote(monkeypatch, [])
+    with pytest.raises(OmieError) as error:
+        OmieFinanceFacade(Configuration(tmp_path)).call(TRANSACTION_UPDATE, {
+            "confirmar": True, "dados": {"id": 12, "observacao": "Texto"}, "atualizar_cache": refresh,
+        }, "empresa")
+    assert error.value.details["field"] == "atualizar_cache"
     profile.assert_not_called()
     request.assert_not_called()

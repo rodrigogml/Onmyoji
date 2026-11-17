@@ -150,7 +150,7 @@ def create_server(root: Path):
 
     async def call_tool(_ctx, params):
         try:
-            if params.name.startswith(("pdf.", "ocr.", "excel.", "bis10cmd.", "file_review.", "mercado.", "mercadolivre.", "mercadopago.")):
+            if params.name.startswith(("pdf.", "ocr.", "excel.", "bis10cmd.", "file_review.", "mercado.", "mercadolivre.", "mercadopago.", "omie.")):
                 data = await asyncio.to_thread(application.call, params.name, params.arguments or {})
             else:
                 data = application.call(params.name, params.arguments or {})

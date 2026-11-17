@@ -3,6 +3,13 @@ schema_version = 1
 [defaults]
 timeout_seconds = 30
 max_retries = 2
+min_request_interval_seconds = 0.35
+method_requests_per_minute = 180
+process_requests_per_minute = 900
+cache_ttl_seconds = 61
+# Quotas opcionais por aplicação para Trial/FIT; ajuste ao plano contratado.
+# app_requests_per_minute = 55
+# app_requests_per_day = 90  # Trial; para FIT, por exemplo, 450.
 
 [profiles.example]
 enabled = true

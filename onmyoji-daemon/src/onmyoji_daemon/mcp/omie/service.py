@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from math import isfinite
 from pathlib import Path
 import re
@@ -16,6 +18,7 @@ from ..credentials import CredentialError, KeePassCredentialResolver
 from .contracts import build_params
 from .customers import create_customer
 from .exception import OmieError
+from .response_cache import DEFAULT_TTL, ResponseCache
 from .traffic import TRAFFIC_GATE, retry_after_seconds
 
 
@@ -43,6 +46,37 @@ OPERATIONS = {
 
 
 READ_ONLY_METHODS = frozenset(method for _, method, writes in OPERATIONS.values() if not writes)
+CACHE_READ_DESCRIPTION = " Leituras bem-sucedidas compartilham cache entre processos desta instalação. O retorno cache informa reutilizado, consultado_em e valido_ate. Para exigir atualização, use atualizar_cache=true; o MCP respeita a janela de repetição da Omie antes de consultar novamente."
+_FINANCIAL_RESOURCES = {"payables", "receivables", "account_transactions", "financial_movements"}
+_DETAIL_IDENTIFIERS = {
+    "ConsultarProjeto": ("codigo", "codInt"),
+    "ConsultarContaCorrente": ("nCodCC", "cCodCCInt"),
+    "ConsultarCliente": ("codigo_cliente_omie", "codigo_cliente_integracao"),
+    "ConsultaLancCC": ("nCodLanc", "cCodIntLanc"),
+    "ConsultarContaPagar": ("codigo_lancamento_omie", "codigo_lancamento_integracao"),
+    "ConsultarContaReceber": ("codigo_lancamento_omie", "codigo_lancamento_integracao"),
+}
+
+
+def _affected_resources(endpoint: str) -> set[str]:
+    """Invalida o recurso alterado e suas representações financeiras dependentes."""
+    if endpoint in _FINANCIAL_RESOURCES:
+        return set(_FINANCIAL_RESOURCES)
+    if endpoint in {"inbound_nfe_receipts", "incoming_invoices"}:
+        return {endpoint, *_FINANCIAL_RESOURCES}
+    return {endpoint}
+
+
+@dataclass(frozen=True)
+class _RequestPolicy:
+    timeout: float
+    retries: int
+    interval: float
+    method_limit: int
+    root_limit: int
+    app_limit: int | None
+    day_limit: int | None
+    cache_ttl: float
 
 
 def _method_busy_error(description: Any) -> bool:
@@ -89,6 +123,27 @@ class OmieService:
         self.root = onmyoji_root.resolve()
         self.path = self.root / "configs" / "mcp" / "omie.toml"
         self.credentials = credentials or KeePassCredentialResolver(self.root)
+        self._read_observations: list[tuple[bool, float, float]] = []
+
+    def cache_metadata(self) -> dict[str, Any] | None:
+        """Informa a idade mais antiga das páginas consultadas nesta operação."""
+        if not self._read_observations:
+            return None
+        def utc(value: float) -> str:
+            return datetime.fromtimestamp(value, timezone.utc).isoformat()
+        return {
+            "reutilizado": all(item[0] for item in self._read_observations),
+            "consultado_em": utc(min(item[1] for item in self._read_observations)),
+            "valido_ate": utc(min(item[2] for item in self._read_observations)),
+        }
+
+    def _pause_after_error(self, app_key: str, method: str, seconds: float) -> str | None:
+        """Preserva o erro remoto se a persistência da pausa também falhar."""
+        try:
+            TRAFFIC_GATE.pause(self.root, app_key, method, seconds)
+        except OmieError as error:
+            return error.code
+        return None
 
     def test_connection(self, profile_name: str) -> dict[str, Any]:
         """Executa uma listagem mínima para confirmar as duas credenciais Omie."""
@@ -106,6 +161,9 @@ class OmieService:
         if spec is None:
             raise OmieError("unsupported_operation", "Operação Omie não suportada.")
         endpoint, method, writes = spec
+        refresh = arguments.get("atualizar_cache", False)
+        if type(refresh) is not bool or (writes and "atualizar_cache" in arguments):
+            raise OmieError("invalid_parameter", "atualizar_cache deve ser booleano e pertence somente às leituras.", {"field": "atualizar_cache", "retryable": False})
         if writes and arguments.get("confirm") is not True:
             raise OmieError("confirmation_required", "Operações de escrita exigem confirm=true.")
         parameters = build_params(operation, arguments)
@@ -114,7 +172,10 @@ class OmieService:
             def request(method: str, params: Mapping[str, Any], *, retries: int | None = None) -> Any:
                 return self._request(profile, defaults, "customers", method, params, retries=retries)
             return {"data": create_customer(parameters, request)}
-        return {"data": self._request(profile, defaults, endpoint, method, parameters, retries=0 if writes else None)}
+        result = {"data": self._request(profile, defaults, endpoint, method, parameters, retries=0 if writes else None, **({"fresh": True} if refresh else {}))}
+        if not writes and (metadata := self.cache_metadata()) is not None:
+            result["cache"] = metadata
+        return result
 
     def invoke_financial(self, profile_name: str, operation: str, arguments: Mapping[str, Any], *, writes: bool) -> dict[str, Any]:
         """Executa o contrato financeiro já normalizado pela fachada pública."""
@@ -122,10 +183,13 @@ class OmieService:
         if spec is None:
             raise OmieError("unsupported_operation", "Operação financeira Omie não suportada.")
         endpoint, method, _ = spec
+        refresh = arguments.get("atualizar_cache", False)
+        if type(refresh) is not bool or (writes and "atualizar_cache" in arguments):
+            raise OmieError("invalid_parameter", "atualizar_cache deve ser booleano e pertence somente às leituras.", {"field": "atualizar_cache", "retryable": False})
         parameters = build_params(operation, arguments)
         profile, defaults = self._profile(profile_name)
         try:
-            return self._request(profile, defaults, endpoint, method, parameters, retries=0 if writes else None)
+            return self._request(profile, defaults, endpoint, method, parameters, retries=0 if writes else None, **({"fresh": True} if refresh else {}))
         except OmieError as error:
             if writes:
                 if error.code == "omie_http_error":
@@ -161,7 +225,8 @@ class OmieService:
             raise OmieError("profile_disabled", "Perfil Omie está desabilitado.")
         return profile, defaults
 
-    def _request(self, profile: Mapping[str, Any], defaults: Mapping[str, Any], endpoint: str, method: str, parameters: Mapping[str, Any], *, retries: int | None = None) -> Any:
+    def _request(self, profile: Mapping[str, Any], defaults: Mapping[str, Any], endpoint: str, method: str, parameters: Mapping[str, Any], *, retries: int | None = None, fresh: bool = False) -> Any:
+        """Compartilha cache e consumo; escritas nunca reutilizam respostas anteriores."""
         key_field, secret_field = profile.get("app_key_field"), profile.get("app_secret_field")
         credential_profile, entry = profile.get("credential_profile"), profile.get("credential_entry_path")
         if not all(isinstance(value, str) and value for value in (key_field, secret_field, credential_profile, entry)):
@@ -169,108 +234,173 @@ class OmieService:
         try:
             app_key = self.credentials.resolve(credential_profile, entry, key_field)
             app_secret = self.credentials.resolve(credential_profile, entry, secret_field)
-            timeout = float(defaults.get("timeout_seconds", 30))
-            retries = int(defaults.get("max_retries", 2)) if retries is None else retries
-            interval = float(defaults.get("min_request_interval_seconds", 0.35))
-            method_limit = int(defaults.get("method_requests_per_minute", 180))
-            root_limit = int(defaults.get("process_requests_per_minute", 900))
+            policy = _RequestPolicy(
+                float(defaults.get("timeout_seconds", 30)),
+                int(defaults.get("max_retries", 2)) if retries is None else retries,
+                float(defaults.get("min_request_interval_seconds", 0.35)),
+                int(defaults.get("method_requests_per_minute", 180)),
+                int(defaults.get("process_requests_per_minute", 900)),
+                int(defaults["app_requests_per_minute"]) if "app_requests_per_minute" in defaults else None,
+                int(defaults["app_requests_per_day"]) if "app_requests_per_day" in defaults else None,
+                float(defaults.get("cache_ttl_seconds", DEFAULT_TTL)),
+            )
         except CredentialError as error:
             raise OmieError("credential_" + error.code, "Não foi possível obter a credencial Omie.") from error
-        except (TypeError, ValueError) as error:
-            raise OmieError("invalid_config", "Timeout ou tentativas Omie inválidos.") from error
-        if not isfinite(timeout) or not isfinite(interval) or timeout <= 0 or retries < 0 or interval < 0 or not 1 <= method_limit <= 240 or not 1 <= root_limit <= 960:
-            raise OmieError("invalid_config", "Timeout, tentativas ou limites de consumo Omie inválidos.")
+        except (TypeError, ValueError, OverflowError) as error:
+            raise OmieError("invalid_config", "Timeout, tentativas ou limites Omie inválidos.") from error
+        if (not isfinite(policy.timeout) or not 0 < policy.timeout <= 3500 or policy.retries < 0
+                or not isfinite(policy.interval) or policy.interval < 0
+                or not 1 <= policy.method_limit <= 240 or not 1 <= policy.root_limit <= 960
+                or policy.app_limit is not None and not 1 <= policy.app_limit <= 960
+                or policy.day_limit is not None and policy.day_limit < 1
+                or not isfinite(policy.cache_ttl) or not 61 <= policy.cache_ttl <= 300):
+            raise OmieError("invalid_config", "Timeout, tentativas, cache ou limites de consumo Omie inválidos.")
         payload = json.dumps({"call": method, "app_key": app_key, "app_secret": app_secret, "param": [dict(parameters)]}, ensure_ascii=False).encode("utf-8")
-        # A trava cobre retries e impede concorrência para o mesmo método.
-        with TRAFFIC_GATE.serialize(self.root, app_key, method):
-            for attempt in range(retries + 1):
+        cache = ResponseCache(self.root, app_key)
+        return self._send_request(cache, app_key, endpoint, method, parameters, payload, policy, fresh=fresh)
+
+    def _remember_read(self, cache: ResponseCache, endpoint: str, method: str, parameters: Mapping[str, Any], result: Mapping[str, Any], generation: int, fingerprint: str, ttl: float) -> None:
+        """Aprende aliases somente quando o detalhe comprova ID e integração do mesmo objeto."""
+        queries = [dict(parameters)]
+        identifiers = _DETAIL_IDENTIFIERS.get(method)
+        if identifiers is not None:
+            id_key, integration_key = identifiers
+            identifier, integration = result.get(id_key), result.get(integration_key)
+            if (type(identifier) is int and identifier > 0 and isinstance(integration, str) and integration.strip()
+                    and set(parameters) <= set(identifiers)
+                    and all(result.get(key) == value for key, value in parameters.items())):
+                queries += [{id_key: identifier}, {integration_key: integration}]
+        stored = False
+        for query in queries:
+            stored = cache.put(endpoint, method, query, result, generation=generation, ttl=ttl) or stored
+        if stored:
+            cache.register_aliases(endpoint, method, queries, fingerprint=fingerprint, generation=generation)
+        hit = cache.get(endpoint, method, parameters) if stored else None
+        if not cache.is_current(endpoint, generation):
+            raise OmieError(
+                "omie_read_invalidated", "Uma escrita concorrente invalidou a leitura Omie; consulte novamente antes de confirmar o resultado.",
+                {"retryable": False, "retry_after_seconds": 61},
+            )
+        if hit is not None:
+            self._read_observations.append((False, hit.stored_at, hit.expires_at))
+        else:
+            now = time.time()
+            self._read_observations.append((False, now, now))
+
+    def _send_request(self, cache: ResponseCache, app_key: str, endpoint: str, method: str, parameters: Mapping[str, Any], payload: bytes, policy: _RequestPolicy, *, fresh: bool) -> Any:
+        """Executa no máximo uma escrita e protege cada tentativa remota de leitura.
+
+        Falhas HTTP e de negócio pausam o método por pelo menos 61 segundos;
+        HTTP 425 preserva o bloqueio de 30 minutos. Somente falhas de transporte
+        em leituras podem repetir, após aguardar o intervalo compartilhado.
+        """
+        reading = method in READ_ONLY_METHODS
+        if reading and not fresh:
+            hit = cache.get(endpoint, method, parameters)
+            if hit is not None:
+                self._read_observations.append((True, hit.stored_at, hit.expires_at))
+                return hit.data
+        with TRAFFIC_GATE.serialize(self.root, app_key, method, wait_seconds=policy.timeout + 70.0):
+            if reading and not fresh:
+                hit = cache.get(endpoint, method, parameters)
+                if hit is not None:
+                    self._read_observations.append((True, hit.stored_at, hit.expires_at))
+                    return hit.data
+            generation = cache.generation(endpoint) if reading else None
+            fingerprint = cache.resolve_fingerprint(endpoint, method, parameters) if reading else None
+            for attempt in range((policy.retries if reading else 0) + 1):
                 TRAFFIC_GATE.await_slot(
-                    self.root, app_key, method,
-                    interval=interval, method_limit=method_limit, root_limit=root_limit,
+                    self.root, app_key, method, interval=policy.interval,
+                    method_limit=policy.method_limit, root_limit=policy.root_limit,
+                    request_fingerprint=fingerprint, app_limit=policy.app_limit, day_limit=policy.day_limit,
+                    request_timeout=policy.timeout,
                 )
+                resources = _affected_resources(endpoint)
+                token = None if reading else cache.begin_write(resources, lease_seconds=policy.timeout + 65.0)
+                failed = False
                 try:
-                    request = Request(ENDPOINTS[endpoint], data=payload, headers={"Content-Type": "application/json"}, method="POST")
-                    with urlopen(request, timeout=timeout) as response:
-                        result = json.loads(response.read())
-                except HTTPError as error:
-                    wait_from_omie = retry_after_seconds(error.headers)
-                    # A Omie informa bloqueio de 30 minutos após repetição indevida.
-                    if error.code == 425:
-                        TRAFFIC_GATE.pause(self.root, app_key, method, 1800)
-                    if error.code in {429, 502, 503, 504} and attempt < retries:
-                        delay = min(8.0, 0.5 * (2 ** attempt))
-                        if error.code == 429:
-                            delay = max(1.0 * (2 ** attempt), wait_from_omie or 0.0)
-                            # Não prenda a tool durante um Retry-After longo.
-                            if delay > 8:
-                                TRAFFIC_GATE.pause(self.root, app_key, method, delay)
-                            else:
-                                time.sleep(delay)
-                                continue
-                        else:
-                            time.sleep(delay)
-                            continue
-                    details: dict[str, Any] = {"http_status": error.code, "retryable": False}
-                    if error.code == 429:
-                        wait = max(wait_from_omie or 0.0, 2.0)
-                        TRAFFIC_GATE.pause(self.root, app_key, method, wait)
-                        details["retry_after_seconds"] = max(1, int(wait + 0.999))
                     try:
-                        body = json.loads(error.read().decode("utf-8", errors="replace"))
-                        if isinstance(body, Mapping):
-                            description = body.get("description") or body.get("faultstring")
-                            if isinstance(description, str) and description.strip():
-                                details["remote_description"] = description.strip()[:300]
-                            code = body.get("code") or body.get("faultcode")
-                            if isinstance(code, (str, int)) and not isinstance(code, bool):
-                                details["remote_code"] = code
-                    except (OSError, ValueError, UnicodeError, AttributeError):
-                        pass
-                    # A Omie utiliza HTTP 500 também quando outro cliente já
-                    # executa o mesmo método. Esse caso não é erro de contrato:
-                    # retentar apenas métodos de leitura e após atraso limitado.
-                    if error.code == 500 and method in READ_ONLY_METHODS and _method_busy_error(details.get("remote_description")):
-                        if attempt < retries:
-                            time.sleep(min(8.0, 2.0 * (2 ** attempt)))
+                        request = Request(ENDPOINTS[endpoint], data=payload, headers={"Content-Type": "application/json"}, method="POST")
+                        with urlopen(request, timeout=policy.timeout) as response:
+                            result = json.loads(response.read())
+                    except HTTPError as error:
+                        wait = max(1800.0 if error.code == 425 else 61.0, retry_after_seconds(error.headers) or 0.0)
+                        pause_error = self._pause_after_error(app_key, method, wait)
+                        details: dict[str, Any] = {"http_status": error.code, "retryable": False,
+                                                   "retry_after_seconds": max(1, int(wait + 0.999))}
+                        if pause_error is not None:
+                            details["coordination_error"] = pause_error
+                        try:
+                            body = json.loads(error.read().decode("utf-8", errors="replace"))
+                            if isinstance(body, Mapping):
+                                description = body.get("description") or body.get("faultstring")
+                                if isinstance(description, str) and description.strip():
+                                    details["remote_description"] = description.strip()[:300]
+                                code = body.get("code") or body.get("faultcode")
+                                if isinstance(code, (str, int)) and not isinstance(code, bool):
+                                    details["remote_code"] = code
+                        except (OSError, ValueError, UnicodeError, AttributeError):
+                            pass
+                        if error.code == 500 and reading and _method_busy_error(details.get("remote_description")):
+                            raise OmieError(
+                                "omie_busy", "A Omie já está executando esse método; a consulta não foi concluída. "
+                                "A próxima tentativa respeitará o intervalo compartilhado, sem repetição rápida.",
+                                {**details, "reason": "same_method_in_progress"},
+                            ) from error
+                        lookup_error = _project_lookup_error(method, parameters, details)
+                        if error.code == 500 and lookup_error is not None:
+                            raise lookup_error from error
+                        message = f"A API Omie retornou HTTP {error.code}."
+                        if error.code == 425:
+                            message += " Aguarde o fim do bloqueio temporário e revise os parâmetros antes de tentar novamente."
+                        raise OmieError("omie_http_error", message, details) from error
+                    except (URLError, TimeoutError) as error:
+                        pause_error = self._pause_after_error(app_key, method, 61.0)
+                        if reading and attempt < policy.retries and pause_error is None:
                             continue
-                        # Evita uma sequência de novas tentativas que poderia
-                        # acionar o bloqueio HTTP 425 da Omie.
-                        TRAFFIC_GATE.pause(self.root, app_key, method, 10.0)
-                        raise OmieError(
-                            "omie_busy", "A Omie ainda está executando esse método em outra requisição. "
-                            "A consulta não foi concluída; tente novamente após o intervalo indicado.",
-                            {"http_status": 500, "reason": "same_method_in_progress",
-                             "retryable": False, "retry_after_seconds": 10},
-                        ) from error
-                    message = f"A API Omie retornou HTTP {error.code}."
-                    if error.code == 425:
-                        message += " Aguarde o fim do bloqueio temporário e revise os parâmetros antes de tentar novamente."
-                    lookup_error = _project_lookup_error(method, parameters, details)
-                    if error.code == 500 and lookup_error is not None:
-                        raise lookup_error from error
-                    raise OmieError("omie_http_error", message, details) from error
-                except (URLError, TimeoutError) as error:
-                    if attempt == retries:
-                        raise OmieError("network_error", "Não foi possível consultar a API Omie.") from error
-                    time.sleep(min(8.0, 0.5 * (2 ** attempt)))
-                    continue
-                except (json.JSONDecodeError, UnicodeError) as error:
-                    raise OmieError("invalid_response", "A API Omie retornou uma resposta inválida.") from error
-                if not isinstance(result, Mapping):
-                    raise OmieError("invalid_response", "A API Omie retornou uma resposta inválida.")
-                status_field = next((field for field in ("cCodStatus", "codigo_status") if field in result
-                                     and (type(result[field]) not in (str, int) or result[field] not in ("0", 0))), None)
-                if result.get("faultstring") or status_field is not None:
-                    details: dict[str, Any] = {"retryable": False}
-                    code = result.get("faultcode") if result.get("faultstring") else result.get(status_field)
-                    description = result.get("faultstring") or result.get("cDesStatus" if status_field == "cCodStatus" else "descricao_status")
-                    if isinstance(code, (str, int)) and not isinstance(code, bool):
-                        details["remote_code"] = code
-                    if isinstance(description, str) and description.strip():
-                        details["remote_description"] = description.strip()[:300]
-                    lookup_error = _project_lookup_error(method, parameters, details)
-                    if lookup_error is not None:
-                        raise lookup_error
-                    raise OmieError("omie_api_error", "A API Omie retornou uma falha de negócio.", details)
-                return result
+                        raise OmieError("network_error", "Não foi possível consultar a API Omie.", {"retryable": False, "retry_after_seconds": 61}) from error
+                    except (json.JSONDecodeError, UnicodeError) as error:
+                        self._pause_after_error(app_key, method, 61.0)
+                        raise OmieError("invalid_response", "A API Omie retornou uma resposta inválida.", {"retryable": False, "retry_after_seconds": 61}) from error
+                    if not isinstance(result, Mapping):
+                        self._pause_after_error(app_key, method, 61.0)
+                        raise OmieError("invalid_response", "A API Omie retornou uma resposta inválida.", {"retryable": False, "retry_after_seconds": 61})
+                    status_field = next((field for field in ("cCodStatus", "codigo_status") if field in result
+                                         and (type(result[field]) not in (str, int) or result[field] not in ("0", 0))), None)
+                    if result.get("faultstring") or status_field is not None:
+                        pause_error = self._pause_after_error(app_key, method, 61.0)
+                        details = {"retryable": False, "retry_after_seconds": 61}
+                        if pause_error is not None:
+                            details["coordination_error"] = pause_error
+                        code = result.get("faultcode") if result.get("faultstring") else result.get(status_field)
+                        description = result.get("faultstring") or result.get("cDesStatus" if status_field == "cCodStatus" else "descricao_status")
+                        if isinstance(code, (str, int)) and not isinstance(code, bool):
+                            details["remote_code"] = code
+                        if isinstance(description, str) and description.strip():
+                            details["remote_description"] = description.strip()[:300]
+                        lookup_error = _project_lookup_error(method, parameters, details)
+                        if lookup_error is not None:
+                            raise lookup_error
+                        raise OmieError("omie_api_error", "A API Omie retornou uma falha de negócio.", details)
+                    if reading:
+                        self._remember_read(cache, endpoint, method, parameters, result, generation, fingerprint, policy.cache_ttl)
+                    return result
+                except BaseException:
+                    failed = True
+                    raise
+                finally:
+                    try:
+                        try:
+                            if not reading:
+                                cache.end_write(resources, token)
+                        finally:
+                            TRAFFIC_GATE.complete(self.root, app_key, method, fingerprint)
+                    except OmieError as error:
+                        if not failed:
+                            if reading:
+                                raise
+                            raise OmieError(
+                                "outcome_unknown", "A escrita pode ter sido recebida pela Omie; a invalidação compartilhada falhou. Consulte antes de repetir.",
+                                {"cause_code": error.code, "retryable": False, "phase": "cache_invalidation"},
+                            ) from error
         raise OmieError("network_error", "Não foi possível consultar a API Omie.")

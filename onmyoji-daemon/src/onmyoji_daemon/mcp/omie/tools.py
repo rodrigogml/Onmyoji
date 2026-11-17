@@ -4,7 +4,8 @@ from __future__ import annotations
 from typing import Any
 
 from ..configuration import McpConfiguration
-from .service import OPERATIONS, OmieService
+from ...state_layout import SETUP_VERSION
+from .service import CACHE_READ_DESCRIPTION, OPERATIONS, OmieService
 from .publication import description, input_contract
 from .finance import OmieFinanceFacade
 
@@ -33,7 +34,7 @@ class OmieToolRegistry:
         for operation, (_, _, writes) in OPERATIONS.items():
             if operation in FINANCE_LEGACY_OPERATIONS:
                 continue
-            suffix = " Exige confirm=true porque altera dados no ERP." if writes else ""
+            suffix = " Exige confirm=true porque altera dados no ERP." if writes else CACHE_READ_DESCRIPTION
             tools.append({"name": "omie." + operation, "description": description(operation) + suffix + self._context(profiles), "input_schema": self._schema(profiles, operation, writes)})
         tools.extend({**tool, "description": tool["description"] + self._context(profiles)} for tool in OmieFinanceFacade(self.configuration).definitions(profiles))
         return tools
@@ -53,8 +54,9 @@ class OmieToolRegistry:
 
     @staticmethod
     def _context(profiles: list[dict[str, str]]) -> str:
-        if len(profiles) == 1: return f' Perfil ativo: "{profiles[0]["name"]}" — {profiles[0]["description"]}'
-        return " Escolha profile conforme omie.list_profiles e o contexto de cada perfil."
+        version = f" Contrato MCP Omie {SETUP_VERSION}."
+        if len(profiles) == 1: return version + f' Perfil ativo: "{profiles[0]["name"]}" — {profiles[0]["description"]}'
+        return version + " Escolha profile conforme omie.list_profiles e o contexto de cada perfil."
 
     @staticmethod
     def _profile(profiles: list[dict[str, str]], arguments: dict[str, Any]) -> str | None:
@@ -74,6 +76,8 @@ class OmieToolRegistry:
             properties["profile"] = {"type": "string", "enum": [item["name"] for item in profiles]}; required.append("profile")
         if writes:
             properties["confirm"] = {"type": "boolean", "description": "Deve ser true para confirmar a escrita."}; required.append("confirm")
+        else:
+            properties["atualizar_cache"] = {"type": "boolean", "description": "Exige dados atualizados após aguardar a janela remota de repetição."}
         result: dict[str, Any] = {"type": "object", "properties": properties, "additionalProperties": False}
         if required: result["required"] = required
         return result

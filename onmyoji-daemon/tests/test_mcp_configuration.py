@@ -104,6 +104,99 @@ def test_omie_tool_depends_on_enabled_profile_and_existing_vault_profile(tmp_pat
     assert config.enabled_omie_profiles() == [{"name": "account-a", "description": "ERP de teste."}]
 
 
+def test_omie_limits_and_cache_survive_save_reload_and_profile_edit(tmp_path):
+    """Editar o perfil no setup não apaga as proteções de consumo já configuradas."""
+    config = McpConfiguration(tmp_path)
+    document = config.omie()
+    limits = {
+        "timeout_seconds": 3500, "max_retries": 0,
+        "min_request_interval_seconds": 1.1, "method_requests_per_minute": 55,
+        "process_requests_per_minute": 900, "app_requests_per_minute": 55,
+        "app_requests_per_day": 90, "cache_ttl_seconds": 61.5,
+    }
+    document["defaults"] = limits.copy()
+    document["profiles"]["empresa"] = {
+        "enabled": False, "description": "ERP antes da edição.",
+        "credential_profile": "vault-a", "credential_entry_path": "APIs/Omie/empresa",
+        "app_key_field": "username", "app_secret_field": "password",
+    }
+
+    config.save_omie(document)
+    reloaded = McpConfiguration(tmp_path).omie()
+
+    assert reloaded["defaults"] == limits
+    reloaded["profiles"]["empresa"].update(enabled=True, description="ERP depois da edição.")
+    McpConfiguration(tmp_path).save_omie(reloaded)
+    final = McpConfiguration(tmp_path).omie()
+    assert final["defaults"] == limits
+    assert final["profiles"]["empresa"]["description"] == "ERP depois da edição."
+    assert final["profiles"]["empresa"]["enabled"] is True
+
+
+def test_omie_absent_or_removed_optional_limits_are_not_reintroduced(tmp_path):
+    config = McpConfiguration(tmp_path)
+    document = config.omie()
+    expected = {"timeout_seconds": 30, "max_retries": 2}
+    assert document["defaults"] == expected
+
+    config.save_omie(document)
+    assert config.omie()["defaults"] == expected
+    document["defaults"].update(cache_ttl_seconds=61, app_requests_per_day=90)
+    config.save_omie(document)
+    document = config.omie()
+    del document["defaults"]["cache_ttl_seconds"]
+    del document["defaults"]["app_requests_per_day"]
+    config.save_omie(document)
+
+    assert McpConfiguration(tmp_path).omie()["defaults"] == expected
+
+
+@pytest.mark.parametrize("field,value", [
+    ("timeout_seconds", 1), ("timeout_seconds", 3500), ("max_retries", 0), ("max_retries", 10),
+    ("min_request_interval_seconds", 0), ("min_request_interval_seconds", 0.35),
+    ("method_requests_per_minute", 1), ("method_requests_per_minute", 240),
+    ("process_requests_per_minute", 1), ("process_requests_per_minute", 960),
+    ("app_requests_per_minute", 1), ("app_requests_per_minute", 960),
+    ("app_requests_per_day", 1), ("app_requests_per_day", 10000),
+    ("cache_ttl_seconds", 61), ("cache_ttl_seconds", 61.5), ("cache_ttl_seconds", 300),
+])
+def test_omie_consumption_configuration_accepts_documented_boundaries(tmp_path, field, value):
+    config = McpConfiguration(tmp_path)
+    document = config.omie()
+    document["defaults"][field] = value
+
+    config.save_omie(document)
+
+    assert McpConfiguration(tmp_path).omie()["defaults"][field] == value
+
+
+@pytest.mark.parametrize("field,value", [
+    (field, value)
+    for field, values in (
+        ("timeout_seconds", [None, True, False, "30", 0, -1, 3501, 1.5]),
+        ("max_retries", [None, True, False, "2", -1, 0.0]),
+        ("min_request_interval_seconds", [None, True, False, "0.35", -0.01, float("nan"), float("inf"), float("-inf")]),
+        ("method_requests_per_minute", [None, True, False, "55", 0, -1, 241, 55.0]),
+        ("process_requests_per_minute", [None, True, False, "900", 0, -1, 961, 900.0]),
+        ("app_requests_per_minute", [None, True, False, "55", 0, -1, 961, 55.0]),
+        ("app_requests_per_day", [None, True, False, "90", 0, -1, 90.0]),
+        ("cache_ttl_seconds", [None, True, False, "61", 0, 60.9, 300.1, float("nan"), float("inf"), float("-inf")]),
+    )
+    for value in values
+])
+def test_omie_consumption_configuration_rejects_invalid_values_without_replacing_file(tmp_path, field, value):
+    config = McpConfiguration(tmp_path)
+    original = config.omie()
+    config.save_omie(original)
+    document = config.omie()
+    document["defaults"][field] = value
+
+    with pytest.raises(McpConfigurationError, match=field):
+        config.save_omie(document)
+
+    assert McpConfiguration(tmp_path).omie() == original
+
+
 def test_cloudflare_tool_depends_on_enabled_profile_and_existing_vault_profile(tmp_path):
     config = McpConfiguration(tmp_path)
     credentials = config.credentials()

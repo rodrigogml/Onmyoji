@@ -6,11 +6,7 @@ nativos, cujo uso é explicado nos contratos publicados.
 """
 from __future__ import annotations
 
-from collections import OrderedDict
 from dataclasses import dataclass
-import json
-from threading import RLock
-from time import monotonic
 from datetime import datetime
 from math import isfinite
 from typing import Any, Mapping
@@ -18,7 +14,7 @@ from typing import Any, Mapping
 from .allocation import verify_department_allocation
 from .contracts import DIRECT_DOCUMENT_TYPES, build_params, normalize_account_departments, normalize_percentage_departments
 from .exception import OmieError
-from .service import OmieService
+from .service import CACHE_READ_DESCRIPTION, OmieService
 
 
 DATE_PATTERN = r"^\d{2}/\d{2}/\d{4}$"
@@ -220,6 +216,10 @@ def _transaction_body(spec: FinanceSpec, data: Mapping[str, Any]) -> dict[str, A
     names = _transaction_names(spec)
     unknown = set(data) - set(names)
     if unknown:
+        if "conciliado" in unknown:
+            _invalid("dados.conciliado", "esta operação não altera conciliação; remova conciliado. Consulte movimentos.listar_para_conciliacao para conferir o estado.")
+        if "observacoes" in unknown:
+            _invalid("dados.observacoes", "use observacao, no singular, para alterar somente o texto.", use_instead=["dados.observacao"])
         _invalid(f"dados.{sorted(unknown)[0]}", "não pertence ao contrato desta operação.")
     for field in _transaction_required(spec):
         if field not in data:
@@ -309,6 +309,8 @@ def _department_schema() -> dict[str, Any]:
 def _schema(spec: FinanceSpec, profiles: list[dict[str, str]]) -> dict[str, Any]:
     date = {"type": "string", "pattern": DATE_PATTERN, "description": "Data no formato dd/mm/aaaa.", "examples": ["01/11/2026"]}
     properties: dict[str, Any] = {"incluir_dados_omie": {"type": "boolean", "description": "Inclui dados nativos apenas quando forem necessários para auditoria."}}
+    if not spec.writes:
+        properties["atualizar_cache"] = {"type": "boolean", "description": "Exige leitura atualizada após aguardar a janela remota; nunca remove um cooldown da Omie."}
     required: list[str] = []
     if spec.writes:
         data_properties: dict[str, Any] = {
@@ -426,52 +428,6 @@ def _translate_title(data: Mapping[str, Any], *, create: bool) -> dict[str, Any]
     return translated
 
 
-# O cache guarda páginas nativas completas, nunca credenciais, somente em memória.
-# A chave inclui a instância/perfil; mudar a página pública não refaz a coleta.
-_ACCOUNT_CACHE_TTL = 300.0
-_ACCOUNT_CACHE_MAX_ENTRIES = 6
-_ACCOUNT_CACHE_MAX_ROWS = 25000
-_ACCOUNT_CACHE_LOCK = RLock()
-_ACCOUNT_CACHE: OrderedDict[tuple[str, str, str], tuple[float, dict[str, Any]]] = OrderedDict()
-_ACCOUNT_PROFILE_LOCKS: dict[tuple[str, str], RLock] = {}
-
-
-def _profile_cache_lock(root: str, profile: str) -> RLock:
-    with _ACCOUNT_CACHE_LOCK:
-        return _ACCOUNT_PROFILE_LOCKS.setdefault((root, profile), RLock())
-
-
-def _cache_get(key: tuple[str, str, str]) -> dict[str, Any] | None:
-    with _ACCOUNT_CACHE_LOCK:
-        item = _ACCOUNT_CACHE.get(key)
-        if item is None:
-            return None
-        expiration, data = item
-        if expiration <= monotonic():
-            del _ACCOUNT_CACHE[key]
-            return None
-        _ACCOUNT_CACHE.move_to_end(key)
-        return data
-
-
-def _cache_put(key: tuple[str, str, str], response: dict[str, Any]) -> None:
-    # Não manter históricos desproporcionalmente grandes na memória do daemon.
-    if len(response["listaLancamentos"]) > _ACCOUNT_CACHE_MAX_ROWS:
-        return
-    with _ACCOUNT_CACHE_LOCK:
-        _ACCOUNT_CACHE[key] = (monotonic() + _ACCOUNT_CACHE_TTL, response)
-        _ACCOUNT_CACHE.move_to_end(key)
-        while len(_ACCOUNT_CACHE) > _ACCOUNT_CACHE_MAX_ENTRIES:
-            _ACCOUNT_CACHE.popitem(last=False)
-
-
-def _cache_invalidate(root: str, profile: str) -> None:
-    with _ACCOUNT_CACHE_LOCK:
-        for key in list(_ACCOUNT_CACHE):
-            if key[0] == root and key[1] == profile:
-                del _ACCOUNT_CACHE[key]
-
-
 class OmieFinanceFacade:
     """Publica e executa os contratos financeiros orientados a finalidade."""
 
@@ -482,7 +438,7 @@ class OmieFinanceFacade:
         for spec in SPECS:
             description = spec.description
             if spec.legacy == "account_transactions_list":
-                description += " Aceita conta_corrente_id; o MCP consulta todas as páginas do período, filtra a conta e só então aplica pagina e tamanho_pagina (máximo 50). Se a consulta falhar, a ausência de duplicidade NÃO está confirmada. Resultados bem-sucedidos podem permanecer em cache por 5 minutos."
+                description += " Aceita conta_corrente_id; o MCP consulta todas as páginas do período, filtra a conta e só então aplica pagina e tamanho_pagina (máximo 50). Se a consulta falhar, a ausência de duplicidade NÃO está confirmada. As páginas nativas usam o cache compartilhado da instalação."
             if spec.kind == "get":
                 fields = list(IDENTIFIER_NAMES[spec.legacy.rsplit("_", 1)[0]])
                 description += " Informe exatamente um identificador em " + ("dados" if spec.writes else "filtros") + ": " + " ou ".join(fields) + "."
@@ -502,6 +458,8 @@ class OmieFinanceFacade:
                     'Não use chaves técnicas cCodDep/nPerDep/nValDep ou valor no rateio; '
                     'a Omie calcula os valores a partir dos percentuais. Uma lista vazia solicita remover o rateio.'
                 )
+            if not spec.writes:
+                description += CACHE_READ_DESCRIPTION
             tools.append({"name": spec.name, "description": description + " Não use parâmetros técnicos da Omie.", "input_schema": _schema(spec, profiles)})
         return tools
 
@@ -509,42 +467,34 @@ class OmieFinanceFacade:
         spec = BY_NAME.get(name)
         if spec is None: raise ValueError("Tool financeira Omie indisponível.")
         if not isinstance(arguments, Mapping): raise OmieError("invalid_parameter", "Os argumentos devem ser um objeto JSON.")
+        refresh = arguments.get("atualizar_cache", False)
+        if type(refresh) is not bool or (spec.writes and "atualizar_cache" in arguments):
+            _invalid("atualizar_cache", "deve ser booleano e pertence somente às leituras.")
         legacy = self._legacy_arguments(spec, arguments)
+        if refresh:
+            legacy["atualizar_cache"] = True
         account = _object(arguments, "filtros").get("conta_corrente_id") if spec.legacy == "account_transactions_list" else None
         if spec.collect_pages or account is not None:
-            legacy = {"params": {**legacy["params"], "nPagina": 1, "nRegPorPagina": 50}}
+            legacy = {**legacy, "params": {**legacy["params"], "nPagina": 1, "nRegPorPagina": 50}}
         service = OmieService(self.configuration.root)
-        root = str(self.configuration.root.resolve())
         verification = None
-        if account is not None:
-            # A mesma consulta nativa é usada por todas as páginas/contas públicas.
-            cache_key = (root, profile, json.dumps(legacy["params"], sort_keys=True))
-            with _profile_cache_lock(root, profile):
-                response = _cache_get(cache_key)
-                if response is None:
-                    response = service.invoke_financial(profile, spec.legacy, legacy, writes=False)
-                    response = self._collect_pages(service, profile, spec, legacy, response)
-                    _cache_put(cache_key, response)
-                response = self._filter_account_transactions(response, account, arguments)
-        elif spec.writes:
-            # Não reutilizar respostas antigas em escritas (inclusive incertas).
-            with _profile_cache_lock(root, profile):
-                _cache_invalidate(root, profile)
-                try:
-                    verify_allocation = spec.legacy in {"account_transactions_update", "payables_update", "receivables_update"} and "departamentos" in _object(arguments, "dados")
-                    parameters = build_params(spec.legacy, legacy) if verify_allocation else None
-                    response = service.invoke_financial(profile, spec.legacy, legacy, writes=True)
-                    if parameters is not None:
-                        verification = verify_department_allocation(service, profile, spec.legacy, parameters)
-                finally:
-                    _cache_invalidate(root, profile)
+        if spec.writes:
+            verify_allocation = spec.legacy in {"account_transactions_update", "payables_update", "receivables_update"} and "departamentos" in _object(arguments, "dados")
+            parameters = build_params(spec.legacy, legacy) if verify_allocation else None
+            response = service.invoke_financial(profile, spec.legacy, legacy, writes=True)
+            if parameters is not None:
+                verification = verify_department_allocation(service, profile, spec.legacy, parameters)
         else:
             response = service.invoke_financial(profile, spec.legacy, legacy, writes=False)
-            if spec.collect_pages:
+            if spec.collect_pages or account is not None:
                 response = self._collect_pages(service, profile, spec, legacy, response)
+            if account is not None:
+                response = self._filter_account_transactions(response, account, arguments)
         result = self._normalize(spec, response, arguments.get("incluir_dados_omie") is True)
         if verification is not None:
             result["verificacao"] = verification
+        if not spec.writes and (metadata := service.cache_metadata()) is not None:
+            result["cache"] = metadata
         return result
 
     def _legacy_arguments(self, spec: FinanceSpec, arguments: Mapping[str, Any]) -> dict[str, Any]:
@@ -579,11 +529,11 @@ class OmieFinanceFacade:
                 if field in arguments:
                     _invalid(field, "esta consulta não aceita paginação; remova pagina e tamanho_pagina.")
         if spec.kind == "catalog":
-            unknown = set(arguments) - {"profile", "incluir_dados_omie"}
+            unknown = set(arguments) - {"profile", "incluir_dados_omie", "atualizar_cache"}
             if unknown:
                 _invalid(sorted(unknown)[0], "este catálogo não aceita filtros; chame com {} ou somente os controles publicados de perfil e auditoria.")
             return {"params": {}}
-        allowed = {"profile", "incluir_dados_omie", "filtros"}
+        allowed = {"profile", "incluir_dados_omie", "atualizar_cache", "filtros"}
         if spec.paginated:
             allowed.update({"pagina", "tamanho_pagina"})
         unknown = set(arguments) - allowed
@@ -718,7 +668,7 @@ class OmieFinanceFacade:
         for current in range(1, max(1, total_pages) + 1):
             if current > 1:
                 params = {**legacy["params"], "nPagina": current}
-                page = service.invoke_financial(profile, spec.legacy, {"params": params}, writes=False)
+                page = service.invoke_financial(profile, spec.legacy, {**legacy, "params": params}, writes=False)
                 page_rows, page_total, page_count = cls._financial_page(page, row_key, current)
                 if page_total != total_pages or page_count != total_records:
                     cls._invalid_response("paginacao")

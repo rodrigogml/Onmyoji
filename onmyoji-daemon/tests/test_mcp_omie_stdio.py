@@ -24,7 +24,7 @@ def test_stdio_publishes_omie_and_rejects_invalid_call_without_vault(tmp_path):
     config.save_omie(omie)
     source = str(Path(__file__).resolve().parents[1] / "src")
     environment = {**os.environ, "PYTHONPATH": source, "PYTHONUTF8": "1"}
-    parameters = StdioServerParameters(command=sys.executable, args=["-m", "onmyoji_daemon.mcp.server", "--onmyoji-root", str(tmp_path)], env=environment)
+    parameters = StdioServerParameters(command=sys.executable, args=["-B", "-m", "onmyoji_daemon.mcp.server", "--onmyoji-root", str(tmp_path)], env=environment)
 
     async def check():
         async with stdio_client(parameters) as (read, write):
@@ -39,6 +39,8 @@ def test_stdio_publishes_omie_and_rejects_invalid_call_without_vault(tmp_path):
                 projects = next(tool for tool in tools if tool.name == "omie.financeiro.projetos.listar")
                 assert projects.input_schema["properties"]["filtros"]["properties"]["nome"]["maxLength"] == 100
                 assert "filtros.id" in projects.description
+                assert "Contrato MCP Omie" in projects.description
+                assert projects.input_schema["properties"]["atualizar_cache"]["type"] == "boolean"
                 result = await session.call_tool("omie.document_types_get", {"params": {"codigo": 123}})
                 assert result.is_error is True
                 assert "nonexistent" not in str(result.content)
@@ -48,5 +50,12 @@ def test_stdio_publishes_omie_and_rejects_invalid_call_without_vault(tmp_path):
                     assert "invalid_parameter" in str(result.content)
                     assert "filtros.nome" in str(result.content)
                     assert "nonexistent" not in str(result.content)
+                result = await session.call_tool("omie.financeiro.lancamentos_conta.alterar", {
+                    "dados": {"id": 12, "observacoes": "Texto"}, "confirmar": True,
+                })
+                assert result.is_error is True
+                assert "dados.observacao" in str(result.content)
+                assert "use_instead" in str(result.content)
+                assert "nonexistent" not in str(result.content)
 
     asyncio.run(check())
