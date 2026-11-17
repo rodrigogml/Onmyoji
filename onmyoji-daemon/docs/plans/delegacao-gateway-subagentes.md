@@ -298,7 +298,7 @@ Propor a opção local `busy_input_policy` em `[agent]` do config do Gateway, co
 | --- | --- |
 | Sem turno ativo, processo inicializado | Obter slot e `turn/start` na thread carregada; se necessário, `thread/resume` primeiro |
 | Sem turno ativo, processo parado | Iniciar processo, `initialize`/`initialized`, retomar thread e `turn/start` |
-| Turno ativo e política `queue` | Manter FIFO; confirmar recebimento/enfileiramento com texto curto e deduplicado |
+| Turno ativo e política `queue` | Manter FIFO, sem notificação automática de recebimento/enfileiramento |
 | Turno ativo, política `steer`, owner em DM privada, sem conflito de fila/configuração e input suportado | `turn/steer` com `expectedTurnId` |
 | `/fila <texto>` | Persistir na fila, inclusive em política steer; não mudar política global |
 | `/direcionar <texto>` elegível | Usar steering; se turno acabou, iniciar próximo turno com o mesmo input ainda não aceito |

@@ -321,14 +321,6 @@ class ExecutionGateway(ExecutionRecovery):
         if inbox is None:
             return
         self._diagnostic("input.persisted", generation=generation, input_id=inbox, route=route)
-        with self.app_server_lock:
-            busy = conversation in self._slots
-        if busy and self.api:
-            address, topic = self._telegram_address(conversation)
-            try:
-                self.deliveries.text(DeliveryOwner(conversation, generation), "receipt:" + inbox, "receipt", inbox, self.api, address, "Mensagem recebida. Ela será encaminhada conforme a política de fila/direcionamento disponível.", **topic)
-            except Exception:
-                self._diagnostic("delivery.uncertain", generation=generation, kind="receipt")
         with self.workers_changed:
             self.workers_changed.notify_all()
         if self.store.next_input(conversation, self._generation(conversation)):

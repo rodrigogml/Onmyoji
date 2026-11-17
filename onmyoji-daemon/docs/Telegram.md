@@ -337,6 +337,8 @@ O Gateway recebe e registra mensagens mesmo enquanto há um turno em execução.
 Downloads e preparação de voz/anexos usam capacidade limitada, preservando a
 ordem por conversa; callbacks e controles têm caminho próprio. A fila durável
 é deduplicada pela origem do update antes de avançar o checkpoint do polling.
+Novas entradas durante um turno são persistidas e roteadas sem notificação
+automática de recebimento ou enfileiramento.
 
 Em `configs/daemon/services/telegram/config.toml`:
 
