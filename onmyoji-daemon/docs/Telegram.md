@@ -170,7 +170,8 @@ Telegram. `DM` significa conversa privada com o bot.
 
 | Comando | Owner | Outros |
 | --- | --- | --- |
-| `/new` | DM e grupos: reiniciar a conversa correspondente. | Somente DM: reiniciar a própria conversa. |
+| `/new` | DM e grupos: criar ou reiniciar a conversa correspondente. | Somente DM: criar ou reiniciar a própria conversa. |
+| `/topic <nome>` | Tópicos de DM e de grupos: renomear o tópico atual, sem iniciar Codex. | Não permitido. |
 | `/config` | DM: abrir preferências; grupos: ajustar a janela de contexto com argumentos numéricos. | Não permitido. |
 | `/channel` | DM e grupos: cadastrar, identificar e gerenciar canais. | Não permitido, inclusive para solicitar cadastro. |
 | `/usage` | Somente DM (inclusive tópicos privados): consultar os limites e o consumo da conta Codex. | Não permitido; nenhuma informação da franquia é consultada ou enviada. |
@@ -256,7 +257,8 @@ comandos no chat privado de cada owner:
 
 | Comando | Função |
 | --- | --- |
-| `/new` | Iniciar uma nova conversa. |
+| `/new` | Criar ou reiniciar a conversa atual. |
+| `/topic <nome>` | Renomear o tópico atual diretamente no Telegram. |
 | `/config` | Configurar a conversa atual. |
 | `/channel` | Gerenciar canal de envio. |
 | `/usage` | Consultar consumo e franquia do Codex. |
@@ -474,13 +476,45 @@ Uma compactação recusada não repete nem invalida o turno já concluído.
 
 No Linux, o checkpoint também aceita o lançador JavaScript do Codex sob Node. Antes de registrar ou recuperar, verifica o script e seus argumentos, além da identidade nativa, criação e hash do processo. Se o wrapper ainda estiver vivo após uma interrupção, a recuperação bloqueia outra abertura e requer intervenção do operador: encerrar apenas o Node não comprova o término de eventual filho nativo. Se a identidade estiver inacessível ou alterada, o encerramento automático também é bloqueado. O diagnóstico registra apenas a etapa e o código operacional, sem conteúdo de mensagens ou erro bruto.
 
-`/new` é a forma explícita de descartar o contexto. Cada tópico direto do
-Telegram também é uma conversa independente, embora pertença ao mesmo DM.
+`/new` é a forma explícita de descartar o contexto. Quando já existe uma thread
+Codex vinculada à conversa, o Gateway responde **Conversa reiniciada.**; sem
+vínculo anterior, responde **Nova conversa criada.**. O comando prepara o
+contexto local sem iniciar o Codex: a nova thread Codex só é criada na próxima
+mensagem que exigir processamento. Cada tópico direto do Telegram também é
+uma conversa independente, embora pertença à mesma DM.
 
 Se a conexão autenticada com o Telegram falhar durante a inicialização, o
 supervisor marca o Gateway como indisponível e tenta iniciá-lo novamente em
 segundo plano. Uma inicialização que não ficou pronta é encerrada antes da nova
 tentativa, para não deixar processos sem endpoint de controle.
+
+## Nome dos tópicos no Telegram
+
+O owner pode enviar `/topic amendoim` dentro de um tópico para alterar seu título
+para **amendoim**. O Gateway executa a alteração diretamente no Telegram,
+inclusive em tópicos privados criados pelo usuário, sem chamar o Codex. O nome
+deve conter de 1 a 128 caracteres após remover espaços nas extremidades; sem
+nome, o Gateway informa o uso do comando.
+
+O comando renomeia somente o tópico em que foi recebido: não altera o título
+da DM inteira, não cria um tópico e não reinicia o contexto Codex. Se ainda não
+existe thread Codex vinculada, ela continua sendo criada sob demanda pela próxima
+mensagem que exigir processamento. Em chats sem tópico, o Gateway informa que
+o comando precisa ser executado em um tópico.
+
+O comando atende aos tópicos privados do bot e aos tópicos de fóruns de
+grupos. Tópicos de mensagens diretas de canais do Telegram não são
+compatíveis com essa operação.
+
+Em grupos, a alteração também depende das permissões do bot no Telegram. Tópicos
+comuns usam `editForumTopic`; o tópico Geral de um fórum usa
+`editGeneralForumTopic`. A confirmação só é enviada após o Telegram aceitar a
+alteração, e o catálogo local passa a refletir o novo nome. Um alias escolhido
+manualmente em `/channel` continua sendo apenas a identificação local do canal.
+
+> [!NOTE]
+> `/new` administra o vínculo com o Codex. `/topic` altera o título visível no
+> Telegram e preserva esse vínculo e a geração da conversa.
 
 ## Migração e rollback local
 

@@ -1264,12 +1264,17 @@ class ExecutionGateway(ExecutionRecovery):
         with self.database_lock:
             return bool(self.database.execute("SELECT 1 FROM execution_turns WHERE state IN ('uncertain','reconciling') LIMIT 1").fetchone())
 
-    def _new_conversation(self, chat_id: Any) -> None:
+    def _new_conversation(self, chat_id: Any) -> bool:
+        """Reinicia a geração e informa se havia uma thread Codex vinculada.
+
+        A referência anterior é consultada no mesmo bloqueio que a descarta.
+        A próxima mensagem que exigir processamento cria a nova thread.
+        """
         conversation = str(chat_id)
         self._ensure_conversation(conversation)
         with self.database_lock:
-            row = self.database.execute("SELECT generation FROM conversations WHERE chat_id=?", (conversation,)).fetchone()
-            generation = int(row[0])
+            row = self.database.execute("SELECT generation,codex_thread_id FROM conversations WHERE chat_id=?", (conversation,)).fetchone()
+            generation, had_thread = int(row[0]), bool(row[1])
             with self.app_server_lock:
                 old = [active for active in self.app_turns.values() if active.conversation_id == conversation and active.generation == generation]
             for active in old:
@@ -1317,6 +1322,7 @@ class ExecutionGateway(ExecutionRecovery):
             self.workers_changed.notify_all()
         if self.store.next_input(conversation, self._generation(conversation)):
             self._wake_worker(conversation)
+        return had_thread
 
     def _interrupt(self, active: Any) -> None:
         active.cancel_requested = True

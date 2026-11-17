@@ -9,6 +9,7 @@ from typing import Any
 
 _OWNER_COMMANDS = (
     ("new", "Iniciar uma nova conversa"),
+    ("topic", "Renomear o tópico atual: /topic <nome>"),
     ("config", "Configurar esta conversa"),
     ("channel", "Gerenciar canal de envio"),
     ("usage", "Consultar consumo e franquia do Codex"),

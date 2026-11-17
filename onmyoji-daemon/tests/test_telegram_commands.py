@@ -24,7 +24,7 @@ from onmyoji_daemon.telegram_commands import (
 )
 
 
-COMMAND_NAMES = ["new", "config", "channel", "usage", "resetusage", "login", "fila", "direcionar", "cancel", "resolver", "users", "register", "status", "unregister"]
+COMMAND_NAMES = ["new", "topic", "config", "channel", "usage", "resetusage", "login", "fila", "direcionar", "cancel", "resolver", "users", "register", "status", "unregister"]
 
 
 class MenuService:
@@ -89,11 +89,11 @@ def test_menu_catalog_covers_all_owner_commands_and_respects_telegram_contract()
     assert all(re.fullmatch(r"[a-z0-9_]{1,32}", entry["command"]) for entry in commands)
     assert all(1 <= len(entry["description"]) <= 256 for entry in commands)
     assert {"/" + entry["command"] for entry in owner_commands(True)} == REGISTERED_COMMANDS - {"/pair"}
-    assert {"/usage", "/resetusage", "/login", "/new", "/cancel", "/resolver", "/pair"} <= CONTROL_COMMANDS
+    assert {"/usage", "/resetusage", "/login", "/new", "/topic", "/cancel", "/resolver", "/pair"} <= CONTROL_COMMANDS
     assert not {"/fila", "/direcionar"}.intersection(CONTROL_COMMANDS)
     assert [entry["command"] for entry in other_private_commands()] == ["new", "resolver", "register", "status", "unregister"]
     assert set(item["command"] for item in other_private_commands()) <= set(COMMAND_NAMES)
-    assert "resetusage" not in {item["command"] for item in other_private_commands()}
+    assert not {"resetusage", "topic"}.intersection(item["command"] for item in other_private_commands())
 
 
 def test_documented_permission_matrix_covers_all_registered_commands():
@@ -105,15 +105,12 @@ def test_documented_permission_matrix_covers_all_registered_commands():
     rows = re.findall(r"^[|] `(/[^`]+)` [|]", matrix, flags=re.MULTILINE)
     normalized = [row.split(" ", 1)[0] for row in rows]
     assert len(normalized) == len(set(normalized))
-    assert set(normalized) == REGISTERED_COMMANDS - {"/resetusage"}
-    proposal = documentation_path.with_name("Telegram-2026-11-12.proposed.md")
-    proposed_matrix = proposal.read_text(encoding="utf-8").split("## Matriz de acesso aos comandos do Telegram", 1)[1].split("\n## ", 1)[0]
-    proposed_rows = re.findall(r"^[|] `(/[^`]+)` [|]", proposed_matrix, flags=re.MULTILINE)
-    assert {row.split(" ", 1)[0] for row in proposed_rows} == REGISTERED_COMMANDS - {"/register", "/status", "/unregister", "/users"}
-    assert "| `/resetusage` | Somente DM" in proposed_matrix
+    assert set(normalized) == REGISTERED_COMMANDS
+    assert "| `/resetusage` | Somente DM" in matrix
     assert "| `/usage` | Somente DM" in matrix
     assert "| `/usage` | Somente DM (inclusive tópicos privados): consultar os limites e o consumo da conta Codex. | Não permitido;" in matrix
-    assert "| `/new` | DM e grupos: reiniciar a conversa correspondente. | Somente DM" in matrix
+    assert "| `/new` | DM e grupos: criar ou reiniciar a conversa correspondente. | Somente DM" in matrix
+    assert "| `/topic <nome>` | Tópicos de DM e de grupos: renomear o tópico atual, sem iniciar Codex. | Não permitido." in matrix
     assert "| `/resolver` | DM e grupos:" in matrix
     assert "| `/channel` | DM e grupos:" in matrix
     assert "| `/pair <PIN>` | Somente DM, com PIN temporário válido." in matrix
@@ -384,15 +381,20 @@ def test_gateway_partial_sync_remains_pending_and_recovery_can_verify_all_owners
 def test_public_private_menu_failure_keeps_sync_pending_until_verified(menu_gateway):
     gateway = menu_gateway
     public_attempts = []
+
+    def sync_public(**_kwargs):
+        public_attempts.append(True)
+        return len(public_attempts) > 1
+
     gateway.api = SimpleNamespace(
         set_owner_commands=lambda *_args, **_kwargs: True,
-        set_other_private_commands=lambda **_kwargs: public_attempts.append(True) and len(public_attempts) > 1,
+        set_other_private_commands=sync_public,
     )
 
     first = gateway._configure_owner_commands()
     assert first["owners"] == first["verified"] == 2
     assert first["failed"] == 0 and first["other_private_verified"] is False
-    assert first["expected_other_private"] == ["new", "resolver"]
+    assert first["expected_other_private"] == ["new", "resolver", "register", "status", "unregister"]
     assert first["pending"] and not command_sync_is_current(first, False)
 
     recovered = gateway._configure_owner_commands()

@@ -49,11 +49,11 @@ class UserAction(str, Enum):
 SELF_SERVICE_COMMANDS = frozenset({"/register", "/status", "/unregister"})
 LEGACY_DM_COMMANDS = frozenset({"/new", "/resolver"})
 OWNER_DM_COMMANDS = frozenset({
-    "/new", "/resolver", "/config", "/channel", "/usage",
+    "/new", "/topic", "/resolver", "/config", "/channel", "/usage",
     "/resetusage", "/login", "/fila", "/direcionar", "/cancel",
     "/totp", "/users",
 })
-OWNER_GROUP_COMMANDS = frozenset({"/new", "/resolver", "/config", "/channel"})
+OWNER_GROUP_COMMANDS = frozenset({"/new", "/topic", "/resolver", "/config", "/channel"})
 
 
 @dataclass(frozen=True)

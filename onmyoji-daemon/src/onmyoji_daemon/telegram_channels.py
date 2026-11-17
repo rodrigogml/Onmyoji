@@ -96,6 +96,45 @@ class TelegramChannels:
                 (alias or self._channel_display_from_names(chat_name.strip() or old_chat, topic_name.strip() or old_topic, conversation_id), conversation_id))
             self.database.commit()
 
+    def _rename_topic(self, conversation_id: str, chat: dict[str, Any], name: str) -> None:
+        """Altera o título Telegram após autorização do owner pelo chamador.
+
+        Aceita de 1 a 128 caracteres após remover espaços das extremidades.
+        Preserva a geração, o vínculo Codex e o alias local do canal. Sem um
+        tópico compatível ou confirmação do Telegram, apenas informa o motivo;
+        não cria tópico, thread Codex nem repete a chamada automaticamente.
+        """
+        title = name.strip()
+        if not 1 <= len(title) <= 128:
+            self._ephemeral(conversation_id, "Use /topic <nome>, com um nome de 1 a 128 caracteres.")
+            return
+        chat_id, topic_values = self._telegram_address(conversation_id)
+        topic_id = topic_values.get("message_thread_id")
+        general = (chat.get("type") == "supergroup" and chat.get("is_forum") is True
+                   and topic_id in (None, 1) and conversation_id.startswith("group:"))
+        if general:
+            method, values = "editGeneralForumTopic", {"chat_id": chat_id, "name": title}
+        elif type(topic_id) is int and topic_id > 0:
+            method, values = "editForumTopic", {"chat_id": chat_id, "message_thread_id": topic_id, "name": title}
+        else:
+            self._ephemeral(conversation_id, "Este canal não tem um tópico renomeável. Use /topic <nome> dentro de um tópico.")
+            return
+        try:
+            assert self.api
+            if self.api.call(method, values) is not True:
+                raise RuntimeError("Telegram não confirmou a alteração do título.")
+        except Exception as error:
+            self._record_error(f"Não foi possível confirmar a renomeação do tópico: {error}")
+            self._ephemeral(conversation_id, "Não foi possível confirmar a renomeação do tópico. Confira o título e as permissões do bot no Telegram antes de tentar novamente.")
+            return
+        try:
+            self._remember_channel_label(conversation_id, topic_name=title)
+        except Exception as error:
+            self._record_error(f"Não foi possível atualizar o nome local do tópico: {error}")
+            self._ephemeral(conversation_id, "Tópico renomeado, mas o nome local do canal não pôde ser atualizado.")
+            return
+        self._ephemeral(conversation_id, f"Tópico renomeado para {title}.")
+
     def _channel_set_alias(self, conversation_id: str, alias: str) -> None:
         value = alias.strip()[:160]
         if not value: raise ValueError("Informe um nome visual para o canal.")

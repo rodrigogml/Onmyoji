@@ -1595,10 +1595,19 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
             return
         if not is_owner and command not in {"/new", "/resolver"}:
             return
+        if command == "/topic":
+            parts = text.split(maxsplit=1)
+            _name, separator, recipient = parts[0].partition("@")
+            if separator and recipient.casefold() != self.bot_username.casefold(): return
+            self._rename_topic(conversation_id, chat, parts[1] if len(parts) > 1 else "")
+            return
         channel = self._channel_state(conversation_id, renew=True)
         if channel["expired"]: self._ephemeral(conversation_id, "O modo de respostas em áudio foi desligado por inatividade.")
         telegram_chat_id, topic_values = self._telegram_address(conversation_id)
-        if command == "/new": self._new_conversation(conversation_id); self.api.send(telegram_chat_id, "Conversa reiniciada.", **topic_values); return
+        if command == "/new":
+            had_thread = self._new_conversation(conversation_id)
+            self.api.send(telegram_chat_id, "Conversa reiniciada." if had_thread else "Nova conversa criada.", **topic_values)
+            return
         if command == "/cancel":
             cancelled = self._cancel_conversation(conversation_id)
             self._ephemeral(conversation_id, "Cancelamento solicitado; a fila foi preservada." if cancelled else "Não há turno ativo para cancelar."); return
@@ -1663,7 +1672,8 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
         """Caches every delivered group item but only routes explicit authorized invocations."""
         assert self.api
         if text.startswith("/"):
-            is_channel_command = text.split(maxsplit=1)[0].split("@", 1)[0].casefold() == "/channel"
+            command = text.split(maxsplit=1)[0].split("@", 1)[0].casefold()
+            is_channel_command = command == "/channel"
             if is_channel_command:
                 self._delete_control_message(int(chat["id"]), message.get("message_id"))
             else:
@@ -1672,10 +1682,16 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
                 if sender.get("id") in self.contacts.owners():
                     self._channel_menu(conversation_id, chat, sender)
                 return
-            if sender.get("id") in self.contacts.owners() and text.split(maxsplit=1)[0].split("@", 1)[0].casefold() == "/new":
-                self._new_conversation(conversation_id)
+            if command == "/topic":
+                parts = text.split(maxsplit=1)
+                _name, separator, recipient = parts[0].partition("@")
+                if sender.get("id") in self.contacts.owners() and (not separator or recipient.casefold() == self.bot_username.casefold()):
+                    self._rename_topic(conversation_id, chat, parts[1] if len(parts) > 1 else "")
+                return
+            if sender.get("id") in self.contacts.owners() and command == "/new":
+                had_thread = self._new_conversation(conversation_id)
                 values = {"message_thread_id": message["message_thread_id"]} if isinstance(message.get("message_thread_id"), int) else {}
-                self.api.send(int(chat["id"]), "Conversa reiniciada.", **values)
+                self.api.send(int(chat["id"]), "Conversa reiniciada." if had_thread else "Nova conversa criada.", **values)
             if sender.get("id") in self.contacts.owners() and text.split(maxsplit=1)[0].split("@", 1)[0].casefold() == "/config":
                 values = text.split()[1:]
                 if len(values) > 2 or any(not value.isdigit() for value in values): return

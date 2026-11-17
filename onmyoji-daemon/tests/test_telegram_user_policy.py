@@ -59,13 +59,13 @@ def test_bad_role_records_fail_closed_and_username_cannot_be_inferred():
 
 
 @pytest.mark.parametrize("command", [
-    "/config", "/channel", "/usage", "/resetusage", "/login", "/totp",
+    "/config", "/channel", "/topic", "/usage", "/resetusage", "/login", "/totp",
     "/fila", "/direcionar", "/cancel", "/users",
 ])
 def test_admin_commands_owner_only_and_private(command):
     assert authorize_command(command, scope=ChatScope.OWN_DM, is_owner=True).allowed
     assert not authorize_command(command, scope=ChatScope.OWN_DM, is_owner=False).allowed
-    if command not in {"/channel", "/config"}:
+    if command not in {"/channel", "/config", "/topic"}:
         assert not authorize_command(command, scope=ChatScope.GROUP, is_owner=True).allowed
 
 
@@ -90,7 +90,7 @@ def test_existing_pair_uses_only_its_separate_one_time_pin_protocol():
 
 
 def test_owner_group_commands_stay_separate_from_user_chat():
-    for command in ("/new", "/resolver", "/config", "/channel"):
+    for command in ("/new", "/topic", "/resolver", "/config", "/channel"):
         assert authorize_command(command, scope=ChatScope.GROUP, is_owner=True).allowed
         assert not authorize_command(command, scope=ChatScope.GROUP).allowed
 

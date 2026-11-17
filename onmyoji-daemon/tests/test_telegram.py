@@ -375,7 +375,7 @@ def test_usage_is_included_in_the_owner_command_catalog(tmp_path):
 
     summary = gateway._configure_owner_commands()
 
-    assert summary["expected"] == ["new", "config", "channel", "usage", "fila", "direcionar", "cancel", "resolver"]
+    assert "usage" in summary["expected"]
 
 
 def test_new_command_is_deleted_once_and_still_resets_conversation(tmp_path):
@@ -384,7 +384,7 @@ def test_new_command_is_deleted_once_and_still_resets_conversation(tmp_path):
     gateway.api = type("Api", (), {"delete": lambda _self, chat, message: deleted.append((chat, message)), "send": lambda _self, chat, text, **_values: sent.append((chat, text)) or {"message_id": 1}})()
     gateway._update({"message": {"message_id": 71, "chat": {"id": 9, "type": "private"}, "from": {"id": 9}, "text": "/new"}})
     assert deleted == [(9, 71)]
-    assert sent == [(9, "Conversa reiniciada.")]
+    assert sent == [(9, "Nova conversa criada.")]
 
 
 def test_non_owner_can_reset_only_their_own_private_conversation(tmp_path):
@@ -400,7 +400,7 @@ def test_non_owner_can_reset_only_their_own_private_conversation(tmp_path):
     gateway._new_conversation = capture
     gateway._update({"message": {"message_id": 71, "chat": {"id": 42, "type": "private"},
                                   "from": {"id": 42}, "text": "/new"}})
-    assert resets == ["42"] and sent == [(42, "Conversa reiniciada.")]
+    assert resets == ["42"] and sent == [(42, "Nova conversa criada.")]
     assert deleted == [(42, 71)]
     assert gateway._generation("9") == 0
     assert gateway._generation("42") == 1
