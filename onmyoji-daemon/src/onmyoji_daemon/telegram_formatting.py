@@ -32,7 +32,7 @@ def render_html(text: str) -> str:
         (re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)"), "<i>", "</i>"),
     ):
         formatted = pattern.sub(lambda match: opening + match.group(1) + closing, formatted)
-    return "\n".join(f"<blockquote>{line[2:]}</blockquote>" if line.startswith("&gt; ") else line for line in formatted.splitlines())
+    return "\n".join(f"<blockquote>{line.removeprefix('&gt; ')}</blockquote>" if line.startswith("&gt; ") else line for line in formatted.splitlines())
 
 
 def _tag_name(token: str) -> str:

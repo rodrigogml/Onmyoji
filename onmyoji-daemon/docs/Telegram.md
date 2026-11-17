@@ -590,6 +590,11 @@ longas sem descartar o começo ou o fim da resposta. A [Bot API do
 Telegram](https://core.telegram.org/bots/api#formatting-options) suporta
 formatação HTML e o parâmetro `parse_mode` em mensagens de texto.
 
+Linhas iniciadas por `> ` são exibidas como citações. Por exemplo,
+`> **Objetivo**` produz uma citação com **Objetivo** em negrito, preservando
+os caracteres do conteúdo e removendo somente o marcador de citação. A
+síntese de voz recebe apenas o texto da citação, sem a marcação visual.
+
 Menus interativos são publicados somente em conversas privadas, pois a
 validação do callback exige o owner dessa conversa. Em grupos e tópicos, a
 ferramenta não é entregue ao agente; envio de mensagens e arquivos continua

@@ -675,6 +675,17 @@ def test_agent_text_uses_html_parse_mode_for_every_chunk(tmp_path):
     assert len(sent) > 1 and all(values["parse_mode"] == "HTML" and len(text) <= MAX_MESSAGE_LENGTH for _chat, text, values in sent)
 
 
+def test_agent_text_sends_quotes_without_entity_fragments(tmp_path):
+    """Citações chegam ao Telegram em HTML sem perder o texto ou vazar entidades."""
+    data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
+    gateway = Gateway(Settings.load(tmp_path, data)); sent = []
+    gateway.api = type("Api", (), {"send": lambda _self, chat, text, **values: sent.append((chat, text, values)) or {"message_id": len(sent)}})()
+
+    gateway._send_agent_text(9, "Passe para o outro agente:\n\n> **Objetivo**\n\n> Corrigir a NF-e `000596516`.")
+
+    assert sent == [(9, "Passe para o outro agente:\n\n<blockquote><b>Objetivo</b></blockquote>\n\n<blockquote>Corrigir a NF-e `000596516`.</blockquote>", {"parse_mode": "HTML"})]
+
+
 def test_agent_can_send_photo_and_document_created_in_the_reserved_outbox(tmp_path):
     data = tmp_path / "configs" / "daemon" / "services" / "telegram"; write_settings(tmp_path, data)
     gateway = Gateway(replace(Settings.load(tmp_path, data), agent_outbound_media=True)); sent = []
