@@ -690,8 +690,7 @@ class ExecutionGateway(ExecutionRecovery):
             if attachment["kind"] == "voice":
                 transcription = attachment.get("transcription")
                 if not isinstance(transcription, dict):
-                    transcript = self._transcribe_voice(path)
-                    transcription = {"status": "available", "text": transcript, "automatic": True} if transcript else {"status": "unavailable", "automatic": True}
+                    transcription = self._voice_transcription(path, active.conversation_id)
                 data["transcription"] = transcription
             if attachment["kind"] == "photo":
                 inputs.append({"type": "localImage", "path": str(path)})

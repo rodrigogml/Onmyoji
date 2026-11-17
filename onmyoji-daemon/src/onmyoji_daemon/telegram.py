@@ -591,7 +591,7 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
     def _totp_enabled(self) -> bool:
         return self.settings.totp_enabled
     def _record_error(self, error: Exception | str) -> None:
-        kind = error.reason if isinstance(error, ProcessRecoveryError) else getattr(error, "kind", "operational_failure")
+        kind = error.code if isinstance(error, EccoVoxError) else error.reason if isinstance(error, ProcessRecoveryError) else getattr(error, "kind", "operational_failure")
         code = kind if isinstance(kind, str) and re.fullmatch(r"[a-z_]{1,64}", kind) else "operational_failure"
         self.last_error = "Falha operacional registrada; confira a etapa e o código de diagnóstico."
         with self._status_lock:
@@ -604,7 +604,7 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
         """Lê o catálogo atual sem manter caminhos ou IDs remotos em cache."""
         return load_sticker_catalog(self.settings.root, self.settings.max_outbound_media_bytes)
     def _diagnostic(self, event: str, **values: Any) -> None:
-        allowed = {"generation", "size", "count", "duration_ms", "elapsed_ms", "stage", "state", "route", "method", "kind", "source", "delivery", "action", "reason", "code", "execution_id", "input_id", "work_id"}
+        allowed = {"generation", "size", "count", "duration_ms", "elapsed_ms", "stage", "state", "route", "method", "kind", "source", "delivery", "action", "reason", "code", "http_status", "execution_id", "input_id", "work_id"}
         safe = {key: value for key, value in values.items() if key in allowed and (isinstance(value, (int, float, bool)) or isinstance(value, str) and re.fullmatch(r"[a-zA-Z0-9_.:-]{1,128}", value))}
         if "conversation" in values:
             safe["conversation_hash"] = hashlib.sha256(str(values["conversation"]).encode()).hexdigest()[:20]
@@ -860,8 +860,7 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
             if int(total) + size > self.settings.max_retained_attachment_bytes: incoming.unlink(missing_ok=True); raise RuntimeError("A retenção de anexos desta conversa atingiu o limite configurado.")
             transcription = None
             if kind == "voice":
-                transcript = self._transcribe_voice(incoming)
-                transcription = {"status": "available", "text": transcript, "automatic": True} if transcript else {"status": "unavailable", "automatic": True}
+                transcription = self._voice_transcription(incoming, str(chat_id))
             if generation != self._generation(chat_id):
                 shutil.rmtree(incoming.parent, ignore_errors=True); raise RuntimeError("Conversa reiniciada durante a preparação da voz.")
             archive = self.archive_root / conversation_uuid / str(generation) / attachment_id / safe_name(filename, "attachment"); archive.parent.mkdir(parents=True, exist_ok=True); shutil.move(str(incoming), str(archive)); shutil.rmtree(incoming.parent, ignore_errors=True)
@@ -1295,12 +1294,40 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
         except (OSError, tomllib.TOMLDecodeError, AttributeError): pass
         return {"type": "workspaceWrite", "writableRoots": list(dict.fromkeys(roots)), "networkAccess": False}
 
-    def _transcribe_voice(self, path: Path) -> str | None:
+    def _voice_transcription(self, path: Path, conversation_id: str) -> dict[str, Any]:
+        """Retém o motivo da indisponibilidade sem interromper o recebimento da voz.
+
+        Configuração ausente ou inválida produz ``not_configured``; um runtime
+        sem endpoint de transcrição produz ``unsupported``; as demais falhas
+        produzem ``failed``. O diagnóstico preserva código e etapa, sem texto
+        da exceção, conteúdo ou caminho do áudio.
+        """
         try:
-            value = EccoVoxService(self.settings.root).transcribe(self.settings.voice_profile, str(path))
-            return str(value.get("text") or "").strip() or None
+            transcript = self._transcribe_voice(path)
+            if not isinstance(transcript, str) or not transcript.strip():
+                raise EccoVoxError("empty_transcription", "EccoVox não produziu uma transcrição utilizável.")
+            return {"status": "available", "text": transcript.strip(), "automatic": True}
         except Exception as error:
-            self._record_error(f"Transcrição de voz indisponível: {error}"); return None
+            code = error.code if isinstance(error, EccoVoxError) else "operational_failure"
+            if not isinstance(code, str) or not re.fullmatch(r"[a-z_]{1,64}", code):
+                code = "operational_failure"
+            reason = "not_configured" if code in {"invalid_config", "profile_unavailable"} else "unsupported" if code == "transcription_unsupported" else "failed"
+            self._record_error(error)
+            self._diagnostic("voice.transcription_unavailable", conversation=conversation_id, stage="transcription", reason=reason, code=code, kind=type(error).__name__, http_status=getattr(error, "http_status", None))
+            return {"status": "unavailable", "automatic": True, "reason": reason, "code": code}
+
+    def _transcribe_voice(self, path: Path) -> str | None:
+        """Transcreve com o perfil selecionado, preservando os erros do EccoVox.
+
+        Um perfil não selecionado lança ``profile_unavailable``; configuração
+        e falhas do runtime mantêm os códigos de ``EccoVoxService.transcribe``.
+        A habilitação das respostas sintetizadas não restringe a transcrição.
+        """
+        if not self.settings.voice_profile.strip():
+            raise EccoVoxError("profile_unavailable", "Nenhum perfil EccoVox foi selecionado para o Telegram.")
+        value = EccoVoxService(self.settings.root).transcribe(self.settings.voice_profile, str(path))
+        text = value.get("text")
+        return text.strip() if isinstance(text, str) else None
 
     def _usage(self, conversation_id: str) -> None:
         """Consulta a franquia da conta sem iniciar um turno nem expor dados de login."""

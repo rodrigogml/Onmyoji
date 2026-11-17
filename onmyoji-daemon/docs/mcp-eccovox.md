@@ -2,6 +2,14 @@
 
 O módulo `eccovox` oferece transcrição de áudio e síntese de fala pelo runtime local EccoVox. O MCP atua como cliente desse runtime; criar um perfil não instala nem inicia o EccoVox.
 
+> [!NOTE]
+> A configuração ausente ou inválida produz `invalid_config`; perfil ausente ou
+> desabilitado produz `profile_unavailable`. Falhas de conexão e timeout
+> preservam `runtime_unavailable` e `timeout`. Na transcrição, HTTP 404, 405 e
+> 501 produzem `transcription_unsupported`; outros erros HTTP continuam como
+> `runtime_error`. O Gateway Telegram usa esses códigos para distinguir
+> suporte não configurado, endpoint sem suporte e falhas de processamento.
+
 ## Configuração
 
 Use **MCP > EccoVox**. Cada perfil tem nome, descrição de contexto, habilitação, endpoint HTTP local, voz e idioma padrão, pasta padrão de saída e raízes autorizadas de leitura e escrita. As raízes padrão são o Work inteiro; a saída automática fica em `<Work>/.onmyoji/eccovox/output`. O endpoint sugerido é `http://127.0.0.1:8870`; somente endereços de loopback são aceitos.
