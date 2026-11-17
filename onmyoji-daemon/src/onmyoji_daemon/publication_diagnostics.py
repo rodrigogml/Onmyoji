@@ -195,7 +195,7 @@ def diagnose(root: Path, progress: Callable[[str], None] | None = None) -> list[
             add("ok" if available else "error", "Credencial Cloudflare no KeePass", "A senha protegida existe na entrada selecionada. Permissões remotas ainda dependem do provisionamento." if available else "A entrada selecionada não contém senha/API Token.", "" if available else "Execute o wizard e informe o token no campo protegido da entrada KeePass.")
         except CredentialError as error:
             reasons = {"entry_denied": "A entrada está fora das raízes autorizadas do perfil.", "profile_not_found": "O perfil de vault não foi encontrado.", "config_not_found": "A configuração do vault MCP não existe."}
-            add("error", "Credencial Cloudflare no KeePass", reasons.get(error.code, "Não foi possível acessar a entrada KeePass.") + f" Código: {error.code}.", "Confira o perfil em MCP > KeePass Vault, desbloqueio e permissões da entrada; depois execute o wizard.")
+            add("error", "Credencial Cloudflare no KeePass", reasons.get(error.code, "Não foi possível acessar a entrada KeePass.") + f" Código: {error.code}.", "Confira o perfil em K. KeePass no menu principal, desbloqueio e permissões da entrada; depois execute o wizard.")
 
     step("Verificando o executável cloudflared, sem instalar ou conectar.")
     configured_binary = str(settings.get("cloudflared_executable") or "cloudflared")

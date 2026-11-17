@@ -43,8 +43,18 @@ def mcp_runtime_ready(root: Path) -> bool:
         return False
 
 
-def ensure_mcp_runtime(root: Path, progress: Callable[[str], None] | None = None) -> str:
+def ensure_mcp_runtime(root: Path, progress: Callable[[str], None] | None = None, *, use_sudo: bool = False) -> str:
+    """Prepara os componentes MCP com autorização explícita para instalação global.
+
+    ``use_sudo`` é repassado ao runtime central, que restringe a elevação ao pip
+    global e mantém a validação sob a conta original.
+
+    Raises:
+        McpRuntimeError: Se o runtime central não puder preparar ou validar as
+            dependências, preservando seu diagnóstico operacional.
+    """
     try:
-        return shared_runtime.ensure(root, [SETUPTOOLS_REQUIREMENT, MCP_REQUIREMENT, OAUTH_REQUIREMENT, EMAIL_REQUIREMENT, VALIDATION_REQUIREMENT], _probe(), progress)
+        installation_options = {"use_sudo": True} if use_sudo else {}
+        return shared_runtime.ensure(root, [SETUPTOOLS_REQUIREMENT, MCP_REQUIREMENT, OAUTH_REQUIREMENT, EMAIL_REQUIREMENT, VALIDATION_REQUIREMENT], _probe(), progress, **installation_options)
     except shared_runtime.RuntimeError as error:
         raise McpRuntimeError(str(error)) from error

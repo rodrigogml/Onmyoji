@@ -6,7 +6,7 @@ código não depende de scripts de integração nem expõe o cofre como ferramen
 
 ## Configuração e descoberta
 
-Use **MCP → V. Perfis de vault** para configurar o cofre compartilhado e depois
+Use **K. KeePass** no menu principal para configurar o cofre compartilhado e depois
 **MCP → Omie** para criar um perfil da integração. O perfil
 tem nome escolhido pelo operador, descrição de contexto, estado habilitado e
 referência a um perfil de vault e uma entrada KeePass. Os campos padrão são

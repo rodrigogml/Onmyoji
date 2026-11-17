@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 from onmyoji_daemon.mcp import runtime
 
@@ -34,3 +37,57 @@ def test_mcp_runtime_requires_setuptools_for_advanced_ocr(tmp_path: Path, monkey
     assert runtime.ensure_mcp_runtime(tmp_path) == "pronto"
     assert runtime.SETUPTOOLS_REQUIREMENT in captured["requirements"]
     assert "import setuptools" in captured["probe"]
+
+
+@pytest.mark.parametrize("use_sudo", [False, True])
+@pytest.mark.parametrize("show_progress", [False, True])
+def test_mcp_installation_forwards_only_explicit_administrative_authorization(tmp_path: Path, monkeypatch, use_sudo: bool, show_progress: bool) -> None:
+    """A autorização pertence à instalação solicitada, sem alterar o contrato legado."""
+    calls = []
+    progress = [].append if show_progress else None
+    def ensure(*args, **kwargs):
+        calls.append((args, kwargs))
+        return "Runtime MCP validado."
+    monkeypatch.setattr(runtime.shared_runtime, "ensure", ensure)
+
+    assert runtime.ensure_mcp_runtime(tmp_path, progress=progress, use_sudo=use_sudo) == "Runtime MCP validado."
+    assert calls == [((tmp_path, [runtime.SETUPTOOLS_REQUIREMENT, runtime.MCP_REQUIREMENT, runtime.OAUTH_REQUIREMENT, runtime.EMAIL_REQUIREMENT, runtime.VALIDATION_REQUIREMENT], runtime._probe(), progress), {"use_sudo": True} if use_sudo else {})]
+
+
+def test_mcp_installation_preserves_central_runtime_failure(tmp_path: Path, monkeypatch) -> None:
+    """Uma recusa do sudo continua sendo falha com a orientação do runtime central."""
+    def refused(*args, **kwargs):
+        raise runtime.shared_runtime.RuntimeError("sudo não autorizou a instalação global.")
+    monkeypatch.setattr(runtime.shared_runtime, "ensure", refused)
+
+    with pytest.raises(runtime.McpRuntimeError, match="sudo não autorizou a instalação global"):
+        runtime.ensure_mcp_runtime(tmp_path, use_sudo=True)
+
+
+def test_mcp_readiness_requires_an_existing_selected_python(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(runtime, "mcp_runtime_python", lambda _root: tmp_path / "missing-python")
+    monkeypatch.setattr(runtime.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("Um Python ausente não pode executar a consulta."))
+    assert runtime.mcp_runtime_ready(tmp_path) is False
+
+
+@pytest.mark.parametrize("returncode, expected", [(0, True), (1, False)])
+def test_mcp_readiness_probes_the_selected_python_without_installing(tmp_path: Path, monkeypatch, returncode: int, expected: bool) -> None:
+    executable = tmp_path / "python"
+    executable.touch()
+    calls = []
+    monkeypatch.setattr(runtime, "mcp_runtime_python", lambda _root: executable)
+    monkeypatch.setattr(runtime.subprocess, "run", lambda command, **kwargs: calls.append(command) or subprocess.CompletedProcess(command, returncode))
+
+    assert runtime.mcp_runtime_ready(tmp_path) is expected
+    assert calls == [[str(executable), "-I", "-B", "-c", runtime._probe()]]
+
+
+@pytest.mark.parametrize("error", [OSError("unavailable"), subprocess.TimeoutExpired("python", 10), runtime.shared_runtime.RuntimeError("Python não configurado.")])
+def test_mcp_readiness_reports_an_unavailable_runtime_as_not_ready(tmp_path: Path, monkeypatch, error: Exception) -> None:
+    executable = tmp_path / "python"
+    executable.touch()
+    def fail(*args, **kwargs):
+        raise error
+    monkeypatch.setattr(runtime, "mcp_runtime_python", fail if isinstance(error, runtime.shared_runtime.RuntimeError) else lambda _root: executable)
+    monkeypatch.setattr(runtime.subprocess, "run", fail)
+    assert runtime.mcp_runtime_ready(tmp_path) is False

@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import pytest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -18,6 +19,77 @@ assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
+
+
+def test_vault_cli_dispatches_shared_credentials_without_mcp_preparation(tmp_path, monkeypatch):
+    configuration = object()
+    calls = []
+    monkeypatch.setattr(MODULE, "McpConfiguration", lambda root: configuration if root == tmp_path.resolve() else pytest.fail("Instância incorreta."))
+    monkeypatch.setattr(MODULE, "vault_profiles_menu", lambda config: calls.append(config))
+    monkeypatch.setattr(MODULE, "menu", lambda _root: pytest.fail("O cofre não pertence ao menu MCP."))
+    monkeypatch.setattr(MODULE, "ensure_mcp_runtime", lambda *_args, **_kwargs: pytest.fail("Abrir o cofre não instala o SDK MCP."))
+
+    assert MODULE.main(["--onmyoji-root", str(tmp_path), "--action", "vault"]) == 0
+    assert calls == [configuration]
+
+
+def test_vault_cli_reports_configuration_failure_without_traceback(tmp_path, monkeypatch, capsys):
+    def unavailable(_root):
+        raise MODULE.McpConfigurationError("Reparar permissões do cofre.")
+    monkeypatch.setattr(MODULE, "McpConfiguration", unavailable)
+    assert MODULE.main(["--onmyoji-root", str(tmp_path), "--action", "vault"]) == 2
+    output = capsys.readouterr().out
+    assert "Reparar permissões do cofre." in output
+    assert "Traceback" not in output
+
+
+def test_default_mcp_cli_preserves_integration_menu_routing(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(MODULE, "menu", lambda root: calls.append(root) or 0)
+    assert MODULE.main(["--onmyoji-root", str(tmp_path)]) == 0
+    assert calls == [tmp_path.resolve()]
+
+
+def test_vault_menu_keeps_creation_and_management_until_return(tmp_path, monkeypatch, capsys):
+    config = MagicMock(root=tmp_path)
+    config.vault_profile_names.return_value = ["principal"]
+    actions = iter(["1", "2", "x"])
+    calls = []
+    monkeypatch.setattr(MODULE, "prompt", lambda _label: next(actions))
+    monkeypatch.setattr(MODULE, "create_vault_profile", lambda selected: calls.append(("create", selected)))
+    monkeypatch.setattr(MODULE, "select", lambda _title, names: names[0])
+    monkeypatch.setattr(MODULE, "manage_vault_profile", lambda selected, name: calls.append(("manage", selected, name)))
+
+    MODULE.vault_profiles_menu(config)
+
+    assert calls == [("create", config), ("manage", config, "principal")]
+    output = capsys.readouterr().out
+    assert "keepass" in output.casefold()
+    assert "MCP · Perfis de vault" not in output
+
+
+def test_mcp_menu_no_longer_offers_vault_management(tmp_path, monkeypatch, capsys):
+    actions = iter(["v", "x"])
+    monkeypatch.setattr(MODULE, "prompt", lambda _label: next(actions))
+    monkeypatch.setattr(MODULE, "vault_profiles_menu", lambda _config: pytest.fail("O cofre foi movido para a central."))
+
+    MODULE.integrations_menu(MODULE.McpConfiguration(tmp_path))
+
+    output = capsys.readouterr().out
+    assert "Perfis de vault" not in output
+    assert "Todoist" in output
+    assert "Opção inválida" in output
+
+
+@pytest.mark.parametrize("cancel", ["x", "\x1b"])
+def test_vault_cli_opens_without_site_packages_or_mcp_sdk(tmp_path, cancel):
+    """KeePass abre no Python-base antes de instalar daemon, MCP ou bibliotecas opcionais."""
+    completed = subprocess.run([sys.executable, "-S", "-B", str(SCRIPT), "--onmyoji-root", str(tmp_path), "--action", "vault"], input=cancel + "\n", text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=15, check=False)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "keepass" in completed.stdout.casefold()
+    assert "Instalando dependências" not in completed.stdout
+    assert not (tmp_path / "configs").exists()
 
 
 class McpSetupTests(unittest.TestCase):

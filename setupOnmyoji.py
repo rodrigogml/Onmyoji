@@ -1376,7 +1376,19 @@ def run_dedicated_menu(root: Path, destination: str) -> bool:
 
 
 def launch_mcp_menu(root: Path) -> bool:
-    """Prepara o runtime único e abre o setup MCP com seu próprio Python."""
+    """Prepara o MCP global como instalador e abre as integrações na conta operacional.
+
+    A criação do runtime isolado pertence à conta dedicada. No modo global,
+    somente o pip recebe sudo quando necessário e autorizado; o menu dedicado
+    verifica novamente as dependências antes de usar o Python selecionado.
+    """
+    try:
+        isolated = python_runtime.is_isolated(root)
+    except python_runtime.RuntimeError as error:
+        result(False, str(error))
+        return False
+    if isolated and run_dedicated_menu(root, "mcp"):
+        return True
     if not mcp_runtime_ready(root):
         flow_heading("Preparação do MCP", "Componentes necessários no runtime Python da instância")
         note("O runtime MCP está ausente ou incompleto; ele precisa ser preparado antes de abrir as integrações.")
@@ -1384,10 +1396,16 @@ def launch_mcp_menu(root: Path) -> bool:
             result(False, "A abertura do MCP foi cancelada sem alterar o runtime.")
             return False
         try:
-            note(ensure_mcp_runtime(root, progress=note))
+            use_sudo = authorize_runtime_installation(root)
+            if use_sudo is None:
+                return False
+            installation_options = {"use_sudo": True} if use_sudo else {}
+            note(ensure_mcp_runtime(root, progress=note, **installation_options))
         except McpRuntimeError as error:
             result(False, f"Não foi possível preparar o runtime MCP: {error}")
             return False
+    if not isolated and run_dedicated_menu(root, "mcp"):
+        return True
     try:
         executable = mcp_runtime_python(root)
     except (OSError, python_runtime.RuntimeError) as error:
@@ -1403,6 +1421,31 @@ def launch_mcp_menu(root: Path) -> bool:
         return False
     if completed.returncode:
         result(False, f"O setup MCP terminou com código {completed.returncode}.")
+        return False
+    return True
+
+
+def launch_keepass_menu(root: Path) -> bool:
+    """Abre os cofres compartilhados na conta operacional, sem preparar o SDK MCP.
+
+    Antes da criação do runtime isolado, usa o Python-base configurado. Cofres,
+    perfis e o provedor da senha mestra continuam pertencendo à conta do Shikigami.
+    """
+    if run_dedicated_menu(root, "keepass"):
+        return True
+    try:
+        executable = python_runtime.python(root)
+        if not executable.is_file() and python_runtime.is_isolated(root):
+            executable = python_runtime.base_python(root)
+        if not executable.is_file():
+            result(False, "O Python configurado para abrir o KeePass não foi encontrado.")
+            return False
+        completed = subprocess.run([str(executable), "-B", str(root / "onmyoji-daemon" / "setupMcp.py"), "--onmyoji-root", str(root), "--action", "vault"], check=False)
+    except (OSError, python_runtime.RuntimeError) as error:
+        result(False, f"Não foi possível abrir o KeePass: {error}")
+        return False
+    if completed.returncode:
+        result(False, f"O configurador KeePass terminou com código {completed.returncode}.")
         return False
     return True
 
@@ -1775,7 +1818,7 @@ def configure_mcp_password_reference(root: Path, integration: str, default_entry
     """Seleciona um perfil MCP e garante uma senha na entrada escolhida."""
     profiles = McpConfiguration(root).vault_profile_names()
     if not profiles:
-        result(False, "Nenhum perfil de vault MCP disponível. Configure-o primeiro no menu MCP.")
+        result(False, "Nenhum perfil de cofre disponível. Configure-o primeiro em K. KeePass no menu principal.")
         return None
     selected = current_profile if current_profile in profiles else profiles[0]
     profile = flow_choice(f"{integration} · Perfil de vault MCP", profiles, selected)
@@ -2234,7 +2277,8 @@ def authorize_runtime_installation(root: Path) -> bool | None:
     """Retorna a autorização de sudo, ou ``None`` para cancelar a instalação.
 
     Destinos graváveis dispensam confirmação. A conta dedicada nunca solicita
-    sudo: a instalação global administrativa pertence ao instalador no menu Daemon.
+    sudo: a instalação global administrativa parte dos menus centrais do daemon
+    ou MCP, sob a conta instaladora.
     Falhas ao verificar o destino interrompem a ação com diagnóstico operacional.
     """
     try:
@@ -2244,7 +2288,7 @@ def authorize_runtime_installation(root: Path) -> bool | None:
         result(False, str(error))
         return None
     if dedicated_child_profile(root):
-        result(False, "O Python global exige permissão administrativa. Volte à central e instale os componentes pelo menu Daemon com a conta instaladora, ou selecione isolated em Python e bibliotecas.")
+        result(False, "O Python global exige permissão administrativa. Volte à central pela conta instaladora e prepare os componentes pelo menu Daemon ou MCP, conforme a funcionalidade desejada, ou selecione isolated em Python e bibliotecas.")
         return None
     if not linux_tool("sudo"):
         result(False, "O Python global exige escrita administrativa e sudo não está disponível. Execute esta instalação como administrador ou selecione isolated em Python e bibliotecas.")
@@ -2293,7 +2337,11 @@ def python_menu(root: Path) -> None:
                 result(False, str(error))
         elif choice == "4":
             try:
-                note(ensure_mcp_runtime(root, progress=note))
+                use_sudo = authorize_runtime_installation(root)
+                if use_sudo is None:
+                    continue
+                installation_options = {"use_sudo": True} if use_sudo else {}
+                note(ensure_mcp_runtime(root, progress=note, **installation_options))
                 result(True, "Componentes MCP preparados no runtime único.")
             except McpRuntimeError as error:
                 result(False, str(error))
@@ -2319,7 +2367,8 @@ def python_menu(root: Path) -> None:
                 if not ok:
                     result(False, message)
                     continue
-                note(ensure_mcp_runtime(root, progress=note))
+                installation_options = {"use_sudo": True} if use_sudo else {}
+                note(ensure_mcp_runtime(root, progress=note, **installation_options))
                 install_document_runtime(root, tier="base", progress=note)
                 result(True, "Todos os componentes básicos foram preparados no runtime único.")
             except (DocumentError, McpRuntimeError, OSError, ValueError, python_runtime.RuntimeError) as error:
@@ -3518,7 +3567,7 @@ def daemon_menu(root: Path) -> None:
                 listed = command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "profiles"], quiet=True)
                 try: values = json.loads(listed.stdout)
                 except json.JSONDecodeError: values = []
-                if not values: result(False, "Nenhum perfil de vault disponível. Configure-o primeiro em MCP > Perfis de vault."); continue
+                if not values: result(False, "Nenhum perfil de cofre disponível. Configure-o primeiro em K. KeePass no menu principal."); continue
                 print()
                 for index, profile in enumerate(values, 1): item(f"{index}.", profile)
                 item("X.", "Voltar")
@@ -4481,9 +4530,10 @@ def menu(skills: list[Skill], root: Path) -> int:
         print()
         item("G.", "Git e sincronização", "Origin da instância, upstream do Onmyōji e regras de merge")
         item("P.", "Python e bibliotecas", "Runtime único e componentes compartilhados")
+        item("K.", "KeePass", "Cofres e credenciais compartilhados do Onmyōji")
         item("C.", "Codex-CLI", "Modelo, projeto, sandbox e permissões")
         item("D.", "Daemon", "Supervisor local e serviços da instância")
-        item("M.", "MCP", "Perfis de vault e integrações MCP")
+        item("M.", "MCP", "Perfis e integrações MCP")
         conflicts = conflicting_skill_ids(skills)
         enabled = enabled_ids(root, skills)
         def rendered(index: int, skill: Skill, width: int = 50) -> str:
@@ -4513,16 +4563,19 @@ def menu(skills: list[Skill], root: Path) -> int:
         if choice == "c":
             if not run_dedicated_menu(root, "codex"): codex_menu(root)
             continue
+        if choice == "k":
+            launch_keepass_menu(root)
+            continue
         if choice == "d": daemon_menu(root); continue
         if choice == "m":
-            if not run_dedicated_menu(root, "mcp"): launch_mcp_menu(root)
+            launch_mcp_menu(root)
             continue
         if choice.isdigit() and 1 <= int(choice) <= len(skills): skill_menu(skills[int(choice) - 1], root, skills)
         else: alert("Opção inválida. Escolha uma das alternativas ou cancele.")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--action", choices=["menu", "list", "enable", "disable", "configure", "status"], default="menu"); parser.add_argument("--skill"); parser.add_argument("--json", action="store_true"); parser.add_argument("--dedicated-phase", action="store_true", help=argparse.SUPPRESS); parser.add_argument("--dedicated-menu", choices=["diagnostics", "git", "python", "codex", "mcp"], help=argparse.SUPPRESS); parser.add_argument("--dedicated-checks", action="store_true", help=argparse.SUPPRESS); parser.add_argument("--resume-after-update", action="store_true", help=argparse.SUPPRESS); parser.add_argument("--restart-daemon-after-update", action="store_true", help=argparse.SUPPRESS); args = parser.parse_args()
+    parser = argparse.ArgumentParser(); parser.add_argument("--action", choices=["menu", "list", "enable", "disable", "configure", "status"], default="menu"); parser.add_argument("--skill"); parser.add_argument("--json", action="store_true"); parser.add_argument("--dedicated-phase", action="store_true", help=argparse.SUPPRESS); parser.add_argument("--dedicated-menu", choices=["diagnostics", "git", "python", "codex", "keepass", "mcp"], help=argparse.SUPPRESS); parser.add_argument("--dedicated-checks", action="store_true", help=argparse.SUPPRESS); parser.add_argument("--resume-after-update", action="store_true", help=argparse.SUPPRESS); parser.add_argument("--restart-daemon-after-update", action="store_true", help=argparse.SUPPRESS); args = parser.parse_args()
     if args.action == "menu" and not (args.dedicated_phase or args.dedicated_menu or args.dedicated_checks or args.resume_after_update): opening_logo()
     migrated, migration_message = verify_state_layout(ROOT)
     if not migrated:
@@ -4563,7 +4616,8 @@ def main() -> int:
         elif args.dedicated_menu == "git": git_menu(ROOT)
         elif args.dedicated_menu == "python": python_menu(ROOT)
         elif args.dedicated_menu == "codex": codex_menu(ROOT)
-        else: launch_mcp_menu(ROOT)
+        elif args.dedicated_menu == "keepass": return 0 if launch_keepass_menu(ROOT) else 2
+        else: return 0 if launch_mcp_menu(ROOT) else 2
         return 0
     skills = discover(); conflicts = conflicting_skill_ids(skills); by_id = {skill.identifier: skill for skill in skills if skill.identifier not in conflicts}
     initialized, initialization_message = ensure_skill_state(ROOT, skills)

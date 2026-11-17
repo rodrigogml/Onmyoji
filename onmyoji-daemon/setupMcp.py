@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Configurador interativo dos perfis MCP locais."""
+"""Configurador interativo de cofres KeePass e integrações MCP locais."""
 from __future__ import annotations
 
+import argparse
 import copy
 import getpass
 import hashlib
@@ -38,7 +39,6 @@ from onmyoji_daemon.mcp.aws import AwsError, AwsService
 from onmyoji_daemon.mcp.mysql import MySQLError, MySQLService
 from onmyoji_daemon.mcp.ssh import SshError, SshService, fetch_host_key, save_host_key
 from onmyoji_daemon.mcp.bis2cmd import Bis2CmdError, Bis2CmdService
-from onmyoji_daemon.mcp.bis10cmd import Bis10CmdError, Bis10CmdService
 from onmyoji_daemon.mcp.google import GoogleError, GoogleService
 from onmyoji_daemon.mcp.google.oauth import authorize as authorize_google
 from onmyoji_daemon.mcp.spotify import SpotifyError, SpotifyService
@@ -508,7 +508,7 @@ def manage_vault_profile(config: McpConfiguration, name: str) -> None:
                 profile["auth"]["linux"] = repaired
                 config.save_credentials(data)
         vault = data["vaults"][profile["vault"]]
-        profile_screen("MCP · Perfil de vault", name, {**profile, "vault_configurado": vault})
+        profile_screen("KeePass · Perfil de cofre", name, {**profile, "vault_configurado": vault})
         item("1.", "Alterar cofre associado")
         item("2.", "Alterar executável KeePassXC")
         item("3.", "Configurar autenticação")
@@ -557,22 +557,23 @@ def manage_vault_profile(config: McpConfiguration, name: str) -> None:
 
 
 def vault_profiles_menu(config: McpConfiguration) -> None:
+    """Administra os cofres compartilhados pelas funcionalidades da instância."""
     while True:
         try:
             names = config.vault_profile_names()
         except McpConfigurationError as error:
             result(False, str(error))
             return
-        screen("MCP · Perfis de vault", "Cada perfil associa um único cofre KeePassXC")
+        screen("KeePass · Perfis de cofre", "Credenciais compartilhadas pelas funcionalidades do Onmyōji")
         item("1.", "Criar perfil")
         item("2.", "Gerenciar perfil", f"{len(names)} configurado(s)")
         item("X.", "Voltar")
         choice = prompt("Opção: ").strip().casefold()
-        if choice == "x": return
+        if choice in {"x", "\x1b"}: return
         if choice == "1":
             try: create_vault_profile(config)
             except McpConfigurationError as error: result(False, str(error))
-        elif choice == "2" and (name := select("MCP · Gerenciar perfil de vault", names)):
+        elif choice == "2" and (name := select("KeePass · Gerenciar perfil de cofre", names)):
             manage_vault_profile(config, name)
 
 
@@ -1694,6 +1695,8 @@ def bis10cmd_credentials(config: McpConfiguration, vault: str, entry: str, kind:
 
 
 def manage_bis10cmd_profile(config: McpConfiguration, name: str) -> None:
+    from onmyoji_daemon.mcp.bis10cmd import Bis10CmdError, Bis10CmdService
+
     while True:
         data = config.bis10cmd(); profile = data["profiles"].get(name)
         if not isinstance(profile, dict): return
@@ -2772,7 +2775,7 @@ def mercado_menu(config: McpConfiguration) -> None:
 
 
 def integrations_menu(config: McpConfiguration) -> None:
-    """Lista vault e integrações MCP em uma única tela de navegação."""
+    """Lista as integrações MCP em uma única tela de navegação."""
     while True:
         todoist_profiles = config.todoist()["profiles"]
         omie_profiles = config.omie()["profiles"]
@@ -2791,8 +2794,7 @@ def integrations_menu(config: McpConfiguration) -> None:
         memory_enabled = config.memory_tool_available()
         data_tables_enabled = config.data_tables_tool_available()
         mercado_profiles = config.mercado()["profiles"]
-        screen("MCP", "Perfis de vault e integrações MCP locais")
-        item("V.", "Perfis de vault", "KeePassXC e autenticação local")
+        screen("MCP", "Integrações MCP locais")
         print("\n  INTEGRAÇÕES DISPONÍVEIS")
         integration_item("1.", "Todoist", todoist_profiles)
         integration_item("2.", "Omie", omie_profiles)
@@ -2819,9 +2821,7 @@ def integrations_menu(config: McpConfiguration) -> None:
         choice = prompt("Opção: ").strip().casefold()
         if choice in {"x", "\x1b"}:
             return
-        if choice == "v":
-            vault_profiles_menu(config)
-        elif choice == "1":
+        if choice == "1":
             todoist_menu(config)
         elif choice == "2":
             omie_menu(config)
@@ -2875,4 +2875,25 @@ def menu(root: Path) -> int:
     return 0
 
 
-if __name__ == "__main__": raise SystemExit(menu(ROOT))
+def main(argv: list[str] | None = None) -> int:
+    """Abre cofres ou integrações sem instalar componentes ao navegar.
+
+    A ação ``vault`` usa somente as configurações e o CLI KeePassXC; abrir
+    ou criar um cofre não depende da instalação do SDK MCP.
+    """
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--onmyoji-root", type=Path, default=ROOT)
+    parser.add_argument("--action", choices=["menu", "vault"], default="menu")
+    args = parser.parse_args(argv)
+    root = args.onmyoji_root.resolve()
+    if args.action == "vault":
+        try:
+            vault_profiles_menu(McpConfiguration(root))
+        except McpConfigurationError as error:
+            result(False, str(error))
+            return 2
+        return 0
+    return menu(root)
+
+
+if __name__ == "__main__": raise SystemExit(main())
