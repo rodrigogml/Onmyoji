@@ -1391,7 +1391,7 @@ def test_partial_account_update_omits_other_fields_and_does_not_read_unrequested
 
 @pytest.mark.parametrize("operation,fields", [
     ("contas_pagar.alterar", {"id", "codigo_integracao", "cliente_fornecedor_id", "cliente_fornecedor_codigo_integracao", "data_vencimento", "valor", "categoria_codigo", "projeto_id", "observacao", "tipo_documento", "numero_documento", "conta_corrente_id"}),
-    ("contas_pagar.registrar_pagamento", {"id", "codigo_integracao", "conta_corrente_id", "valor", "data", "observacao"}),
+    ("contas_pagar.registrar_pagamento", {"id", "codigo_integracao", "conta_corrente_id", "valor", "data", "observacao", "desconto", "juros", "multa"}),
     ("contas_pagar.cancelar_pagamento", {"id_baixa"}),
     ("transferencias.criar", {"codigo_integracao", "conta_origem_id", "conta_destino_id", "data", "valor", "categoria_codigo", "numero_documento", "observacao", "projeto_id", "departamentos"}),
     ("contas_pagar.criar_lote", {"lote", "titulos"}),

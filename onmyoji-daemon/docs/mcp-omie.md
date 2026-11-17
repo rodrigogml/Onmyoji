@@ -178,6 +178,54 @@ invalidade de campos obrigatórios gera erro com o nome público, por exemplo
 financeiros legados não são atalhos de execução: chamadas a esses nomes são
 recusadas com orientação para a fachada publicada.
 
+### Pagamentos e recebimentos com desconto
+
+O desconto pertence à própria operação de baixa:
+
+| Ferramenta MCP | Método Omie |
+| --- | --- |
+| `omie.financeiro.contas_pagar.registrar_pagamento` | `LancarPagamento` |
+| `omie.financeiro.contas_receber.registrar_recebimento` | `LancarRecebimento` |
+
+Essas ferramentas exigem `confirmar: true` e recebem em `dados` o identificador
+do título (`id` ou `codigo_integracao`), `conta_corrente_id`, `valor` e `data`.
+O contrato do MCP mantém `valor` como número finito maior que zero. A data usa
+o formato `dd/mm/aaaa`.
+
+Os campos monetários opcionais são `desconto`, `juros` e `multa`: números
+finitos maiores ou iguais a zero. Informe cada campo somente quando precisar
+registrá-lo; sua omissão não acrescenta um valor padrão à requisição. Zero
+explícito é aceito e transmitido.
+
+O MCP envia `valor` sem transformação e transmite os ajustes em campos nativos
+separados, com os mesmos nomes. Não soma o desconto ao valor nem recalcula
+automaticamente a baixa. Percentuais e aliases como `valor_desconto`,
+`desconto_valor` ou `percentual_desconto` não pertencem ao contrato: o campo
+canônico é `desconto`, em dinheiro.
+
+Exemplo fictício da forma da chamada, com os valores informados explicitamente:
+
+```json
+{"tool":"omie.financeiro.contas_pagar.registrar_pagamento","arguments":{"confirmar":true,"dados":{"id":12,"conta_corrente_id":34,"valor":950,"desconto":50,"data":"17/11/2026"}}}
+```
+
+Para uma conta a receber, use `registrar_recebimento` com o mesmo formato de
+dados. Após atualizar a instalação, reinicie os processos MCP e renove
+`tools/list` para que o cliente descubra os campos publicados.
+
+Observe no retorno `codigo_baixa`, `liquidado` e `valor_baixado`. O aceite da
+requisição não comprova, sozinho, a quitação integral nem o saldo final.
+Consulte o título por `contas_pagar.consultar` ou `contas_receber.consultar`
+e confira os movimentos vinculados para confirmar os valores e a situação da
+baixa.
+
+> [!IMPORTANT]
+> Não repita a baixa para fazer essa conferência. Guarde o identificador
+> retornado e consulte o estado atual antes de decidir qualquer nova escrita.
+
+Referências: [baixa de conta a pagar pela API](https://ajuda.omie.com.br/pt-BR/articles/8257476-baixando-uma-conta-a-pagar-via-api)
+e [baixa de conta a receber pela API](https://ajuda.omie.com.br/pt-BR/articles/8255357-baixando-uma-conta-a-receber-via-api).
+
 ### Categorias: substituir o rateio de uma conta a pagar
 
 `omie.financeiro.contas_pagar.definir_categorias` solicita a substituição da

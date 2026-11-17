@@ -137,7 +137,11 @@ TITLE_NAMES = {
     "numero_documento": "numero_documento", "conta_corrente_id": "id_conta_corrente", "departamentos": "distribuicao",
 }
 TITLE_REQUIRED = ("codigo_integracao", "cliente_fornecedor_id", "data_vencimento", "valor", "categoria_codigo")
-PAYMENT_NAMES = {"id": "codigo_lancamento", "codigo_integracao": "codigo_lancamento_integracao", "conta_corrente_id": "codigo_conta_corrente", "valor": "valor", "data": "data", "observacao": "observacao"}
+PAYMENT_NAMES = {
+    "id": "codigo_lancamento", "codigo_integracao": "codigo_lancamento_integracao",
+    "conta_corrente_id": "codigo_conta_corrente", "valor": "valor", "data": "data", "observacao": "observacao",
+    "desconto": "desconto", "juros": "juros", "multa": "multa",
+}
 TRANSFER_NAMES = {"codigo_integracao": "integration_id", "conta_origem_id": "source_account_id", "conta_destino_id": "destination_account_id", "data": "date", "valor": "amount", "categoria_codigo": "category_code", "numero_documento": "document_number", "observacao": "note", "projeto_id": "project_id", "departamentos": "departments"}
 
 
@@ -271,6 +275,42 @@ def _transaction_body(spec: FinanceSpec, data: Mapping[str, Any]) -> dict[str, A
     return translated
 
 
+def _payment_body(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Valida a baixa e transmite valor e ajustes monetários separadamente.
+
+    Desconto, juros e multa são opcionais e não recebem zeros implícitos.
+    Não soma nem subtrai ajustes de ``valor``. ``invalid_parameter`` recusa
+    identificadores, datas e valores inválidos antes do acesso ao serviço;
+    ajustes exigem números finitos não negativos, sem percentuais ou aliases.
+    """
+    unknown = set(data) - set(PAYMENT_NAMES)
+    if unknown:
+        field = sorted(unknown)[0]
+        if field in {"valor_desconto", "desconto_valor", "percentual_desconto"}:
+            _invalid("dados." + field, "use dados.desconto com o valor monetário do desconto, não um percentual.", use_instead=["dados.desconto"])
+        _invalid("dados." + field, "não pertence ao contrato desta baixa.")
+    for field in ("conta_corrente_id", "valor", "data"):
+        if field not in data:
+            _invalid("dados." + field, "é obrigatório nesta operação.")
+    if not {"id", "codigo_integracao"} & set(data):
+        _invalid("dados", "informe id ou codigo_integracao para identificar o título.")
+    for field in ("id", "conta_corrente_id"):
+        if field in data:
+            _positive_id(data[field], "dados." + field)
+    if "codigo_integracao" in data:
+        _text(data["codigo_integracao"], "dados.codigo_integracao", max_length=60)
+    _date(data["data"], "dados.data")
+    for field in ("valor", "desconto", "juros", "multa"):
+        if field not in data:
+            continue
+        value = data[field]
+        if type(value) not in (int, float) or (type(value) is float and not isfinite(value)) or value < 0 or field == "valor" and value == 0:
+            _invalid("dados." + field, "deve ser um número finito maior que zero." if field == "valor" else "deve ser um valor monetário finito maior ou igual a zero.")
+    if "observacao" in data and not isinstance(data["observacao"], str):
+        _invalid("dados.observacao", "deve ser um texto.")
+    return {PAYMENT_NAMES[key]: value for key, value in data.items()}
+
+
 def _page(arguments: Mapping[str, Any], *, native: bool) -> dict[str, int]:
     page, size = arguments.get("pagina", 1), arguments.get("tamanho_pagina", 50)
     if type(page) is not int or page < 1: _invalid("pagina", "deve ser um inteiro positivo.")
@@ -352,6 +392,9 @@ def _schema(spec: FinanceSpec, profiles: list[dict[str, str]]) -> dict[str, Any]
             "projeto_id": {"type": "integer", "minimum": 1}, "observacao": {"type": "string"}, "tipo_documento": {"type": "string", "minLength": 1}, "numero_documento": {"type": "string", "maxLength": 20},
             "lote": {"type": "integer", "minimum": 1}, "titulos": {"type": "array", "minItems": 1, "items": {"type": "object"}},
             "conta_corrente_id": {"type": "integer", "minimum": 1}, "data": date, "id_baixa": {"type": "integer", "minimum": 1},
+            "desconto": {"type": "number", "minimum": 0, "description": "Valor monetário do desconto aplicado à baixa, não percentual. Opcional; enviado separadamente de valor."},
+            "juros": {"type": "number", "minimum": 0, "description": "Valor monetário dos juros da baixa. Opcional; enviado somente quando informado."},
+            "multa": {"type": "number", "minimum": 0, "description": "Valor monetário da multa da baixa. Opcional; enviado somente quando informado."},
             "cliente_id": {"type": "integer", "minimum": 1}, "departamentos": _department_schema(),
             "conta_origem_id": {"type": "integer", "minimum": 1}, "conta_destino_id": {"type": "integer", "minimum": 1},
         }
@@ -396,6 +439,8 @@ def _schema(spec: FinanceSpec, profiles: list[dict[str, str]]) -> dict[str, Any]
         elif spec.kind == "payment":
             data_schema["required"] = ["conta_corrente_id", "valor", "data"]
             data_schema["anyOf"] = [{"required": ["id"]}, {"required": ["codigo_integracao"]}]
+            data_schema["properties"]["valor"] = {"type": "number", "exclusiveMinimum": 0,
+                "description": "Valor enviado sem conversão à operação de baixa da Omie. Desconto, juros e multa seguem em campos separados; o MCP não recalcula este valor."}
         elif spec.kind == "receipt": data_schema["required"] = ["id_baixa"]
         elif spec.kind == "transfer": data_schema["required"] = ["codigo_integracao", "conta_origem_id", "conta_destino_id", "data", "valor", "categoria_codigo"]
         elif spec.kind == "batch":
@@ -529,6 +574,8 @@ class OmieFinanceFacade:
                     "Confere título, categorias das baixas, pagamento, desconto e conciliação antes de confirmar o resultado. "
                     "Nunca cancela nem refaz uma baixa; divergência ou falha de consulta não é sucesso confirmado."
                 )
+            if spec.kind == "payment":
+                description += " Aceita dados.desconto, dados.juros e dados.multa como valores monetários opcionais, finitos e não negativos. Não use percentuais nem aliases de desconto. Valor e ajustes são enviados separadamente, sem cálculo implícito. Confira o identificador da baixa, liquidado e o saldo do título antes de concluir a quitação; não repita uma escrita incerta."
             if spec.kind in {"transaction", "transfer", "title", "department_set"} and not general_update:
                 description += (
                     ' Para dados.departamentos use somente [{"codigo":"8532594895","percentual":100}]. '
@@ -651,7 +698,7 @@ class OmieFinanceFacade:
                     _separate_allocation(spec, item, field=f"dados.titulos[{index}].departamentos")
                 return {"body": {"lote": data["lote"], "titles": [_translate_title(item, create=spec.legacy.endswith("_create_batch")) for item in titles]}}
             if spec.kind == "payment":
-                return {"body": self._map(data, PAYMENT_NAMES)}
+                return {"body": _payment_body(data)}
             if spec.kind == "receipt": return {"body": self._map(data, {"id_baixa": "codigo_baixa"})}
             if spec.kind == "transaction":
                 return {"body": _transaction_body(spec, data)}
