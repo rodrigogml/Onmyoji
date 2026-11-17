@@ -5,11 +5,13 @@ import os
 from pathlib import Path
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import threading
 import tomllib
 from time import monotonic
+from collections import deque
 from collections.abc import Callable
 
 
@@ -78,8 +80,11 @@ def is_isolated(root: Path) -> bool:
     return configuration(root)["mode"] == "isolated"
 
 
+_DISCARDED_ENVIRONMENT = ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE", "PIP_TARGET", "PIP_PREFIX", "PIP_USER", "PIP_BREAK_SYSTEM_PACKAGES")
+
+
 def _environment() -> dict[str, str]:
-    environment = {key: value for key, value in os.environ.items() if key.upper() not in {"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE", "PIP_TARGET", "PIP_PREFIX", "PIP_USER", "PIP_BREAK_SYSTEM_PACKAGES"}}
+    environment = {key: value for key, value in os.environ.items() if key.upper() not in _DISCARDED_ENVIRONMENT}
     environment.update(PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1")
     return environment
 
@@ -104,6 +109,58 @@ def _pip_command(executable: Path, arguments: list[str]) -> list[str]:
     return [str(executable), "-I", "-B", "-c", code, *arguments]
 
 
+def installation_requires_sudo(root: Path) -> bool:
+    """Verifica a escrita no destino global como a conta que executa o setup.
+
+    Ambientes isolados, Windows e processos já administrativos dispensam sudo.
+    A consulta não cria diretórios nem instala componentes.
+
+    Raises:
+        RuntimeError: Se o Python selecionado não permitir consultar os destinos
+            de instalação e suas permissões.
+    """
+    if is_isolated(root) or os.name == "nt" or getattr(os, "geteuid", lambda: 0)() == 0:
+        return False
+    executable = python(root)
+    code = """import os, sysconfig
+from pathlib import Path
+def writable(value):
+    target = Path(value)
+    while not target.exists():
+        if target.parent == target:
+            return False
+        target = target.parent
+    return target.is_dir() and os.access(target, os.W_OK | os.X_OK)
+print('0' if all(writable(sysconfig.get_path(name)) for name in ('purelib', 'platlib', 'scripts')) else '1')
+"""
+    try:
+        completed = subprocess.run(_python_code(executable, code), env=_environment(), text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=15, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError("Não foi possível verificar as permissões de instalação do Python global.") from error
+    value = (completed.stdout or "").strip()
+    if completed.returncode or value not in {"0", "1"}:
+        detail = _safe_output(completed.stderr or completed.stdout or "")
+        raise RuntimeError(f"Não foi possível verificar as permissões de instalação do Python global.{(' Detalhe: ' + detail) if detail else ''}")
+    return value == "1"
+
+
+def _sudo_pip_command(command: list[str], progress: Callable[[str], None] | None) -> list[str]:
+    """Autentica no terminal e eleva somente a instalação global solicitada."""
+    sudo = shutil.which("sudo")
+    if not sudo:
+        raise RuntimeError("sudo não está disponível. Execute a instalação pelo setup com privilégios administrativos ou selecione isolated em Python e bibliotecas.")
+    if progress:
+        progress("A instalação global exige privilégios administrativos. A senha, se necessária, será solicitada pelo sudo no terminal.")
+    try:
+        authenticated = subprocess.run([sudo, "-v"], check=False)
+    except OSError as error:
+        raise RuntimeError("Não foi possível solicitar autorização administrativa ao sudo.") from error
+    if authenticated.returncode:
+        raise RuntimeError("sudo não autorizou a instalação global. Execute a instalação pelo setup com privilégios administrativos ou selecione isolated em Python e bibliotecas.")
+    unset = [argument for name in _DISCARDED_ENVIRONMENT for argument in ("-u", name)]
+    return [sudo, "-n", "--", "env", *unset, "PIP_BREAK_SYSTEM_PACKAGES=1", "PYTHONNOUSERSITE=1", "PYTHONDONTWRITEBYTECODE=1", *command]
+
+
 def run_with_progress(command: list[str], *, environment: dict[str, str], timeout: int, stage: str, progress: Callable[[str], None] | None, cwd: Path | None = None) -> tuple[int, str]:
     """Executa ferramenta externa exibindo saída sanitizada e batimentos periódicos."""
     try:
@@ -117,7 +174,7 @@ def run_with_progress(command: list[str], *, environment: dict[str, str], timeou
             lines.put(line)
         lines.put(None)
     threading.Thread(target=read_output, daemon=True).start()
-    deadline = monotonic() + timeout; detail = ""; closed = False
+    deadline = monotonic() + timeout; details: deque[str] = deque(maxlen=8); closed = False
     while not closed:
         remaining = deadline - monotonic()
         if remaining <= 0:
@@ -132,17 +189,21 @@ def run_with_progress(command: list[str], *, environment: dict[str, str], timeou
             closed = True
             continue
         detail = _safe_output(line)
+        if detail:
+            details.append(detail)
         if progress and detail:
             progress(f"{stage} {detail}")
-    return process.wait(), detail
+    return process.wait(), "\n".join(details)
 
 
-def ensure(root: Path, requirements: list[str], probe: str, progress: Callable[[str], None] | None = None) -> str:
+def ensure(root: Path, requirements: list[str], probe: str, progress: Callable[[str], None] | None = None, *, use_sudo: bool = False) -> str:
     """Prepara o runtime selecionado e instala requisitos no mesmo interpretador.
 
     A seleção global permite ao pip instalar em Python protegido por PEP 668;
     essa permissão existe somente no ambiente do processo de instalação.
     O modo isolado nunca recebe essa permissão, mesmo quando herdada do terminal.
+    ``use_sudo`` autoriza elevar somente o pip global em sistemas POSIX; a
+    autenticação ocorre no terminal e a validação mantém a conta original.
 
     Raises:
         RuntimeError: Se a configuração for inválida, o interpretador não existir
@@ -173,12 +234,17 @@ def ensure(root: Path, requirements: list[str], probe: str, progress: Callable[[
         if progress:
             progress("Instalando dependências no runtime único do Shikigami.")
         command = _pip_command(executable, ["install", "--disable-pip-version-check", "--no-input", "--upgrade", *requirements])
+        if use_sudo and not isolated and os.name != "nt" and getattr(os, "geteuid", lambda: 0)() != 0:
+            command = _sudo_pip_command(command, progress)
         try:
             code, detail = run_with_progress(command, environment=environment, timeout=600, stage="Instalando dependências no runtime único do Shikigami.", progress=progress)
         except RuntimeError as error:
             raise RuntimeError("Não foi possível instalar dependências no runtime do Shikigami.") from error
         if code:
-            raise RuntimeError(f"O instalador de dependências do runtime do Shikigami falhou.{(' Detalhe: ' + detail) if detail else ''}")
+            message = f"O instalador de dependências do runtime do Shikigami falhou.{(' Detalhe: ' + detail) if detail else ''}"
+            if not isolated and re.search(r"permission denied|permissão negada|\[errno 13\]|access is denied|acesso negado|\[winerror 5\]", detail, re.IGNORECASE):
+                message += " Execute a instalação pelo setup com privilégios administrativos ou selecione isolated em Python e bibliotecas."
+            raise RuntimeError(message)
     try:
         code, detail = run_with_progress(_python_code(executable, probe), environment=_environment(), timeout=15, stage="Validando as dependências do runtime único.", progress=progress)
     except RuntimeError as error:

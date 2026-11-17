@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from onmyoji_daemon import cli
 from onmyoji_daemon.rpc import RpcError
 
@@ -102,3 +104,37 @@ def test_cli_allows_extra_time_for_local_ca_installation(monkeypatch, capsys):
     assert result == 0
     assert received == {"method": "mini-apps.tls.install-trust", "params": {"confirm": True}, "timeout": 30}
     assert '"installed": true' in captured.out
+
+
+@pytest.mark.parametrize("flags, expected", [
+    ([], {"repair": False, "allow_install": True, "use_sudo": False}),
+    (["--use-sudo"], {"repair": False, "allow_install": True, "use_sudo": True}),
+    (["--check-only"], {"repair": False, "allow_install": False, "use_sudo": False}),
+    (["--repair", "--use-sudo"], {"repair": True, "allow_install": True, "use_sudo": True}),
+    (["--repair", "--use-sudo", "--check-only"], {"repair": True, "allow_install": False, "use_sudo": True}),
+])
+def test_cli_runtime_installation_preserves_explicit_permissions(tmp_path, monkeypatch, capsys, flags, expected):
+    """A autorização de sudo é independente da reparação e nunca cancela check-only."""
+    received = {}
+
+    def ensure(root, **options):
+        received.update(root=root, **options)
+        return True, "Runtime pronto."
+
+    monkeypatch.setattr(cli.management, "ensure_runtime", ensure)
+
+    assert cli.main(["--onmyoji-root", str(tmp_path), "install-runtime", *flags]) == 0
+    assert received == {"root": tmp_path.resolve(), "show_progress": True, **expected}
+    captured = capsys.readouterr()
+    assert captured.out == "Runtime pronto.\n"
+    assert captured.err == ""
+
+
+def test_cli_runtime_installation_returns_authentication_diagnostic(tmp_path, monkeypatch, capsys):
+    """Recusa do sudo interrompe a CLI com diagnóstico operacional sem traceback."""
+    monkeypatch.setattr(cli.management, "ensure_runtime", lambda *_args, **_kwargs: (False, "sudo não autorizou a instalação global."))
+
+    assert cli.main(["--onmyoji-root", str(tmp_path), "install-runtime", "--use-sudo"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "sudo não autorizou a instalação global.\n"
+    assert captured.err == ""

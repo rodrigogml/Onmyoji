@@ -2230,6 +2230,33 @@ def _configure_python_runtime(root: Path, data: dict[str, object]) -> dict[str, 
     return candidate if ok else data
 
 
+def authorize_runtime_installation(root: Path) -> bool | None:
+    """Retorna a autorização de sudo, ou ``None`` para cancelar a instalação.
+
+    Destinos graváveis dispensam confirmação. A conta dedicada nunca solicita
+    sudo: a instalação global administrativa pertence ao instalador no menu Daemon.
+    Falhas ao verificar o destino interrompem a ação com diagnóstico operacional.
+    """
+    try:
+        if not python_runtime.installation_requires_sudo(root):
+            return False
+    except (OSError, python_runtime.RuntimeError) as error:
+        result(False, str(error))
+        return None
+    if dedicated_child_profile(root):
+        result(False, "O Python global exige permissão administrativa. Volte à central e instale os componentes pelo menu Daemon com a conta instaladora, ou selecione isolated em Python e bibliotecas.")
+        return None
+    if not linux_tool("sudo"):
+        result(False, "O Python global exige escrita administrativa e sudo não está disponível. Execute esta instalação como administrador ou selecione isolated em Python e bibliotecas.")
+        return None
+    note("O destino do Python global não permite escrita por esta conta. Somente a instalação das bibliotecas usará sudo.")
+    note("A senha será solicitada pelo sudo no terminal, sem ser lida ou armazenada pelo Onmyōji.")
+    if prompt("Autorizar a instalação global com sudo? [s/N]: ").strip().casefold() not in {"s", "sim"}:
+        result(False, "Instalação global cancelada. Para instalar sem privilégios administrativos, selecione isolated em Python e bibliotecas.")
+        return None
+    return True
+
+
 def python_menu(root: Path) -> None:
     """Centraliza o runtime único e a manutenção explícita de bibliotecas."""
     data = load_system(root)
@@ -2257,7 +2284,10 @@ def python_menu(root: Path) -> None:
             _show_python_components(root)
         elif choice == "3":
             try:
-                ok, message = daemon_management.ensure_runtime(root, show_progress=True)
+                use_sudo = authorize_runtime_installation(root)
+                if use_sudo is None:
+                    continue
+                ok, message = daemon_management.ensure_runtime(root, show_progress=True, use_sudo=use_sudo)
                 result(ok, message)
             except (OSError, ValueError, python_runtime.RuntimeError) as error:
                 result(False, str(error))
@@ -2282,7 +2312,10 @@ def python_menu(root: Path) -> None:
                 result(False, str(error))
         elif choice == "7":
             try:
-                ok, message = daemon_management.ensure_runtime(root, show_progress=True)
+                use_sudo = authorize_runtime_installation(root)
+                if use_sudo is None:
+                    continue
+                ok, message = daemon_management.ensure_runtime(root, show_progress=True, use_sudo=use_sudo)
                 if not ok:
                     result(False, message)
                     continue
@@ -2716,7 +2749,17 @@ def daemon_menu(root: Path) -> None:
         if os.name == "nt": print("    • pywin32 — integração opcional com Serviço do Windows.")
         print("\n  [4/4] Preparando o runtime e os componentes")
         note("O daemon instala automaticamente os componentes necessários no runtime único; a manutenção manual fica em Python e bibliotecas.")
-        completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "install-runtime", "--repair"], quiet=False)
+        use_sudo = authorize_runtime_installation(root)
+        if use_sudo is None:
+            return False
+        global_installation = not python_runtime.is_isolated(root)
+        arguments = [sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "install-runtime", "--repair"]
+        if use_sudo:
+            arguments.append("--use-sudo")
+        completed = command(arguments, quiet=False, administrative=global_installation)
+        if completed.returncode == 0 and global_installation and dedicated_execution:
+            note("Validando as bibliotecas globais sob a conta dedicada do Shikigami.")
+            completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "install-runtime", "--check-only"], quiet=False)
         result(completed.returncode == 0, "Daemon instalado e runtime Python validado." if completed.returncode == 0 else "A instalação do daemon não foi concluída.")
         return completed.returncode == 0
 
