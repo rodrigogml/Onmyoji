@@ -2250,7 +2250,7 @@ def authorize_runtime_installation(root: Path) -> bool | None:
         result(False, "O Python global exige escrita administrativa e sudo não está disponível. Execute esta instalação como administrador ou selecione isolated em Python e bibliotecas.")
         return None
     note("O destino do Python global não permite escrita por esta conta. Somente a instalação das bibliotecas usará sudo.")
-    note("A senha será solicitada pelo sudo no terminal, sem ser lida ou armazenada pelo Onmyōji.")
+    note("O sudo seguirá a política desta conta e só solicitará senha se necessário, diretamente no terminal.")
     if prompt("Autorizar a instalação global com sudo? [s/N]: ").strip().casefold() not in {"s", "sim"}:
         result(False, "Instalação global cancelada. Para instalar sem privilégios administrativos, selecione isolated em Python e bibliotecas.")
         return None

@@ -298,11 +298,12 @@ def test_installation_permissions_report_process_failures(tmp_path: Path, monkey
 
 @pytest.mark.parametrize("show_progress", [False, True])
 def test_ensure_elevates_only_global_pip_after_terminal_authentication(tmp_path: Path, monkeypatch, show_progress: bool) -> None:
-    """A senha é lida pelo sudo e a validação continua sob a conta operacional."""
+    """Somente uma exigência real de senha abre autenticação, mantendo a validação operacional."""
     executable = global_runtime(tmp_path)
     posix_account(monkeypatch)
     monkeypatch.setenv("PIP_TARGET", "/unexpected")
     monkeypatch.setenv("PIP_USER", "1")
+    monkeypatch.setenv("LC_ALL", "pt_BR.UTF-8")
     monkeypatch.setattr(runtime.shutil, "which", lambda name: "/usr/bin/sudo" if name == "sudo" else None)
     authentications = []
     calls = []
@@ -314,12 +315,14 @@ def test_ensure_elevates_only_global_pip_after_terminal_authentication(tmp_path:
 
     def run(command, **kwargs):
         calls.append((command, kwargs["environment"]))
-        return 0, ""
+        return (1, "sudo: a password is required") if len(calls) == 1 else (0, "")
 
     monkeypatch.setattr(runtime.subprocess, "run", authenticate)
     monkeypatch.setattr(runtime, "run_with_progress", run)
     assert runtime.ensure(tmp_path, ["example"], "import example", progress=messages.append if show_progress else None, use_sudo=True) == "Runtime Python único do Shikigami pronto."
-    assert authentications == [(["/usr/bin/sudo", "-v"], {"check": False})]
+    assert len(authentications) == 1
+    assert authentications[0][0] == ["/usr/bin/sudo", "-v"]
+    assert authentications[0][1] == {"env": calls[0][1], "check": False}
     installation, environment = calls[0]
     assert installation[:4] == ["/usr/bin/sudo", "-n", "--", "env"]
     assert "PIP_BREAK_SYSTEM_PACKAGES=1" in installation
@@ -329,11 +332,58 @@ def test_ensure_elevates_only_global_pip_after_terminal_authentication(tmp_path:
         assert installation[installation.index(name) - 1] == "-u"
         assert name not in environment
     assert installation[installation.index(str(executable)):] == [str(executable), "-I", "-B", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", "example"]
-    assert calls[1][0] == [str(executable), "-I", "-B", "-c", "import example"]
-    assert "PIP_BREAK_SYSTEM_PACKAGES" not in calls[1][1]
+    assert calls[1] == calls[0]
+    assert calls[2][0] == [str(executable), "-I", "-B", "-c", "import example"]
+    assert "PIP_BREAK_SYSTEM_PACKAGES" not in calls[2][1]
+    assert calls[0][1]["LC_ALL"] == "C"
+    assert calls[2][1]["LC_ALL"] == "pt_BR.UTF-8"
     assert any("senha" in message for message in messages) is show_progress
     assert os.environ["PIP_TARGET"] == "/unexpected"
     assert os.environ["PIP_USER"] == "1"
+    assert os.environ["LC_ALL"] == "pt_BR.UTF-8"
+
+
+@pytest.mark.parametrize("returncode, detail", [
+    (0, ""),
+    (1, "error: uninstall-no-record-file\nCannot uninstall cffi 1.17.1"),
+    (1, "sudo: user is not allowed to execute this command"),
+    (2, "sudo: a password is required"),
+    (1, "ERROR: subprocess failed\nsudo: a password is required"),
+])
+def test_sudo_permitted_or_cached_installation_and_other_errors_do_not_authenticate(tmp_path: Path, monkeypatch, returncode: int, detail: str) -> None:
+    """NOPASSWD e cache passam direto; falhas do pip e da política não repetem a instalação."""
+    executable = global_runtime(tmp_path)
+    posix_account(monkeypatch)
+    monkeypatch.setattr(runtime.shutil, "which", lambda _name: "/usr/bin/sudo")
+    monkeypatch.setattr(runtime.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("O sudo não pediu uma senha para o comando real."))
+    calls = []
+    def run(command, **kwargs):
+        calls.append((command, kwargs["environment"]))
+        return (returncode, detail) if len(calls) == 1 else (0, "")
+    monkeypatch.setattr(runtime, "run_with_progress", run)
+
+    assert runtime._install(executable, ["install", "example"], environment=runtime._environment(), use_sudo=True, stage="Instalando.", progress=None) == (returncode, detail)
+    assert len(calls) == 1
+    assert calls[0][0][:4] == ["/usr/bin/sudo", "-n", "--", "env"]
+
+
+def test_sudo_authentication_allows_only_one_installation_retry(tmp_path: Path, monkeypatch) -> None:
+    """Uma nova exigência de senha após autenticar encerra a operação sem entrar em ciclo."""
+    global_runtime(tmp_path)
+    posix_account(monkeypatch)
+    monkeypatch.setattr(runtime.shutil, "which", lambda _name: "/usr/bin/sudo")
+    authentications = []
+    calls = []
+    monkeypatch.setattr(runtime.subprocess, "run", lambda command, **kwargs: authentications.append(command) or subprocess.CompletedProcess(command, 0))
+    def run(command, **_kwargs):
+        calls.append(command)
+        return 1, "sudo: a password is required"
+    monkeypatch.setattr(runtime, "run_with_progress", run)
+
+    with pytest.raises(runtime.RuntimeError, match="sudo: a password is required"):
+        runtime.ensure(tmp_path, ["example"], "import example", use_sudo=True)
+    assert len(calls) == 2
+    assert authentications == [["/usr/bin/sudo", "-v"]]
 
 
 @pytest.mark.parametrize("mode, platform_name, uid, requirements", [("isolated", "posix", 1000, ["example"]), ("global", "nt", 1000, ["example"]), ("global", "posix", 0, ["example"]), ("global", "posix", 1000, [])])
@@ -372,13 +422,16 @@ def test_ensure_stops_before_pip_when_sudo_is_unavailable_or_denied(tmp_path: Pa
             raise auth_result
         return subprocess.CompletedProcess(command, auth_result)
 
-    def unexpected_pip(*args, **kwargs):
-        pytest.fail("Uma instalação sem autorização administrativa não pode iniciar o pip.")
+    calls = []
+    def require_password(command, **kwargs):
+        calls.append(command)
+        return 1, "sudo: a password is required"
 
     monkeypatch.setattr(runtime.subprocess, "run", authenticate)
-    monkeypatch.setattr(runtime, "run_with_progress", unexpected_pip)
+    monkeypatch.setattr(runtime, "run_with_progress", require_password)
     with pytest.raises(runtime.RuntimeError, match=expected):
         runtime.ensure(tmp_path, ["example"], "import example", use_sudo=True)
+    assert len(calls) == (1 if sudo else 0)
 
 
 @pytest.mark.parametrize("detail", ["[Errno 13] Permission denied", "Permissão negada", "Access is denied", "[WinError 5] Acesso negado"])

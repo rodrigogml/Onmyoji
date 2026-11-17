@@ -144,19 +144,11 @@ print('0' if all(writable(sysconfig.get_path(name)) for name in ('purelib', 'pla
     return value == "1"
 
 
-def _sudo_pip_command(command: list[str], progress: Callable[[str], None] | None) -> list[str]:
-    """Autentica no terminal e eleva somente a instalação global solicitada."""
+def _sudo_pip_command(command: list[str]) -> list[str]:
+    """Monta a instalação global sem exigir uma nova autenticação previamente."""
     sudo = shutil.which("sudo")
     if not sudo:
         raise RuntimeError("sudo não está disponível. Execute a instalação pelo setup com privilégios administrativos ou selecione isolated em Python e bibliotecas.")
-    if progress:
-        progress("A instalação global exige privilégios administrativos. A senha, se necessária, será solicitada pelo sudo no terminal.")
-    try:
-        authenticated = subprocess.run([sudo, "-v"], check=False)
-    except OSError as error:
-        raise RuntimeError("Não foi possível solicitar autorização administrativa ao sudo.") from error
-    if authenticated.returncode:
-        raise RuntimeError("sudo não autorizou a instalação global. Execute a instalação pelo setup com privilégios administrativos ou selecione isolated em Python e bibliotecas.")
     unset = [argument for name in _DISCARDED_ENVIRONMENT for argument in ("-u", name)]
     return [sudo, "-n", "--", "env", *unset, "PIP_BREAK_SYSTEM_PACKAGES=1", "PYTHONNOUSERSITE=1", "PYTHONDONTWRITEBYTECODE=1", *command]
 
@@ -196,14 +188,48 @@ def run_with_progress(command: list[str], *, environment: dict[str, str], timeou
     return process.wait(), "\n".join(details)
 
 
+def _install(executable: Path, arguments: list[str], *, environment: dict[str, str], use_sudo: bool, stage: str, progress: Callable[[str], None] | None) -> tuple[int, str]:
+    """Executa pip e autentica somente quando o sudo exigir uma senha.
+
+    O chamador autoriza ``use_sudo`` apenas para uma instalação global POSIX
+    não administrativa. NOPASSWD e credenciais em cache não abrem autenticação;
+    falhas do pip ou recusas de política nunca repetem a instalação. Uma falha
+    exclusiva de autenticação permite uma única repetição depois de ``sudo -v``.
+
+    Raises:
+        RuntimeError: Se não houver sudo, a autenticação for recusada ou algum
+            processo não puder iniciar ou concluir dentro do prazo.
+    """
+    command = _pip_command(executable, arguments)
+    execution_environment = environment
+    if use_sudo:
+        command = _sudo_pip_command(command)
+        execution_environment = {**environment, "LC_ALL": "C"}
+    code, detail = run_with_progress(command, environment=execution_environment, timeout=600, stage=stage, progress=progress)
+    if not use_sudo or code != 1 or detail.strip() != "sudo: a password is required":
+        return code, detail
+    if progress:
+        progress("O sudo exige autenticação para esta instalação. A senha será solicitada pelo próprio sudo no terminal.")
+    try:
+        authenticated = subprocess.run([command[0], "-v"], env=execution_environment, check=False)
+    except OSError as error:
+        raise RuntimeError("Não foi possível solicitar autorização administrativa ao sudo.") from error
+    if authenticated.returncode:
+        raise RuntimeError("sudo não autorizou a instalação global. Execute a instalação pelo setup com privilégios administrativos ou selecione isolated em Python e bibliotecas.")
+    return run_with_progress(command, environment=execution_environment, timeout=600, stage=stage, progress=progress)
+
+
 def ensure(root: Path, requirements: list[str], probe: str, progress: Callable[[str], None] | None = None, *, use_sudo: bool = False) -> str:
     """Prepara o runtime selecionado e instala requisitos no mesmo interpretador.
 
     A seleção global permite ao pip instalar em Python protegido por PEP 668;
     essa permissão existe somente no ambiente do processo de instalação.
     O modo isolado nunca recebe essa permissão, mesmo quando herdada do terminal.
-    ``use_sudo`` autoriza elevar somente o pip global em sistemas POSIX; a
-    autenticação ocorre no terminal e a validação mantém a conta original.
+    ``use_sudo`` autoriza elevar somente o pip global em sistemas POSIX; NOPASSWD
+    e credenciais em cache dispensam autenticação, e uma senha só é solicitada
+    pelo sudo quando exigida pela política. A validação mantém a conta original.
+    Pacotes externos sem RECORD só recebem uma cópia quando o destino global
+    é separado e tem prioridade de importação; seus arquivos são preservados.
 
     Raises:
         RuntimeError: Se a configuração for inválida, o interpretador não existir
@@ -233,13 +259,20 @@ def ensure(root: Path, requirements: list[str], probe: str, progress: Callable[[
                 progress("Modo global: a instalação pode atualizar bibliotecas do sistema, inclusive em Python protegido por PEP 668.")
         if progress:
             progress("Instalando dependências no runtime único do Shikigami.")
-        command = _pip_command(executable, ["install", "--disable-pip-version-check", "--no-input", "--upgrade", *requirements])
-        if use_sudo and not isolated and os.name != "nt" and getattr(os, "geteuid", lambda: 0)() != 0:
-            command = _sudo_pip_command(command, progress)
+        elevated = use_sudo and not isolated and os.name != "nt" and getattr(os, "geteuid", lambda: 0)() != 0
+        def install(arguments: list[str], stage: str) -> tuple[int, str]:
+            return _install(executable, arguments, environment=environment, use_sudo=elevated, stage=stage, progress=progress)
+        arguments = ["install", "--disable-pip-version-check", "--no-input", "--upgrade", *requirements]
+        stage = "Instalando dependências no runtime único do Shikigami."
         try:
-            code, detail = run_with_progress(command, environment=environment, timeout=600, stage="Instalando dependências no runtime único do Shikigami.", progress=progress)
+            code, detail = install(arguments, stage)
+            if code and not isolated and os.name != "nt":
+                from .runtime_recovery import recover_distribution
+                recovered: set[str] = set()
+                while code and recover_distribution(root, executable, requirements, detail, progress, install, recovered):
+                    code, detail = install(arguments, stage)
         except RuntimeError as error:
-            raise RuntimeError("Não foi possível instalar dependências no runtime do Shikigami.") from error
+            raise RuntimeError(f"Não foi possível instalar dependências no runtime do Shikigami. {error}") from error
         if code:
             message = f"O instalador de dependências do runtime do Shikigami falhou.{(' Detalhe: ' + detail) if detail else ''}"
             if not isolated and re.search(r"permission denied|permissão negada|\[errno 13\]|access is denied|acesso negado|\[winerror 5\]", detail, re.IGNORECASE):
