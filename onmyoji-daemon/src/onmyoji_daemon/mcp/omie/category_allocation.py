@@ -88,6 +88,44 @@ def _invalid_observation(processed: bool, reason: str, **details: Any) -> None:
     raise _error(code, message, escrita_processada=processed, reason=reason, **details)
 
 
+def _remote_number(record: Mapping[str, Any], key: str, processed: bool, *, field: str,
+                   operation: str = "financial_movements_list", movement_kind: str | None = None) -> Decimal:
+    """Identifica números ausentes, nulos ou inválidos sem expor o valor remoto.
+
+    Ausência e ``null`` não comprovam zero. A falha conserva ``invalid_number``
+    e informa campo, operação, tipo JSON e motivo específico. Antes da escrita
+    lança ``category_allocation_preflight_failed``; depois do aceite lança
+    ``category_allocation_verification_failed``, sem autorizar repetição.
+    """
+    present = key in record
+    value = record.get(key)
+    if not present:
+        received_type = "missing"
+    elif value is None:
+        received_type = "null"
+    elif type(value) is bool:
+        received_type = "boolean"
+    elif type(value) in (int, float):
+        received_type = "number"
+    elif isinstance(value, str):
+        received_type = "string"
+    elif isinstance(value, list):
+        received_type = "array"
+    elif isinstance(value, Mapping):
+        received_type = "object"
+    else:
+        received_type = "unsupported"
+    try:
+        return _number(value)
+    except ValueError:
+        issue = received_type if received_type in {"missing", "null"} else (
+            "invalid_value" if received_type in {"number", "string"} else "invalid_type"
+        )
+        context = {"tipo_movimento": movement_kind} if movement_kind is not None else {}
+        _invalid_observation(processed, "invalid_number", field=field, operation=operation,
+                             number_issue=issue, received_type=received_type, **context)
+
+
 def _cause(error: Exception) -> dict[str, Any]:
     result: dict[str, Any] = {"cause_code": error.code if isinstance(error, OmieError) else "unexpected_error"}
     if isinstance(error, OmieError) and isinstance(error.details, Mapping):
@@ -122,10 +160,8 @@ def _title(service: Any, profile: str, query: Mapping[str, Any], processed: bool
         _invalid_observation(processed, "title_identity_mismatch")
     if not _date(record.get("data_emissao")) or not _date(record.get("data_vencimento")):
         _invalid_observation(processed, "invalid_title_dates")
-    try:
-        if _number(record.get("valor_documento")) <= 0:
-            raise ValueError("invalid_title_amount")
-    except ValueError:
+    amount = _remote_number(record, "valor_documento", processed, field="valor_documento", operation="payables_get")
+    if amount <= 0:
         _invalid_observation(processed, "invalid_title_amount")
     if type(record.get("codigo_cliente_fornecedor")) is not int or record["codigo_cliente_fornecedor"] < 1:
         _invalid_observation(processed, "invalid_supplier")
@@ -190,15 +226,18 @@ def _financial_state(service: Any, profile: str, title: Mapping[str, Any], proce
     try:
         if not isinstance(summary, Mapping) or summary.get("cLiquidado") not in ("S", "N"):
             raise ValueError("invalid_payment_summary")
-        amounts = {key: _number(summary.get(key)) for key in _SUMMARY_NUMBERS}
+        amounts = {key: _remote_number(summary, key, processed, field="resumo." + key, movement_kind="CP") for key in _SUMMARY_NUMBERS}
         if any(value < 0 for value in amounts.values()):
             raise ValueError("invalid_payment_summary")
         if abs(amounts["nValPago"] - amounts["nDesconto"] + amounts["nJuros"] + amounts["nMulta"] - amounts["nValLiquido"]) > _CENT:
             raise ValueError("inconsistent_payment_summary")
         if summary["cLiquidado"] == "S" and amounts["nValAberto"] != 0:
             raise ValueError("inconsistent_open_balance")
-        if abs(_number(financial["detalhes"].get("nValorTitulo")) - _number(title["valor_documento"])) > _CENT:
+        amount = _remote_number(financial["detalhes"], "nValorTitulo", processed, field="detalhes.nValorTitulo", movement_kind="CP")
+        if abs(amount - _number(title["valor_documento"])) > _CENT:
             raise ValueError("financial_title_amount_mismatch")
+    except OmieError:
+        raise
     except ValueError as error:
         _invalid_observation(processed, str(error))
     payments: dict[int, dict[str, Any]] = {}
@@ -213,7 +252,7 @@ def _financial_state(service: Any, profile: str, title: Mapping[str, Any], proce
                 raise ValueError("duplicate_payment")
             if not _date(details.get("dDtPagamento")):
                 raise ValueError("invalid_payment_date")
-            numbers = {key: _number(details.get(key)) for key in _PAYMENT_NUMBERS}
+            numbers = {key: _remote_number(details, key, processed, field="detalhes." + key, movement_kind="BXCP") for key in _PAYMENT_NUMBERS}
             if any(numbers[key] < 0 for key in ("nDesconto", "nJuros", "nMulta")):
                 raise ValueError("invalid_payment_amounts")
             if "dDtConcilia" not in details:
@@ -225,6 +264,8 @@ def _financial_state(service: Any, profile: str, title: Mapping[str, Any], proce
                 raise ValueError("incomplete_reconciliation")
             for key, number in numbers.items():
                 totals[key] += abs(number) if key == "nValorMovCC" else number
+        except OmieError:
+            raise
         except ValueError as error:
             _invalid_observation(processed, str(error))
         payments[identifier] = row
@@ -258,25 +299,26 @@ def _same(left: Any, right: Any) -> bool:
     return left == right
 
 
-def _observed(rows: Any, total: Decimal, *, payment: bool, processed: bool) -> list[dict[str, Any]]:
+def _observed(rows: Any, total: Decimal, *, payment: bool, processed: bool, movement_kind: str | None = None) -> list[dict[str, Any]]:
     code_key, percent_key, value_key = ("cCodCateg", "nDistrPercentual", "nDistrValor") if payment else ("codigo_categoria", "percentual", "valor")
     if not isinstance(rows, list) or not rows:
         _invalid_observation(processed, "missing_categories")
     result = []
     codes: set[str] = set()
     try:
-        for row in rows:
+        for index, row in enumerate(rows):
             if not isinstance(row, Mapping):
                 raise ValueError("invalid_category")
             code = row.get(code_key)
             if not isinstance(code, str) or not code.strip() or len(code) > 20 or code in codes:
                 raise ValueError("invalid_category_code")
-            percent = _number(row.get(percent_key))
+            operation = "financial_movements_list" if payment else "payables_get"
+            percent = _remote_number(row, percent_key, processed, field=f"categorias[{index}].{percent_key}", operation=operation, movement_kind=movement_kind)
             if not 0 < percent <= 100:
                 raise ValueError("invalid_category_percentage")
             item: dict[str, Any] = {"codigo": code, "percentual": float(percent)}
             if payment or value_key in row:
-                amount = _number(row.get(value_key))
+                amount = _remote_number(row, value_key, processed, field=f"categorias[{index}].{value_key}", operation=operation, movement_kind=movement_kind)
                 if amount < 0 or abs(total * percent / 100 - amount) > _CENT:
                     raise ValueError("inconsistent_category_amount")
                 item["valor"] = float(amount)
@@ -286,6 +328,8 @@ def _observed(rows: Any, total: Decimal, *, payment: bool, processed: bool) -> l
             raise ValueError("incomplete_category_percentages")
         if result and all("valor" in item for item in result) and abs(sum((_number(item["valor"]) for item in result), Decimal(0)) - total) > _CENT:
             raise ValueError("incomplete_category_amounts")
+    except OmieError:
+        raise
     except ValueError as error:
         _invalid_observation(processed, str(error))
     return result
@@ -374,11 +418,11 @@ def define_categories(service: Any, profile: str, identifier: Mapping[str, Any],
         if changed:
             raise _error("category_allocation_side_effect_detected", "A conferência detectou alterações fora das categorias. Confira o estado atual; nenhuma compensação foi executada.", escrita_processada=True, campos_alterados=changed)
         flags["campos_preservados"] = True
-        financial_categories = _observed(financial_after.get("categorias"), _number(after["valor_documento"]), payment=True, processed=True)
+        financial_categories = _observed(financial_after.get("categorias"), _number(after["valor_documento"]), payment=True, processed=True, movement_kind="CP")
         flags["titulo_financeiro_confirmado"] = _matches(expected, financial_categories)
         payments = []
         for payment_id, row in payments_after.items():
-            allocation = _observed(row.get("categorias"), abs(_number(row["detalhes"]["nValorMovCC"])), payment=True, processed=True)
+            allocation = _observed(row.get("categorias"), abs(_number(row["detalhes"]["nValorMovCC"])), payment=True, processed=True, movement_kind="BXCP")
             payments.append(_payment_result(payment_id, row, allocation))
         flags["baixas_confirmadas"] = all(_matches(expected, row["categorias"]) for row in payments)
         if not flags["titulo_confirmado"]:

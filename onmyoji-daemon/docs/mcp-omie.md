@@ -261,6 +261,30 @@ também podem decorrer de alteração concorrente no ERP.
 Falhas com `outcome_unknown` exigem essa mesma consulta: o retorno não permite
 afirmar se a escrita foi concluída.
 
+Quando a conferência numérica de uma resposta remota falha, o diagnóstico
+mantém `reason: invalid_number` e identifica o campo em `details.field`, como
+`valor_documento`, `resumo.nJuros`, `detalhes.nValorTitulo` ou
+`detalhes.nDesconto`. O caminho também pode apontar um item do rateio, como
+`categorias[0].percentual`, `categorias[0].valor`,
+`categorias[0].nDistrPercentual` ou `categorias[0].nDistrValor`.
+`operation: payables_get` identifica campos consultados no título;
+`operation: financial_movements_list`, com `tipo_movimento: CP` ou `BXCP`,
+identifica o registro financeiro ou a baixa. Os demais metadados distinguem
+a causa:
+
+| Metadado | Valores |
+| --- | --- |
+| `number_issue` | `missing` para campo ausente; `null` para nulo explícito; `invalid_type` para tipo incompatível; `invalid_value` para conteúdo numérico inválido. |
+| `received_type` | `missing`, `null`, `boolean`, `number`, `string`, `array`, `object` ou `unsupported` para tipos fora do contrato JSON. |
+
+Esse diagnóstico informa presença e tipo, sem reproduzir o valor recebido nem
+registros nativos sensíveis. Na pré-conferência, mantém
+`escrita_processada: false` e impede a gravação; na pós-conferência, informa
+`escrita_processada: true` e não repete a escrita. Ausência e `null` não são
+convertidos globalmente em zero: é necessário identificar o campo e verificar
+a representação efetivamente retornada antes de definir um tratamento.
+O diagnóstico, sozinho, não comprova que o número esteja incorreto no ERP.
+
 > [!IMPORTANT]
 > A API publica o rateio de categorias no título, mas não garante que toda
 > alteração de um título pago atualize as baixas existentes. Esta operação
