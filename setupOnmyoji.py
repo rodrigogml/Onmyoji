@@ -1113,11 +1113,42 @@ def _updated_setup_python(root: Path) -> Path:
     return executable.resolve()
 
 
-def _restart_updated_setup(root: Path, executable: Path, *, restart_daemon: bool) -> None:
+def _authorize_update_service(root: Path, *, use_sudo: bool = False) -> bool | None:
+    """Autoriza sudo uma vez para o serviço de sistema; None cancela a operação."""
+    service = daemon_management.service_info(root)
+    if (
+        not service or os.name == "nt"
+        or str(service.get("scope") or "system") != "system"
+        or getattr(os, "geteuid", lambda: 0)() == 0
+    ):
+        return False
+    if use_sudo:
+        return True
+    if prompt("Autorizar sudo para parar e retomar o serviço durante a atualização? [s/N]: ").strip().casefold() in {"s", "sim"}:
+        return True
+    return None
+
+
+def _resume_updated_daemon(root: Path, *, use_sudo: bool = False) -> tuple[bool, str]:
+    """Retoma o serviço registrado ou o processo local somente após migrar o estado."""
+    try:
+        if daemon_management.service_info(root):
+            authorized = _authorize_update_service(root, use_sudo=use_sudo)
+            if authorized is None:
+                return False, "A autorização de sudo para iniciar o serviço foi cancelada. Inicie-o no submenu Serviço."
+            return daemon_management.service_action(root, "start", use_sudo=authorized)
+        return daemon_management.start_background(root)
+    except (OSError, subprocess.SubprocessError) as error:
+        return False, f"Não foi possível retomar o daemon: {error}"
+
+
+def _restart_updated_setup(root: Path, executable: Path, *, restart_daemon: bool, use_sudo: bool = False) -> None:
     """Reabre o setup atualizado sem quebrar caminhos com espaços no Windows."""
     arguments = [str(executable), str(root / "setupOnmyoji.py"), "--resume-after-update"]
     if restart_daemon:
         arguments.append("--restart-daemon-after-update")
+        if use_sudo:
+            arguments.append("--update-service-sudo")
     try:
         if sys.platform == "win32":
             # os.execv usa a CRT no Windows e pode desmembrar caminhos com espaços.
@@ -1138,6 +1169,7 @@ def update_upstream(root: Path) -> None:
     flow_heading("Atualizar Onmyōji", "Incorpora a main do upstream à branch atual")
     stash_id = ""
     restart_daemon = False
+    use_sudo = False
     try:
         if not _git_remote_url(root, "upstream"):
             raise GitSetupError("O remoto upstream não está configurado. Configure-o em Git e sincronização.")
@@ -1210,19 +1242,38 @@ def update_upstream(root: Path) -> None:
         if root.resolve() == ROOT.resolve():
             # Verifica o Python selecionado antes de interromper o daemon.
             executable = _updated_setup_python(root)
-            if daemon_management.running_process(root):
-                ok, message = daemon_management.stop_background(root)
-                if not ok:
-                    raise GitSetupError("A atualização foi baixada, mas o daemon não pôde ser parado para migrar o estado: " + message)
-                restart_daemon = True
-                note("Daemon local encerrado para a migração de estado; ele será retomado após o novo setup.")
+            try:
+                service = daemon_management.service_info(root)
+                if service:
+                    running = (
+                        daemon_management.service_is_active(root)
+                        or daemon_management.running_process(root)
+                        or daemon_management.daemon_reachable(root)
+                    )
+                else:
+                    running = daemon_management.running_process(root)
+                if running:
+                    if service:
+                        authorized = _authorize_update_service(root)
+                        if authorized is None:
+                            raise GitSetupError("A atualização foi baixada, mas a parada do serviço para migrar o estado foi cancelada. O daemon continua em execução.")
+                        use_sudo = authorized
+                        ok, message = daemon_management.service_action(root, "stop", use_sudo=use_sudo)
+                    else:
+                        ok, message = daemon_management.stop_background(root)
+                    if not ok:
+                        raise GitSetupError("A atualização foi baixada, mas o daemon não pôde ser parado para migrar o estado: " + message)
+                    restart_daemon = True
+                    note(("Serviço do daemon parado" if service else "Daemon local encerrado") + " para a migração de estado; ele será retomado após o novo setup.")
+            except (OSError, subprocess.SubprocessError) as error:
+                raise GitSetupError(f"A atualização foi baixada, mas não foi possível preparar a parada do daemon: {error}") from error
             note("Reiniciando o setup atualizado para verificar versões e concluir migrações.")
-            _restart_updated_setup(root, executable, restart_daemon=restart_daemon)
+            _restart_updated_setup(root, executable, restart_daemon=restart_daemon, use_sudo=use_sudo)
         note("Execute a versão atualizada do setup para concluir a verificação de layout.")
     except GitSetupError as error:
         result(False, str(error))
         if restart_daemon:
-            note("O daemon permanece parado até concluir a migração. Reexecute o setup com o Python configurado.")
+            note("O daemon permanece parado. Reexecute o setup com o Python configurado para concluir a migração e inicie-o no menu Daemon.")
         if stash_id:
             note(f"Stash temporário: {stash_id}. Confira seu estado antes de restaurá-lo ou removê-lo.")
 
@@ -4668,7 +4719,7 @@ def menu(skills: list[Skill], root: Path) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--action", choices=["menu", "list", "enable", "disable", "configure", "status"], default="menu"); parser.add_argument("--skill"); parser.add_argument("--json", action="store_true"); parser.add_argument("--dedicated-phase", action="store_true", help=argparse.SUPPRESS); parser.add_argument("--dedicated-menu", choices=["diagnostics", "git", "python", "codex", "keepass", "mcp"], help=argparse.SUPPRESS); parser.add_argument("--dedicated-checks", action="store_true", help=argparse.SUPPRESS); parser.add_argument("--resume-after-update", action="store_true", help=argparse.SUPPRESS); parser.add_argument("--restart-daemon-after-update", action="store_true", help=argparse.SUPPRESS); args = parser.parse_args()
+    parser = argparse.ArgumentParser(); parser.add_argument("--action", choices=["menu", "list", "enable", "disable", "configure", "status"], default="menu"); parser.add_argument("--skill"); parser.add_argument("--json", action="store_true"); parser.add_argument("--dedicated-phase", action="store_true", help=argparse.SUPPRESS); parser.add_argument("--dedicated-menu", choices=["diagnostics", "git", "python", "codex", "keepass", "mcp"], help=argparse.SUPPRESS); parser.add_argument("--dedicated-checks", action="store_true", help=argparse.SUPPRESS); parser.add_argument("--resume-after-update", action="store_true", help=argparse.SUPPRESS); parser.add_argument("--restart-daemon-after-update", action="store_true", help=argparse.SUPPRESS); parser.add_argument("--update-service-sudo", action="store_true", help=argparse.SUPPRESS); args = parser.parse_args()
     if args.action == "menu" and not (args.dedicated_phase or args.dedicated_menu or args.dedicated_checks or args.resume_after_update): opening_logo()
     migrated, migration_message = verify_state_layout(ROOT)
     if not migrated:
@@ -4678,7 +4729,7 @@ def main() -> int:
     if args.resume_after_update:
         note(migration_message)
     if args.restart_daemon_after_update:
-        ok, message = daemon_management.start_background(ROOT)
+        ok, message = _resume_updated_daemon(ROOT, use_sudo=args.update_service_sudo)
         result(ok, "Daemon reiniciado após a atualização." if ok else "A migração foi concluída, mas o daemon não foi reiniciado: " + message)
     system, message = ensure_shikigami_configuration(ROOT)
     if system is None:

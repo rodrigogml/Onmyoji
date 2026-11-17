@@ -783,6 +783,25 @@ class SystemSetupTests(unittest.TestCase):
         execv.assert_called_once_with(str(executable), [str(executable), str(root / "setupOnmyoji.py"), "--resume-after-update"])
         run.assert_not_called()
 
+    def test_restart_updated_setup_preserves_service_authorization_only_when_resuming_daemon(self) -> None:
+        root = Path("instance with spaces")
+        executable = Path("Python with spaces/python.exe")
+        for platform in ("win32", "linux"):
+            for restart_daemon in (False, True):
+                with self.subTest(platform=platform, restart_daemon=restart_daemon):
+                    with patch.object(MODULE.sys, "platform", platform), patch.object(MODULE.os, "execv") as execv, patch.object(MODULE.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
+                        if platform == "win32":
+                            with self.assertRaises(SystemExit):
+                                MODULE._restart_updated_setup(root, executable, restart_daemon=restart_daemon, use_sudo=True)
+                            arguments = run.call_args.args[0]
+                        else:
+                            MODULE._restart_updated_setup(root, executable, restart_daemon=restart_daemon, use_sudo=True)
+                            arguments = execv.call_args.args[1]
+                    expected = [str(executable), str(root / "setupOnmyoji.py"), "--resume-after-update"]
+                    if restart_daemon:
+                        expected.extend(["--restart-daemon-after-update", "--update-service-sudo"])
+                    self.assertEqual(arguments, expected)
+
     def test_restart_updated_setup_reports_launch_error(self) -> None:
         with patch.object(MODULE.sys, "platform", "win32"), patch.object(MODULE.subprocess, "run", side_effect=OSError("execução recusada")):
             with self.assertRaisesRegex(MODULE.GitSetupError, "Não foi possível reiniciar"):

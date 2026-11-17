@@ -562,6 +562,27 @@ def service_security(root: Path, use_sudo: bool = False) -> tuple[bool, str]:
     return value.returncode == 0, (value.stdout or value.stderr).strip()
 
 
+def service_is_active(root: Path) -> bool:
+    """Consulta o gestor sem sudo; inclui inicialização e retomada em andamento.
+
+    Retorna falso para registro ausente, serviço parado ou falha na consulta.
+    No systemd, considera ``active``, ``activating`` e ``reloading``; no Windows,
+    ``RUNNING``, ``START_PENDING`` e ``CONTINUE_PENDING``.
+    """
+    info = service_info(root)
+    name = str(info.get("name") or "").strip()
+    if not name: return False
+    command = ["sc.exe", "query", name] if os.name == "nt" else _systemctl(str(info.get("scope") or "system"), "show", "--property=ActiveState", "--value", name)
+    try:
+        value = subprocess.run(command, text=True, capture_output=True, check=False, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if value.returncode != 0: return False
+    if os.name == "nt":
+        return _windows_service_state(value.stdout or "") in {"RUNNING", "START_PENDING", "CONTINUE_PENDING"}
+    return (value.stdout or "").strip() in {"active", "activating", "reloading"}
+
+
 def service_status(root: Path) -> tuple[bool, str]:
     info = service_info(root)
     if not info: return False, "Serviço do sistema operacional não está instalado para esta instância."
