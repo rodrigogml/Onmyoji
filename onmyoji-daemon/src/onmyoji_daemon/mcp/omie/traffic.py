@@ -80,6 +80,14 @@ class OmieTrafficGate:
         O arquivo de trava não contém App Key, payload nem qualquer dado do ERP.
         A trava por thread evita reentrância no processo; a trava do sistema
         operacional coordena processos independentes que usam o mesmo root.
+        No Windows, reserva o primeiro byte mesmo em arquivo vazio, sem ler ou
+        escrever uma região que outra chamada pode manter bloqueada.
+
+        Lança ``omie_local_busy`` após 60 segundos de disputa da trava de
+        arquivo e ``omie_local_lock_error`` quando a trava não pode ser
+        preparada, adquirida ou liberada por uma falha local. A falha de
+        liberação após sucesso da operação inclui ``phase="release"`` nos
+        detalhes; quando a operação já falhou, preserva sua exceção original.
         """
         key = self._key(root, app_key, method)
         with self._guard:
@@ -95,14 +103,8 @@ class OmieTrafficGate:
                     {"retryable": False},
                 ) from error
             try:
-                # msvcrt.locking requer ao menos um byte; flock também aceita.
                 if os.name == "nt":
                     import msvcrt
-                    handle.seek(0)
-                    if not handle.read(1):
-                        handle.seek(0)
-                        handle.write(b"0")
-                        handle.flush()
                 else:
                     import fcntl
                 deadline = monotonic() + 60.0
@@ -126,14 +128,25 @@ class OmieTrafficGate:
                                 {"retryable": False, "retry_after_seconds": 3},
                             ) from error
                         sleep(0.1)
+                operation_failed = False
                 try:
                     yield
+                except BaseException:
+                    operation_failed = True
+                    raise
                 finally:
-                    handle.seek(0)
-                    if os.name == "nt":
-                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                    else:
-                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                    try:
+                        handle.seek(0)
+                        if os.name == "nt":
+                            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                        else:
+                            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                    except OSError as error:
+                        if not operation_failed:
+                            raise OmieError(
+                                "omie_local_lock_error", "Não foi possível liberar a trava de concorrência Omie.",
+                                {"retryable": False, "phase": "release"},
+                            ) from error
             finally:
                 handle.close()
 

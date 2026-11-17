@@ -36,8 +36,17 @@ def test_stdio_publishes_omie_and_rejects_invalid_call_without_vault(tmp_path):
                 creation = next(tool for tool in tools if tool.name == "omie.customers_create")
                 assert "ERP de teste stdio" in creation.description
                 assert creation.input_schema["properties"]["body"]["required"] == ["cnpj_cpf", "razao_social"]
+                projects = next(tool for tool in tools if tool.name == "omie.financeiro.projetos.listar")
+                assert projects.input_schema["properties"]["filtros"]["properties"]["nome"]["maxLength"] == 100
+                assert "filtros.id" in projects.description
                 result = await session.call_tool("omie.document_types_get", {"params": {"codigo": 123}})
                 assert result.is_error is True
                 assert "nonexistent" not in str(result.content)
+                for filters in ({"nome_projeto": "STRB15"}, {"nome": None}):
+                    result = await session.call_tool("omie.financeiro.projetos.listar", {"filtros": filters})
+                    assert result.is_error is True
+                    assert "invalid_parameter" in str(result.content)
+                    assert "filtros.nome" in str(result.content)
+                    assert "nonexistent" not in str(result.content)
 
     asyncio.run(check())

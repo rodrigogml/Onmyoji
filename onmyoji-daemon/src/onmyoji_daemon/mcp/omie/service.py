@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from math import isfinite
 from pathlib import Path
+import re
 import time
 import tomllib
 from unicodedata import combining, normalize
@@ -50,6 +51,35 @@ def _method_busy_error(description: Any) -> bool:
         return False
     folded = "".join(ch for ch in normalize("NFKD", description.casefold()) if not combining(ch))
     return "ja existe uma requisicao" in folded and "metodo" in folded and "sendo executada" in folded
+
+
+def _project_lookup_error(method: str, parameters: Mapping[str, Any], details: Mapping[str, Any]) -> OmieError | None:
+    """Contextualiza apenas a ausência conhecida de um identificador de projeto.
+
+    Retorna ``project_not_found`` para ``ConsultarProjeto`` com a descrição
+    ``Projeto não cadastrado``, inclusive quando recebida como HTTP 500. Mantém
+    os diagnósticos remotos e orienta a descobrir o ID pelo nome, sem inferir
+    que o cadastro inexiste ou que seu código de integração está vazio.
+    Outras falhas permanecem com a classificação original.
+    """
+    description = details.get("remote_description")
+    if method != "ConsultarProjeto" or not isinstance(description, str):
+        return None
+    folded = " ".join("".join(ch for ch in normalize("NFKD", description.casefold()) if not combining(ch)).split())
+    if re.fullmatch(r"(?:(?:error|erro):\s*)?projeto nao cadastrado[.!]*", folded) is None:
+        return None
+    integration = "codInt" in parameters
+    field = "filtros.codigo_integracao" if integration else "filtros.id"
+    identifier = "código de integração" if integration else "ID numérico"
+    return OmieError(
+        "project_not_found",
+        f"A Omie não encontrou projeto pelo {identifier} informado. "
+        "Localize-o com omie.financeiro.projetos.listar e filtros.nome, confira as páginas "
+        "e confirme o cadastro antes de usar dados[].codigo em filtros.id. "
+        "O nome do projeto e seu código de integração são campos distintos.",
+        {**details, "retryable": False, "reason": "project_not_found_for_identifier", "field": field,
+         "suggested_tool": "omie.financeiro.projetos.listar", "suggested_filter": "filtros.nome"},
+    )
 
 
 class OmieService:
@@ -103,9 +133,10 @@ class OmieService:
                     # HTTP 4xx (exceto timeout 408) é rejeição explícita, não estado incerto.
                     if type(status) is int and 400 <= status < 500 and status != 408:
                         raise
-                if error.code in {"omie_http_error", "network_error", "invalid_response"}:
+                released_after_request = error.code == "omie_local_lock_error" and error.details.get("phase") == "release"
+                if error.code in {"omie_http_error", "network_error", "invalid_response"} or released_after_request:
                     details = {"operation": operation, "cause_code": error.code, "retryable": False}
-                    for field in ("http_status", "remote_code", "remote_description", "retry_after_seconds"):
+                    for field in ("http_status", "remote_code", "remote_description", "retry_after_seconds", "phase"):
                         if field in error.details:
                             details[field] = error.details[field]
                     raise OmieError(
@@ -214,6 +245,9 @@ class OmieService:
                     message = f"A API Omie retornou HTTP {error.code}."
                     if error.code == 425:
                         message += " Aguarde o fim do bloqueio temporário e revise os parâmetros antes de tentar novamente."
+                    lookup_error = _project_lookup_error(method, parameters, details)
+                    if error.code == 500 and lookup_error is not None:
+                        raise lookup_error from error
                     raise OmieError("omie_http_error", message, details) from error
                 except (URLError, TimeoutError) as error:
                     if attempt == retries:
@@ -232,6 +266,9 @@ class OmieService:
                         details["remote_code"] = code
                     if isinstance(description, str) and description.strip():
                         details["remote_description"] = description.strip()[:300]
+                    lookup_error = _project_lookup_error(method, parameters, details)
+                    if lookup_error is not None:
+                        raise lookup_error
                     raise OmieError("omie_api_error", "A API Omie retornou uma falha de negócio.", details)
                 return result
         raise OmieError("network_error", "Não foi possível consultar a API Omie.")

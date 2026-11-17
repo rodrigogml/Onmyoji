@@ -1,8 +1,8 @@
 """Fachada financeira semântica da Omie.
 
 Os nomes e os filtros publicados aqui pertencem ao MCP.  Os identificadores da
-Omie ficam confinados neste adaptador para que uma mudança ou inconsistência da
-API não se torne uma instrução ambígua para o agente.
+Omie são traduzidos nas entradas; os registros retornados preservam os campos
+nativos, cujo uso é explicado nos contratos publicados.
 """
 from __future__ import annotations
 
@@ -67,8 +67,8 @@ SPECS: list[FinanceSpec] = [
     FinanceSpec("omie.financeiro.categorias.consultar", "categories_get", "Consulta uma categoria pelo código.", kind="get"),
     FinanceSpec("omie.financeiro.departamentos.listar", "departments_list", "Lista departamentos para rateio."),
     FinanceSpec("omie.financeiro.departamentos.consultar", "departments_get", "Consulta um departamento pelo código.", kind="get"),
-    FinanceSpec("omie.financeiro.projetos.listar", "projects_list", "Lista projetos para classificação financeira."),
-    FinanceSpec("omie.financeiro.projetos.consultar", "projects_get", "Consulta um projeto pelo identificador.", kind="get"),
+    FinanceSpec("omie.financeiro.projetos.listar", "projects_list", "Lista projetos para classificação financeira, com filtro opcional em filtros.nome. Percorra paginacao.proxima_pagina e confirme o projeto pelo nome e demais dados; nomes semelhantes não identificam um projeto com segurança."),
+    FinanceSpec("omie.financeiro.projetos.consultar", "projects_get", "Consulta um projeto pelo ID Omie ou por um código de integração confirmado. Para descobrir o ID por nome, use omie.financeiro.projetos.listar com filtros.nome.", kind="get"),
     FinanceSpec("omie.financeiro.tipos_documento.listar", "document_types_list", "Retorna o catálogo completo de tipos de documento em uma única chamada, sem paginação e sem filtros. Chame com {} quando houver um único perfil; não envie pagina nem tamanho_pagina.", kind="catalog"),
 ]
 SPECS += _list_specs("movimentos", "financial_movements_list", "movimentos financeiros")
@@ -173,6 +173,9 @@ def _identifier_schema(spec: FinanceSpec) -> dict[str, Any]:
             if resource in IDENTIFIER_LENGTHS:
                 properties[field]["maxLength"] = IDENTIFIER_LENGTHS[resource]
             properties[field]["description"] = "Código definido pela integração na inclusão." if field == "codigo_integracao" else "Código do cadastro retornado pela Omie."
+    if resource == "projects":
+        properties["id"]["description"] = "ID numérico Omie retornado em dados[].codigo por projetos.listar ou consultar. Informe como inteiro, sem aspas."
+        properties["codigo_integracao"]["description"] = "Valor confirmado no campo codInt do projeto. codInt pode estar vazio; o nome, mesmo quando parece um código como STRB15, não é código de integração. Para descobrir por nome, use projetos.listar com filtros.nome."
     return {"type": "object", "properties": properties, "oneOf": [{"required": [field]} for field in properties], "additionalProperties": False}
 
 
@@ -338,6 +341,12 @@ def _schema(spec: FinanceSpec, profiles: list[dict[str, str]]) -> dict[str, Any]
             required = ["filtros"]
         elif spec.kind == "get":
             required = ["filtros"]
+        elif spec.legacy == "projects_list":
+            filters["nome"] = {
+                "type": "string", "minLength": 1, "maxLength": 100, "pattern": r"\S",
+                "description": "Nome enviado ao filtro de projetos da Omie. Confira os nomes e demais dados retornados; não presuma busca parcial, nome único nem correspondência com codInt.",
+                "examples": ["STRB15"],
+            }
         properties["filtros"] = _identifier_schema(spec) if spec.kind == "get" else {"type": "object", "properties": filters, "required": ["data_inicial", "data_final"] if spec.period else [], "additionalProperties": False}
         if spec.account_required:
             properties["filtros"]["required"].append("conta_corrente_id")
@@ -415,6 +424,8 @@ class OmieFinanceFacade:
             if spec.kind == "get":
                 fields = list(IDENTIFIER_NAMES[spec.legacy.rsplit("_", 1)[0]])
                 description += " Informe exatamente um identificador em " + ("dados" if spec.writes else "filtros") + ": " + " ou ".join(fields) + "."
+            if spec.legacy in {"projects_list", "projects_get"}:
+                description += " Em dados, codigo é o ID numérico (use filtros.id), codInt é o código de integração e nome é o nome do projeto. Textos como STRB15 podem estar somente em nome; use filtros.codigo_integracao apenas quando o valor estiver confirmado em codInt."
             if spec.legacy == "account_transactions_create":
                 description += " Exige codigo_integracao (texto de até 20 caracteres), conta_corrente_id, data, valor, categoria_codigo e tipo_documento em dados. O id é gerado pela Omie."
             if spec.kind in {"transaction", "transfer"}:
@@ -498,6 +509,12 @@ class OmieFinanceFacade:
             if unknown:
                 _invalid(sorted(unknown)[0], "este catálogo não aceita filtros; chame com {} ou somente os controles publicados de perfil e auditoria.")
             return {"params": {}}
+        allowed = {"profile", "incluir_dados_omie", "filtros"}
+        if spec.paginated:
+            allowed.update({"pagina", "tamanho_pagina"})
+        unknown = set(arguments) - allowed
+        if unknown:
+            _invalid(sorted(unknown)[0], "não pertence ao contrato desta consulta; use somente os parâmetros publicados.")
         filters = _object(arguments, "filtros")
         native = spec.legacy in {"financial_movements_list", "account_transactions_list"}
         params = _page(arguments, native=native) if spec.paginated else {}
@@ -521,6 +538,15 @@ class OmieFinanceFacade:
                 params["nCodCC"] = filters["conta_corrente_id"]
         elif spec.kind == "get":
             params = _identifier_params(spec, filters, "filtros")
+        elif spec.kind == "list":
+            allowed_filters = {"nome"} if spec.legacy == "projects_list" else set()
+            unknown = set(filters) - allowed_filters
+            if unknown:
+                message = "esta listagem aceita somente filtros.nome." if allowed_filters else "esta listagem não aceita filtros; remova os campos de filtros."
+                _invalid(f"filtros.{sorted(unknown)[0]}", message, use_instead=["filtros.nome"] if allowed_filters else None)
+            if "nome" in filters:
+                _text(filters["nome"], "filtros.nome", max_length=100)
+                params["nome_projeto"] = filters["nome"]
         return {"params": params}
 
     @staticmethod

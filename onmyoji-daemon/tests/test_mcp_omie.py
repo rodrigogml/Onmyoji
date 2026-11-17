@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
 from threading import Event, Thread
@@ -294,6 +295,150 @@ def test_http_failure_exposes_sanitized_omie_diagnostic(tmp_path, monkeypatch):
         OmieService(tmp_path, Credentials()).invoke("example", "projects_get", {"params": {"codInt": "P1"}})
     assert error.value.details["remote_code"] == 123
     assert error.value.details["remote_description"] == "Filtro de data invalido"
+
+
+@pytest.mark.parametrize("parameters,field,label", [
+    ({"codInt": "STRB15"}, "filtros.codigo_integracao", "código de integração"),
+    ({"codigo": 9000000222}, "filtros.id", "ID numérico"),
+])
+@pytest.mark.parametrize("description", [
+    "Projeto não cadastrado", "ERROR: PROJETO NAO CADASTRADO!", "\nProjeto  não\tcadastrado.\n",
+])
+@pytest.mark.parametrize("http_status", [None, 500])
+def test_missing_project_identifies_lookup_and_guides_discovery_without_retry(
+    tmp_path, monkeypatch, parameters, field, label, description, http_status,
+):
+    """Ausência por identificador preserva o diagnóstico e não infere cadastro vazio."""
+    payload = {"faultcode": "SOAP-ENV:Client-9000", "faultstring": description, "private": "PRIVATE"}
+    requests = []
+
+    class Failure(Response):
+        def read(self): return json.dumps(payload).encode("utf-8")
+
+    def request(value, **_kwargs):
+        requests.append(json.loads(value.data))
+        if http_status is not None:
+            raise HTTPError("https://app.omie.com.br/", http_status, "sensitive", {},
+                            BytesIO(json.dumps(payload).encode("utf-8")))
+        return Failure()
+
+    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.urlopen", request)
+    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.time.sleep",
+                        lambda _delay: pytest.fail("Projeto ausente não deve ser consultado novamente."))
+
+    with pytest.raises(OmieError) as error:
+        OmieService(tmp_path, Credentials())._request(
+            {"credential_profile": "vault", "credential_entry_path": "APIs/Omie",
+             "app_key_field": "username", "app_secret_field": "password"},
+            {"max_retries": 2}, "projects", "ConsultarProjeto", parameters,
+        )
+
+    assert len(requests) == 1
+    assert requests[0]["param"] == [parameters]
+    assert error.value.code == "project_not_found"
+    assert error.value.details == {
+        **({"http_status": 500} if http_status else {}),
+        "remote_code": "SOAP-ENV:Client-9000", "remote_description": description.strip(),
+        "retryable": False, "reason": "project_not_found_for_identifier", "field": field,
+        "suggested_tool": "omie.financeiro.projetos.listar", "suggested_filter": "filtros.nome",
+    }
+    assert label in str(error.value)
+    assert "dados[].codigo em filtros.id" in str(error.value)
+    assert "filtros.nome" in str(error.value)
+    assert "vazio" not in str(error.value)
+    assert all(secret not in str(error.value.as_dict()) for secret in ("PRIVATE", "private-app-key", "private-app-secret"))
+
+
+def test_missing_project_business_status_has_the_same_guidance(tmp_path, monkeypatch):
+    write_config(tmp_path)
+
+    class Failure(Response):
+        def read(self): return b'{"cCodStatus": "1", "cDesStatus": "Projeto nao cadastrado"}'
+
+    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.urlopen", lambda *_args, **_kwargs: Failure())
+
+    with pytest.raises(OmieError) as error:
+        OmieService(tmp_path, Credentials()).invoke_financial(
+            "example", "projects_get", {"params": {"codInt": "STRB15"}}, writes=False,
+        )
+
+    assert error.value.code == "project_not_found"
+    assert error.value.details["remote_code"] == "1"
+    assert error.value.details["field"] == "filtros.codigo_integracao"
+    assert "http_status" not in error.value.details
+
+
+@pytest.mark.parametrize("method,status,description", [
+    ("ConsultarProjeto", 500, None), ("ConsultarProjeto", 500, 123),
+    ("ConsultarProjeto", 500, "Serviço indisponível"),
+    ("ConsultarProjeto", 500, "Subprojeto não cadastrado"),
+    ("ConsultarProjeto", 500, "Projeto não cadastrado corretamente"),
+    ("ConsultarProjeto", 500, "Não foi possível verificar: Projeto não cadastrado"),
+    ("ConsultarProjeto", 403, "Projeto não cadastrado"),
+    ("IncluirProjeto", 500, "Projeto não cadastrado"),
+    ("ListarProjetos", 500, "Projeto não cadastrado"),
+])
+def test_other_remote_failures_keep_the_original_classification(tmp_path, monkeypatch, method, status, description):
+    payload = {"faultcode": "original", "faultstring": description}
+    calls = []
+
+    def request(*_args, **_kwargs):
+        calls.append(True)
+        raise HTTPError("https://app.omie.com.br/", status, "sensitive", {},
+                        BytesIO(json.dumps(payload).encode("utf-8")))
+
+    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.urlopen", request)
+
+    with pytest.raises(OmieError) as error:
+        OmieService(tmp_path, Credentials())._request(
+            {"credential_profile": "vault", "credential_entry_path": "APIs/Omie",
+             "app_key_field": "username", "app_secret_field": "password"},
+            {"max_retries": 2}, "projects", method, {"codInt": "STRB15"},
+        )
+
+    assert error.value.code == "omie_http_error"
+    assert error.value.details["http_status"] == status
+    assert "suggested_tool" not in error.value.details
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("phase", ["acquire", "release"])
+def test_write_lock_failure_distinguishes_before_request_from_after_request(tmp_path, monkeypatch, phase):
+    """Só uma falha posterior ao envio exige consultar a escrita antes de repeti-la."""
+    write_config(tmp_path)
+    requests = []
+
+    @contextmanager
+    def serialize(*_args):
+        if phase == "acquire":
+            raise OmieError("omie_local_lock_error", "Trava indisponível.", {"retryable": False})
+        yield
+        raise OmieError("omie_local_lock_error", "Falha ao liberar a trava.", {"retryable": False, "phase": "release"})
+
+    def request(*_args, **_kwargs):
+        requests.append(True)
+        return Response()
+
+    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.TRAFFIC_GATE.serialize", serialize)
+    monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.urlopen", request)
+
+    with pytest.raises(OmieError) as error:
+        OmieService(tmp_path, Credentials()).invoke_financial("example", "account_transactions_create", {
+            "body": {"integration_id": "TEST-LANC-001", "account_id": 12, "date": "17/11/2026",
+                     "amount": 123.45, "category_code": "2.01", "document_type": "99999"},
+        }, writes=True)
+
+    assert requests == ([True] if phase == "release" else [])
+    if phase == "release":
+        assert error.value.code == "outcome_unknown"
+        assert error.value.details == {
+            "operation": "account_transactions_create", "cause_code": "omie_local_lock_error",
+            "retryable": False, "phase": "release",
+        }
+        assert "consulte antes de repetir" in str(error.value)
+    else:
+        assert error.value.code == "omie_local_lock_error"
+        assert error.value.details == {"retryable": False}
 
 
 def test_http_425_persists_cooldown_across_service_instances(tmp_path, monkeypatch):

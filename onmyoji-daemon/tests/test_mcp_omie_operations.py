@@ -155,6 +155,22 @@ def test_receipt_update_publishes_financial_fields_and_rejects_unsupported_compl
         })
 
 
+@pytest.mark.parametrize("operation", ["inbound_nfe_receipts_update", "inbound_nfe_receipts_update_completed"])
+def test_receipt_project_fields_explain_name_and_identifier_lookup(operation):
+    """Nomes de negócio usam a listagem; codInt só identifica uma integração conhecida."""
+    registry = OmieToolRegistry(Configuration([{"name": "empresa", "description": "ERP"}]))
+    tool = next(item for item in registry.definitions() if item["name"] == "omie." + operation)
+    fields = tool["input_schema"]["properties"]["body"]["properties"]
+    guidance = fields["project_id"]["description"]
+
+    for expected in ("dados[].codigo", "filtros.nome", "percorra as páginas", "um único projeto", "filtros.id", "codInt", "vazio"):
+        assert expected in guidance
+        assert expected in tool["description"]
+    for container in ("additional_info", "infoAdicionais"):
+        for identifier in ("project_id", "nIdProjeto"):
+            assert fields[container]["properties"][identifier]["description"] == guidance
+
+
 def test_invalid_receipt_changes_are_blocked_before_loading_profile(tmp_path):
     service = OmieService(tmp_path)
     service._profile = Mock(side_effect=AssertionError("Não consultar cofre/configuração em dados inválidos"))

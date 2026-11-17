@@ -90,6 +90,52 @@ Exemplo de conferência de um lançamento existente, usando um ID fictício:
 {"tool":"omie.financeiro.lancamentos_conta.consultar","arguments":{"filtros":{"id":9000000001},"incluir_dados_omie":true}}
 ```
 
+### Projetos: nome, ID e integração
+
+`omie.financeiro.projetos.listar` aceita `filtros.nome`: texto não vazio de até
+100 caracteres, enviado como `nome_projeto` à Omie. Sem esse filtro, a operação
+lista os projetos do perfil. O MCP preserva em `dados` os campos do cadastro:
+
+| Campo retornado | Uso |
+| --- | --- |
+| `codigo` | ID numérico: informe em `filtros.id` de `projetos.consultar` ou em `projeto_id`/`project_id` nas operações financeiras e de NF-e. |
+| `codInt` | Código de integração: informe em `filtros.codigo_integracao` somente quando esse valor estiver preenchido e confirmado no cadastro. |
+| `nome` | Nome do projeto: pode conter códigos de negócio como `STRB15`, independentemente de `codInt`. |
+
+Para localizar um projeto conhecido pelo nome:
+
+1. Liste com `filtros.nome` e percorra `paginacao.proxima_pagina`, conferindo os
+   nomes retornados. O MCP não define correspondência parcial nem suporte a
+   curingas para o filtro da Omie. Para buscar por parte do nome sem depender
+   dessa semântica, percorra as páginas sem filtro e compare localmente.
+2. Confirme um único projeto e use seu `codigo` numérico. Em caso de
+   ambiguidade, confirme o cadastro correto antes de classificar uma operação.
+3. Se precisar do detalhe, consulte com `filtros.id`. Não deduza o código de
+   integração pelo formato do nome.
+
+Exemplo fictício com um único perfil, supondo que a listagem confirmou
+`{"codigo":789,"codInt":"","nome":"STRB15"}`:
+
+```json
+{"tool":"omie.financeiro.projetos.listar","arguments":{"filtros":{"nome":"STRB15"},"pagina":1,"tamanho_pagina":50}}
+{"tool":"omie.financeiro.projetos.consultar","arguments":{"filtros":{"id":789}}}
+```
+
+> [!IMPORTANT]
+> Uma falha "Projeto não cadastrado" na consulta significa que o projeto não
+> foi encontrado pelo identificador informado. Ela não comprova que o projeto
+> inexiste por nome nem que `codInt` está vazio; confirme esses dados na listagem.
+> O erro `project_not_found` orienta a descoberta por nome e preserva o
+> diagnóstico remoto, sem repetir automaticamente a consulta que recebeu essa
+> falha. Confira o campo indicado antes de mudar o identificador.
+
+Listagens financeiras recusam filtros não publicados com `invalid_parameter`
+antes de acessar credenciais ou HTTP. Use `filtros.nome` para projetos; a chave
+nativa `nome_projeto` não pertence ao contrato público. Contas correntes,
+categorias e departamentos aceitam apenas `filtros` vazio ou omitido.
+
+Referência: [contrato oficial de projetos](https://app.omie.com.br/api/v1/geral/projetos/).
+
 ### Criação e alteração de lançamentos
 
 `omie.financeiro.lancamentos_conta.criar` exige em `dados`: `codigo_integracao`,
@@ -229,7 +275,16 @@ corrige um campo rejeitado.
 O controle de tráfego do daemon serializa requisições da mesma App Key + método,
 inclusive entre processos que utilizam a **mesma raiz de instalação**,
 por meio de travas locais em `state/mcp/omie/method-locks/` com nomes hash
-sem credenciais ou dados financeiros. Também usa janela móvel para evitar rajadas e aplica por padrão intervalo mínimo de
+sem credenciais ou dados financeiros. No Windows, a espera pela trava não lê
+nem altera o byte protegido por outra chamada. A disputa entre processos
+aguarda até 60 segundos; ao esgotar esse prazo, retorna `omie_local_busy` com
+`retry_after_seconds: 3`. Falhas de preparação ou aquisição da trava retornam
+`omie_local_lock_error`; nenhuma dessas falhas realiza uma chamada à Omie.
+Se a liberação falhar após uma operação concluída, o erro inclui
+`phase: "release"`; nas escritas financeiras, retorna `outcome_unknown` para
+orientar a consulta do resultado antes de qualquer repetição. Se a operação
+já falhou, a falha de liberação preserva o diagnóstico original.
+Também usa janela móvel para evitar rajadas e aplica por padrão intervalo mínimo de
 0,35 segundo entre chamadas desse método, limite preventivo de 180 chamadas
 por minuto por método e 900 por minuto por processo. Há margem em relação aos
 limites padrão publicados pela Omie. Para contas Trial/FIT (60 chamadas/minuto),
@@ -275,9 +330,9 @@ ou os aliases `additional_info` e `department_allocations`. O rateio semântico
 usa `department_code`, `percentage` e `amount`; também são válidos os campos
 nativos na lista. Representações duplicadas de um mesmo campo são rejeitadas.
 
-`project_id`/`nIdProjeto` requer **ID numérico Omie**, não o código de integração
-como `STRA36`. Consulte `omie.financeiro.projetos.consultar` com `filtros.codigo_integracao` para obter
-esse ID. O departamento `Pisos` também exige seu código textual verdadeiro
+`project_id`/`nIdProjeto` recebe o **ID numérico Omie** de `dados[].codigo`.
+Para localizar um projeto pelo nome, siga o fluxo de [projetos](#projetos-nome-id-e-integração).
+O departamento `Pisos` também exige seu código textual verdadeiro
 (obtenha-o com `omie.financeiro.departamentos.listar`), não o nome.
 
 Exemplo fictício, a ser enviado **apenas após consultar a NF-e e validar** seus
