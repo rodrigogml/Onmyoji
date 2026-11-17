@@ -338,3 +338,66 @@ def test_master_password_store_uses_recreated_provider_attributes(tmp_path, monk
     assert options["input"] == "new-master-value\n"
     assert "new-master-value" not in " ".join(command)
     assert "new-master-value" not in capsys.readouterr().out
+
+
+def test_linux_recreation_uses_real_provider_selection_with_a_session_bus(tmp_path, monkeypatch, capsys):
+    """D-Bus e secret-tool presentes não desviam um novo perfil Linux ao Secret Service."""
+    system_os = MODULE.os
+
+    class LinuxOs:
+        name = "posix"
+
+        def __getattr__(self, name):
+            return getattr(system_os, name)
+
+    config = MODULE.McpConfiguration(tmp_path)
+    database = tmp_path / "configs" / "mcp" / "vaults" / "default.kdbx"
+    database.parent.mkdir(parents=True)
+    database.write_bytes(ORIGINAL)
+    execution = tmp_path / "configs" / "shikigami" / "linux-execution.json"
+    execution.parent.mkdir(parents=True)
+    execution.write_text('{"schema_version": 1, "mode": "current"}', encoding="utf-8")
+    commands = []
+    stored = []
+    validations = []
+
+    def create(command, **options):
+        assert command[:3] == ["keepassxc-cli", "db-create", "--set-password"]
+        assert options["input"] == "new-master-value\nnew-master-value\n"
+        assert database.read_bytes() == ORIGINAL
+        commands.append(command)
+        Path(command[-1]).write_bytes(REPLACEMENT)
+        return subprocess.CompletedProcess(command, 0)
+
+    def store(path, password, *, root):
+        assert database.read_bytes() == ORIGINAL
+        assert root == tmp_path
+        assert path.is_relative_to(tmp_path / "configs" / "mcp" / "secrets")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(password, encoding="utf-8")
+        stored.append((path, password))
+
+    monkeypatch.setattr(MODULE, "os", LinuxOs())
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus")
+    monkeypatch.setattr(MODULE.shutil, "which", lambda name: "/usr/bin/secret-tool" if name == "secret-tool" else None)
+    monkeypatch.setattr(MODULE, "instance_identity", lambda _root: "Turing")
+    monkeypatch.setattr(MODULE, "ask_new_profile_name", lambda *_args: "default")
+    monkeypatch.setattr(MODULE, "flow_choice", lambda title, *_args: "Criar cofre KDBX local" if title == "Cofre KeePassXC" else RECREATE)
+    monkeypatch.setattr(MODULE, "select_keepassxc_command", lambda: ["keepassxc-cli"])
+    monkeypatch.setattr(MODULE, "ask", lambda *_args: "")
+    monkeypatch.setattr(MODULE, "prompt", lambda *_args: "s")
+    monkeypatch.setattr(MODULE.getpass, "getpass", lambda *_args: "new-master-value")
+    monkeypatch.setattr(MODULE.KeePassCredentialResolver, "validate_vault_access", lambda *args: validations.append(args))
+    monkeypatch.setattr(MODULE, "store_protected_password", store)
+    monkeypatch.setattr(MODULE.subprocess, "run", create)
+
+    MODULE.create_vault_profile(config)
+
+    assert database.read_bytes() == REPLACEMENT
+    assert len(commands) == len(stored) == len(validations) == 1
+    assert stored[0][1] == "new-master-value"
+    profile = config.credentials()["profiles"]["default"]
+    assert profile["auth"]["linux"] == {"mode": "protected_file", "path": str(stored[0][0])}
+    assert stored[0][0].read_text(encoding="utf-8") == "new-master-value"
+    assert "new-master-value" not in " ".join(commands[0])
+    assert "Secret Service" not in capsys.readouterr().out

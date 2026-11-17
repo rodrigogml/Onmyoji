@@ -31,16 +31,11 @@ def command_auth():
     return {"linux": {"mode": "command", "command": ["secret-tool", "lookup", "profile", "default"]}}
 
 
-@pytest.mark.parametrize("dedicated, session_bus, expected_mode", [
-    (True, True, "protected_file"),
-    (True, False, "protected_file"),
-    (False, True, "command"),
-    (False, False, "protected_file"),
-])
-def test_linux_authentication_uses_a_provider_accessible_to_the_operational_identity(tmp_path, monkeypatch, linux, dedicated, session_bus, expected_mode):
-    """A conta dedicada não depende do barramento de sessão herdado do instalador."""
-    monkeypatch.setattr(MODULE, "load_execution_profile", lambda _root: {"mode": "dedicated" if dedicated else "current"})
-    monkeypatch.setattr(MODULE.shutil, "which", lambda _name: "/usr/bin/secret-tool")
+@pytest.mark.parametrize("secret_tool", [False, True])
+@pytest.mark.parametrize("session_bus", [False, True])
+def test_new_linux_profiles_use_protected_files_regardless_of_session_services(tmp_path, monkeypatch, linux, secret_tool, session_bus):
+    """A presença de CLI e D-Bus não seleciona um serviço que pode recusar gravações."""
+    monkeypatch.setattr(MODULE.shutil, "which", lambda _name: "/usr/bin/secret-tool" if secret_tool else None)
     if session_bus:
         monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus")
     else:
@@ -48,11 +43,8 @@ def test_linux_authentication_uses_a_provider_accessible_to_the_operational_iden
 
     auth = MODULE.profile_auth("default", tmp_path)
 
-    assert auth["linux"]["mode"] == expected_mode
-    if expected_mode == "protected_file":
-        assert Path(auth["linux"]["path"]).is_relative_to(tmp_path / "configs" / "mcp" / "secrets")
-    else:
-        assert auth["linux"]["command"][0] == "secret-tool"
+    assert auth["linux"]["mode"] == "protected_file"
+    assert Path(auth["linux"]["path"]).is_relative_to(tmp_path / "configs" / "mcp" / "secrets")
 
 
 @pytest.mark.parametrize("failure", [

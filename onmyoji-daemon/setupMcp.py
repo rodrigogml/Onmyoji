@@ -30,7 +30,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from onmyoji_daemon.mcp.configuration import McpConfiguration, McpConfigurationError
 from onmyoji_daemon.config_publication import apply_shared_file_mode, operational_file_mode
-from onmyoji_daemon.linux_service import load_execution_profile
 from onmyoji_daemon.mcp.credentials import CredentialError, KeePassCredentialResolver
 from onmyoji_daemon.mcp.todoist import TodoistError, TodoistService
 from onmyoji_daemon.mcp.omie import OmieError, OmieService
@@ -276,9 +275,9 @@ def protected_password_auth(name: str, root: Path) -> dict[str, str]:
 def profile_auth(name: str, root: Path = ROOT) -> dict:
     """Seleciona um provedor compatível com a identidade operacional do cofre.
 
-    Contas dedicadas usam arquivo protegido, sem depender do D-Bus herdado do
-    instalador. A sessão do usuário atual pode usar o Secret Service disponível;
-    a gravação confirma seu funcionamento e oferece alternativa se ele falhar.
+    Novos perfis Linux usam arquivo protegido, independentemente da sessão
+    gráfica ou do D-Bus. Assim, o daemon pode obter a senha fora do terminal
+    de configuração. Perfis existentes mantêm o provedor já gravado.
     """
     identity = instance_identity(root)
     target = f"{identity}/MCP/KeePass/{name}"
@@ -286,11 +285,7 @@ def profile_auth(name: str, root: Path = ROOT) -> dict:
     if os.name == "nt":
         target = ask("Destino no Windows Credential Manager", target, True)
         return {"windows": {"mode": "windows_credential_manager", "target": target or ""}, "linux": {"mode": "command", "command": linux_command}}
-    if load_execution_profile(root).get("mode") != "dedicated" and shutil.which("secret-tool") and os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
-        linux = {"mode": "command", "command": linux_command}
-    else:
-        linux = protected_password_auth(name, root)
-    return {"windows": {"mode": "windows_credential_manager", "target": target}, "linux": linux}
+    return {"windows": {"mode": "windows_credential_manager", "target": target}, "linux": protected_password_auth(name, root)}
 
 
 def store_protected_password(path: Path, password: str, root: Path = ROOT) -> None:
