@@ -249,7 +249,7 @@ def test_registry_dispatches_selected_profile_for_a_published_operation(tmp_path
 
 @pytest.mark.parametrize("name,alternatives", [
     ("omie.projects_get", {"omie.financeiro.projetos.consultar"}),
-    ("omie.payables_update", {"omie.financeiro.contas_pagar.alterar", "omie.financeiro.contas_pagar.definir_departamentos"}),
+    ("omie.payables_update", {"omie.financeiro.contas_pagar.alterar", "omie.financeiro.contas_pagar.definir_departamentos", "omie.financeiro.contas_pagar.definir_categorias"}),
     ("omie.account_transactions_get", {"omie.financeiro.lancamentos_conta.consultar"}),
     ("omie.account_transactions_create", {"omie.financeiro.lancamentos_conta.criar"}),
     ("omie.account_transactions_update", {"omie.financeiro.lancamentos_conta.alterar", "omie.financeiro.lancamentos_conta.definir_departamentos"}),

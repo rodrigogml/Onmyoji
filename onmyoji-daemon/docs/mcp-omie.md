@@ -152,7 +152,8 @@ podem ser enviados juntos. O MCP envia somente os campos solicitados.
 Para mudar apenas uma observação, por exemplo, informe o identificador e
 `observacao`; não reenvie valor, conta, data, categoria ou tipo de documento.
 
-**Rateio de um registro existente usa `definir_departamentos`.** As ferramentas
+**Rateio por departamentos de um registro existente usa
+`definir_departamentos`.** As ferramentas
 `lancamentos_conta.alterar`, `contas_pagar.alterar` e `contas_receber.alterar`
 não publicam nem aceitam `dados.departamentos`. Se esse campo chegar à chamada,
 o MCP recusa antes do HTTP e indica a ferramenta específica da mesma família.
@@ -176,6 +177,98 @@ invalidade de campos obrigatórios gera erro com o nome público, por exemplo
 `dados.codigo_integracao`, antes de acessar credenciais ou HTTP. Os nomes
 financeiros legados não são atalhos de execução: chamadas a esses nomes são
 recusadas com orientação para a fachada publicada.
+
+### Categorias: substituir o rateio de uma conta a pagar
+
+`omie.financeiro.contas_pagar.definir_categorias` substitui a distribuição
+completa de categorias de um título existente e confere o título e suas
+baixas. Use essa ferramenta para consolidar categorias antigas, inclusive em
+um título pago; `contas_pagar.alterar` com `categoria_codigo` altera somente
+o campo de categoria única e não confirma a remoção de um rateio anterior.
+Categorias e departamentos são classificações diferentes: a distribuição
+`distribuicao` das ferramentas de departamentos não substitui `categorias`.
+Após atualizar a instalação, reinicie os processos MCP existentes e renove
+`tools/list` para descobrir a operação.
+
+A chamada exige `confirmar: true` e, em `dados`, exatamente um entre `id`
+(inteiro positivo) e `codigo_integracao` (texto não vazio, até 60 caracteres),
+mais `categorias`. Cada item contém somente `codigo` (texto não vazio de até
+20 caracteres) e `percentual` (número finito, positivo, até 100). Os códigos
+não se repetem e os percentuais somam 100. A lista não pode ser vazia: para
+eliminar um rateio antigo, informe a categoria que deve receber 100%.
+Não envie valores, nomes de categorias nem os campos nativos da Omie.
+
+Exemplo fictício, com um único perfil habilitado:
+
+```json
+{"tool":"omie.financeiro.contas_pagar.definir_categorias","arguments":{"confirmar":true,"dados":{"id":9000000002,"categorias":[{"codigo":"2.01.03","percentual":100}]}}}
+```
+
+A ferramenta resolve o título, identifica suas baixas por `ListarMovimentos`
+e percorre todas as páginas necessárias, com até 50 registros por página.
+Usa `nCodTitulo` para manter a identidade do título, `cTpLancamento: BXCP`
+para identificar baixas de contas a pagar e a consulta `CP` para conferir o
+registro financeiro do título e o resumo do pagamento. Não exige que o agente
+descubra previamente o ID de cada baixa. Cada baixa identificada é conferida
+por seu `nCodBaixa`, sem confundi-lo
+com o identificador do título ou do movimento de conta corrente.
+As consultas usam a data de emissão efetiva do título para evitar a janela
+padrão de 30 dias da Omie. Se essa data estiver ausente ou inválida, ou se a
+soma das baixas não conferir com o resumo financeiro do título, a operação
+recusa a escrita em vez de assumir que encontrou todos os pagamentos.
+O resumo deve ser consistente entre valor pago, desconto, juros, multa e
+líquido; um título indicado como liquidado deve ter saldo aberto zero.
+A baixa deve informar `dDtConcilia`: vazio ou `null` significa não conciliada;
+uma data preenchida exige também hora e usuário de conciliação.
+
+Antes e depois da escrita, as consultas exigem atualização remota e respeitam
+o cache compartilhado, a elegibilidade e o cooldown da Omie. A operação envia
+uma única chamada `AlterarContaPagar`, com o ID confirmado e a lista completa
+`categorias`. Quando há uma única categoria, envia também `codigo_categoria`
+com o mesmo código e exige que o campo persistido corresponda à solicitação.
+Não reenvia condições de pagamento, não cancela nem refaz baixas.
+Depois da gravação, compara a distribuição efetivamente consultada no título,
+no registro financeiro `CP` e em todas as baixas, além de conferir identidades,
+conta, valores, desconto, juros, multa, datas e conciliação presentes nos
+registros necessários.
+Respostas incompletas ou sem vínculo comprovado impedem uma confirmação de
+sucesso; uma falha na pré-consulta impede a escrita.
+
+O resultado separa `verificacao.titulo_confirmado`,
+`verificacao.titulo_financeiro_confirmado`, `verificacao.baixas_confirmadas`
+e `verificacao.campos_preservados`. Retorna `categorias` do título,
+`categorias_financeiro` do registro `CP` e as categorias e identificadores de
+cada baixa observada. O aceite da Omie, sozinho, não confirma a distribuição
+nem sua propagação. Use
+`incluir_dados_omie: true` apenas quando precisar dos registros nativos de
+auditoria, sem credenciais.
+
+| Situação | Resultado do MCP |
+| --- | --- |
+| Pré-consulta incompleta ou inconsistente | `category_allocation_preflight_failed`; nenhuma escrita enviada. |
+| Título consultado mantém rateio diferente do solicitado | `category_allocation_not_persisted`. |
+| Título confirmado, mas rateio do registro financeiro `CP` ou de uma baixa não corresponde | `category_allocation_propagation_not_confirmed`. |
+| Pagamento ou outro campo preservado difere entre as consultas | `category_allocation_side_effect_detected`. |
+| Consulta posterior falha ou não permite concluir a conferência | `category_allocation_verification_failed`. |
+
+Os erros de pré e pós-conferência informam `escrita_processada` e
+`retryable: false`; os posteriores à escrita trazem também as confirmações
+já obtidas em `verificacao`. Quando a gravação já foi processada, consulte o
+estado atual antes de qualquer decisão;
+não repita a escrita para tentar forçar a propagação. A ferramenta não faz
+reversão nem compensação automática. Diferenças entre os estados consultados
+também podem decorrer de alteração concorrente no ERP.
+Falhas com `outcome_unknown` exigem essa mesma consulta: o retorno não permite
+afirmar se a escrita foi concluída.
+
+> [!IMPORTANT]
+> A API publica o rateio de categorias no título, mas não garante que toda
+> alteração de um título pago atualize as baixas existentes. Esta operação
+> só confirma o que conseguiu consultar depois da escrita; uma divergência
+> deve ser avaliada antes de considerar qualquer reversão do pagamento.
+
+Referências: [contas a pagar](https://app.omie.com.br/api/v1/financas/contapagar/)
+e [movimentos financeiros](https://app.omie.com.br/api/v1/financas/mf/).
 
 ### Departamentos: cadastro e rateio são responsabilidades diferentes
 
@@ -525,7 +618,7 @@ e [webhooks](https://api.omie.com.br/docs/webhooks).
 | Tipos de documento | Catálogo sem paginação; consulta por código de até cinco caracteres. |
 | Departamentos, projetos, categorias e contas | Campos permitidos, limites e identificadores de cada ação. Paginação de cadastros aceita nomes simplificados ou nativos. |
 | Lançamentos e transferências | A fachada `omie.financeiro` converte campos semânticos para `cabecalho`, `detalhes` e `transferencia`; origem e destino diferentes. `transferencias.criar` exige a categoria de saída, fixa `cTipo` como `TRA` e cria uma única transferência por `IncluirLancCC`. |
-| Contas a pagar/receber | Edição parcial de títulos, conta prevista, baixas e lotes com contratos próprios. Rateio de registro existente usa `definir_departamentos`; não refaz baixa. Linha digitável somente em contas a pagar, texto não vazio de até 70 caracteres sem reformatação. |
+| Contas a pagar/receber | Edição parcial de títulos, conta prevista, baixas e lotes com contratos próprios. Rateio de departamentos usa `definir_departamentos`; categorias de conta a pagar usam `definir_categorias`, com conferência do título e das baixas. Nenhuma definição refaz baixa. Linha digitável somente em contas a pagar, texto não vazio de até 70 caracteres sem reformatação. |
 | Recebimentos e NF-e | Converte identificadores, etapa, itens e informações financeiras para os envelopes específicos da Omie. |
 
 ### Correção dos recebimentos de NF-e

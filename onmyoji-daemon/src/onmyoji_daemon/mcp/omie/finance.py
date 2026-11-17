@@ -12,6 +12,7 @@ from math import isfinite
 from typing import Any, Mapping
 
 from .allocation import verify_department_allocation
+from .category_allocation import define_categories, normalize_categories
 from .department_allocation import define_departments
 from .contracts import DIRECT_DOCUMENT_TYPES, build_params, normalize_account_departments, normalize_percentage_departments
 from .exception import OmieError
@@ -90,6 +91,7 @@ for resource, legacy, label in (("contas_pagar", "payables", "contas a pagar"), 
     ]
 
 SPECS += [
+    FinanceSpec("omie.financeiro.contas_pagar.definir_categorias", "payables_update", "Substitui integralmente o rateio de categorias de uma conta a pagar e confere o título e todas as baixas vinculadas, preservando pagamento, desconto e conciliação.", True, kind="category_set"),
     FinanceSpec("omie.financeiro.contas_pagar.registrar_pagamento", "payables_pay", "Registra o pagamento de uma conta a pagar.", True, kind="payment"),
     FinanceSpec("omie.financeiro.contas_pagar.cancelar_pagamento", "payables_payment_cancel", "Cancela um pagamento pelo identificador da baixa.", True, kind="receipt"),
     FinanceSpec("omie.financeiro.contas_receber.registrar_recebimento", "receivables_receive", "Registra o recebimento de uma conta a receber.", True, kind="payment"),
@@ -318,6 +320,23 @@ def _department_schema() -> dict[str, Any]:
     }
 
 
+def _category_schema() -> dict[str, Any]:
+    """Publica o rateio completo por percentual; uma categoria recebe 100%."""
+    return {
+        "type": "array", "minItems": 1,
+        "description": "Lista completa desejada, com códigos únicos e percentuais somando 100 (tolerância 0,000001). Lista vazia não é aceita.",
+        "items": {
+            "type": "object",
+            "properties": {
+                "codigo": {"type": "string", "minLength": 1, "maxLength": 20, "pattern": r"\S", "description": "Código textual da categoria financeira."},
+                "percentual": {"type": "number", "exclusiveMinimum": 0, "maximum": 100, "description": "Percentual da categoria; a soma da lista deve ser 100."},
+            },
+            "required": ["codigo", "percentual"], "additionalProperties": False,
+        },
+        "examples": [[{"codigo": "2.01.03", "percentual": 100}]],
+    }
+
+
 def _schema(spec: FinanceSpec, profiles: list[dict[str, str]]) -> dict[str, Any]:
     date = {"type": "string", "pattern": DATE_PATTERN, "description": "Data no formato dd/mm/aaaa.", "examples": ["01/11/2026"]}
     properties: dict[str, Any] = {"incluir_dados_omie": {"type": "boolean", "description": "Inclui dados nativos apenas quando forem necessários para auditoria."}}
@@ -361,6 +380,13 @@ def _schema(spec: FinanceSpec, profiles: list[dict[str, str]]) -> dict[str, Any]
                     "type": "integer", "minimum": 1,
                     "description": "Lançamento de conta corrente a conferir depois da alteração do título. O vínculo é validado antes da escrita. Sem esse campo, a confirmação abrange somente o título.",
                 }
+        if spec.kind == "category_set":
+            identifiers = _identifier_schema(spec)
+            data_schema = {
+                "type": "object", "properties": {**identifiers["properties"], "categorias": _category_schema()},
+                "required": ["categorias"], "oneOf": identifiers["oneOf"], "additionalProperties": False,
+                "description": "Informe exatamente um identificador e a lista completa de categorias. As baixas são descobertas e conferidas automaticamente.",
+            }
         if spec.kind == "title" and spec.legacy.endswith("_create"):
             data_schema["required"] = list(TITLE_REQUIRED)
         elif spec.kind == "title":
@@ -481,6 +507,8 @@ class OmieFinanceFacade:
             general_update = spec.kind in {"transaction", "title"} and spec.legacy.endswith("_update")
             if general_update:
                 description += " Para trocar departamentos, use " + _rateio_tool(spec) + "; esta alteração geral não aceita rateio."
+            if spec.kind == "title" and spec.legacy == "payables_update":
+                description += " categoria_codigo altera o campo de categoria única. Para substituir o rateio completo de categorias e conferir também as baixas, use omie.financeiro.contas_pagar.definir_categorias."
             if spec.kind == "title" and spec.legacy.endswith("_upsert"):
                 description += " Para definir somente o rateio de um título existente, prefira " + _rateio_tool(spec) + ". A conferência desta inclusão/alteração abrange o título, sem confirmar propagação para baixas."
             if spec.kind == "department_set":
@@ -489,6 +517,13 @@ class OmieFinanceFacade:
                     description += " Para BAXP/BAXR, prefira a tool definir_departamentos do título de origem; a recusa fornece o ID e os argumentos quando o vínculo é conhecido."
                 else:
                     description += " Informe lancamento_conta_id quando o objetivo também abranger uma baixa já existente; sem ele, a confirmação cobre apenas o título."
+            if spec.kind == "category_set":
+                description += (
+                    ' Use dados.categorias=[{"codigo":"2.01.03","percentual":100}] e exatamente um entre id e codigo_integracao. '
+                    "Envia a lista completa por AlterarContaPagar, faz no máximo uma escrita e descobre todas as baixas por ListarMovimentos (nCodTitulo/BXCP). "
+                    "Confere título, categorias das baixas, pagamento, desconto e conciliação antes de confirmar o resultado. "
+                    "Nunca cancela nem refaz uma baixa; divergência ou falha de consulta não é sucesso confirmado."
+                )
             if spec.kind in {"transaction", "transfer", "title", "department_set"} and not general_update:
                 description += (
                     ' Para dados.departamentos use somente [{"codigo":"8532594895","percentual":100}]. '
@@ -529,6 +564,11 @@ class OmieFinanceFacade:
         service = OmieService(self.configuration.root)
         verification = None
         verified_record = None
+        if spec.kind == "category_set":
+            return define_categories(
+                service, profile, legacy["identifier"], legacy["categories"],
+                include_native=arguments.get("incluir_dados_omie") is True,
+            )
         if spec.kind == "department_set":
             return define_departments(
                 service, profile, spec.legacy.rsplit("_", 1)[0], legacy["identifier"], legacy["departments"],
@@ -561,6 +601,14 @@ class OmieFinanceFacade:
         if spec.writes:
             if arguments.get("confirmar") is not True: raise OmieError("confirmation_required", "Operações de escrita exigem confirmar=true.", {"retryable": False})
             data = _object(arguments, "dados")
+            if spec.kind == "category_set":
+                unknown = set(data) - {"id", "codigo_integracao", "categorias"}
+                if unknown:
+                    _invalid(f"dados.{sorted(unknown)[0]}", "esta operação altera somente as categorias; não envie dados do pagamento, desconto ou conciliação.")
+                if "categorias" not in data:
+                    _invalid("dados.categorias", "informe a lista completa de categorias desejada.")
+                identifier = _identifier_params(spec, {key: value for key, value in data.items() if key in {"id", "codigo_integracao"}}, "dados")
+                return {"identifier": identifier, "categories": normalize_categories(data["categorias"])}
             if spec.kind == "department_set":
                 allowed = {"id", "codigo_integracao", "departamentos"}
                 if spec.legacy != "account_transactions_update":
@@ -576,6 +624,9 @@ class OmieFinanceFacade:
                     _positive_id(data["lancamento_conta_id"], "dados.lancamento_conta_id")
                 return {"identifier": identifier, "departments": departments, **({"movement_id": data["lancamento_conta_id"]} if "lancamento_conta_id" in data else {})}
             if spec.kind in {"transaction", "title"} and spec.legacy.endswith("_update"):
+                if spec.legacy == "payables_update" and "categorias" in data:
+                    tool = "omie.financeiro.contas_pagar.definir_categorias"
+                    _invalid("dados.categorias", "use " + tool + " para substituir o rateio completo e conferir título e baixas. Nenhuma alteração foi enviada.", use_instead=[tool])
                 _separate_allocation(spec, data)
             if spec.kind == "get":
                 return {"params": _identifier_params(spec, data, "dados")}
