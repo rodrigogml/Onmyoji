@@ -218,6 +218,15 @@ soma das baixas não conferir com o resumo financeiro do título, a operação
 recusa a escrita em vez de assumir que encontrou todos os pagamentos.
 O resumo deve ser consistente entre valor pago, desconto, juros, multa e
 líquido; um título indicado como liquidado deve ter saldo aberto zero.
+Nas baixas `BXCP`, os campos `detalhes.nJuros`, `detalhes.nMulta` e
+`detalhes.nDesconto` omitidos pela Omie são lidos como zero. Essa regra vale
+somente para a ausência da chave; `null`, texto vazio e valores inválidos
+continuam impedindo a conferência. O resumo `CP`, `nValorMovCC` e os demais
+valores essenciais continuam obrigatórios.
+A comparação anterior e posterior considera ausência e zero equivalentes
+somente nesses três campos opcionais. Mudanças para valores positivos e
+valores efetivos de desconto, juros ou multa continuam sendo conferidos,
+inclusive pela soma das baixas em relação ao resumo financeiro.
 A baixa deve informar `dDtConcilia`: vazio ou `null` significa não conciliada;
 uma data preenchida exige também hora e usuário de conciliação.
 
@@ -241,7 +250,9 @@ e `verificacao.campos_preservados`. Retorna `categorias` do título,
 cada baixa observada. O aceite da Omie, sozinho, não confirma a distribuição
 nem sua propagação. Use
 `incluir_dados_omie: true` apenas quando precisar dos registros nativos de
-auditoria, sem credenciais.
+auditoria, sem credenciais. O retorno público informa zero para os campos
+opcionais omitidos nas baixas; a auditoria nativa preserva as omissões do
+retorno da Omie.
 
 | Situação | Resultado do MCP |
 | --- | --- |
@@ -280,9 +291,9 @@ a causa:
 Esse diagnóstico informa presença e tipo, sem reproduzir o valor recebido nem
 registros nativos sensíveis. Na pré-conferência, mantém
 `escrita_processada: false` e impede a gravação; na pós-conferência, informa
-`escrita_processada: true` e não repete a escrita. Ausência e `null` não são
-convertidos globalmente em zero: é necessário identificar o campo e verificar
-a representação efetivamente retornada antes de definir um tratamento.
+`escrita_processada: true` e não repete a escrita. A conversão de ausência em
+zero fica restrita aos três campos opcionais de baixas descritos acima;
+`null` e ausências em outros campos numéricos mantêm esse diagnóstico.
 O diagnóstico, sozinho, não comprova que o número esteja incorreto no ERP.
 
 > [!IMPORTANT]

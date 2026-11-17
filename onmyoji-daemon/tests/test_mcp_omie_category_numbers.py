@@ -88,10 +88,15 @@ INVALID_VALUES = [
 
 
 @pytest.mark.parametrize("processed", [False, True], ids=["preflight", "verification"])
-@pytest.mark.parametrize("group,field,kind", REMOTE_FIELDS)
-@pytest.mark.parametrize("value,issue,received_type", INVALID_VALUES)
+@pytest.mark.parametrize("group,field,kind,value,issue,received_type", [
+    pytest.param(group, field, kind, *invalid.values, id=f"{group}-{field}-{invalid.id}")
+    for group, field, kind in REMOTE_FIELDS
+    for invalid in INVALID_VALUES
+    if not (invalid.values[0] is MISSING and group == "BXCP"
+            and field in {"detalhes.nDesconto", "detalhes.nJuros", "detalhes.nMulta"})
+])
 def test_remote_numeric_failure_identifies_the_field_without_exposing_its_value(processed, group, field, kind, value, issue, received_type):
-    """Ausência, nulo e formato inválido continuam inconclusivos, mesmo para ajustes zerados."""
+    """Campos essenciais ausentes e qualquer valor explícito inválido impedem confirmação."""
     records = responses()
     index = {"title": 0, "CP": 1, "BXCP": 2}[group] + (4 if processed else 0)
     record = records[index] if group == "title" else records[index]["movimentos"][0]
@@ -203,3 +208,123 @@ def test_null_optional_category_amount_is_invalid_when_the_remote_field_is_prese
     assert raised.value.details["number_issue"] == "null"
     assert raised.value.details["escrita_processada"] is True
     assert sum(call.kwargs["writes"] for call in service.invoke_financial.call_args_list) == 1
+
+
+def responses_without_payment_adjustments():
+    """Título sintético de 1000, pago integralmente sem desconto, juros ou multa."""
+    records = responses()
+    for index in (1, 2, 5, 6):
+        record = records[index]["movimentos"][0]
+        record["resumo"].update(nDesconto=0, nValLiquido=1000)
+        record["detalhes"]["nDesconto"] = 0
+        if index in (2, 6):
+            record["detalhes"]["nValorMovCC"] = 1000
+            for category in record["categorias"]:
+                category["nDistrValor"] = 1000 * category["nDistrPercentual"] / 100
+    return records
+
+
+@pytest.mark.parametrize("omitted", [
+    ("nJuros",), ("nMulta",), ("nJuros", "nMulta"),
+    ("nDesconto",), ("nDesconto", "nJuros"), ("nDesconto", "nMulta"),
+    ("nDesconto", "nJuros", "nMulta"),
+])
+def test_missing_optional_payment_amounts_are_zero_without_changing_the_native_records(omitted):
+    """A omissão de ajustes zerados não apaga desconto positivo nem altera a auditoria nativa."""
+    records = responses_without_payment_adjustments() if "nDesconto" in omitted else responses()
+    for index in (2, 6):
+        for key in omitted:
+            del records[index]["movimentos"][0]["detalhes"][key]
+    original = deepcopy(records)
+    service = Mock()
+    service.invoke_financial.side_effect = records
+
+    result = define_categories(service, "empresa", IDENTIFIER, CATEGORIES, include_native=True)
+
+    assert result["verificacao"]["titulo_confirmado"] is True
+    assert result["verificacao"]["baixas_confirmadas"] is True
+    assert result["verificacao"]["campos_preservados"] is True
+    assert result["baixas"][0]["desconto"] == (0 if "nDesconto" in omitted else 50)
+    assert result["baixas"][0]["juros"] == result["baixas"][0]["multa"] == 0
+    assert result["baixas"][0]["valor"] == (1000 if "nDesconto" in omitted else 950)
+    assert result["baixas"][0]["conciliacao"] == {
+        "conciliado": True, "data": "17/11/2026", "hora": "12:34:56", "usuario": "TESTE",
+    }
+    native_payment = result["dados_omie"]["baixas"][0]
+    assert native_payment == original[6]["movimentos"][0]
+    assert all(key not in native_payment["detalhes"] for key in omitted)
+    assert records == original
+    writes = [call for call in service.invoke_financial.call_args_list if call.kwargs["writes"]]
+    assert len(writes) == 1
+    assert writes[0].args[1:] == ("payables_update", {"body": {
+        "codigo_lancamento_omie": 34, "codigo_categoria": "2.01.03", "categorias": CATEGORIES,
+    }})
+
+
+@pytest.mark.parametrize("key", ["nDesconto", "nJuros", "nMulta"])
+@pytest.mark.parametrize("missing_before", [False, True], ids=["explicit-to-missing", "missing-to-explicit"])
+@pytest.mark.parametrize("explicit_zero", [0, 0.0, "0.00"], ids=["integer", "float", "decimal-text"])
+def test_optional_zero_omission_and_explicit_zero_are_equivalent_for_preservation(key, missing_before, explicit_zero):
+    records = responses_without_payment_adjustments()
+    missing_index = 2 if missing_before else 6
+    del records[missing_index]["movimentos"][0]["detalhes"][key]
+    records[6 if missing_before else 2]["movimentos"][0]["detalhes"][key] = explicit_zero
+    original = deepcopy(records)
+    service = Mock()
+    service.invoke_financial.side_effect = records
+
+    result = define_categories(service, "empresa", IDENTIFIER, CATEGORIES, include_native=True)
+
+    assert result["verificacao"]["campos_preservados"] is True
+    assert result["baixas"][0][{"nDesconto": "desconto", "nJuros": "juros", "nMulta": "multa"}[key]] == 0
+    assert (key not in result["dados_omie"]["baixas"][0]["detalhes"]) is (not missing_before)
+    assert records == original
+    assert sum(call.kwargs["writes"] for call in service.invoke_financial.call_args_list) == 1
+
+
+def set_payment_adjustment(records, offset, key, amount):
+    """Mantém resumo e baixa coerentes para detectar a mudança pelo snapshot financeiro."""
+    liquid = 1000 - amount if key == "nDesconto" else 1000 + amount
+    for index in (offset + 1, offset + 2):
+        records[index]["movimentos"][0]["resumo"].update({key: amount, "nValLiquido": liquid})
+    payment = records[offset + 2]["movimentos"][0]
+    payment["detalhes"].update({key: amount, "nValorMovCC": liquid})
+    for category in payment["categorias"]:
+        category["nDistrValor"] = liquid * category["nDistrPercentual"] / 100
+
+
+@pytest.mark.parametrize("key", ["nDesconto", "nJuros", "nMulta"])
+@pytest.mark.parametrize("positive_before", [False, True], ids=["missing-zero-to-positive", "positive-to-missing-zero"])
+def test_missing_zero_and_positive_adjustments_are_never_equivalent(key, positive_before):
+    records = responses_without_payment_adjustments()
+    set_payment_adjustment(records, 0 if positive_before else 4, key, 10)
+    del records[6 if positive_before else 2]["movimentos"][0]["detalhes"][key]
+    original = deepcopy(records)
+    service = Mock()
+    service.invoke_financial.side_effect = records
+
+    with pytest.raises(OmieError) as raised:
+        define_categories(service, "empresa", IDENTIFIER, CATEGORIES)
+
+    assert raised.value.code == "category_allocation_side_effect_detected"
+    assert raised.value.details["escrita_processada"] is True
+    assert "baixa:78" in raised.value.details["campos_alterados"]
+    assert raised.value.details["verificacao"]["campos_preservados"] is False
+    assert records == original
+    assert sum(call.kwargs["writes"] for call in service.invoke_financial.call_args_list) == 1
+
+
+@pytest.mark.parametrize("processed", [False, True], ids=["preflight", "verification"])
+def test_omitted_discount_cannot_hide_a_positive_discount_in_the_financial_summary(processed):
+    records = responses()
+    del records[6 if processed else 2]["movimentos"][0]["detalhes"]["nDesconto"]
+    service = Mock()
+    service.invoke_financial.side_effect = records
+
+    with pytest.raises(OmieError) as raised:
+        define_categories(service, "empresa", IDENTIFIER, CATEGORIES)
+
+    assert raised.value.code == ("category_allocation_verification_failed" if processed else "category_allocation_preflight_failed")
+    assert raised.value.details["reason"] == "payment_population_incomplete"
+    assert raised.value.details["escrita_processada"] is processed
+    assert sum(call.kwargs["writes"] for call in service.invoke_financial.call_args_list) == int(processed)

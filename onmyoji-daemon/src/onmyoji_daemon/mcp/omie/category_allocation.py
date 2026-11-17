@@ -20,7 +20,8 @@ _CENT = Decimal("0.01")
 _TITLE_ID = "codigo_lancamento_omie"
 _INTEGRATION_ID = "codigo_lancamento_integracao"
 _SUMMARY_NUMBERS = ("nValPago", "nValLiquido", "nValAberto", "nDesconto", "nJuros", "nMulta")
-_PAYMENT_NUMBERS = ("nValorMovCC", "nDesconto", "nJuros", "nMulta")
+_PAYMENT_ADJUSTMENTS = ("nDesconto", "nJuros", "nMulta")
+_PAYMENT_NUMBERS = ("nValorMovCC", *_PAYMENT_ADJUSTMENTS)
 _AUDIT_FIELDS = ("dDtAlt", "cHrAlt", "cUsAlt")
 
 
@@ -134,6 +135,19 @@ def _cause(error: Exception) -> dict[str, Any]:
             if type(value) is int and low <= value <= high:
                 result[field] = value
     return result
+
+
+def _payment_number(record: Mapping[str, Any], key: str, processed: bool) -> Decimal:
+    """Interpreta os três ajustes opcionais de BXCP omitidos como zero.
+
+    Desconto, juros e multa ausentes não alteram o payload nativo. Valores
+    presentes continuam sujeitos ao diagnóstico numérico estrito, inclusive
+    ``null``. O valor principal da baixa permanece obrigatório. A conferência
+    com o resumo CP deve comprovar a soma dos ajustes antes de autorizar escrita.
+    """
+    if key in _PAYMENT_ADJUSTMENTS and key not in record:
+        return Decimal(0)
+    return _remote_number(record, key, processed, field="detalhes." + key, movement_kind="BXCP")
 
 
 def _read(service: Any, profile: str, operation: str, params: Mapping[str, Any], processed: bool) -> Any:
@@ -252,7 +266,7 @@ def _financial_state(service: Any, profile: str, title: Mapping[str, Any], proce
                 raise ValueError("duplicate_payment")
             if not _date(details.get("dDtPagamento")):
                 raise ValueError("invalid_payment_date")
-            numbers = {key: _remote_number(details, key, processed, field="detalhes." + key, movement_kind="BXCP") for key in _PAYMENT_NUMBERS}
+            numbers = {key: _payment_number(details, key, processed) for key in _PAYMENT_NUMBERS}
             if any(numbers[key] < 0 for key in ("nDesconto", "nJuros", "nMulta")):
                 raise ValueError("invalid_payment_amounts")
             if "dDtConcilia" not in details:
@@ -277,7 +291,8 @@ def _financial_state(service: Any, profile: str, title: Mapping[str, Any], proce
     return financial, payments
 
 
-def _snapshot(record: Mapping[str, Any], *, title: bool = False) -> dict[str, Any]:
+def _snapshot(record: Mapping[str, Any], *, title: bool = False, payment: bool = False) -> dict[str, Any]:
+    """Compara ajustes opcionais já validados por valor, preservando a origem."""
     result = deepcopy(dict(record))
     result.pop("categorias", None)
     if title:
@@ -286,6 +301,9 @@ def _snapshot(record: Mapping[str, Any], *, title: bool = False) -> dict[str, An
     else:
         for key in ("cCodCateg", *_AUDIT_FIELDS):
             result["detalhes"].pop(key, None)
+        if payment:
+            for key in _PAYMENT_ADJUSTMENTS:
+                result["detalhes"][key] = _number(result["detalhes"].get(key, 0))
     return result
 
 
@@ -347,7 +365,7 @@ def _payment_result(identifier: int, row: Mapping[str, Any], categories: list[di
     return {
         "id_baixa": identifier, "lancamento_conta_id": details["nCodMovCC"], "conta_corrente_id": details["nCodCC"],
         "data": details["dDtPagamento"], "valor": float(_number(details["nValorMovCC"])),
-        "desconto": float(_number(details["nDesconto"])), "juros": float(_number(details["nJuros"])), "multa": float(_number(details["nMulta"])),
+        "desconto": float(_payment_number(details, "nDesconto", True)), "juros": float(_payment_number(details, "nJuros", True)), "multa": float(_payment_number(details, "nMulta", True)),
         "conciliacao": {"conciliado": bool(details.get("dDtConcilia")), "data": details.get("dDtConcilia"),
                         "hora": details.get("cHrConcilia"), "usuario": details.get("cUsConcilia")},
         "categorias": categories,
@@ -413,7 +431,7 @@ def define_categories(service: Any, profile: str, identifier: Mapping[str, Any],
         if set(payments_before) != set(payments_after):
             changed.append("identificadores_baixas")
         for payment_id in payments_before.keys() & payments_after.keys():
-            if not _same(_snapshot(payments_before[payment_id]), _snapshot(payments_after[payment_id])):
+            if not _same(_snapshot(payments_before[payment_id], payment=True), _snapshot(payments_after[payment_id], payment=True)):
                 changed.append(f"baixa:{payment_id}")
         if changed:
             raise _error("category_allocation_side_effect_detected", "A conferência detectou alterações fora das categorias. Confira o estado atual; nenhuma compensação foi executada.", escrita_processada=True, campos_alterados=changed)
