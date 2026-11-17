@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from math import isfinite
 from typing import Any, Mapping
@@ -90,6 +91,55 @@ OPERATION_NAMES = {
 
 
 
+def normalize_percentage_departments(
+    rows: Any, *, field: str = "dados.departamentos", error_code: str = "invalid_parameter",
+) -> list[dict[str, Any]]:
+    """Valida um rateio percentual sem depender do valor do título ou lançamento.
+
+    Aceita uma lista inteira no formato ``codigo/percentual`` ou
+    ``cCodDep/nPerDep`` e retorna somente ``cCodDep/nPerDep``. A lista vazia
+    solicita remoção do rateio. Departamentos não podem se repetir e os
+    percentuais positivos devem somar exatamente 100. Lança ``error_code``
+    (por padrão ``invalid_parameter``) com o campo indicado quando houver
+    formatos misturados, códigos inválidos ou percentuais inconsistentes.
+    """
+    def invalid(message: str) -> None:
+        raise OmieError(error_code, f"{field}: {message}", {"field": field, "reason": message, "retryable": False})
+
+    if not isinstance(rows, list):
+        invalid("deve ser uma lista de objetos JSON.")
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    representation: str | None = None
+    total = Decimal(0)
+    for index, row in enumerate(rows):
+        if not isinstance(row, Mapping):
+            invalid(f"item {index}: deve ser um objeto JSON.")
+        if set(row) == {"codigo", "percentual"}:
+            code, percentage, current = row["codigo"], row["percentual"], "semantic"
+        elif set(row) == {"cCodDep", "nPerDep"}:
+            code, percentage, current = row["cCodDep"], row["nPerDep"], "native"
+        else:
+            invalid(f"item {index}: use somente codigo/percentual ou cCodDep/nPerDep, sem misturar formatos.")
+        if representation is not None and current != representation:
+            invalid("use o mesmo formato em todos os departamentos.")
+        representation = current
+        if not isinstance(code, str) or not code.strip() or len(code) > 40:
+            invalid(f"item {index}: código do departamento deve ser texto não vazio de até 40 caracteres.")
+        if code in seen:
+            invalid(f"item {index}: o código do departamento está repetido.")
+        if type(percentage) not in (int, float) or (isinstance(percentage, float) and not isfinite(percentage)):
+            invalid(f"item {index}: percentual deve ser um número finito.")
+        if percentage <= 0 or percentage > 100:
+            invalid(f"item {index}: percentual deve estar acima de zero e até 100.")
+        total += Decimal(str(percentage))
+        seen.add(code)
+        result.append({"cCodDep": code, "nPerDep": percentage})
+    if result and total != Decimal(100):
+        invalid("a soma dos percentuais deve ser exatamente 100.")
+    return result
+
+
 def normalize_account_departments(
     rows: Any, amount: Any, *, field: str = "departamentos", error_code: str = "invalid_body",
 ) -> list[dict[str, Any]]:
@@ -108,6 +158,7 @@ def normalize_account_departments(
         invalid("o valor do lançamento deve ter no máximo duas casas decimais quando houver rateio.")
 
     parsed: list[tuple[str, Decimal | None, Decimal | None]] = []
+    seen: set[str] = set()
     for index, row in enumerate(rows):
         if not isinstance(row, Mapping):
             invalid(f"item {index}: deve ser um objeto JSON.")
@@ -127,6 +178,9 @@ def normalize_account_departments(
             invalid(f"item {index}: informe percentual ou valor do departamento.")
         if not isinstance(code, str) or not code.strip() or len(code) > 40:
             invalid(f"item {index}: código do departamento deve ser texto não vazio de até 40 caracteres.")
+        if code in seen:
+            invalid(f"item {index}: o código do departamento está repetido.")
+        seen.add(code)
         fraction = None
         if percent_key in keys:
             if type(percent) not in (int, float) or (isinstance(percent, float) and not isfinite(percent)):
@@ -683,25 +737,51 @@ def _build_params(operation: str, request: Mapping[str, Any]) -> dict[str, Any]:
         if operation == "account-transactions.update":
             if "id" not in transaction and "integration_id" not in transaction:
                 fail("missing_parameter", "id ou integration_id é obrigatório.")
+            if not set(transaction) - {"id", "integration_id"}:
+                fail("invalid_body", "informe ao menos um campo para alteração.")
         else:
             transaction["integration_id"] = require_string(transaction.get("integration_id"), "integration_id", max_length=20)
-        for field in ("account_id", "date", "amount", "category_code", "document_type"):
-            if field not in transaction:
-                fail("invalid_body", f"{field} é obrigatório.")
-        if not isinstance(transaction["document_type"], str) or transaction["document_type"] not in DIRECT_DOCUMENT_TYPES:
+            for field in ("account_id", "date", "amount", "category_code", "document_type"):
+                if field not in transaction:
+                    fail("invalid_body", f"{field} é obrigatório.")
+        for field in ("id", "account_id", "customer_id", "project_id"):
+            if field in transaction and (type(transaction[field]) is not int or transaction[field] < 1):
+                fail("invalid_body", f"{field} deve ser um inteiro positivo.")
+        for field in ("integration_id", "category_code", "document_number"):
+            if field in transaction:
+                require_string(transaction[field], field, max_length=20)
+        if "date" in transaction:
+            date = transaction["date"]
+            if not isinstance(date, str) or re.fullmatch(r"[0-9]{2}/[0-9]{2}/[0-9]{4}", date) is None:
+                fail("invalid_body", "date deve ser dd/mm/aaaa.")
+            try:
+                datetime.strptime(date, "%d/%m/%Y")
+            except ValueError:
+                fail("invalid_body", "date deve ser uma data válida.")
+        if "amount" in transaction:
+            amount = transaction["amount"]
+            if type(amount) not in (int, float) or amount <= 0 or (isinstance(amount, float) and not isfinite(amount)):
+                fail("invalid_body", "amount deve ser um número finito maior que zero.")
+        if "document_type" in transaction and (not isinstance(transaction["document_type"], str) or transaction["document_type"] not in DIRECT_DOCUMENT_TYPES):
             fail("invalid_body", "document_type não está entre os tipos disponibilizados pelo wrapper.")
-        if "document_number" in transaction:
-            require_string(transaction["document_number"], "document_number", max_length=20)
-        result = {"cabecalho": {"nCodCC": transaction["account_id"], "dDtLanc": transaction["date"], "nValorLanc": transaction["amount"]}, "detalhes": {"cCodCateg": transaction["category_code"], "cTipo": transaction["document_type"]}}
+        if "note" in transaction and not isinstance(transaction["note"], str):
+            fail("invalid_body", "note deve ser um texto.")
+        header = {target: transaction[source] for source, target in (("account_id", "nCodCC"), ("date", "dDtLanc"), ("amount", "nValorLanc")) if source in transaction}
+        details = {target: transaction[source] for source, target in (("category_code", "cCodCateg"), ("document_type", "cTipo"), ("document_number", "cNumDoc"), ("customer_id", "nCodCliente"), ("project_id", "nCodProjeto"), ("note", "cObs")) if source in transaction}
+        result = {}
+        if header:
+            result["cabecalho"] = header
+        if details:
+            result["detalhes"] = details
         if "integration_id" in transaction:
             result["cCodIntLanc"] = transaction["integration_id"]
         if "id" in transaction:
             result["nCodLanc"] = transaction["id"]
-        for source, target in (("document_number", "cNumDoc"), ("customer_id", "nCodCliente"), ("project_id", "nCodProjeto"), ("note", "cObs")):
-            if source in transaction:
-                result["detalhes"][target] = transaction[source]
         if "departments" in transaction:
-            result["departamentos"] = normalize_account_departments(transaction["departments"], transaction["amount"])
+            if "amount" in transaction:
+                result["departamentos"] = normalize_account_departments(transaction["departments"], transaction["amount"])
+            else:
+                result["departamentos"] = normalize_percentage_departments(transaction["departments"], field="departments", error_code="invalid_body")
         return result
     if operation == "account-transfers.create":
         transfer = copy_fields(body, {"integration_id", "source_account_id", "destination_account_id", "date", "amount", "category_code", "document_number", "note", "project_id", "departments"})

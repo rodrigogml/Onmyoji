@@ -100,12 +100,13 @@ def input_contract(operation: str) -> tuple[str, dict[str, Any]]:
     if operation in {"account_transactions_create", "account_transactions_update"}:
         fields = {name: {} for name in ("integration_id", "id", "account_id", "date", "amount", "category_code", "document_number", "customer_id", "project_id", "note", "departments")}
         fields["document_type"] = {"type": "string", "enum": sorted(DIRECT_DOCUMENT_TYPES), "description": "Tipo preservado como detalhes.cTipo; NFE/NFS/FAT/99999 são aceitos localmente, sujeitos à validação do serviço Omie."}
-        required = ("account_id", "date", "amount", "category_code", "document_type")
-        if operation.endswith("_create"):
-            required += ("integration_id",)
+        required = ("account_id", "date", "amount", "category_code", "document_type", "integration_id") if operation.endswith("_create") else ()
         schema = obj(fields, required)
         if operation.endswith("_update"):
-            schema["anyOf"] = [{"required": [key]} for key in ("id", "integration_id")]
+            schema["allOf"] = [
+                {"anyOf": [{"required": [key]} for key in ("id", "integration_id")]},
+                {"anyOf": [{"required": [key]} for key in fields if key not in {"id", "integration_id"}]},
+            ]
         return "body", schema
     if operation == "account_transfers_create":
         return "body", obj({
@@ -218,9 +219,10 @@ NOTES = {
     "customers_get": "Consulta somente por ID Omie ou código de integração; CPF/CNPJ e nomes usam customers_list.",
     "customers_create": "Valida formato de CPF/CNPJ, percorre o cadastro completo e reutiliza um único ativo. Bloqueia duplicados/inativos e consulta incompleta. Gera código de integração estável; inclusão sem retry automático. Em resposta incerta, consulte antes de repetir.",
     "account_transactions_create": "Cria lançamento direto (não cria conta a pagar). Converte account_id/date/amount para cabecalho e category_code/document_type para detalhes. Não solicita conciliação.",
-    "account_transactions_update": "Altera lançamento direto preservando document_type e document_number; exige id ou integration_id.",
+    "account_transactions_update": "Altera somente os campos enviados; exige id ou integration_id e pelo menos um campo editável. Para alterar apenas rateio, envie o identificador e departments, sem repetir conta, data, valor, categoria ou tipo. Com rateio, a fachada financeira consulta depois da escrita e só confirma quando a distribuição persistida confere. Se houver título vinculado em diversos.nCodLancCP/nCodLancCR, confira a origem; não repita a escrita nem cancele ou recrie a baixa para corrigir rateio.",
     "account_transfers_create": "Cria uma transferência única entre contas diferentes por IncluirLancCC; não produza dois lançamentos independentes. category_code é a categoria de saída e será enviada em detalhes.cCodCateg; o tipo TRA e a conta de destino são definidos pelo conector.",
-    "payables_update": "Para corrigir tipo de título pago, preserve os demais campos e consulte após alteração. Não recrie título nem cancele/repita baixa para trocar o tipo.",
+    "payables_update": "Altera somente os campos informados. Na fachada financeira, dados.departamentos usa codigo textual e percentual e é enviado como distribuicao; não exige reenviar os demais dados do título. O rateio é consultado após a escrita e só é confirmado quando persistido. Em título pago, confira também o movimento vinculado: a propagação para a baixa não é garantida. Não recrie título nem cancele/repita baixa para corrigir classificação.",
+    "receivables_update": "Altera somente os campos informados. Na fachada financeira, dados.departamentos usa codigo textual e percentual e é enviado como distribuicao; não exige reenviar os demais dados do título. O rateio é consultado após a escrita e só é confirmado quando persistido. Em título recebido, confira também o movimento vinculado: a propagação para a baixa não é garantida. Não recrie título nem cancele/repita baixa para corrigir classificação.",
     "inbound_nfe_receipts_update": "Consulte primeiro a NF-e. Aceita body.receipt_id ou ide, campos planos, additional_info/infoAdicionais, departments/departamentos/department_allocations e items. department_allocations usa department_code, percentage e amount. Não envie fornecedor nem valor. Consulte após atualizar. project_id: " + PROJECT_ID_GUIDANCE,
     "inbound_nfe_receipts_update_completed": "Somente para recebimentos já concluídos; permite infoAdicionais (purchase_category_code, project_id, bank_account_id, registration_date ou buyer_id). A API AlterarRecebimentoConcluido não aceita departments: consulte o recebimento e não altere o rateio por esta operação. project_id: " + PROJECT_ID_GUIDANCE,
 }

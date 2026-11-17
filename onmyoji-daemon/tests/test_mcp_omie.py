@@ -73,10 +73,11 @@ def test_invalid_arguments_fail_before_reading_credentials(tmp_path, arguments):
 
 
 @pytest.mark.parametrize("status", ["1", 2, None, True, []])
-def test_api_processing_failure_is_sanitized(tmp_path, monkeypatch, status):
+@pytest.mark.parametrize("status_field,description_field", [("cCodStatus", "cDesStatus"), ("codigo_status", "descricao_status")])
+def test_api_processing_failure_is_sanitized(tmp_path, monkeypatch, status, status_field, description_field):
     write_config(tmp_path)
     class Failure(Response):
-        def read(self): return json.dumps({"cCodStatus": status, "cDesStatus": "sensitive"}).encode()
+        def read(self): return json.dumps({status_field: status, description_field: "sensitive"}).encode()
     monkeypatch.setattr("onmyoji_daemon.mcp.omie.service.urlopen", lambda *_args, **_kwargs: Failure())
     with pytest.raises(OmieError) as error:
         OmieService(tmp_path, Credentials()).invoke("example", "projects_get", {"params": {"codInt": "P1"}})

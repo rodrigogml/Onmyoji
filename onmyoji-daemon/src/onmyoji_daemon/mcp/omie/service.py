@@ -258,10 +258,12 @@ class OmieService:
                     raise OmieError("invalid_response", "A API Omie retornou uma resposta inválida.") from error
                 if not isinstance(result, Mapping):
                     raise OmieError("invalid_response", "A API Omie retornou uma resposta inválida.")
-                if result.get("faultstring") or ("cCodStatus" in result and (type(result["cCodStatus"]) not in (str, int) or result["cCodStatus"] not in ("0", 0))):
+                status_field = next((field for field in ("cCodStatus", "codigo_status") if field in result
+                                     and (type(result[field]) not in (str, int) or result[field] not in ("0", 0))), None)
+                if result.get("faultstring") or status_field is not None:
                     details: dict[str, Any] = {"retryable": False}
-                    code = result.get("faultcode") if result.get("faultstring") else result.get("cCodStatus")
-                    description = result.get("faultstring") or result.get("cDesStatus")
+                    code = result.get("faultcode") if result.get("faultstring") else result.get(status_field)
+                    description = result.get("faultstring") or result.get("cDesStatus" if status_field == "cCodStatus" else "descricao_status")
                     if isinstance(code, (str, int)) and not isinstance(code, bool):
                         details["remote_code"] = code
                     if isinstance(description, str) and description.strip():
