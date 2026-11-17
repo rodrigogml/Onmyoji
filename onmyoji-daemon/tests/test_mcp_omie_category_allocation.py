@@ -749,3 +749,268 @@ def test_negative_debit_preserves_its_sign_and_checks_allocation_by_absolute_val
     assert result["baixas"][0]["valor"] == -950
     assert result["baixas"][0]["categorias"] == [{"codigo": "2.01.03", "percentual": 100, "valor": 950}]
     assert result["verificacao"]["campos_preservados"] is True
+
+
+@pytest.mark.parametrize("group,index,operation,kind", [
+    ("title", 4, "payables_get", None),
+    ("CP", 5, "financial_movements_list", "CP"),
+    ("BXCP", 6, "financial_movements_list", "BXCP"),
+])
+@pytest.mark.parametrize("collection", [None, [], "omitida"])
+@pytest.mark.parametrize("include_native", [False, True])
+def test_missing_category_collection_keeps_its_origin_and_still_checks_financial_preservation(group, index, operation, kind, collection, include_native):
+    """Coleção ausente não impede a leitura posterior das condições financeiras."""
+    responses = successful_responses()
+    record = responses[index] if group == "title" else responses[index]["movimentos"][0]
+    if collection == "omitida":
+        del record["categorias"]
+    else:
+        record["categorias"] = collection
+    original = deepcopy(responses)
+    service = Mock()
+    service.invoke_financial.side_effect = responses
+
+    with pytest.raises(OmieError) as raised:
+        define_categories(service, "empresa", IDENTIFIER, CATEGORIES, include_native=include_native)
+
+    error = raised.value
+    assert error.code == "category_allocation_verification_failed"
+    assert error.details["reason"] == "missing_categories"
+    assert error.details["field"] == "categorias"
+    assert error.details["operation"] == operation
+    if kind is None:
+        assert "tipo_movimento" not in error.details
+    else:
+        assert error.details["tipo_movimento"] == kind
+    if group == "BXCP":
+        assert error.details["id_baixa"] == 78
+    else:
+        assert "id_baixa" not in error.details
+    assert error.details["escrita_processada"] is True
+    assert error.details["retryable"] is False
+    assert error.details["verificacao"]["campos_preservados"] is True
+    assert len(service.invoke_financial.call_args_list) == 7
+    assert sum(call.kwargs["writes"] for call in service.invoke_financial.call_args_list) == 1
+    assert responses == original
+    assert ("dados_omie" in error.details) is include_native
+    if include_native:
+        audit = error.details["dados_omie"]
+        assert audit["registro"] == original[4]
+        assert audit["financeiro"] == original[5]["movimentos"][0]
+        assert audit["baixas"] == original[6]["movimentos"]
+        assert error.details["requisicao_omie"]["call"] == "AlterarContaPagar"
+
+
+def test_missing_collections_are_reported_together_without_claiming_any_category_confirmation():
+    responses = successful_responses()
+    del responses[4]["categorias"]
+    responses[5]["movimentos"][0]["categorias"] = []
+    responses[6]["movimentos"][0]["categorias"] = None
+    service = Mock()
+    service.invoke_financial.side_effect = responses
+
+    with pytest.raises(OmieError) as raised:
+        define_categories(service, "empresa", IDENTIFIER, CATEGORIES, include_native=True)
+
+    details = raised.value.details
+    assert raised.value.code == "category_allocation_verification_failed"
+    failures = details["falhas_conferencia"]
+    assert len(failures) == 3
+    assert all(failure["code"] == "category_allocation_verification_failed" for failure in failures)
+    assert [(failure["details"]["operation"], failure["details"].get("tipo_movimento")) for failure in failures] == [
+        ("payables_get", None), ("financial_movements_list", "CP"), ("financial_movements_list", "BXCP"),
+    ]
+    assert failures[2]["details"]["id_baixa"] == 78
+    assert details["categorias_titulo"] is None
+    assert details["categorias_financeiro"] is None
+    assert details["baixas"][0]["categorias"] is None
+    assert details["verificacao"] == {
+        "titulo_confirmado": False, "titulo_financeiro_confirmado": False,
+        "baixas_confirmadas": False, "campos_preservados": True,
+    }
+    assert len(service.invoke_financial.call_args_list) == 7
+    assert sum(call.kwargs["writes"] for call in service.invoke_financial.call_args_list) == 1
+
+
+@pytest.mark.parametrize("changed_condition", ["reconciliation", "discount"])
+def test_missing_title_categories_do_not_hide_changed_payment_conditions(changed_condition):
+    """A preservação tem precedência sobre a classificação inconclusiva do título."""
+    responses = successful_responses()
+    del responses[4]["categorias"]
+    payment = responses[6]["movimentos"][0]
+    if changed_condition == "reconciliation":
+        payment["detalhes"]["dDtConcilia"] = "18/11/2026"
+    else:
+        for index in (5, 6):
+            responses[index]["movimentos"][0]["resumo"].update(nDesconto=25, nValLiquido=975)
+        payment["detalhes"].update(nDesconto=25, nValorMovCC=975)
+        payment["categorias"][0]["nDistrValor"] = 975
+    original = deepcopy(responses)
+    service = Mock()
+    service.invoke_financial.side_effect = responses
+
+    with pytest.raises(OmieError) as raised:
+        define_categories(service, "empresa", IDENTIFIER, CATEGORIES, include_native=True)
+
+    assert raised.value.code == "category_allocation_side_effect_detected"
+    details = raised.value.details
+    assert details["verificacao"]["campos_preservados"] is False
+    assert details["verificacao"]["titulo_confirmado"] is False
+    assert "baixa:78" in details["campos_alterados"]
+    assert details["falhas_conferencia"][0]["details"]["operation"] == "payables_get"
+    assert details["dados_omie"]["registro"] == original[4]
+    assert details["dados_omie"]["baixas"] == original[6]["movimentos"]
+    assert responses == original
+    assert len(service.invoke_financial.call_args_list) == 7
+    assert sum(call.kwargs["writes"] for call in service.invoke_financial.call_args_list) == 1
+
+
+def test_observed_legacy_title_takes_precedence_over_missing_financial_categories():
+    """A divergência comprovada no título não vira somente uma falha de leitura CP."""
+    responses = successful_responses()
+    responses[4] = title()
+    del responses[5]["movimentos"][0]["categorias"]
+    responses[6] = page(financial_record())
+    service = Mock()
+    service.invoke_financial.side_effect = responses
+
+    with pytest.raises(OmieError) as raised:
+        define_categories(service, "empresa", IDENTIFIER, CATEGORIES)
+
+    details = raised.value.details
+    assert raised.value.code == "category_allocation_not_persisted"
+    assert details["categorias_titulo"] == [
+        {"codigo": "2.01.03", "percentual": 80, "valor": 800},
+        {"codigo": "2.07.01", "percentual": 20, "valor": 200},
+    ]
+    assert details["categorias_financeiro"] is None
+    assert details["baixas"][0]["categorias"][1]["codigo"] == "2.07.01"
+    assert details["falhas_conferencia"][0]["details"]["tipo_movimento"] == "CP"
+    assert details["verificacao"]["campos_preservados"] is True
+    assert len(service.invoke_financial.call_args_list) == 7
+    assert sum(call.kwargs["writes"] for call in service.invoke_financial.call_args_list) == 1
+
+
+def test_observed_legacy_financial_title_takes_precedence_over_missing_payment_categories():
+    responses = successful_responses()
+    responses[5] = page(financial_record(payment=False))
+    del responses[6]["movimentos"][0]["categorias"]
+    service = Mock()
+    service.invoke_financial.side_effect = responses
+
+    with pytest.raises(OmieError) as raised:
+        define_categories(service, "empresa", IDENTIFIER, CATEGORIES)
+
+    details = raised.value.details
+    assert raised.value.code == "category_allocation_propagation_not_confirmed"
+    assert details["verificacao"]["titulo_confirmado"] is True
+    assert details["verificacao"]["titulo_financeiro_confirmado"] is False
+    assert details["verificacao"]["baixas_confirmadas"] is False
+    assert details["verificacao"]["campos_preservados"] is True
+    assert details["categorias_financeiro"][1]["codigo"] == "2.07.01"
+    assert details["baixas"][0]["categorias"] is None
+    assert details["falhas_conferencia"][0]["details"]["id_baixa"] == 78
+    assert len(service.invoke_financial.call_args_list) == 7
+    assert sum(call.kwargs["writes"] for call in service.invoke_financial.call_args_list) == 1
+
+
+def test_missing_title_categories_do_not_hide_observed_legacy_categories_in_movements():
+    responses = successful_responses()
+    del responses[4]["categorias"]
+    responses[5] = page(financial_record(payment=False))
+    responses[6] = page(financial_record())
+    service = Mock()
+    service.invoke_financial.side_effect = responses
+
+    with pytest.raises(OmieError) as raised:
+        define_categories(service, "empresa", IDENTIFIER, CATEGORIES)
+
+    details = raised.value.details
+    assert raised.value.code == "category_allocation_verification_failed"
+    assert details["categorias_titulo"] is None
+    assert details["categorias_financeiro"][1]["codigo"] == "2.07.01"
+    assert details["baixas"][0]["categorias"][1]["codigo"] == "2.07.01"
+    assert details["verificacao"]["titulo_confirmado"] is False
+    assert details["verificacao"]["campos_preservados"] is True
+    assert len(service.invoke_financial.call_args_list) == 7
+
+
+def test_one_unreadable_payment_category_does_not_prevent_checking_other_payments():
+    first_before = financial_record(identifier=78, value=380, discount=20)
+    second_before = financial_record(identifier=79, value=570, discount=30)
+    first_after = financial_record(identifier=78, value=380, discount=20, corrected=True)
+    second_after = financial_record(identifier=79, value=570, discount=30)
+    del first_after["categorias"]
+    responses = [title(), page(financial_record(payment=False)), page(first_before, second_before), ACK,
+                 title(corrected=True), page(financial_record(payment=False, corrected=True)), page(first_after, second_after)]
+    service = Mock()
+    service.invoke_financial.side_effect = responses
+
+    with pytest.raises(OmieError) as raised:
+        define_categories(service, "empresa", IDENTIFIER, CATEGORIES)
+
+    details = raised.value.details
+    assert raised.value.code == "category_allocation_propagation_not_confirmed"
+    assert details["baixas"][0]["id_baixa"] == 78
+    assert details["baixas"][0]["categorias"] is None
+    assert details["baixas"][1]["id_baixa"] == 79
+    assert details["baixas"][1]["categorias"][1]["codigo"] == "2.07.01"
+    assert details["falhas_conferencia"][0]["details"]["id_baixa"] == 78
+    assert details["verificacao"]["titulo_confirmado"] is True
+    assert details["verificacao"]["campos_preservados"] is True
+    assert sum(call.kwargs["writes"] for call in service.invoke_financial.call_args_list) == 1
+
+
+def test_post_write_payment_query_failure_keeps_the_title_and_financial_record_already_observed():
+    """Auditoria parcial distingue o CP consultado da listagem de baixas que falhou."""
+    responses = successful_responses()
+    observed_title = deepcopy(responses[4])
+    observed_financial = deepcopy(responses[5]["movimentos"][0])
+    responses[6] = OmieError("omie_http_error", "Falha HTTP sintética", {"http_status": 503})
+    service = Mock()
+    service.invoke_financial.side_effect = responses
+
+    with pytest.raises(OmieError) as raised:
+        define_categories(service, "empresa", IDENTIFIER, CATEGORIES, include_native=True)
+
+    details = raised.value.details
+    assert raised.value.code == "category_allocation_verification_failed"
+    assert details["reason"] == "query_failed"
+    assert details["cause_code"] == "omie_http_error"
+    assert details["http_status"] == 503
+    assert details["escrita_processada"] is True
+    assert details["verificacao"]["campos_preservados"] is False
+    assert details["verificacao"]["baixas_confirmadas"] is False
+    assert details["dados_omie"] == {"registro": observed_title, "financeiro": observed_financial}
+    assert "baixas" not in details["dados_omie"]
+    assert len(service.invoke_financial.call_args_list) == 7
+    assert sum(call.kwargs["writes"] for call in service.invoke_financial.call_args_list) == 1
+
+
+def test_post_write_invalid_payment_number_keeps_all_observed_native_records_without_claiming_preservation():
+    """Uma baixa identificada permanece auditável mesmo quando seu valor não é válido."""
+    responses = successful_responses()
+    responses[6]["movimentos"][0]["detalhes"]["nValorMovCC"] = None
+    original = deepcopy(responses)
+    service = Mock()
+    service.invoke_financial.side_effect = responses
+
+    with pytest.raises(OmieError) as raised:
+        define_categories(service, "empresa", IDENTIFIER, CATEGORIES, include_native=True)
+
+    details = raised.value.details
+    assert raised.value.code == "category_allocation_verification_failed"
+    assert details["reason"] == "invalid_number"
+    assert details["field"] == "detalhes.nValorMovCC"
+    assert details["tipo_movimento"] == "BXCP"
+    assert details["number_issue"] == "null"
+    assert details["escrita_processada"] is True
+    assert details["verificacao"]["campos_preservados"] is False
+    assert details["verificacao"]["baixas_confirmadas"] is False
+    assert details["dados_omie"] == {
+        "registro": original[4], "financeiro": original[5]["movimentos"][0],
+        "baixas": original[6]["movimentos"],
+    }
+    assert responses == original
+    assert len(service.invoke_financial.call_args_list) == 7
+    assert sum(call.kwargs["writes"] for call in service.invoke_financial.call_args_list) == 1

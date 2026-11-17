@@ -1,4 +1,4 @@
-"""Substitui categorias de contas a pagar e confere título e todas as baixas.
+"""Solicita o rateio de categorias e confere título e todas as baixas.
 
 A única escrita é ``AlterarContaPagar``. Consultas remotas antes e depois
 comprovam a classificação e a preservação financeira; não há compensação nem
@@ -231,11 +231,14 @@ def _movements(service: Any, profile: str, title: Mapping[str, Any], kind: str, 
         page_number += 1
 
 
-def _financial_state(service: Any, profile: str, title: Mapping[str, Any], processed: bool) -> tuple[dict[str, Any], dict[int, dict[str, Any]]]:
+def _financial_state(service: Any, profile: str, title: Mapping[str, Any], processed: bool,
+                     observations: dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[int, dict[str, Any]]]:
     titles = _movements(service, profile, title, "CP", processed)
     if len(titles) != 1:
         _invalid_observation(processed, "financial_title_not_unique")
     financial = titles[0]
+    if observations is not None:
+        observations["financeiro"] = financial
     summary = financial.get("resumo")
     try:
         if not isinstance(summary, Mapping) or summary.get("cLiquidado") not in ("S", "N"):
@@ -256,7 +259,10 @@ def _financial_state(service: Any, profile: str, title: Mapping[str, Any], proce
         _invalid_observation(processed, str(error))
     payments: dict[int, dict[str, Any]] = {}
     totals = {key: Decimal(0) for key in _PAYMENT_NUMBERS}
-    for row in _movements(service, profile, title, "BXCP", processed):
+    payment_rows = _movements(service, profile, title, "BXCP", processed)
+    if observations is not None:
+        observations["baixas"] = payment_rows
+    for row in payment_rows:
         details = row["detalhes"]
         try:
             if any(type(details.get(key)) is not int or details[key] < 1 for key in ("nCodBaixa", "nCodMovCC", "nCodCC")):
@@ -317,10 +323,19 @@ def _same(left: Any, right: Any) -> bool:
     return left == right
 
 
-def _observed(rows: Any, total: Decimal, *, payment: bool, processed: bool, movement_kind: str | None = None) -> list[dict[str, Any]]:
+def _observed(rows: Any, total: Decimal, *, payment: bool, processed: bool,
+              movement_kind: str | None = None, payment_id: int | None = None,
+              present: bool = True) -> list[dict[str, Any]]:
+    operation = "financial_movements_list" if payment else "payables_get"
+    context: dict[str, Any] = {"field": "categorias", "operation": operation}
+    if movement_kind is not None:
+        context["tipo_movimento"] = movement_kind
+    if payment_id is not None:
+        context["id_baixa"] = payment_id
     code_key, percent_key, value_key = ("cCodCateg", "nDistrPercentual", "nDistrValor") if payment else ("codigo_categoria", "percentual", "valor")
     if not isinstance(rows, list) or not rows:
-        _invalid_observation(processed, "missing_categories")
+        issue = "missing" if not present else "null" if rows is None else "empty" if isinstance(rows, list) else "invalid_type"
+        _invalid_observation(processed, "missing_categories", collection_issue=issue, **context)
     result = []
     codes: set[str] = set()
     try:
@@ -330,7 +345,6 @@ def _observed(rows: Any, total: Decimal, *, payment: bool, processed: bool, move
             code = row.get(code_key)
             if not isinstance(code, str) or not code.strip() or len(code) > 20 or code in codes:
                 raise ValueError("invalid_category_code")
-            operation = "financial_movements_list" if payment else "payables_get"
             percent = _remote_number(row, percent_key, processed, field=f"categorias[{index}].{percent_key}", operation=operation, movement_kind=movement_kind)
             if not 0 < percent <= 100:
                 raise ValueError("invalid_category_percentage")
@@ -346,10 +360,10 @@ def _observed(rows: Any, total: Decimal, *, payment: bool, processed: bool, move
             raise ValueError("incomplete_category_percentages")
         if result and all("valor" in item for item in result) and abs(sum((_number(item["valor"]) for item in result), Decimal(0)) - total) > _CENT:
             raise ValueError("incomplete_category_amounts")
-    except OmieError:
-        raise
+    except OmieError as error:
+        raise OmieError(error.code, str(error), {**context, **error.details}) from error
     except ValueError as error:
-        _invalid_observation(processed, str(error))
+        _invalid_observation(processed, str(error), **context)
     return result
 
 
@@ -360,7 +374,7 @@ def _matches(expected: list[dict[str, Any]], observed: list[dict[str, Any]]) -> 
     )
 
 
-def _payment_result(identifier: int, row: Mapping[str, Any], categories: list[dict[str, Any]]) -> dict[str, Any]:
+def _payment_result(identifier: int, row: Mapping[str, Any], categories: list[dict[str, Any]] | None) -> dict[str, Any]:
     details = row["detalhes"]
     return {
         "id_baixa": identifier, "lancamento_conta_id": details["nCodMovCC"], "conta_corrente_id": details["nCodCC"],
@@ -373,7 +387,7 @@ def _payment_result(identifier: int, row: Mapping[str, Any], categories: list[di
 
 
 def define_categories(service: Any, profile: str, identifier: Mapping[str, Any], categories: list[dict[str, Any]], *, include_native: bool = False) -> dict[str, Any]:
-    """Substitui categorias e confirma título, todas as baixas e seus valores.
+    """Solicita o rateio e confirma título, todas as baixas e seus valores.
 
     Recebe identificador nativo único e categorias já traduzidas. Resolve a
     integração uma vez e usa o ID numérico nas operações posteriores. Exige
@@ -388,6 +402,12 @@ def define_categories(service: Any, profile: str, identifier: Mapping[str, Any],
     informa mudança financeira ou de outro campo fora da classificação e dos
     metadados de alteração. Retornos e erros distinguem cada confirmação.
     Nenhuma falha autoriza repetição automática, cancelamento ou nova baixa.
+    Falhas de classificação não interrompem a leitura financeira posterior:
+    todas as coleções são conferidas independentemente. Os erros preservam as
+    falhas em ``falhas_conferencia``; com auditoria, expõem os registros já
+    consultados em ``dados_omie``, sem inferir coleções ausentes pela categoria
+    escalar. Divergências observadas e efeitos colaterais têm prioridade sobre
+    a ausência de classificação em outro objeto.
     """
     if not isinstance(identifier, Mapping) or len(identifier) != 1 or not set(identifier) <= {_TITLE_ID, _INTEGRATION_ID}:
         raise _error("invalid_parameter", "Informe exatamente um identificador do título.", field="dados")
@@ -407,6 +427,21 @@ def define_categories(service: Any, profile: str, identifier: Mapping[str, Any],
     audit = {"call": "AlterarContaPagar", "param": [body]}
     target = {"recurso": "contas_pagar", "id": before[_TITLE_ID]}
     flags = {"titulo_confirmado": False, "titulo_financeiro_confirmado": False, "baixas_confirmadas": False, "campos_preservados": False}
+    category_errors: list[OmieError] = []
+    observations: dict[str, Any] = {}
+    observed = None
+    financial_categories = None
+    payments: list[dict[str, Any]] = []
+
+    def observe(record: Mapping[str, Any], total: Decimal, *, payment: bool = False,
+                kind: str | None = None, payment_id: int | None = None) -> list[dict[str, Any]] | None:
+        try:
+            return _observed(record.get("categorias"), total, payment=payment, processed=True,
+                             movement_kind=kind, payment_id=payment_id, present="categorias" in record)
+        except OmieError as error:
+            category_errors.append(error)
+            return None
+
     try:
         try:
             ack = service.invoke_financial(profile, "payables_update", {"body": body}, writes=True)
@@ -418,11 +453,18 @@ def define_categories(service: Any, profile: str, identifier: Mapping[str, Any],
                 or _TITLE_ID in ack and (type(ack[_TITLE_ID]) is not int or ack[_TITLE_ID] != before[_TITLE_ID])):
             raise _error("outcome_unknown", "O retorno da escrita não confirmou o processamento do título; consulte antes de repetir.", reason="invalid_acknowledgement")
         after = _title(service, profile, query, True)
-        observed = _observed(after.get("categorias"), _number(after["valor_documento"]), payment=False, processed=True)
-        flags["titulo_confirmado"] = _matches(expected, observed) and (
+        observations["registro"] = after
+        observed = observe(after, _number(after["valor_documento"]))
+        flags["titulo_confirmado"] = observed is not None and _matches(expected, observed) and (
             len(expected) != 1 or after.get("codigo_categoria") == expected[0]["codigo_categoria"]
         )
-        financial_after, payments_after = _financial_state(service, profile, after, True)
+        financial_after, payments_after = _financial_state(service, profile, after, True, observations)
+        financial_categories = observe(financial_after, _number(after["valor_documento"]), payment=True, kind="CP")
+        flags["titulo_financeiro_confirmado"] = financial_categories is not None and _matches(expected, financial_categories)
+        for payment_id, row in payments_after.items():
+            allocation = observe(row, abs(_number(row["detalhes"]["nValorMovCC"])), payment=True, kind="BXCP", payment_id=payment_id)
+            payments.append(_payment_result(payment_id, row, allocation))
+        flags["baixas_confirmadas"] = all(row["categorias"] is not None and _matches(expected, row["categorias"]) for row in payments)
         changed = []
         if not _same(_snapshot(before, title=True), _snapshot(after, title=True)):
             changed.append("titulo")
@@ -436,25 +478,28 @@ def define_categories(service: Any, profile: str, identifier: Mapping[str, Any],
         if changed:
             raise _error("category_allocation_side_effect_detected", "A conferência detectou alterações fora das categorias. Confira o estado atual; nenhuma compensação foi executada.", escrita_processada=True, campos_alterados=changed)
         flags["campos_preservados"] = True
-        financial_categories = _observed(financial_after.get("categorias"), _number(after["valor_documento"]), payment=True, processed=True, movement_kind="CP")
-        flags["titulo_financeiro_confirmado"] = _matches(expected, financial_categories)
-        payments = []
-        for payment_id, row in payments_after.items():
-            allocation = _observed(row.get("categorias"), abs(_number(row["detalhes"]["nValorMovCC"])), payment=True, processed=True, movement_kind="BXCP")
-            payments.append(_payment_result(payment_id, row, allocation))
-        flags["baixas_confirmadas"] = all(_matches(expected, row["categorias"]) for row in payments)
-        if not flags["titulo_confirmado"]:
+        if observed is not None and not flags["titulo_confirmado"]:
             raise _error("category_allocation_not_persisted", "A Omie aceitou a escrita, mas o título mantém categorias diferentes das solicitadas. Não repita a escrita para conferir.", escrita_processada=True, categorias_titulo=observed, baixas=payments)
-        if not flags["titulo_financeiro_confirmado"] or not flags["baixas_confirmadas"]:
+        movement_mismatch = (financial_categories is not None and not flags["titulo_financeiro_confirmado"]) or any(
+            row["categorias"] is not None and not _matches(expected, row["categorias"]) for row in payments
+        )
+        if flags["titulo_confirmado"] and movement_mismatch:
             raise _error("category_allocation_propagation_not_confirmed", "O título foi corrigido, mas o rateio não foi confirmado no movimento financeiro do título ou em todas as baixas. Não cancele nem refaça pagamentos.", escrita_processada=True, categorias_titulo=observed, categorias_financeiro=financial_categories, baixas=payments)
+        if category_errors:
+            raise category_errors[0]
         result: dict[str, Any] = {"alvo": target, "categorias": observed, "baixas": payments,
                                   "categorias_financeiro": financial_categories, "verificacao": {**flags, "quantidade_baixas": len(payments)}, "versao_mcp": SETUP_VERSION}
         if include_native:
-            result["dados_omie"] = {"requisicao": audit, "processamento": ack, "registro": after,
-                                    "financeiro": financial_after, "baixas": list(payments_after.values())}
+            result["dados_omie"] = {"requisicao": audit, "processamento": ack, **observations}
         return result
     except OmieError as error:
         details = {**error.details, "alvo": target, "verificacao": dict(flags), "retryable": False, "versao_mcp": SETUP_VERSION}
+        if observations:
+            details.update(categorias_titulo=observed, categorias_financeiro=financial_categories, baixas=payments)
+        if category_errors:
+            details["falhas_conferencia"] = [failure.as_dict() for failure in category_errors]
         if include_native:
             details["requisicao_omie"] = audit
+            if observations:
+                details["dados_omie"] = observations
         raise OmieError(error.code, str(error), details) from error

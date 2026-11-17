@@ -190,7 +190,14 @@ def test_post_write_category_numbers_keep_the_exact_field_and_origin(group, key,
         assert "tipo_movimento" not in details
     else:
         assert details["tipo_movimento"] == group
+    if group == "BXCP":
+        assert details["id_baixa"] == 78
+    failure = details["falhas_conferencia"][0]
+    assert failure["code"] == "category_allocation_verification_failed"
+    assert failure["details"]["field"] == f"categorias[0].{key}"
+    assert details["verificacao"]["campos_preservados"] is True
     assert PRIVATE_VALUE not in json.dumps(raised.value.as_dict(), ensure_ascii=False, allow_nan=False)
+    assert len(service.invoke_financial.call_args_list) == 7
     assert sum(call.kwargs["writes"] for call in service.invoke_financial.call_args_list) == 1
 
 
@@ -207,6 +214,8 @@ def test_null_optional_category_amount_is_invalid_when_the_remote_field_is_prese
     assert raised.value.details["operation"] == "payables_get"
     assert raised.value.details["number_issue"] == "null"
     assert raised.value.details["escrita_processada"] is True
+    assert raised.value.details["verificacao"]["campos_preservados"] is True
+    assert len(service.invoke_financial.call_args_list) == 7
     assert sum(call.kwargs["writes"] for call in service.invoke_financial.call_args_list) == 1
 
 

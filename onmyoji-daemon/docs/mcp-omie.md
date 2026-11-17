@@ -180,9 +180,9 @@ recusadas com orientação para a fachada publicada.
 
 ### Categorias: substituir o rateio de uma conta a pagar
 
-`omie.financeiro.contas_pagar.definir_categorias` substitui a distribuição
-completa de categorias de um título existente e confere o título e suas
-baixas. Use essa ferramenta para consolidar categorias antigas, inclusive em
+`omie.financeiro.contas_pagar.definir_categorias` solicita a substituição da
+distribuição completa de categorias de um título existente e confere o título
+e suas baixas. Use essa ferramenta para consolidar categorias antigas, inclusive em
 um título pago; `contas_pagar.alterar` com `categoria_codigo` altera somente
 o campo de categoria única e não confirma a remoção de um rateio anterior.
 Categorias e departamentos são classificações diferentes: a distribuição
@@ -242,25 +242,53 @@ conta, valores, desconto, juros, multa, datas e conciliação presentes nos
 registros necessários.
 Respostas incompletas ou sem vínculo comprovado impedem uma confirmação de
 sucesso; uma falha na pré-consulta impede a escrita.
+Na pós-conferência, a ausência de `categorias` no título não encerra a
+investigação: o MCP também consulta o registro `CP` e todas as baixas `BXCP`
+identificáveis, sem enviar outra escrita. Assim, uma coleção ausente não
+oculta um rateio antigo que ainda possa ser observado nos outros registros.
 
 O resultado separa `verificacao.titulo_confirmado`,
 `verificacao.titulo_financeiro_confirmado`, `verificacao.baixas_confirmadas`
 e `verificacao.campos_preservados`. Retorna `categorias` do título,
 `categorias_financeiro` do registro `CP` e as categorias e identificadores de
 cada baixa observada. O aceite da Omie, sozinho, não confirma a distribuição
-nem sua propagação. Use
+nem sua propagação. Os campos de `verificacao` continuam booleanos: `true`
+significa confirmado e `false` significa não confirmado. Nos erros, as
+coleções `categorias_titulo`, `categorias_financeiro` e
+`baixas[i].categorias` usam `null` quando a conferência ficou inconclusiva.
+Uma coleção ausente não significa distribuição vazia nem remoção confirmada
+de categorias.
+As falhas de conferência são reunidas em `details.falhas_conferencia`, como
+objetos com `code`, `message` e `details`. O diagnóstico de uma coleção
+ausente identifica `field: categorias`, a operação e, em movimentos
+financeiros, `tipo_movimento: CP` ou `BXCP` e `id_baixa` quando aplicável.
+`collection_issue` distingue chave ausente (`missing`), nulo explícito
+(`null`), lista vazia (`empty`) e tipo incompatível (`invalid_type`).
+Esse contexto permite distinguir a origem da conferência inconclusiva.
+Use
 `incluir_dados_omie: true` apenas quando precisar dos registros nativos de
 auditoria, sem credenciais. O retorno público informa zero para os campos
 opcionais omitidos nas baixas; a auditoria nativa preserva as omissões do
-retorno da Omie.
+retorno da Omie. Quando solicitado, um erro de pós-conferência também inclui
+em `details.dados_omie` os registros posteriores disponíveis em `registro`,
+`financeiro` e `baixas`; a requisição permanece em
+`details.requisicao_omie`. Esses dados permitem a análise sem repetir a
+gravação. Uma consulta que falhou continua sendo registrada como falha; a
+auditoria não inventa o registro ausente.
 
 | Situação | Resultado do MCP |
 | --- | --- |
 | Pré-consulta incompleta ou inconsistente | `category_allocation_preflight_failed`; nenhuma escrita enviada. |
+| Pagamento ou outro campo preservado difere entre as consultas | `category_allocation_side_effect_detected`, com prioridade sobre o resultado das categorias. |
 | Título consultado mantém rateio diferente do solicitado | `category_allocation_not_persisted`. |
 | Título confirmado, mas rateio do registro financeiro `CP` ou de uma baixa não corresponde | `category_allocation_propagation_not_confirmed`. |
-| Pagamento ou outro campo preservado difere entre as consultas | `category_allocation_side_effect_detected`. |
 | Consulta posterior falha ou não permite concluir a conferência | `category_allocation_verification_failed`. |
+
+Uma divergência efetivamente observada no título resulta em
+`category_allocation_not_persisted` mesmo quando a conferência de `CP` ou de
+uma baixa fica inconclusiva. As falhas adicionais continuam disponíveis no
+diagnóstico agregado; não substituem uma divergência já comprovada por uma
+mensagem genérica de coleção ausente.
 
 Os erros de pré e pós-conferência informam `escrita_processada` e
 `retryable: false`; os posteriores à escrita trazem também as confirmações
@@ -301,6 +329,20 @@ O diagnóstico, sozinho, não comprova que o número esteja incorreto no ERP.
 > alteração de um título pago atualize as baixas existentes. Esta operação
 > só confirma o que conseguiu consultar depois da escrita; uma divergência
 > deve ser avaliada antes de considerar qualquer reversão do pagamento.
+
+Em uma validação real, `AlterarContaPagar` retornou processamento bem-sucedido,
+mas leituras posteriores ainda mostraram o rateio antigo no título e na
+baixa, com pagamento, desconto e conciliação preservados. Essa observação
+comprova a ausência de efeito naquele caso; não estabelece uma proibição
+geral para alterar categorias de títulos pagos.
+O contrato oficial publica `valor` e `percentual` nos itens de `categorias`,
+sem esclarecer que `valor` seja obrigatório para essa alteração. Acrescentar
+valores monetários à requisição não é uma solução comprovada nem altera o
+contrato público desta ferramenta, que continua recebendo código e percentual.
+Para esse tipo de divergência, use as consultas já obtidas para validar o
+comportamento com o suporte Omie ou em um ambiente de teste da API. A interface
+do ERP também pode ser utilizada se permitir o ajuste. Não repita a escrita
+para tentar forçar a propagação, nem cancele a baixa automaticamente.
 
 Referências: [contas a pagar](https://app.omie.com.br/api/v1/financas/contapagar/)
 e [movimentos financeiros](https://app.omie.com.br/api/v1/financas/mf/).

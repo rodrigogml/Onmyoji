@@ -91,7 +91,7 @@ for resource, legacy, label in (("contas_pagar", "payables", "contas a pagar"), 
     ]
 
 SPECS += [
-    FinanceSpec("omie.financeiro.contas_pagar.definir_categorias", "payables_update", "Substitui integralmente o rateio de categorias de uma conta a pagar e confere o título e todas as baixas vinculadas, preservando pagamento, desconto e conciliação.", True, kind="category_set"),
+    FinanceSpec("omie.financeiro.contas_pagar.definir_categorias", "payables_update", "Solicita à Omie a substituição integral do rateio de categorias e só confirma o resultado após conferir título, todas as baixas e a preservação de pagamento, desconto e conciliação. Um aceite sem persistência não confirma a alteração.", True, kind="category_set"),
     FinanceSpec("omie.financeiro.contas_pagar.registrar_pagamento", "payables_pay", "Registra o pagamento de uma conta a pagar.", True, kind="payment"),
     FinanceSpec("omie.financeiro.contas_pagar.cancelar_pagamento", "payables_payment_cancel", "Cancela um pagamento pelo identificador da baixa.", True, kind="receipt"),
     FinanceSpec("omie.financeiro.contas_receber.registrar_recebimento", "receivables_receive", "Registra o recebimento de uma conta a receber.", True, kind="payment"),
