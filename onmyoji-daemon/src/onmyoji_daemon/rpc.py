@@ -49,8 +49,12 @@ class RpcServer:
         self.control_lock = threading.Lock()
         self.readers = threading.BoundedSemaphore(long_limit + 32)
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.socket.bind((host, port)); self.socket.listen(16); self.socket.settimeout(0.25)
+        try:
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.socket.bind((host, port)); self.socket.listen(16); self.socket.settimeout(0.25)
+        except OSError as error:
+            self.socket.close()
+            raise OSError(error.errno, f"Não foi possível abrir o RPC local em {host}:{port}: {error.strerror or error}") from error
         self.port = int(self.socket.getsockname()[1])
 
     def serve_forever(self, stop: threading.Event) -> None:

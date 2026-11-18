@@ -107,15 +107,31 @@ class NotificationHttpServer:
     def __init__(self, port: int, gateway, max_request_bytes: int = 1_048_576, long_limit: int = 32):
         self.server = _Server(port, gateway, max_request_bytes, long_limit)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True, name="agent-events-http")
+        self._lifecycle_lock = threading.Lock()
+        self._closed = False
 
     @property
     def port(self) -> int:
         return self.server.server_address[1]
 
+    @property
+    def running(self) -> bool:
+        return not self._closed and self.thread.is_alive()
+
     def start(self) -> None:
-        self.thread.start()
+        with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("O listener HTTP de eventos já foi encerrado.")
+            if self.thread.ident is None:
+                self.thread.start()
 
     def close(self) -> None:
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join(2)
+        with self._lifecycle_lock:
+            if self._closed:
+                return
+            self._closed = True
+            if self.thread.ident is not None:
+                self.server.shutdown()
+            self.server.server_close()
+            if self.thread.ident is not None and self.thread is not threading.current_thread():
+                self.thread.join(2)

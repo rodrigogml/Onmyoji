@@ -11,6 +11,7 @@ import os
 import re
 import threading
 import time
+import tomllib
 import uuid
 from typing import Any
 
@@ -58,12 +59,51 @@ class Supervisor:
         self.host, self.token, self.stop_event = "127.0.0.1", secrets.token_urlsafe(32), threading.Event()
         from .agent_notification.configuration import NotificationConfiguration
         limits = NotificationConfiguration(self.onmyoji_root).load()
-        self.rpc = RpcServer(self.host, free_port(), self.token, self.handle, long_methods=("notification.submit",), long_limit=limits["long_limit"], event_max_bytes=limits["max_request_bytes"], on_rejection=self._notification_transport_rejected)
+        reserved = self._http_ports(limits["port"])
+        for _attempt in range(64):
+            rpc = RpcServer(self.host, 0, self.token, self.handle, long_methods=("notification.submit",), long_limit=limits["long_limit"], event_max_bytes=limits["max_request_bytes"], on_rejection=self._notification_transport_rejected)
+            if rpc.port not in reserved:
+                self.rpc = rpc
+                break
+            rpc.close()
+        else:
+            raise OSError("Não foi possível reservar uma porta RPC fora das portas HTTP da instância.")
         self.services = {name: ManagedService(spec) for name, spec in SERVICES.items()}
         self.publications = PublicationCoordinator(self.onmyoji_root, self.services, self._call_service, {self.rpc.port})
         self.recovery_delay_seconds = 15.0
         self.next_recovery_at: dict[str, float] = {}
         self._load_state()
+
+    def _http_ports(self, notification_port: int | None = None) -> set[int]:
+        """Reserva listeners HTTP antes que seus processos estejam em execução."""
+        reserved = {39390, 39391, 39392}
+        reserved.update(spec.publication_port for spec in SERVICES.values() if spec.publication_port is not None)
+        if notification_port is None:
+            from .agent_notification.configuration import NotificationConfiguration
+            try:
+                notification_port = NotificationConfiguration(self.onmyoji_root).load()["port"]
+            except (OSError, ValueError, RpcError):
+                pass
+        if notification_port is not None:
+            reserved.add(notification_port)
+        try:
+            configuration = tomllib.loads((self.root / "services" / "gateway" / "config.toml").read_text(encoding="utf-8"))
+            gateway_port = configuration.get("http_port")
+            if type(gateway_port) is int and 1 <= gateway_port <= 65535:
+                reserved.add(gateway_port)
+        except (OSError, ValueError):
+            pass
+        return reserved
+
+    def _worker_rpc_port(self) -> int:
+        """Escolhe transporte privado sem ocupar listeners HTTP ou outros RPCs."""
+        reserved = self._http_ports() | {self.rpc.port}
+        reserved.update(service.port for service in self.services.values() if service.port)
+        for _attempt in range(64):
+            port = free_port()
+            if port not in reserved:
+                return port
+        raise OSError("Não foi possível selecionar uma porta RPC livre das reservas da instância.")
 
     def _acquire_lock(self) -> None:
         """Garante um único supervisor por CODEX_HOME, removendo somente lock órfão."""
@@ -117,17 +157,20 @@ class Supervisor:
     def _safe_output(line: str) -> str:
         return re.sub(r"(?i)(token|password|secret)\s*[=:]\s*\S+", r"\1=[redacted]", line).strip()[-800:]
 
-    def _capture_output(self, service: ManagedService) -> None:
-        if not service.process or not service.process.stdout or not service.log_path: return
+    def _capture_output(self, service: ManagedService, process: subprocess.Popen[str], generation: str, log_path: Path) -> None:
+        """Preserva o log de cada processo sem reatribuir sua saída a outra geração."""
+        if not process.stdout: return
         try:
-            with service.log_path.open("a", encoding="utf-8") as output:
-                for raw in service.process.stdout:
+            with log_path.open("a", encoding="utf-8") as output:
+                for raw in process.stdout:
                     line = self._safe_output(raw)
                     if not line: continue
                     output.write(line + "\n"); output.flush()
-                    service.output_tail = line
-                    if service.process.poll() is not None and service.process.returncode:
-                        service.last_error = line
+                    with self.publications.lock:
+                        if service.process is process and service.generation == generation:
+                            service.output_tail = line
+                            if process.poll() is not None and process.returncode:
+                                service.last_error = line
         except OSError:
             pass
 
@@ -152,10 +195,14 @@ class Supervisor:
         with self.publications.lock:
             self.publications.invalidate(name, service.generation)
             service.generation, service.state = uuid.uuid4().hex, "starting"
-        service.port, service.token = free_port(), secrets.token_urlsafe(32)
-        data_dir = self.root / "services" / name; data_dir.mkdir(parents=True, exist_ok=True)
-        command = service.spec.command(data_dir) + ["--host", self.host, "--port", str(service.port), "--token=" + service.token, "--onmyoji-root", str(self.onmyoji_root)]
+            service.output_tail, service.last_error = "", None
+            service.process = None
+            service.port = 0
         try:
+            with self.publications.lock:
+                service.port, service.token = self._worker_rpc_port(), secrets.token_urlsafe(32)
+            data_dir = self.root / "services" / name; data_dir.mkdir(parents=True, exist_ok=True)
+            command = service.spec.command(data_dir) + ["--host", self.host, "--port", str(service.port), "--token=" + service.token, "--onmyoji-root", str(self.onmyoji_root)]
             environment = dict(os.environ)
             source_root = str(Path(__file__).resolve().parents[1])
             environment["PYTHONPATH"] = source_root + (os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else "")
@@ -171,7 +218,7 @@ class Supervisor:
                                                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             if service.spec.contain_process_tree:
                 service.process_group = ServiceProcessGroup(service.process)
-            threading.Thread(target=self._capture_output, args=(service,), daemon=True).start()
+            threading.Thread(target=self._capture_output, args=(service, service.process, service.generation, service.log_path), daemon=True).start()
             deadline = time.monotonic() + 12
             while time.monotonic() < deadline:
                 if service.process.poll() is not None:

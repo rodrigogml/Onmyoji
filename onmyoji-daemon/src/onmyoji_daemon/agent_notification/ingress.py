@@ -1,6 +1,7 @@
 """Adaptadores de entrada e saída; execução pertence ao núcleo compartilhado."""
 from __future__ import annotations
 
+import errno
 import json
 import re
 import threading
@@ -24,7 +25,9 @@ class NotificationIngress:
         self.notification_log = NotificationLog(self.store, self.settings.root / "state" / "daemon" / "runtime" / "logs" / "agent-gateway")
         self._notification_delivery_lock = threading.Lock()
         self._notification_sync_lock = threading.Lock()
+        self._notification_http_lock = threading.RLock()
         self._notification_http = None
+        self._notification_http_error = None
 
     def _notification_handle(self, method, params):
         configuration = self.notification_configuration.load()
@@ -33,15 +36,19 @@ class NotificationIngress:
             return {"recorded": True}
         if method == "notification.configure":
             result = self.notification_configuration.configure(params)
+            if self._notification_http_status()["state"] != "running":
+                self._start_notification_http()
+            result["http"] = self._notification_http_status()
             self._wake_worker("")
             return result
         if method in {"notification.status", "notification.diagnose"}:
             with self.database_lock:
                 counts = dict(self.database.execute("SELECT COALESCE(execution_state,'pending'),COUNT(*) FROM notification_receipts GROUP BY execution_state").fetchall())
-            checks = {"app_server_enabled": self.settings.app_server_enabled, "telegram_available": bool(self.api), "email_account_per_event": True}
+            http = self._notification_http_status()
+            checks = {"app_server_enabled": self.settings.app_server_enabled, "telegram_available": bool(self.api), "email_account_per_event": True, "http_listener": http["state"] == "running"}
             if method == "notification.diagnose":
                 checks.update(self._notification_diagnose(configuration))
-            return {"enabled": configuration["enabled"], "configuration": configuration, "counts": counts, "checks": checks, "execution": self.store.summary()}
+            return {"enabled": configuration["enabled"], "configuration": configuration, "counts": counts, "checks": checks, "execution": self.store.summary(), "http": http}
         if method != "notification.submit":
             raise RpcError("Operação de notificação desconhecida.", "unknown_method")
         return self._notification_submit(params, wait=True)
@@ -91,14 +98,55 @@ class NotificationIngress:
 
     def _start_notification_http(self):
         from .http import NotificationHttpServer
-        configuration = self.notification_configuration.load()
-        self._notification_http = NotificationHttpServer(configuration["port"], self, configuration["max_request_bytes"], configuration["long_limit"])
-        self._notification_http.start()
+        with self._notification_http_lock:
+            if self._notification_http is not None:
+                if self._notification_http.running:
+                    return
+                self._notification_http.close()
+                self._notification_http = None
+            if self.stop_event.is_set():
+                return
+            configuration = self.notification_configuration.load()
+            server = None
+            try:
+                server = NotificationHttpServer(configuration["port"], self, configuration["max_request_bytes"], configuration["long_limit"])
+                server.start()
+            except OSError as error:
+                if server is not None:
+                    server.close()
+                code = getattr(error, "winerror", None) or error.errno
+                if error.errno == errno.EADDRINUSE or code == 10048:
+                    detail = "a porta já está em uso por outro processo"
+                elif error.errno in {errno.EACCES, errno.EPERM} or code == 10013:
+                    detail = "o sistema recusou o acesso a essa porta"
+                else:
+                    detail = "o sistema não permitiu abrir o listener"
+                self._notification_http_error = f"HTTP de eventos indisponível em 127.0.0.1:{configuration['port']}: {detail} (código {code if code is not None else 'desconhecido'})."
+                return
+            self._notification_http = server
+            self._notification_http_error = None
+
+    def _notification_http_status(self):
+        """Distingue o listener efetivo da habilitação lógica do ingresso de eventos."""
+        with self._notification_http_lock:
+            server = self._notification_http
+            error = self._notification_http_error
+            port = server.port if server is not None else self.notification_configuration.load()["port"]
+            if server is not None and server.running:
+                state = "running"
+            elif server is not None or error:
+                state = "failed"
+                error = error or f"O listener HTTP de eventos em 127.0.0.1:{port} encerrou sem confirmação de disponibilidade."
+            else:
+                state = "stopped"
+            return {"state": state, "host": "127.0.0.1", "port": port, "last_error": error}
 
     def _stop_notification_http(self):
-        server, self._notification_http = self._notification_http, None
-        if server is not None:
-            server.close()
+        with self._notification_http_lock:
+            server, self._notification_http = self._notification_http, None
+            if server is not None:
+                server.close()
+            self._notification_http_error = None
 
     def _notification_diagnose(self, configuration):
         from .contract import SCHEMA, VALIDATOR

@@ -22,6 +22,11 @@ O setup aguarda a prontidão do Telegram antes de solicitar o PIN; gateway
 desabilitado, falha do módulo e erro de acesso ao controle têm diagnósticos
 próprios, sem serem resumidos como daemon desligado.
 
+Um conflito na porta HTTP de eventos do agente fica restrito a esse listener e
+não impede o Telegram de responder ao pareamento. Consulte **Daemon > Eventos
+do agente > Diagnóstico** para identificar o endereço e corrigir a porta; veja
+a [disponibilidade do ingresso HTTP](../../docs/eventos-agendamentos.md#eventos-do-agente).
+
 Use **Daemon > Telegram > Gateway Telegram** para preparar a ativação e
 **Owners e comandos > Parear owner** para solicitar o código. As consultas
 precisam usar a mesma instância (`CODEX_HOME`) e conta operacional que executa

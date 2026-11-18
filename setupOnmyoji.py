@@ -2643,7 +2643,14 @@ def notification_menu(root: Path) -> None:
                 if changes["enabled"]:
                     local_daemon_rpc(root, "enable", {"service": "telegram"})
                     state = local_daemon_rpc(root, "start", {"service": "telegram"})
-                    result(state.get("state") == "running", "Ingresso configurado; confira o diagnóstico." if state.get("state") == "running" else str(state.get("last_error") or "Não foi possível iniciar o gateway."))
+                    if state.get("state") == "running":
+                        health = local_daemon_rpc(root, "notification.status").get("http", {})
+                        if health.get("state") == "failed":
+                            result(False, "Configuração salva, mas o listener de eventos não está disponível: " + str(health.get("last_error") or "Consulte o diagnóstico de eventos."))
+                        else:
+                            result(True, "Ingresso configurado; confira o diagnóstico.")
+                    else:
+                        result(False, str(state.get("last_error") or "Não foi possível iniciar o gateway."))
                 else:
                     result(True, "Ingresso desabilitado.")
                 continue
@@ -2652,6 +2659,11 @@ def notification_menu(root: Path) -> None:
                 diagnostic = local_daemon_rpc(root, "notification.diagnose")
                 for label, ready in diagnostic["checks"].items():
                     result(bool(ready), label.replace("_", " "))
+                http = diagnostic.get("http", {})
+                if http.get("last_error"):
+                    result(False, str(http["last_error"]))
+                elif http:
+                    note(f"Listener HTTP: {http.get('host')}:{http.get('port')} · {http.get('state')}")
                 note("Execuções: " + json.dumps(diagnostic["counts"], ensure_ascii=False))
                 continue
             if choice == "2":
@@ -2690,8 +2702,10 @@ def notification_menu(root: Path) -> None:
                 alert("Opção inválida. Escolha uma das alternativas ou cancele."); continue
             saved = save_notification_configuration(root, changes)
             result(True, "Configuração salva.")
+            if saved.get("http", {}).get("state") == "failed":
+                result(False, str(saved["http"].get("last_error") or "O listener de eventos não está disponível; consulte o diagnóstico."))
             if saved.get("restart_required"):
-                note("Reinicie o processo do daemon para aplicar a nova porta.")
+                note("Reinicie o daemon para aplicar a nova porta.")
         except (OSError, ValueError, RpcError) as error:
             result(False, str(error))
 
