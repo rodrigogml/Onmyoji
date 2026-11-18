@@ -52,6 +52,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("publication-diagnose", help="Diagnostica Gateway/Tunnel sem iniciar serviços ou alterar arquivos")
     sub.add_parser("process-status"); sub.add_parser("process-start")
     for action in ("process-stop", "process-force-stop"): sub.add_parser(action)
+    sub.add_parser("daemon-status")
+    for action in ("daemon-start", "daemon-stop", "daemon-restart", "daemon-force-stop"):
+        sub.add_parser(action).add_argument("--use-sudo", action="store_true")
     install_service = sub.add_parser("install-service"); install_service.add_argument("--name", required=True); install_service.add_argument("--description", required=True); install_service.add_argument("--scope", choices=["user", "system"], default="system"); install_service.add_argument("--run-as-user", default=""); install_service.add_argument("--run-as-group", default=""); install_service.add_argument("--use-sudo", action="store_true"); install_service.add_argument("--windows-account", default=""); install_service.add_argument("--password-stdin", action="store_true"); install_service.add_argument("--isolate-linux", action="store_true"); install_service.add_argument("--installer-user", default=""); install_service.add_argument("--installer-access", action="store_true"); install_service.add_argument("--workspace", default=""); install_service.add_argument("--resource-limits", type=json.loads, default=None)
     service_account = sub.add_parser("configure-windows-service-account"); service_account.add_argument("--account", required=True); service_account.add_argument("--password-stdin", action="store_true")
     remove_service = sub.add_parser("remove-service"); remove_service.add_argument("--use-sudo", action="store_true"); sub.add_parser("service-status")
@@ -156,6 +159,10 @@ def main(argv: list[str] | None = None) -> int:
         "process-start": lambda: management.start_background(root),
         "process-stop": lambda: management.stop_background(root),
         "process-force-stop": lambda: management.stop_background(root, True),
+        "daemon-start": lambda: management.daemon_action(root, "start", args.use_sudo),
+        "daemon-stop": lambda: management.daemon_action(root, "stop", args.use_sudo),
+        "daemon-restart": lambda: management.daemon_action(root, "restart", args.use_sudo),
+        "daemon-force-stop": lambda: management.daemon_action(root, "force", args.use_sudo),
         "install-service": install_service_action,
         "configure-windows-service-account": lambda: management.configure_windows_service_account(root, args.account, sys.stdin.read().rstrip("\r\n") if args.password_stdin else ""),
         "remove-service": lambda: management.remove_service(root, args.use_sudo),
@@ -168,6 +175,8 @@ def main(argv: list[str] | None = None) -> int:
         "repair-service-permissions": lambda: management.repair_service_permissions(root, args.use_sudo, lambda message: print("› " + message, flush=True)),
         "service-security": lambda: management.service_security(root, args.use_sudo),
     }
+    if args.action == "daemon-status":
+        print(json.dumps(management.daemon_status(root), ensure_ascii=False)); return 0
     if args.action == "process-status":
         info = management.running_process(root); print(json.dumps(info or {"state": "stopped"}, ensure_ascii=False)); return 0
     if args.action in direct:

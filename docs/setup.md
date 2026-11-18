@@ -72,6 +72,8 @@ Quando uma skill oferecer teste de perfil, ele deve selecionar um perfil existen
 
 O serviço do sistema operacional, o controle local do supervisor e o gateway Telegram têm estados distintos. Quando o setup aplica uma alteração com reinício do daemon, aguarda o controle da instância e, se habilitado, o Telegram. O pareamento aguarda o gateway responder antes de solicitar o PIN e apresenta o motivo operacional quando essa prontidão não é confirmada, incluindo gateway desabilitado, falha de inicialização ou erro de comunicação. As consultas do pareamento usam o mesmo `CODEX_HOME`, runtime Python e conta operacional da instância.
 
+Menus, assistentes, ofertas de reinício e atualização usam o mesmo controle do daemon. Havendo serviço registrado, a operação passa pelo gerenciador do sistema operacional; o menu de processo local não pode finalizar seu PID. Um reinício só é confirmado quando o supervisor anterior saiu e uma nova execução responde com a versão e a configuração atuais. No modo serviço, o PID que responde também precisa ser o PID informado pelo gerenciador. Falhas e processos fora do serviço são apresentados como pendências, sem anunciar sucesso. Consulte o [contrato de controle e diagnóstico do daemon](../onmyoji-daemon/docs/daemon-lifecycle.md).
+
 > [!NOTE]
 > O teste controlado do Codex App Server confirma a execução do agente. Ele não confirma que o supervisor ou o gateway Telegram estejam disponíveis para pareamento. Para preparar o gateway, use **Daemon > Telegram > Gateway Telegram**; veja os [estados de inicialização e pareamento](../onmyoji-daemon/docs/Telegram.md#inicialização-e-pareamento).
 

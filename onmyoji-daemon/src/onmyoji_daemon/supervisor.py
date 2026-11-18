@@ -18,7 +18,7 @@ from .registry import SERVICES, ServiceSpec
 from .rpc import RpcError, RpcServer, call, disconnected
 from .supervision.component.process_group import ServiceProcessGroup
 from .supervision.publication import PublicationCoordinator
-from .state_layout import daemon_runtime_path
+from .state_layout import SETUP_VERSION, daemon_runtime_path
 
 
 def free_port() -> int:
@@ -52,6 +52,7 @@ class Supervisor:
         self.endpoint_file = self.runtime / "endpoint.json"
         self.process_file = self.runtime / "process.json"
         self.lock_file = self.runtime / "supervisor.lock"
+        self.process_identity: dict[str, Any] = {}
         self.state_file = self.root / "services.json"
         self.log_root = self.runtime / "logs"; self.log_root.mkdir(parents=True, exist_ok=True)
         self.host, self.token, self.stop_event = "127.0.0.1", secrets.token_urlsafe(32), threading.Event()
@@ -68,7 +69,7 @@ class Supervisor:
         """Garante um único supervisor por CODEX_HOME, removendo somente lock órfão."""
         try: revision = hashlib.sha256((self.root / "daemon.toml").read_bytes()).hexdigest()
         except OSError: revision = ""
-        payload = {"pid": os.getpid(), "root": str(self.onmyoji_root), "instance": uuid.uuid4().hex, "started_at": time.time(), "configuration_revision": revision}
+        payload = {"pid": os.getpid(), "root": str(self.onmyoji_root), "instance": uuid.uuid4().hex, "started_at": time.time(), "configuration_revision": revision, "setup_version": SETUP_VERSION}
         try:
             descriptor = os.open(self.lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
@@ -81,12 +82,14 @@ class Supervisor:
                     alive = str(pid) in probe.stdout and "No tasks" not in probe.stdout
                 else:
                     try: os.kill(pid, 0); alive = True
+                    except PermissionError: alive = True
                     except OSError: pass
             if alive: raise RuntimeError("another daemon supervisor is already running for this instance")
             self.lock_file.unlink(missing_ok=True)
             descriptor = os.open(self.lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         with os.fdopen(descriptor, "w", encoding="utf-8") as output: json.dump(payload, output)
         self.process_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        self.process_identity = payload
 
     def _load_state(self) -> None:
         try: values = json.loads(self.state_file.read_text(encoding="utf-8"))
@@ -268,7 +271,7 @@ class Supervisor:
         service.state = "stopped"; return self.status(name)
 
     def handle(self, method: str, params: dict[str, Any]) -> Any:
-        if method == "ping": return {"service": "onmyoji-daemon", "state": "running"}
+        if method == "ping": return {"service": "onmyoji-daemon", "state": "running", **self.process_identity}
         if method == "list-services": return [self.status(name) for name in self.services]
         if method.startswith("gateway.publication.") or method in {"notification.transport-rejected", "task.activate", "cloudflare-tunnel.activate", "mini-apps.publication.update"}:
             raise RpcError("Operação interna reservada ao Supervisor.", "internal_operation")

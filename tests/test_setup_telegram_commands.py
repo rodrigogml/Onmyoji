@@ -59,6 +59,8 @@ def run_setup(tmp_path, monkeypatch, response, *, returncode=0, wizard=False, lo
             output = {"pin": "123456"}
         elif "list-services" in arguments:
             output = [{"name": "telegram", "enabled": True, "state": "running"}]
+        elif "daemon-status" in arguments:
+            output = {"mode": "process", "active": True, "reachable": True}
         elif arguments[-2:] == ["telegram", "status"]:
             output = {"listener": "running"}
         elif "validation-json" in arguments:

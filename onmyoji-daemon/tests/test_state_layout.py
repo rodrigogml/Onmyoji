@@ -1,9 +1,11 @@
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from onmyoji_daemon import state_layout
 from onmyoji_daemon.state_layout import StateLayoutError, cloudflare_tunnel_state_path, migrate
 
 
@@ -137,3 +139,41 @@ def test_migrate_tunnel_operations_refuses_active_version_one_supervisor(tmp_pat
     assert source.read_bytes() == b"history"
     assert not (cloudflare_tunnel_state_path(tmp_path) / "operations.json").exists()
     assert json.loads(marker.read_text(encoding="utf-8"))["layout_version"] == 1
+
+
+@pytest.mark.parametrize("previous_version, lock_directory", [
+    (0, "configs/daemon/runtime"),
+    (1, "state/daemon/runtime"),
+])
+def test_migrate_preserves_state_when_another_accounts_supervisor_cannot_be_signalled(tmp_path, monkeypatch, previous_version, lock_directory):
+    marker = tmp_path / "state/onmyoji-state.json"
+    if previous_version:
+        marker.parent.mkdir(parents=True)
+        marker.write_text(json.dumps({"layout_version": previous_version}), encoding="utf-8")
+    source = tmp_path / "configs/daemon/services/cloudflare-tunnel/operations.json"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"history")
+    lock = tmp_path / lock_directory / "supervisor.lock"
+    lock.parent.mkdir(parents=True)
+    previous = json.dumps({"pid": 42, "root": str(tmp_path.resolve())}).encode("utf-8")
+    lock.write_bytes(previous)
+    platform = SimpleNamespace(**vars(state_layout.os))
+    platform.name = "posix"
+
+    def denied(pid, signal):
+        assert (pid, signal) == (42, 0)
+        raise PermissionError("Supervisor belongs to another account")
+
+    platform.kill = denied
+    monkeypatch.setattr(state_layout, "os", platform)
+
+    with pytest.raises(StateLayoutError, match="Pare o daemon"):
+        migrate(tmp_path)
+
+    assert source.read_bytes() == b"history"
+    assert lock.read_bytes() == previous
+    assert not (cloudflare_tunnel_state_path(tmp_path) / "operations.json").exists()
+    if previous_version:
+        assert json.loads(marker.read_text(encoding="utf-8"))["layout_version"] == previous_version
+    else:
+        assert not marker.exists()

@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 LAYOUT_VERSION = 2
-SETUP_VERSION = "2026.11.17.25"
+SETUP_VERSION = "2026.11.17.26"
 
 
 class StateLayoutError(RuntimeError):
@@ -70,6 +70,8 @@ def _active(root: Path) -> bool:
         else:
             try:
                 os.kill(pid, 0)
+            except PermissionError:
+                return True
             except OSError:
                 continue
         return True

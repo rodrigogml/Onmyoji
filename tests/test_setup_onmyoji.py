@@ -1488,7 +1488,10 @@ def test_daemon_wizard_restarts_system_service_with_sudo_confirmation(tmp_path, 
     answers = iter(["w", "n", "s", "", "s", "s", "x"])
     def run(args, **_kwargs):
         calls.append(args)
-        output = '[{"label":"Runtime Python do daemon","state":"ok"}]' if "daemon-validation-json" in args else "ok"
+        if "daemon-status" in args:
+            output = '{"mode":"service","active":true,"reachable":true}'
+        else:
+            output = '[{"label":"Runtime Python do daemon","state":"ok"}]' if "daemon-validation-json" in args else "ok"
         return subprocess.CompletedProcess(args, 0, stdout=output, stderr="")
     monkeypatch.setattr(MODULE, "os", LinuxOs())
     monkeypatch.setattr(MODULE, "load_execution_profile", lambda _root: {})
@@ -1499,7 +1502,7 @@ def test_daemon_wizard_restarts_system_service_with_sudo_confirmation(tmp_path, 
 
     MODULE.daemon_menu(tmp_path)
 
-    restart = [args for args in calls if "service-restart" in args]
+    restart = [args for args in calls if "daemon-restart" in args]
     assert len(restart) == 1
     assert "--use-sudo" in restart[0]
 

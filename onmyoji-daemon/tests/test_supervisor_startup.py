@@ -35,7 +35,10 @@ def test_supervisor_serves_rpc_while_an_enabled_service_is_starting(tmp_path, mo
     try:
         assert initializing.wait(2)
         address = endpoint(tmp_path)
-        assert call(*address, "ping", timeout=1) == {"service": "onmyoji-daemon", "state": "running"}
+        ping = call(*address, "ping", timeout=1)
+        assert ping["service"] == "onmyoji-daemon"
+        assert ping["state"] == "running"
+        assert ping["instance"] == supervisor.process_identity["instance"]
         services = call(*address, "list-services", timeout=1)
         telegram = next(service for service in services if service["name"] == "telegram")
         assert telegram["enabled"] is True

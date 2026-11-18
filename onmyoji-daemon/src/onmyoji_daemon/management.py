@@ -26,7 +26,7 @@ from .registry import SERVICES
 from .instance import identity
 from .supervisor import endpoint
 from . import runtime as shared_runtime
-from .state_layout import daemon_runtime_path
+from .state_layout import SETUP_VERSION, daemon_runtime_path
 from .linux_service import ServiceLimits, load_execution_profile, provision_account, recommended_limits, repair_permissions as repair_linux_permissions
 from .config_publication import write_instance_text
 
@@ -216,8 +216,14 @@ def _pid_alive(pid: int) -> bool:
     if os.name == "nt":
         result = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], text=True, capture_output=True, check=False)
         return str(pid) in result.stdout and "No tasks" not in result.stdout
-    try: os.kill(pid, 0); return True
+    try: os.kill(pid, 0)
+    except PermissionError: return True
     except OSError: return False
+    if sys.platform.startswith("linux"):
+        try:
+            if Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] == "Z": return False
+        except (OSError, IndexError): pass
+    return True
 
 
 def running_process(root: Path) -> dict | None:
@@ -235,6 +241,134 @@ def daemon_reachable(root: Path) -> bool:
     except Exception: return False
 
 
+def _daemon_identity(root: Path) -> dict | None:
+    """Lê a identidade de inicialização sem confundir PID com uma nova execução."""
+    info = _read_json(process_path(root))
+    if str(info.get("root")) != str(root.resolve()) or not info.get("instance"): return None
+    try:
+        if int(info.get("pid", 0)) <= 0: return None
+    except (TypeError, ValueError): return None
+    return info
+
+
+def _confirmed_daemon(root: Path) -> dict | None:
+    """Exige que o RPC autenticado responda pela identidade publicada no disco."""
+    info = _daemon_identity(root)
+    if not info: return None
+    try:
+        reply = call(*endpoint(root), "ping", timeout=0.5)
+        if not isinstance(reply, dict): return None
+        if (
+            reply.get("service") == "onmyoji-daemon"
+            and reply.get("root") == str(root.resolve())
+            and reply.get("instance") == info["instance"]
+            and int(reply.get("pid", 0)) == int(info["pid"])
+            and reply.get("setup_version") == info.get("setup_version")
+            and reply.get("configuration_revision") == info.get("configuration_revision")
+        ):
+            return info
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError): pass
+    return None
+
+
+def _service_main_pid(root: Path) -> int | None:
+    """Consulta o PID do gestor; zero significa parado, None significa não confirmado."""
+    info = service_info(root)
+    if not info.get("name"): return None
+    command = ["sc.exe", "queryex", str(info["name"])] if os.name == "nt" else _systemctl(str(info.get("scope") or "system"), "show", "--property=MainPID", "--value", str(info["name"]))
+    try:
+        value = subprocess.run(command, text=True, capture_output=True, check=False, timeout=5)
+        if value.returncode: return None
+        raw = value.stdout.strip()
+        if os.name == "nt":
+            matched = re.search(r"\bPID\s*:\s*(\d+)", raw, re.IGNORECASE)
+            if not matched: return None
+            raw = matched.group(1)
+        pid = int(raw)
+        return pid if pid >= 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError): return None
+
+
+def _wait_for_daemon(root: Path, *, previous: dict | None = None, service: bool = False, timeout: float = 30) -> tuple[bool, str]:
+    """Confirma nova execução, versão, configuração e vínculo com o serviço.
+
+    ``previous`` impede que uma resposta do supervisor anterior satisfaça um
+    reinício. O UUID permite distinguir execuções mesmo com reutilização de PID.
+    """
+    previous = previous or {}
+    deadline = time.monotonic() + timeout
+    detail = "O controle local não confirmou a identidade do daemon."
+    while True:
+        current = _confirmed_daemon(root)
+        if current:
+            pid = int(current["pid"])
+            old_pids = {int(previous.get(key) or 0) for key in ("pid", "service_pid")}
+            if previous.get("instance") == current["instance"]:
+                detail = "O daemon anterior continua respondendo; o reinício não foi confirmado."
+            elif not previous.get("instance") and pid in old_pids:
+                detail = "O PID do serviço não mudou e a identidade anterior não pôde ser comparada."
+            elif any(old_pid > 0 and old_pid != pid and _pid_alive(old_pid) for old_pid in old_pids):
+                detail = "O processo anterior do daemon ainda não foi encerrado."
+            elif current.get("setup_version") != SETUP_VERSION:
+                detail = "O daemon respondeu com uma versão diferente do setup; consulte o runtime e o serviço registrado."
+            elif current.get("configuration_revision") != configuration_revision(root):
+                detail = "O daemon respondeu com uma configuração anterior à configuração salva."
+            elif service and _service_main_pid(root) != pid:
+                detail = "O daemon que respondeu não pertence ao PID do serviço registrado; pode haver um processo fora do serviço."
+            elif service and not service_is_active(root):
+                detail = "O gestor não confirmou o serviço ativo."
+            else:
+                label = "Serviço do daemon" if service else "Daemon local"
+                return True, f"{label} {'reiniciado' if previous else 'iniciado'} e confirmado · PID {pid} · execução {current['instance']}."
+        remaining = deadline - time.monotonic()
+        if remaining <= 0: return False, detail + " Consulte o diagnóstico do daemon."
+        time.sleep(min(0.2, remaining))
+
+
+def _wait_for_daemon_stopped(root: Path, previous: dict | None = None, *, service: bool = False, timeout: float = 30) -> tuple[bool, str]:
+    """Confirma a saída do processo anterior e a ausência de controle RPC ativo."""
+    previous = previous or {}
+    old_pids = {int(previous.get(key) or 0) for key in ("pid", "service_pid")}
+    deadline = time.monotonic() + timeout
+    while True:
+        alive = any(pid > 0 and _pid_alive(pid) for pid in old_pids)
+        if not alive and not running_process(root) and not daemon_reachable(root):
+            if not service or (_service_main_pid(root) == 0 and not service_is_active(root)):
+                return True, "Serviço do daemon parado e confirmado." if service else "Processo do daemon encerrado e confirmado."
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False, "A parada do daemon não foi confirmada: o processo, o controle local ou o serviço ainda está ativo ou indisponível para verificação."
+        time.sleep(min(0.2, remaining))
+
+
+def daemon_status(root: Path) -> dict:
+    """Distingue atividade do gestor e disponibilidade do controle local."""
+    service = bool(service_info(root) or service_path(root).exists())
+    process = running_process(root)
+    reachable = daemon_reachable(root)
+    service_active = bool(service and service_is_active(root))
+    return {"mode": "service" if service else "process", "active": bool(service_active or process or reachable), "service_active": service_active, "reachable": reachable, "process": process}
+
+
+def daemon_action(root: Path, action: str, use_sudo: bool = False) -> tuple[bool, str]:
+    """Centraliza o ciclo de vida; um serviço registrado nunca usa o motor local."""
+    if action not in {"start", "stop", "restart", "force"}: return False, "Ação do daemon inválida."
+    try:
+        if service_info(root) or service_path(root).exists():
+            return service_action(root, action, use_sudo=use_sudo)
+        if action == "start": return start_background(root)
+        if action in {"stop", "force"}: return stop_background(root, force=action == "force")
+        previous = _daemon_identity(root)
+        stopped, message = stop_background(root)
+        if not stopped: return False, message
+        started, message = start_background(root)
+        if not started: return False, message
+        return _wait_for_daemon(root, previous=previous)
+    except (OSError, subprocess.SubprocessError) as error:
+        operation = {"start": "iniciar", "stop": "parar", "restart": "reiniciar", "force": "finalizar"}[action]
+        return False, f"Não foi possível {operation} o daemon: {error}"
+
+
 def start_background(root: Path) -> tuple[bool, str]:
     if not is_installed(root): return False, "Instale primeiro o daemon desta instância."
     if service_path(root).exists(): return False, "O serviço do sistema operacional está instalado; gerencie-o no submenu Serviço."
@@ -248,11 +382,7 @@ def start_background(root: Path) -> tuple[bool, str]:
     flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS if os.name == "nt" else 0
     with open(os.devnull, "w", encoding="utf-8") as sink:
         subprocess.Popen(command, cwd=str(root), env=environment, stdin=subprocess.DEVNULL, stdout=sink, stderr=sink, creationflags=flags, start_new_session=os.name != "nt")
-    deadline = time.monotonic() + 8
-    while time.monotonic() < deadline:
-        if daemon_reachable(root): return True, "Processo do daemon iniciado em segundo plano."
-        time.sleep(0.1)
-    return False, "O processo foi iniciado, mas não respondeu dentro do tempo esperado. Consulte os logs locais."
+    return _wait_for_daemon(root, timeout=8)
 
 
 def _rpc(root: Path, method: str) -> tuple[bool, str]:
@@ -263,20 +393,21 @@ def _rpc(root: Path, method: str) -> tuple[bool, str]:
 
 
 def stop_background(root: Path, force: bool = False) -> tuple[bool, str]:
+    if service_path(root).exists(): return False, "O serviço do sistema operacional está instalado; gerencie-o no submenu Serviço."
     info = running_process(root)
-    if not info: return True, "Nenhum processo local do daemon está em execução."
+    if not info:
+        if daemon_reachable(root): return False, "O daemon responde, mas seu processo não pôde ser identificado. Consulte o diagnóstico antes de pará-lo."
+        return True, "Nenhum processo local do daemon está em execução."
     pid = int(info["pid"])
     if not force:
         ok, message = _rpc(root, "shutdown")
         if ok:
-            deadline = time.monotonic() + 8
-            while time.monotonic() < deadline:
-                if not _pid_alive(pid): return True, "Processo do daemon encerrado normalmente."
-                time.sleep(0.1)
+            return _wait_for_daemon_stopped(root, info, timeout=8)
         return False, message
     if os.name == "nt": result = subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], text=True, capture_output=True, check=False)
     else: result = subprocess.run(["kill", "-KILL", str(pid)], text=True, capture_output=True, check=False)
-    return (result.returncode == 0, "Processo finalizado à força." if result.returncode == 0 else (result.stderr or result.stdout).strip())
+    if result.returncode: return False, (result.stderr or result.stdout).strip()
+    return _wait_for_daemon_stopped(root, info, timeout=8)
 
 
 def service_info(root: Path) -> dict: return _read_json(service_path(root))
@@ -610,7 +741,7 @@ def _windows_service_state(status: str) -> str:
     return matched.group(1).upper() if matched else ""
 
 
-def _wait_for_windows_service_state(root: Path, expected: str, attempts: int = 10) -> tuple[bool, str]:
+def _wait_for_windows_service_state(root: Path, expected: str, attempts: int = 61) -> tuple[bool, str]:
     """Aguarda o estado efetivo do serviço, além do aceite inicial do SCM."""
     last_status = ""
     for attempt in range(attempts):
@@ -623,14 +754,42 @@ def _wait_for_windows_service_state(root: Path, expected: str, attempts: int = 1
 
 
 def service_action(root: Path, action: str, use_sudo: bool = False) -> tuple[bool, str]:
+    """Controla o serviço e só confirma sucesso após verificar o daemon efetivo."""
+    if action not in {"start", "stop", "restart", "force"}: return False, "Ação de serviço inválida."
+    info = service_info(root)
+    if not info or not info.get("name"): return False, "Serviço do sistema operacional não está instalado para esta instância."
+    if str(info.get("root")) != str(root.resolve()): return False, "Registro de serviço não pertence a esta instância."
+    try:
+        previous = dict(_daemon_identity(root) or {})
+        previous["service_pid"] = _service_main_pid(root) or 0
+        ok, message = _run_service_action(root, action, use_sudo)
+        if not ok: return False, message
+        if action in {"stop", "force"}: return _wait_for_daemon_stopped(root, previous, service=True)
+        return _wait_for_daemon(root, previous=previous if action == "restart" else None, service=True)
+    except (OSError, subprocess.SubprocessError) as error:
+        return False, f"Não foi possível controlar o serviço do daemon: {error}"
+
+
+def _run_service_action(root: Path, action: str, use_sudo: bool = False) -> tuple[bool, str]:
+    """Envia a ação ao gestor; o aceite não equivale à confirmação do daemon."""
     info = service_info(root)
     if not info: return False, "Serviço do sistema operacional não está instalado para esta instância."
     if os.name != "nt":
-        command = {"start": "start", "stop": "stop", "restart": "restart", "force": "kill"}.get(action)
+        command = {"start": "start", "stop": "stop", "restart": "restart", "force": "stop"}.get(action)
         if not command: return False, "Ação de serviço inválida."
         scope = str(info.get("scope") or "system"); elevated = scope == "system" and getattr(os, "geteuid", lambda: 0)() != 0
         if elevated and not use_sudo: return False, "A operação deste serviço de sistema exige confirmação de sudo."
         if elevated and not shutil.which("sudo"): return False, "sudo não está disponível. Execute a operação como root ou use su para obter uma sessão administrativa."
+        if action == "force":
+            prefix = ["sudo"] if elevated else []
+            stopped = subprocess.run([*prefix, *_systemctl(scope, "--no-block", "stop", str(info["name"]))], text=True, capture_output=True, check=False)
+            if stopped.returncode: return False, (stopped.stderr or stopped.stdout).strip()
+            pid = _service_main_pid(root)
+            if pid is None: return False, "A parada foi solicitada, mas o PID do serviço não pôde ser confirmado para a finalização forçada."
+            if pid:
+                killed = subprocess.run([*prefix, *_systemctl(scope, "kill", "--signal=SIGKILL", str(info["name"]))], text=True, capture_output=True, check=False)
+                if killed.returncode and _service_main_pid(root) != 0: return False, (killed.stderr or killed.stdout).strip()
+            return True, "Parada forçada solicitada ao gerenciador do serviço."
         value = subprocess.run([*( ["sudo"] if elevated else []), *_systemctl(scope, command, str(info["name"]))], text=True, capture_output=True, check=False)
         return value.returncode == 0, ("Serviço atualizado." if value.returncode == 0 else (value.stderr or value.stdout).strip())
     command = {"start": "start", "stop": "stop", "restart": "stop", "force": "stop"}.get(action)
@@ -638,15 +797,19 @@ def service_action(root: Path, action: str, use_sudo: bool = False) -> tuple[boo
     name = str(info["name"])
     if action == "force":
         stopped = subprocess.run(["sc.exe", "stop", name], text=True, capture_output=True, check=False)
-        time.sleep(2)
-        status = service_status(root)[1]
-        if "STOPPED" not in status: return False, "O Windows não confirmou a parada; não será finalizado um processo sem identificação segura."
+        if stopped.returncode not in {0, 1062}: return False, (stopped.stderr or stopped.stdout).strip()
+        confirmed, status = _wait_for_windows_service_state(root, "STOPPED")
+        if not confirmed: return False, status
         return True, "Solicitação de parada forçada concluída."
     if action == "restart":
-        subprocess.run(["sc.exe", "stop", name], text=True, capture_output=True, check=False); time.sleep(1)
+        stopped = subprocess.run(["sc.exe", "stop", name], text=True, capture_output=True, check=False)
+        if stopped.returncode not in {0, 1062}: return False, (stopped.stderr or stopped.stdout).strip()
+        confirmed, status = _wait_for_windows_service_state(root, "STOPPED")
+        if not confirmed: return False, status
         command = "start"
     value = subprocess.run(["sc.exe", command, name], text=True, capture_output=True, check=False)
-    if value.returncode != 0: return False, (value.stderr or value.stdout).strip()
+    accepted = {0, 1056} if command == "start" else {0, 1062}
+    if value.returncode not in accepted: return False, (value.stderr or value.stdout).strip()
     expected = "RUNNING" if command == "start" else "STOPPED"
     confirmed, status = _wait_for_windows_service_state(root, expected)
     if not confirmed: return False, status

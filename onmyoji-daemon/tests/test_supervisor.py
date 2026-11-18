@@ -186,9 +186,11 @@ def test_service_commands_use_the_runtime_selected_by_windows_service(tmp_path, 
 
 
 def test_windows_service_action_waits_for_the_service_to_run(tmp_path, monkeypatch):
-    management._write_json(management.service_path(tmp_path), {"name": "Teste", "root": str(tmp_path.resolve())})
+    management._write_json(tmp_path, management.service_path(tmp_path), {"name": "Teste", "root": str(tmp_path.resolve())})
+    monkeypatch.setattr(management, "os", SimpleNamespace(name="nt"))
     monkeypatch.setattr(management.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""))
     monkeypatch.setattr(management, "service_status", lambda _root: (True, "STATE              : 4  RUNNING"))
+    monkeypatch.setattr(management, "_wait_for_daemon", lambda *_args, **_kwargs: (True, "Daemon em execução."))
 
     ok, message = management.service_action(tmp_path, "start")
 
@@ -197,7 +199,8 @@ def test_windows_service_action_waits_for_the_service_to_run(tmp_path, monkeypat
 
 
 def test_windows_service_action_reports_when_start_does_not_reach_running(tmp_path, monkeypatch):
-    management._write_json(management.service_path(tmp_path), {"name": "Teste", "root": str(tmp_path.resolve())})
+    management._write_json(tmp_path, management.service_path(tmp_path), {"name": "Teste", "root": str(tmp_path.resolve())})
+    monkeypatch.setattr(management, "os", SimpleNamespace(name="nt"))
     monkeypatch.setattr(management.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""))
     monkeypatch.setattr(management, "service_status", lambda _root: (True, "STATE              : 1  STOPPED"))
     monkeypatch.setattr(management.time, "sleep", lambda _seconds: None)

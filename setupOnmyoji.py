@@ -1132,12 +1132,12 @@ def _authorize_update_service(root: Path, *, use_sudo: bool = False) -> bool | N
 def _resume_updated_daemon(root: Path, *, use_sudo: bool = False) -> tuple[bool, str]:
     """Retoma o serviço registrado ou o processo local somente após migrar o estado."""
     try:
+        authorized = False
         if daemon_management.service_info(root):
             authorized = _authorize_update_service(root, use_sudo=use_sudo)
             if authorized is None:
                 return False, "A autorização de sudo para iniciar o serviço foi cancelada. Inicie-o no submenu Serviço."
-            return daemon_management.service_action(root, "start", use_sudo=authorized)
-        return daemon_management.start_background(root)
+        return daemon_management.daemon_action(root, "start", use_sudo=authorized)
     except (OSError, subprocess.SubprocessError) as error:
         return False, f"Não foi possível retomar o daemon: {error}"
 
@@ -1243,24 +1243,15 @@ def update_upstream(root: Path) -> None:
             # Verifica o Python selecionado antes de interromper o daemon.
             executable = _updated_setup_python(root)
             try:
-                service = daemon_management.service_info(root)
-                if service:
-                    running = (
-                        daemon_management.service_is_active(root)
-                        or daemon_management.running_process(root)
-                        or daemon_management.daemon_reachable(root)
-                    )
-                else:
-                    running = daemon_management.running_process(root)
-                if running:
+                status = daemon_management.daemon_status(root)
+                service = status.get("mode") == "service"
+                if status.get("active") or status.get("reachable"):
                     if service:
                         authorized = _authorize_update_service(root)
                         if authorized is None:
                             raise GitSetupError("A atualização foi baixada, mas a parada do serviço para migrar o estado foi cancelada. O daemon continua em execução.")
                         use_sudo = authorized
-                        ok, message = daemon_management.service_action(root, "stop", use_sudo=use_sudo)
-                    else:
-                        ok, message = daemon_management.stop_background(root)
+                    ok, message = daemon_management.daemon_action(root, "stop", use_sudo=use_sudo)
                     if not ok:
                         raise GitSetupError("A atualização foi baixada, mas o daemon não pôde ser parado para migrar o estado: " + message)
                     restart_daemon = True
@@ -2888,10 +2879,15 @@ def daemon_menu(root: Path) -> None:
 
     def lifecycle(action: str, extra: list[str] | None = None, input_value: str | None = None) -> bool:
         visible = action in {"install-service", "configure-windows-service-account", "configure-service-resources", "repair-service-permissions", "service-security", "remove-service", "service-start", "service-stop", "service-restart", "service-force-stop"}
+        daemon_operation = action in {"daemon-start", "daemon-stop", "daemon-restart", "daemon-force-stop"}
+        if daemon_operation:
+            visible = service_installed()
         try:
-            completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), action, *(extra or [])], quiet=not visible, input_value=input_value, administrative=visible)
+            completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), action, *(extra or [])], quiet=not visible, input_value=input_value, administrative=visible, use_runtime=daemon_operation)
         except KeyboardInterrupt:
             result(False, "Operação interrompida pelo usuário."); return False
+        except (OSError, subprocess.SubprocessError) as error:
+            result(False, f"Não foi possível executar o controle do daemon: {error}"); return False
         detail = (completed.stdout or completed.stderr or ("Operação concluída." if completed.returncode == 0 else f"O comando terminou com código {completed.returncode}; consulte a saída exibida acima.")).strip()
         result(completed.returncode == 0, detail)
         return completed.returncode == 0
@@ -2902,10 +2898,15 @@ def daemon_menu(root: Path) -> None:
             try: scope = json.loads((root / "configs" / "daemon" / "service.json").read_text(encoding="utf-8")).get("scope", "system")
             except (OSError, ValueError): scope = "system"
             if scope == "system" and hasattr(os, "geteuid") and os.geteuid() != 0:
-                note("Esta operação exige sudo. A senha será solicitada pelo sistema, sem ser lida ou armazenada pelo Onmyōji.")
+                note("Esta operação usa sudo. Se necessário, o sistema solicitará a senha, sem que o Onmyōji a leia ou armazene.")
                 if prompt("Continuar? [s/N]: ").strip().casefold() not in {"s", "sim"}: result(False, "Operação cancelada."); return False
                 extras.append("--use-sudo")
         return lifecycle(action, extras)
+
+    def daemon_control(action: str) -> bool:
+        """Delega o ciclo de vida ao controle único, preservando a conta operacional."""
+        operation = {"start": "daemon-start", "stop": "daemon-stop", "restart": "daemon-restart", "force": "daemon-force-stop"}[action]
+        return privileged_service_action(operation) if service_installed() else lifecycle(operation)
 
     def install_daemon() -> bool:
         """Prepara, configura e valida o runtime escolhido pelo usuário."""
@@ -2988,8 +2989,20 @@ def daemon_menu(root: Path) -> None:
         checks = validation("daemon-validation-json")
         return any(check.get("label") == "Runtime Python do daemon" and check.get("state") == "ok" for check in checks)
     def service_installed() -> bool: return (root / "configs" / "daemon" / "service.json").is_file()
+    def daemon_status() -> dict:
+        try:
+            completed = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "daemon-status"], quiet=True, use_runtime=True)
+            value = json.loads(completed.stdout)
+        except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+            return {}
+        return value if completed.returncode == 0 and isinstance(value, dict) else {}
+
+    def daemon_active() -> bool:
+        state = daemon_status()
+        return state.get("active") is True or state.get("reachable") is True
+
     def daemon_running() -> bool:
-        return command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "list-services"], quiet=True).returncode == 0
+        return command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "list-services"], quiet=True, use_runtime=True).returncode == 0
 
     def wait_for_daemon_ready() -> bool:
         """Espera o supervisor responder após uma inicialização ou reinício."""
@@ -3052,11 +3065,11 @@ def daemon_menu(root: Path) -> None:
             return {}
 
     def offer_restart(reason: str = "A alteração") -> None:
-        if not daemon_running(): return
+        if not daemon_active(): return
         note(f"{reason} só entra em vigor no gateway após reiniciar o daemon.")
         answer = prompt("O daemon está em execução; reiniciar agora para efetivar a alteração? [S/n]: ").strip().casefold()
         if answer not in {"", "s", "sim"}: result(False, f"{reason} foi salva, mas o gateway continua com a configuração anterior até o próximo reinício."); return
-        restarted = privileged_service_action("service-restart") if service_installed() else (lifecycle("process-stop") and lifecycle("process-start"))
+        restarted = daemon_control("restart")
         if not restarted:
             return
         if not wait_for_daemon_ready():
@@ -3070,9 +3083,8 @@ def daemon_menu(root: Path) -> None:
             result(False, "O daemon voltou a responder, mas o gateway Telegram ainda não está pronto. Consulte o diagnóstico do Telegram antes de parear um owner.")
 
     def service_running() -> bool:
-        status = command([sys.executable, "-m", "onmyoji_daemon.cli", "--onmyoji-root", str(root), "service-status"], quiet=True)
-        text = (status.stdout + "\n" + status.stderr).upper()
-        return "RUNNING" in text or "ACTIVE: ACTIVE" in text
+        status = daemon_status()
+        return status.get("mode") == "service" and status.get("service_active", status.get("active")) is True
 
     def daemon_wizard() -> None:
         """Configura e valida exclusivamente a plataforma local do daemon."""
@@ -3127,17 +3139,13 @@ def daemon_menu(root: Path) -> None:
         print("\n  5. Teste controlado do agente Codex")
         if not test_agent_with_runtime_repair(lambda: command([sys.executable, str(script), "--onmyoji-root", str(root), "--action", "test-agent"], quiet=True, use_runtime=True), install_daemon): return
         print("\n  6. Início da plataforma")
-        if daemon_running():
+        if daemon_active():
             restart = prompt("O daemon está em execução. Reiniciar agora para aplicar a configuração? [S/n]: ").strip().casefold()
             if restart not in {"", "s", "sim"}:
                 result(False, "Configuração salva e testada, mas pendente de aplicação. Reinicie o daemon quando desejar concluir o wizard.")
                 return
-            if service_installed():
-                if not privileged_service_action("service-restart"): return
-            elif lifecycle("process-stop"):
-                if not lifecycle("process-start"): return
-            else: return
-        elif not (privileged_service_action("service-start") if service_installed() else lifecycle("process-start")):
+            if not daemon_control("restart"): return
+        elif not daemon_control("start"):
             return
         if not wait_for_daemon_ready():
             result(False, "O comando de início foi aceito, mas o daemon não respondeu dentro de 10 segundos. Consulte Operação do daemon.")
@@ -3266,7 +3274,7 @@ def daemon_menu(root: Path) -> None:
                     extras = ["--name", name, "--description", description, "--scope", "system", "--windows-account", account]
                     if password: extras.append("--password-stdin")
                     if lifecycle("install-service", extras, password if password else None) and prompt("Iniciar agora e validar o registro? [S/n]: ").strip().casefold() in {"", "s", "sim"}:
-                        lifecycle("service-start"); lifecycle("service-status")
+                        daemon_control("start"); lifecycle("service-status")
                     continue
                 limits = choose_service_limits()
                 if limits is None: result(False, "Instalação do serviço cancelada."); continue
@@ -3322,9 +3330,9 @@ def daemon_menu(root: Path) -> None:
             choice = prompt("Opção: ").strip().casefold()
             if choice in {"x", "\x1b"}: return
             if choice == "1": lifecycle("service-status")
-            elif choice == "2": privileged_service_action("service-stop" if service_running() else "service-start")
-            elif choice == "3": privileged_service_action("service-restart")
-            elif choice == "4": privileged_service_action("service-force-stop")
+            elif choice == "2": daemon_control("stop" if service_running() else "start")
+            elif choice == "3": daemon_control("restart")
+            elif choice == "4": daemon_control("force")
             elif choice == "5":
                 confirmation = prompt("Digite remover para confirmar: ").strip()
                 if confirmation == "remover": privileged_service_action("remove-service")
@@ -3947,12 +3955,12 @@ def daemon_menu(root: Path) -> None:
         if lifecycle("enable", ["telegram"]):
             result(True, "Gateway Telegram habilitado.")
         else: return
-        if daemon_running():
+        if daemon_active():
             answer = prompt("O daemon está em execução; reiniciar agora para efetivar a alteração? [S/n]: ").strip().casefold()
             if answer not in {"", "s", "sim"}: result(False, "Gateway habilitado, mas pendente de reinício. Execute o wizard novamente após reiniciá-lo."); return
-            restarted = privileged_service_action("service-restart") if service_installed() else (lifecycle("process-stop") and lifecycle("process-start"))
+            restarted = daemon_control("restart")
             if not restarted: return
-        elif not (privileged_service_action("service-start") if service_installed() else lifecycle("process-start")):
+        elif not daemon_control("start"):
             return
         if not wait_for_daemon_ready() or not wait_for_telegram_ready():
             result(False, "O daemon iniciou, mas o gateway Telegram não respondeu em até 15 segundos. Consulte o diagnóstico do Telegram."); return
@@ -4405,7 +4413,7 @@ def daemon_menu(root: Path) -> None:
             if not installed():
                 result(False, "Prepare o daemon em 'Validar runtime do daemon' e execute este wizard novamente."); return
             if prompt("Iniciar o daemon agora para configurar a publicação? [S/n]: ").strip().casefold() not in {"", "s", "sim"}: return
-            if not (privileged_service_action("service-start") if service_installed() else lifecycle("process-start")) or not wait_for_daemon_ready():
+            if not daemon_control("start") or not wait_for_daemon_ready():
                 result(False, "O daemon não respondeu. Consulte o diagnóstico (!)."); return
         registered = publication_command("list-services")
         try: names = {item["name"] for item in json.loads(registered.stdout or "[]") if isinstance(item, dict) and "name" in item}

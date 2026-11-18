@@ -273,28 +273,26 @@ def test_update_stops_the_active_daemon_with_its_registered_lifecycle(
     monkeypatch.setattr(setup_module.daemon_management, "daemon_reachable", lambda _root: reachable)
     monkeypatch.setattr(setup_module.daemon_management, "service_info", lambda _root: service)
     monkeypatch.setattr(setup_module.daemon_management, "service_is_active", lambda _root: active)
+    monkeypatch.setattr(setup_module.daemon_management, "daemon_status", lambda _root: {"mode": "service" if service else "process", "active": bool(process) or active, "reachable": reachable})
     monkeypatch.setattr(setup_module, "_authorize_update_service", lambda _root, **_kwargs: use_sudo)
 
-    def stop_service(root, action, use_sudo=False):
-        events.append(("service", root, action, use_sudo))
-        return True, "Serviço parado."
-
-    def stop_local(root):
-        events.append(("local", root))
+    def stop_daemon(root, action, use_sudo=False):
+        events.append(("control", root, action, use_sudo))
         return True, "Processo parado."
 
     def reopen(root, executable, *, restart_daemon, use_sudo=False):
         events.append(("setup", root, executable, restart_daemon, use_sudo))
 
-    monkeypatch.setattr(setup_module.daemon_management, "service_action", stop_service)
-    monkeypatch.setattr(setup_module.daemon_management, "stop_background", stop_local)
+    monkeypatch.setattr(setup_module.daemon_management, "daemon_action", stop_daemon)
+    monkeypatch.setattr(setup_module.daemon_management, "service_action", lambda *_args, **_kwargs: pytest.fail("Controle central obrigatório"))
+    monkeypatch.setattr(setup_module.daemon_management, "stop_background", lambda *_args: pytest.fail("Controle central obrigatório"))
     monkeypatch.setattr(setup_module, "_restart_updated_setup", reopen)
 
     setup_module.update_upstream(local)
 
     assert (local / "new.txt").exists()
     assert events == [
-        ("service", local, "stop", use_sudo) if service else ("local", local),
+        ("control", local, "stop", use_sudo),
         ("setup", local, Path(sys.executable), True, use_sudo),
     ]
 
@@ -309,6 +307,8 @@ def test_update_does_not_start_a_previously_stopped_daemon(setup_module, repos, 
     monkeypatch.setattr(setup_module.daemon_management, "daemon_reachable", lambda _root: False)
     monkeypatch.setattr(setup_module.daemon_management, "service_info", lambda _root: service)
     monkeypatch.setattr(setup_module.daemon_management, "service_is_active", lambda _root: False)
+    monkeypatch.setattr(setup_module.daemon_management, "daemon_status", lambda _root: {"mode": "service" if service else "process", "active": False, "reachable": False})
+    monkeypatch.setattr(setup_module.daemon_management, "daemon_action", lambda *_args, **_kwargs: pytest.fail("Daemon já parado"))
     monkeypatch.setattr(setup_module.daemon_management, "stop_background", lambda *_args: pytest.fail("Daemon já parado"))
     monkeypatch.setattr(setup_module.daemon_management, "service_action", lambda *_args, **_kwargs: pytest.fail("Serviço já parado"))
     monkeypatch.setattr(setup_module, "_authorize_update_service", lambda *_args, **_kwargs: pytest.fail("Sem operação privilegiada"))
@@ -330,6 +330,8 @@ def test_update_does_not_migrate_when_daemon_stop_fails(setup_module, repos, mon
     monkeypatch.setattr(setup_module.daemon_management, "running_process", lambda _root: {"pid": 42})
     monkeypatch.setattr(setup_module.daemon_management, "service_info", lambda _root: service)
     monkeypatch.setattr(setup_module.daemon_management, "service_is_active", lambda _root: bool(service))
+    monkeypatch.setattr(setup_module.daemon_management, "daemon_status", lambda _root: {"mode": "service" if service else "process", "active": True})
+    monkeypatch.setattr(setup_module.daemon_management, "daemon_action", lambda *_args, **_kwargs: (False, "Parada recusada"))
     monkeypatch.setattr(setup_module, "_authorize_update_service", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(setup_module.daemon_management, "stop_background", lambda *_args: (False, "Parada recusada"))
     monkeypatch.setattr(setup_module.daemon_management, "service_action", lambda *_args, **_kwargs: (False, "Parada recusada"))
@@ -347,6 +349,8 @@ def test_update_preserves_running_service_when_sudo_is_declined(setup_module, re
     monkeypatch.setattr(setup_module.daemon_management, "running_process", lambda _root: {"pid": 42})
     monkeypatch.setattr(setup_module.daemon_management, "service_info", lambda _root: {"name": "onmyoji-test", "scope": "system"})
     monkeypatch.setattr(setup_module.daemon_management, "service_is_active", lambda _root: True)
+    monkeypatch.setattr(setup_module.daemon_management, "daemon_status", lambda _root: {"mode": "service", "active": True})
+    monkeypatch.setattr(setup_module.daemon_management, "daemon_action", lambda *_args, **_kwargs: pytest.fail("Sudo não autorizado"))
     monkeypatch.setattr(setup_module, "_authorize_update_service", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(setup_module.daemon_management, "service_action", lambda *_args, **_kwargs: pytest.fail("Sudo não autorizado"))
     monkeypatch.setattr(setup_module.daemon_management, "stop_background", lambda *_args: pytest.fail("Serviço registrado"))
@@ -366,7 +370,7 @@ def test_update_reports_service_query_failure_before_migration(setup_module, rep
     def unavailable(_root):
         raise OSError("systemctl indisponível")
 
-    monkeypatch.setattr(setup_module.daemon_management, "service_is_active", unavailable)
+    monkeypatch.setattr(setup_module.daemon_management, "daemon_status", unavailable)
     monkeypatch.setattr(setup_module.daemon_management, "service_action", lambda *_args, **_kwargs: pytest.fail("Consulta falhou"))
     monkeypatch.setattr(setup_module, "_restart_updated_setup", lambda *_args, **_kwargs: pytest.fail("Estado de execução desconhecido"))
 
@@ -386,6 +390,7 @@ def test_update_reports_stop_execution_failure_before_migration(setup_module, re
     monkeypatch.setattr(setup_module.daemon_management, "running_process", lambda _root: {"pid": 42})
     monkeypatch.setattr(setup_module.daemon_management, "service_info", lambda _root: service)
     monkeypatch.setattr(setup_module.daemon_management, "service_is_active", lambda _root: bool(service))
+    monkeypatch.setattr(setup_module.daemon_management, "daemon_status", lambda _root: {"mode": "service" if service else "process", "active": True})
     monkeypatch.setattr(setup_module, "_authorize_update_service", lambda *_args, **_kwargs: False)
 
     def unavailable(*_args, **_kwargs):
@@ -393,6 +398,7 @@ def test_update_reports_stop_execution_failure_before_migration(setup_module, re
 
     monkeypatch.setattr(setup_module.daemon_management, "stop_background", unavailable)
     monkeypatch.setattr(setup_module.daemon_management, "service_action", unavailable)
+    monkeypatch.setattr(setup_module.daemon_management, "daemon_action", unavailable)
     monkeypatch.setattr(setup_module, "_restart_updated_setup", lambda *_args, **_kwargs: pytest.fail("Daemon ainda ativo"))
 
     setup_module.update_upstream(local)
@@ -457,7 +463,7 @@ def test_legacy_restart_flag_resumes_registered_service_after_migration(setup_mo
         events.append(("service", root, action, use_sudo))
         return True, "Serviço iniciado"
 
-    monkeypatch.setattr(setup_module.daemon_management, "service_action", start_service)
+    monkeypatch.setattr(setup_module.daemon_management, "daemon_action", start_service)
 
     setup_module.main()
 
@@ -470,6 +476,7 @@ def test_failed_state_migration_never_restarts_daemon(setup_module, tmp_path, mo
     monkeypatch.setattr(setup_module, "verify_state_layout", lambda _root: (False, "Estado não migrado"))
     monkeypatch.setattr(setup_module.daemon_management, "start_background", lambda *_args: pytest.fail("Estado não migrado"))
     monkeypatch.setattr(setup_module.daemon_management, "service_action", lambda *_args, **_kwargs: pytest.fail("Estado não migrado"))
+    monkeypatch.setattr(setup_module.daemon_management, "daemon_action", lambda *_args, **_kwargs: pytest.fail("Estado não migrado"))
 
     assert setup_module.main() == 2
 
@@ -478,10 +485,10 @@ def test_resume_local_daemon_uses_background_process(setup_module, tmp_path, mon
     starts = []
     monkeypatch.setattr(setup_module.daemon_management, "service_info", lambda _root: {})
     monkeypatch.setattr(setup_module.daemon_management, "service_action", lambda *_args, **_kwargs: pytest.fail("Sem serviço registrado"))
-    monkeypatch.setattr(setup_module.daemon_management, "start_background", lambda root: (starts.append(root) or True, "Processo iniciado"))
+    monkeypatch.setattr(setup_module.daemon_management, "daemon_action", lambda root, action, use_sudo=False: (starts.append((root, action, use_sudo)) or True, "Processo iniciado"))
 
     assert setup_module._resume_updated_daemon(tmp_path) == (True, "Processo iniciado")
-    assert starts == [tmp_path]
+    assert starts == [(tmp_path, "start", False)]
 
 
 @pytest.mark.parametrize("service", [{}, {"name": "onmyoji-test", "scope": "user"}])
@@ -494,6 +501,7 @@ def test_resume_reports_operating_system_failures(setup_module, tmp_path, monkey
 
     monkeypatch.setattr(setup_module.daemon_management, "start_background", unavailable)
     monkeypatch.setattr(setup_module.daemon_management, "service_action", unavailable)
+    monkeypatch.setattr(setup_module.daemon_management, "daemon_action", unavailable)
 
     ok, message = setup_module._resume_updated_daemon(tmp_path)
 
@@ -522,7 +530,7 @@ def test_resume_service_preserves_sudo_permission_and_start_result(
         return start_result
 
     monkeypatch.setattr(setup_module, "_authorize_update_service", authorize)
-    monkeypatch.setattr(setup_module.daemon_management, "service_action", start)
+    monkeypatch.setattr(setup_module.daemon_management, "daemon_action", start)
 
     ok, message = setup_module._resume_updated_daemon(tmp_path, use_sudo=True)
 
