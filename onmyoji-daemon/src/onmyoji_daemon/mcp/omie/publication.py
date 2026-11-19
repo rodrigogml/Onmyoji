@@ -43,6 +43,30 @@ def input_contract(operation: str) -> tuple[str, dict[str, Any]]:
     """Retorna params ou body com os campos aceitos pelo validador interno."""
     if operation.startswith("document_types_"):
         return "params", obj({"codigo": {"type": "string", "maxLength": 5}}, ("codigo",) if operation.endswith("_get") else ())
+    if operation == "products_list":
+        schema = pagination({"ean", "filtrar_apenas_descricao", "inativo", "ncm",
+                             "filtrar_apenas_omiepdv", "apenas_importado_api"})
+        for field in ("page", "page_size", "pagina", "registros_por_pagina"):
+            if field in {"page_size", "registros_por_pagina"}:
+                schema["properties"][field]["maximum"] = 500
+        schema["properties"].update({
+            "ean": {"type": "string", "pattern": "^[0-9]{1,14}$",
+                    "description": "GTIN como texto; preserve zeros à esquerda."},
+            "filtrar_apenas_descricao": {"type": "string", "minLength": 1, "maxLength": 200,
+                                        "description": 'A Omie aceita TEXTO, TEXTO%, %TEXTO e %TEXTO%.'},
+            "ncm": {"type": "string", "minLength": 1, "maxLength": 13},
+        })
+        for field in ("filtrar_apenas_omiepdv", "apenas_importado_api", "inativo"):
+            schema["properties"][field] = {"type": "string", "enum": ["S", "N"]}
+        return "params", schema
+    if operation == "products_get":
+        schema = obj({
+            "codigo_produto": {"type": "integer", "minimum": 1},
+            "codigo_produto_integracao": {"type": "string", "minLength": 1, "maxLength": 60},
+            "codigo": {"type": "string", "minLength": 1, "maxLength": 60},
+        })
+        schema["oneOf"] = [{"required": [field]} for field in schema["properties"]]
+        return "params", schema
     if operation == "customers_list":
         schema = pagination(CUSTOMER_LIST_FIELDS)
         schema["properties"]["clientesFiltro"] = obj(CUSTOMER_FILTER_FIELDS)
@@ -188,7 +212,14 @@ def input_contract(operation: str) -> tuple[str, dict[str, Any]]:
                 item_id = obj({
                     "nSequencia": {"type": "integer", "minimum": 1},
                     "cAcao": {"type": "string", "enum": ["NOVO", "ASSOCIAR-PRODUTO", "ASSOCIAR-PEDIDO", "IGNORAR", "EDITAR"]},
+                    "nIdProdutoExistente": {"type": "integer", "minimum": 1,
+                                            "description": "ID codigo_produto confirmado com omie.products_get."},
                 }, ("nSequencia", "cAcao"))
+                item_id["allOf"] = [{
+                    "if": {"properties": {"cAcao": {"const": "ASSOCIAR-PRODUTO"}}, "required": ["cAcao"]},
+                    "then": {"required": ["nIdProdutoExistente"]},
+                    "else": {"not": {"required": ["nIdProdutoExistente"]}},
+                }]
                 item = obj({
                     "itensIde": item_id,
                     "itensInfoAdicEditar": obj({"cCategoriaItem": {"type": "string", "minLength": 1, "maxLength": 20}}, ("cCategoriaItem",)),
@@ -216,12 +247,14 @@ NOTES = {
     "customers_list": "Cadastro compartilhado de clientes/fornecedores. Filtros em clientesFiltro; percorra total_de_paginas. Para parte do nome, percorra páginas sem filtro de nome e compare localmente; não suponha suporte a curingas.",
     "customers_get": "Consulta somente por ID Omie ou código de integração; CPF/CNPJ e nomes usam customers_list.",
     "customers_create": "Valida formato de CPF/CNPJ, percorre o cadastro completo e reutiliza um único ativo. Bloqueia duplicados/inativos e consulta incompleta. Gera código de integração estável; inclusão sem retry automático. Em resposta incerta, consulte antes de repetir.",
+    "products_list": "Pesquisa produtos existentes por EAN, descrição (TEXTO, TEXTO%, %TEXTO, %TEXTO%), NCM e situação. Paginação da Omie até 500 por página. Por padrão, não restringe ao PDV nem a produtos criados via API. Preserve zeros do EAN e confira todas as páginas antes de escolher um produto. Somente leitura.",
+    "products_get": "Consulta produto existente por exatamente um identificador: codigo_produto (ID numérico Omie), codigo_produto_integracao ou codigo (SKU visível). O ID codigo_produto é o usado em itensIde.nIdProdutoExistente. Somente leitura.",
     "account_transactions_create": "Cria lançamento direto (não cria conta a pagar). Converte account_id/date/amount para cabecalho e category_code/document_type para detalhes. Não solicita conciliação. Quando a inclusão unitária contém rateio, a fachada confere os departamentos persistidos; o aceite nativo sozinho não confirma a distribuição.",
     "account_transactions_update": "A fachada omie.financeiro.lancamentos_conta.alterar recebe somente os campos gerais que precisam mudar e recusa departamentos. Para rateio existente, use omie.financeiro.lancamentos_conta.definir_departamentos: exatamente id ou codigo_integracao e a lista completa departamentos. Esse fluxo atende lançamentos diretos, verifica origem antes de escrever e orienta a ferramenta do título para baixas vinculadas. Não reenvie valor, conta, data, categoria ou tipo para corrigir rateio.",
     "account_transfers_create": "Cria uma transferência única entre contas diferentes por IncluirLancCC; não produza dois lançamentos independentes. category_code é a categoria de saída e será enviada em detalhes.cCodCateg; o tipo TRA e a conta de destino são definidos pelo conector. Quando há departamentos, a fachada confere o rateio persistido antes de confirmá-lo.",
     "payables_update": "A fachada omie.financeiro.contas_pagar.alterar altera somente os campos gerais informados; conta_corrente_id define a conta prevista do título e não muda uma baixa já executada. Departamentos de título existente usam omie.financeiro.contas_pagar.definir_departamentos: exatamente id ou codigo_integracao, lista completa departamentos e, opcionalmente, lancamento_conta_id para validar vínculo e conferir propagação. Essa ferramenta envia apenas identificador e distribuicao, confirma o título e distingue propagação pendente. Não recrie título nem cancele ou repita a baixa.",
     "receivables_update": "A fachada omie.financeiro.contas_receber.alterar altera somente os campos gerais informados; conta_corrente_id define a conta prevista do título e não muda um recebimento já executado. Departamentos de título existente usam omie.financeiro.contas_receber.definir_departamentos: exatamente id ou codigo_integracao, lista completa departamentos e, opcionalmente, lancamento_conta_id para validar vínculo e conferir propagação. Use [] para remover o rateio; os métodos antigos de distribuição de departamento foram descontinuados. Não recrie título nem cancele ou repita a baixa.",
-    "inbound_nfe_receipts_update": "Consulte primeiro a NF-e. Aceita body.receipt_id ou ide, campos planos, additional_info/infoAdicionais, departments/departamentos/department_allocations e items. department_allocations usa department_code, percentage e amount. Não envie fornecedor nem valor. Consulte após atualizar. project_id: " + PROJECT_ID_GUIDANCE,
+    "inbound_nfe_receipts_update": "Consulte primeiro a NF-e. Aceita body.receipt_id ou ide, campos planos, additional_info/infoAdicionais, departments/departamentos/department_allocations e items. Para ASSOCIAR-PRODUTO, cada items[].itensIde exige nSequencia e nIdProdutoExistente (ID obtido e conferido com omie.products_list/omie.products_get); não use NOVO se o produto existe. Confirme código, EAN, descrição e unidade, sem assumir equivalência se houver ambiguidade. department_allocations usa department_code, percentage e amount. Não envie fornecedor nem valor. Consulte após atualizar. project_id: " + PROJECT_ID_GUIDANCE,
     "inbound_nfe_receipts_update_completed": "Somente para recebimentos já concluídos; permite infoAdicionais (purchase_category_code, project_id, bank_account_id, registration_date ou buyer_id). A API AlterarRecebimentoConcluido não aceita departments: consulte o recebimento e não altere o rateio por esta operação. project_id: " + PROJECT_ID_GUIDANCE,
 }
 

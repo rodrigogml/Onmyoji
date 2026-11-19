@@ -808,6 +808,50 @@ e [webhooks](https://api.omie.com.br/docs/webhooks).
 | Contas a pagar/receber | Edição parcial de títulos, conta prevista, baixas e lotes com contratos próprios. Rateio de departamentos usa `definir_departamentos`; categorias de conta a pagar usam `definir_categorias`, com conferência do título e das baixas. Nenhuma definição refaz baixa. Linha digitável somente em contas a pagar, texto não vazio de até 70 caracteres sem reformatação. |
 | Recebimentos e NF-e | Converte identificadores, etapa, itens e informações financeiras para os envelopes específicos da Omie. |
 
+### Consulta de produtos existentes para associação aos itens
+
+O MCP expõe exclusivamente duas consultas do catálogo (nenhuma nova tool cria ou altera
+cadastros):
+
+- `omie.products_list` chama `ListarProdutos` com `params` opcionais
+  `ean` (texto de até 14 dígitos, preservando zeros), `filtrar_apenas_descricao`
+  (aceita busca exata e os curingas `%` documentados), `ncm`, `inativo`,
+  `pagina` e `registros_por_pagina` (máximo 500). São aceitos ainda
+  `apenas_importado_api` e `filtrar_apenas_omiepdv` como `S` ou `N`.
+  Para não ocultar produtos não comercializados via PDV ou produtos criados
+  manualmente, os dois últimos filtros assumem `N`.
+- `omie.products_get` chama `ConsultarProduto` e exige **exatamente um**
+  entre `params.codigo_produto` (ID interno numérico), `params.codigo_produto_integracao`
+  (texto) e `params.codigo` (SKU exibido no sistema). Para confirmar a
+  associação, consulte pelo ID interno obtido na listagem.
+
+Para relacionar um item a um produto cadastrado, use a operação existente
+`omie.inbound_nfe_receipts_update`, com `confirm: true` e
+`body.items[].itensIde` contendo **`nSequencia`**, **`cAcao: "ASSOCIAR-PRODUTO"`**
+e **`nIdProdutoExistente`** (ID interno `codigo_produto` da consulta).
+O campo `nIdProdutoExistente` é obrigatório somente com essa ação e não pode
+ser informado para `NOVO`, `IGNORAR`, `EDITAR` ou `ASSOCIAR-PEDIDO`.
+A mesma sequência não pode ser repetida na requisição.
+
+Exemplo fictício; os identificadores abaixo não se referem a uma NF-e real:
+
+```json
+{"tool":"omie.products_list","arguments":{"params":{"ean":"0123456789012","pagina":1,"registros_por_pagina":50}}}
+{"tool":"omie.products_get","arguments":{"params":{"codigo_produto":123456}}}
+{"tool":"omie.inbound_nfe_receipts_update","arguments":{"confirm":true,"body":{"receipt_id":123,"items":[{"itensIde":{"nSequencia":1,"cAcao":"ASSOCIAR-PRODUTO","nIdProdutoExistente":123456}}]}}}
+```
+
+Antes da escrita, confira sequência e descrição do item, código/SKU, EAN,
+unidade e identidade do produto no catálogo completo. Não vincule por
+aproximação se houver múltiplos produtos, EAN divergente, cadastro inativo,
+unidade incompatível ou falta de dados relevantes. Depois da alteração,
+consulte novamente o recebimento para conferir a associação persistida;
+um aceite da escrita não substitui a verificação. Não conclua a nota nem
+refaça baixas enquanto os itens estiverem inconclusivos.
+
+Referências: [Cadastro de Produtos](https://api.omie.com.br/docs/apis/geral/produtos/)
+e [Recebimento de NF-e](https://app.omie.com.br/api/v1/produtos/recebimentonfe/).
+
 ### Correção dos recebimentos de NF-e
 
 A tool `omie.inbound_nfe_receipts_update` utiliza `AlterarRecebimento` para

@@ -23,6 +23,8 @@ def operation_cases():
     add("customers_list", "params", {"page": 2, "page_size": 10, "clientesFiltro": {"cnpj_cpf": "01234567890"}})
     add("customers_get", "params", {"codigo_cliente_omie": 1})
     add("customers_create", "body", {"cnpj_cpf": "01234567890", "razao_social": "Nome completo"})
+    add("products_list", "params", {"ean": "0123456789012", "pagina": 2, "registros_por_pagina": 50})
+    add("products_get", "params", {"codigo_produto": 12345})
     add("departments_list projects_list categories_list bank_accounts_list payables_list receivables_list", "params", {"page": 2, "page_size": 10})
     add("departments_get departments_delete categories_get", "params", {"codigo": "D1"})
     add("departments_create departments_update", "body", {"codigo": "D1", "descricao": "Departamento"})
@@ -61,8 +63,8 @@ CASES = operation_cases()
 WRITES = [name for name, spec in OPERATIONS.items() if spec[2]]
 
 
-def test_catalog_and_validation_cover_the_same_69_native_operations():
-    assert len(OPERATIONS) == 69
+def test_catalog_and_validation_cover_the_same_71_native_operations():
+    assert len(OPERATIONS) == 71
     assert len(WRITES) == 43
     assert set(CASES) == set(OPERATIONS) == set(OPERATION_NAMES)
 

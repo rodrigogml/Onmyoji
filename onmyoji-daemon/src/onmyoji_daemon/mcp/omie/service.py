@@ -24,6 +24,7 @@ from .traffic import TRAFFIC_GATE, retry_after_seconds
 
 ENDPOINTS = {
     "document_types": "https://app.omie.com.br/api/v1/geral/tiposdoc/", "customers": "https://app.omie.com.br/api/v1/geral/clientes/",
+    "products": "https://app.omie.com.br/api/v1/geral/produtos/",
     "departments": "https://app.omie.com.br/api/v1/geral/departamentos/", "projects": "https://app.omie.com.br/api/v1/geral/projetos/",
     "categories": "https://app.omie.com.br/api/v1/geral/categorias/", "bank_accounts": "https://app.omie.com.br/api/v1/geral/contacorrente/",
     "financial_movements": "https://app.omie.com.br/api/v1/financas/mf/", "account_transactions": "https://app.omie.com.br/api/v1/financas/contacorrentelancamentos/",
@@ -33,6 +34,7 @@ ENDPOINTS = {
 OPERATIONS = {
     "document_types_list": ("document_types", "PesquisarTipoDocumento", False), "document_types_get": ("document_types", "ConsultarTipoDocumento", False),
     "customers_list": ("customers", "ListarClientes", False), "customers_get": ("customers", "ConsultarCliente", False), "customers_create": ("customers", "IncluirCliente", True),
+    "products_list": ("products", "ListarProdutos", False), "products_get": ("products", "ConsultarProduto", False),
     "departments_list": ("departments", "ListarDepartamentos", False), "departments_get": ("departments", "ConsultarDepartamento", False), "departments_create": ("departments", "IncluirDepartamento", True), "departments_update": ("departments", "AlterarDepartamento", True), "departments_delete": ("departments", "ExcluirDepartamento", True),
     "projects_list": ("projects", "ListarProjetos", False), "projects_get": ("projects", "ConsultarProjeto", False), "projects_create": ("projects", "IncluirProjeto", True), "projects_update": ("projects", "AlterarProjeto", True), "projects_upsert": ("projects", "UpsertProjeto", True), "projects_delete": ("projects", "ExcluirProjeto", True),
     "categories_list": ("categories", "ListarCategorias", False), "categories_get": ("categories", "ConsultarCategoria", False), "categories_create": ("categories", "IncluirCategoria", True), "categories_update": ("categories", "AlterarCategoria", True), "category_groups_create": ("categories", "IncluirGrupoCategoria", True), "category_groups_update": ("categories", "AlterarGrupoCategoria", True),

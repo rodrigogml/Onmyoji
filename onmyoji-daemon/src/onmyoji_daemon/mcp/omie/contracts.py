@@ -20,6 +20,8 @@ OPERATION_NAMES = {
     "customers_list": "customers.list",
     "customers_get": "customers.get",
     "customers_create": "customers.create",
+    "products_list": "products.list",
+    "products_get": "products.get",
     "departments_list": "departments.list",
     "departments_get": "departments.get",
     "departments_create": "departments.create",
@@ -454,12 +456,24 @@ def _receipt_info_and_allocations(body: Mapping[str, Any], *, completed: bool) -
         if not isinstance(rows, list) or not rows:
             fail("invalid_body", "items exige um item válido ou lista não vazia de itens.")
         validated_items = []
+        seen_sequences: set[int] = set()
         for index, item in enumerate(rows):
             if not isinstance(item, Mapping) or set(item) - {"itensIde", "itensInfoAdicEditar"} or not isinstance(item.get("itensIde"), Mapping):
                 fail("invalid_body", f"items[{index}] exige itensIde e só aceita os campos de item publicados.")
             identity = item["itensIde"]
-            if set(identity) != {"nSequencia", "cAcao"} or type(identity.get("nSequencia")) is not int or identity["nSequencia"] < 1 or identity.get("cAcao") not in {"NOVO", "ASSOCIAR-PRODUTO", "ASSOCIAR-PEDIDO", "IGNORAR", "EDITAR"}:
+            allowed_identity = {"nSequencia", "cAcao", "nIdProdutoExistente"}
+            if (set(identity) - allowed_identity or not {"nSequencia", "cAcao"} <= set(identity)
+                    or type(identity.get("nSequencia")) is not int or identity["nSequencia"] < 1
+                    or identity.get("cAcao") not in {"NOVO", "ASSOCIAR-PRODUTO", "ASSOCIAR-PEDIDO", "IGNORAR", "EDITAR"}):
                 fail("invalid_body", f"items[{index}].itensIde exige nSequencia e cAcao válidos.")
+            if identity["nSequencia"] in seen_sequences:
+                fail("invalid_body", "items não pode repetir nSequencia.")
+            seen_sequences.add(identity["nSequencia"])
+            if identity["cAcao"] == "ASSOCIAR-PRODUTO":
+                if type(identity.get("nIdProdutoExistente")) is not int or identity["nIdProdutoExistente"] <= 0:
+                    fail("invalid_body", f"items[{index}].itensIde.nIdProdutoExistente deve ser um ID positivo para ASSOCIAR-PRODUTO.")
+            elif "nIdProdutoExistente" in identity:
+                fail("invalid_body", f"items[{index}].itensIde.nIdProdutoExistente só é aceito para ASSOCIAR-PRODUTO.")
             validated_item: dict[str, Any] = {"itensIde": dict(identity)}
             if "itensInfoAdicEditar" in item:
                 additional = item["itensInfoAdicEditar"]
@@ -634,6 +648,51 @@ def customer_create_params(request: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+
+def product_params(operation: str, params: Mapping[str, Any]) -> dict[str, Any]:
+    """Consulta produtos existentes sem acionar qualquer cadastro ou alteração."""
+    if operation == "products.get":
+        if len(params) != 1:
+            fail("invalid_request", "Informe exatamente um entre codigo_produto, codigo_produto_integracao ou codigo.")
+        field, value = next(iter(params.items()))
+        if field == "codigo_produto":
+            if type(value) is not int or value <= 0:
+                fail("invalid_request", "codigo_produto deve ser um inteiro positivo.")
+        elif field in {"codigo_produto_integracao", "codigo"}:
+            if not isinstance(value, str) or not value.strip() or len(value) > 60:
+                fail("invalid_request", f"{field} deve ser texto não vazio de até 60 caracteres.")
+        else:
+            fail("invalid_request", "Identificador de produto não permitido.")
+        return {field: value}
+
+    allowed = {"ean", "filtrar_apenas_descricao", "inativo", "ncm",
+               "filtrar_apenas_omiepdv", "apenas_importado_api"}
+    for first, second in (("page", "pagina"), ("page_size", "registros_por_pagina")):
+        if first in params and second in params:
+            fail("invalid_request", f"Informe somente {first} ou {second}, não ambos.")
+    for field in ("page", "pagina", "page_size", "registros_por_pagina"):
+        if field in params and (type(params[field]) is not int or params[field] < 1):
+            fail("invalid_request", f"{field} deve ser um inteiro positivo.")
+    result = pagination(params, allowed)
+    if result["registros_por_pagina"] > 500:
+        fail("invalid_request", "registros_por_pagina deve ser no máximo 500.")
+    for field in ("filtrar_apenas_omiepdv", "apenas_importado_api", "inativo"):
+        if field in result and (not isinstance(result[field], str) or result[field] not in {"S", "N"}):
+            fail("invalid_request", f"{field} deve ser S ou N.")
+    for field, limit in (("filtrar_apenas_descricao", 200), ("ncm", 13)):
+        if field in result and (not isinstance(result[field], str) or
+                                not result[field].strip() or len(result[field]) > limit):
+            fail("invalid_request", f"{field} deve ser texto não vazio de até {limit} caracteres.")
+    if "ean" in result and (not isinstance(result["ean"], str) or
+                             re.fullmatch(r"[0-9]{1,14}", result["ean"]) is None):
+        fail("invalid_request", "ean deve ser texto de até 14 dígitos; preserve zeros à esquerda.")
+    # A Omie usa S como padrão para filtrar somente produtos de PDV.
+    # A consulta geral precisa incluir também produtos que não são de PDV.
+    result.setdefault("filtrar_apenas_omiepdv", "N")
+    result.setdefault("apenas_importado_api", "N")
+    return result
+
+
 def _build_params(operation: str, request: Mapping[str, Any]) -> dict[str, Any]:
     if operation == "customers.create":
         return customer_create_params(request)
@@ -645,6 +704,8 @@ def _build_params(operation: str, request: Mapping[str, Any]) -> dict[str, Any]:
         fail("invalid_request", "params e body devem ser objetos JSON.")
     if operation in {"customers.list", "customers.get"}:
         return customer_params(operation, params)
+    if operation in {"products.list", "products.get"}:
+        return product_params(operation, params)
     if operation == "departments.list":
         return pagination(params, set())
     if operation in {"departments.get", "departments.delete"}:
