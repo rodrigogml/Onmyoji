@@ -69,8 +69,44 @@ def test_usage_bot_suffix_and_private_topics_keep_the_reply_address(usage_gatewa
     assert deleted == [(9, 72)]
     assert len(sent) == 1 and sent[0]["chat"] == 9
     assert "100% disponível" in sent[0]["text"]
+    assert "Conta Codex\nAutenticação: ChatGPT\nE-mail: private@example.test" in sent[0]["text"]
     assert sent[0]["values"] == {"parse_mode": "HTML", **expected}
     assert [call[0] for call in calls] == ["account/read", "account/rateLimits/read"]
+
+
+def test_usage_shows_current_account_with_plan_and_email_from_login(usage_gateway):
+    gateway, client, sent, _deleted, calls = usage_gateway
+    original = client.request
+    account = {"type": "chatgpt", "planType": "plus", "email": "private@example.test"}
+
+    def request(method, params, timeout):
+        if method == "account/read":
+            calls.append((method, params, timeout))
+            return {"account": account, "requiresOpenaiAuth": True}
+        return original(method, params, timeout)
+
+    client.request = request
+    gateway._update(usage_message())
+    result = sent[0]["text"]
+    assert result.startswith("Consumo e franquia do Codex")
+    assert "100% disponível" in result
+    assert "Conta Codex\nAutenticação: ChatGPT\nPlano: plus\nE-mail: private@example.test" in result
+    assert [call[0] for call in calls] == ["account/read", "account/rateLimits/read"]
+
+
+def test_usage_does_not_expose_malformed_account_email(usage_gateway):
+    gateway, client, sent, _deleted, _calls = usage_gateway
+    original = client.request
+
+    def request(method, params, timeout):
+        if method == "account/read":
+            return {"account": {"type": "chatgpt", "email": "private@example.test\nsecret"}}
+        return original(method, params, timeout)
+
+    client.request = request
+    gateway._update(usage_message())
+    assert "E-mail: não informado pelo Codex" in sent[0]["text"]
+    assert "private@example.test" not in sent[0]["text"]
 
 
 def test_usage_from_non_owner_never_reads_account_or_sends_allowance(usage_gateway):
@@ -116,6 +152,7 @@ def test_usage_explains_authentication_modes_without_requesting_unavailable_limi
     gateway._update(usage_message())
     assert expected in sent[0]["text"]
     assert len(calls) == 1 and "%" not in sent[0]["text"]
+    assert "Conta Codex\n" in sent[0]["text"]
 
 
 @pytest.mark.parametrize("account_type", ["futureAuth", ["malformed"]])
@@ -146,6 +183,7 @@ def test_missing_optional_account_read_still_attempts_supported_limits(usage_gat
     gateway._update(usage_message())
     assert [call[0] for call in calls] == ["account/rateLimits/read"]
     assert "100% disponível" in sent[0]["text"]
+    assert "Informações da conta: não fornecidas pelo Codex." in sent[0]["text"]
 
 
 @pytest.mark.parametrize("code", [-32600, -32601])

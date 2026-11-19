@@ -1330,7 +1330,7 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
         return text.strip() if isinstance(text, str) else None
 
     def _usage(self, conversation_id: str) -> None:
-        """Consulta a franquia da conta sem iniciar um turno nem expor dados de login."""
+        """Consulta a franquia e os dados da conta sem iniciar um turno nem expor credenciais."""
         generation = getattr(self._input_local, "generation", None)
         if generation is None:
             generation = self._generation(conversation_id)
@@ -1364,20 +1364,27 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
                     raise
                 account_state = {}
             account = account_state.get("account")
+            if isinstance(account, dict):
+                account_text = self._login_account_text(account, details=True)
+            elif "account" in account_state and account is None:
+                account_text = self._login_account_text({}, details=True)
+            else:
+                account_text = "Informações da conta: não fornecidas pelo Codex."
+            account_suffix = "\n\nConta Codex\n" + account_text
             account_type = account.get("type") if isinstance(account, dict) else None
             if isinstance(account_type, str) and account_type in {"apiKey", "amazonBedrock"}:
                 mode = "chave de API" if account_type == "apiKey" else "Amazon Bedrock"
-                reply(f"O Codex desta instância usa {mode}. A franquia do plano ChatGPT não está disponível nesse modo.")
+                reply(f"O Codex desta instância usa {mode}. A franquia do plano ChatGPT não está disponível nesse modo." + account_suffix)
                 return
             if "account" in account_state and account is None:
                 if account_state.get("requiresOpenaiAuth") is True:
-                    reply("Não há uma conta ChatGPT conectada ao Codex desta instância. Faça login no Codex pelo setup e consulte /usage novamente.")
+                    reply("Não há uma conta ChatGPT conectada ao Codex desta instância. Faça login no Codex pelo setup e consulte /usage novamente." + account_suffix)
                     return
                 if account_state.get("requiresOpenaiAuth") is False:
-                    reply("O provedor configurado no Codex não disponibiliza uma franquia ChatGPT por esta consulta.")
+                    reply("O provedor configurado no Codex não disponibiliza uma franquia ChatGPT por esta consulta." + account_suffix)
                     return
             response = client.request("account/rateLimits/read", {}, timeout=25)
-            output = format_rate_limits(response)
+            output = format_rate_limits(response) + account_suffix
         except CodexProtocolError as error:
             self._record_error(error)
             if error.definitive_rejection and error.rpc_code in {-32600, -32601}:

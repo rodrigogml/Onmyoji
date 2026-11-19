@@ -12,7 +12,7 @@ _OWNER_COMMANDS = (
     ("topic", "Renomear o tópico atual: /topic <nome>"),
     ("config", "Configurar esta conversa"),
     ("channel", "Gerenciar canal de envio"),
-    ("usage", "Consultar consumo e franquia do Codex"),
+    ("usage", "Consultar consumo, franquia e conta Codex"),
     ("resetusage", "Resgatar uma renovação extra da franquia do Codex"),
     ("login", "Gerenciar login e conta Codex"),
     ("fila", "Enfileirar uma mensagem: /fila <texto>"),
