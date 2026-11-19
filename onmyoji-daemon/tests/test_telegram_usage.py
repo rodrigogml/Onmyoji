@@ -269,31 +269,71 @@ def test_unknown_command_help_includes_usage(usage_gateway):
     assert "Comando inválido" in sent[0]["text"] and "/usage" in sent[0]["text"] and "/resetusage" in sent[0]["text"]
 
 
-def test_resetusage_owner_confirms_one_credit_and_refreshes_limits(usage_gateway):
+def _reset_snapshot(*, count=2, details=True, used=100):
+    import time
+    timestamp = int(time.time())
+    summary = {"availableCount": count}
+    if details:
+        summary["credits"] = [
+            {
+                "id": "credit-a", "status": "available", "resetType": "codexRateLimits",
+                "grantedAt": timestamp - 86400, "expiresAt": timestamp + 3600,
+                "title": "Renovação A", "description": "Renovação da franquia Codex.",
+            },
+            {
+                "id": "credit-b", "status": "available", "resetType": "codexRateLimits",
+                "grantedAt": timestamp - 86400, "expiresAt": None,
+                "title": "Renovação B", "description": None,
+            },
+        ][:count]
+    return {"accountId": "account-one", "ordinaryUsageAllowed": False,
+            "rateLimits": {"primary": {"usedPercent": used, "windowDurationMins": 300,
+                                        "resetsAt": timestamp + 3600},
+                           "rateLimitReachedType": "rate_limit_reached" if used >= 100 else None},
+            "rateLimitResetCredits": summary}
+
+
+def _reset_selected_token(sent):
     import re
+    match = re.search(r"/resetusage confirmar ([0-9a-f]{6})", sent[-1]["text"])
+    assert match is not None
+    return match.group(1)
+
+
+def test_resetusage_owner_selects_specific_credit_and_confirms_only_after_preflight(usage_gateway):
     import uuid
     gateway, client, sent, _deleted, calls = usage_gateway
 
     def request(method, params, timeout):
         calls.append((method, params, timeout))
         if method == "account/rateLimits/read":
-            return {"rateLimitResetCredits": {"availableCount": 2},
-                    "rateLimits": {"primary": {"usedPercent": 30, "windowDurationMins": 300}}}
+            return _reset_snapshot()
         assert method == "account/rateLimitResetCredit/consume"
-        assert set(params) == {"idempotencyKey"}
+        assert set(params) == {"idempotencyKey", "creditId"}
+        assert params["creditId"] == "credit-b"
         uuid.UUID(params["idempotencyKey"])
         return {"outcome": "reset"}
 
     client.request = request
     gateway._update(usage_message(text="/resetusage"))
     assert [item[0] for item in calls] == ["account/rateLimits/read"]
-    match = re.search(r"/resetusage confirmar ([0-9a-f]{6})", sent[-1]["text"])
-    assert match is not None
-    gateway._update(usage_message(text=f"/resetusage confirmar {match.group(1)}"))
+    assert "Cupom 1" in sent[-1]["text"] and "Cupom 2" in sent[-1]["text"]
+    assert "Vencimento:" in sent[-1]["text"] and "Renovação B" in sent[-1]["text"]
+    assert "Seleção" not in sent[-1]["text"] or "selecionar" in sent[-1]["text"]
+    assert "/resetusage confirmar" not in sent[-1]["text"]
+
+    gateway._update(usage_message(text="/resetusage selecionar 2"))
+    assert [item[0] for item in calls] == ["account/rateLimits/read"] * 2
+    token = _reset_selected_token(sent)
+    assert "Cupom 2 selecionado" in sent[-1]["text"]
+    gateway._update(usage_message(text=f"/resetusage confirmar {token}"))
     assert [item[0] for item in calls] == [
-        "account/rateLimits/read", "account/rateLimitResetCredit/consume", "account/rateLimits/read"]
+        "account/rateLimits/read", "account/rateLimits/read",
+        "account/rateLimits/read", "account/rateLimitResetCredit/consume",
+        "account/rateLimits/read",
+    ]
     assert "Renovação extra aplicada" in sent[-1]["text"]
-    gateway._update(usage_message(text=f"/resetusage confirmar {match.group(1)}"))
+    gateway._update(usage_message(text=f"/resetusage confirmar {token}"))
     assert len([item for item in calls if item[0].endswith("/consume")]) == 1
 
 
@@ -304,42 +344,151 @@ def test_resetusage_owner_confirms_one_credit_and_refreshes_limits(usage_gateway
 ])
 def test_resetusage_rejected_outside_owner_private_chat(usage_gateway, changes):
     gateway, _client, sent, _deleted, calls = usage_gateway
-    gateway._update(usage_message(text="/resetusage", **changes))
-    gateway._update(usage_message(text="/resetusage confirmar aabbcc", **changes))
+    for command in ("/resetusage", "/resetusage selecionar 1", "/resetusage confirmar aabbcc"):
+        gateway._update(usage_message(text=command, **changes))
     assert calls == [] and sent == []
 
 
-def test_resetusage_ignores_missing_invalid_or_expired_confirmation(usage_gateway):
-    import re
+def test_resetusage_does_not_execute_from_edited_telegram_message(usage_gateway):
+    gateway, _client, sent, _deleted, calls = usage_gateway
+    edited = usage_message(text="/resetusage confirmar abcdef")
+    gateway._update({"edited_message": edited["message"]})
+    assert calls == [] and not gateway._reset_usage_pending
+    assert "mensagem nova" in sent[-1]["text"]
+
+
+def test_resetusage_cannot_confirm_without_selection_or_after_expiration(usage_gateway):
     gateway, client, sent, _deleted, calls = usage_gateway
     client.request = lambda method, params, timeout: (
-        calls.append((method, params, timeout)) or {"rateLimitResetCredits": {"availableCount": 1}})
+        calls.append((method, params, timeout)) or _reset_snapshot())
     gateway._update(usage_message(text="/resetusage confirmar abcdef"))
     assert calls == []
     gateway._update(usage_message(text="/resetusage"))
-    token = re.search(r"/resetusage confirmar ([0-9a-f]{6})", sent[-1]["text"]).group(1)
-    gateway._update(usage_message(text="/resetusage confirmar 000000"))
+    gateway._update(usage_message(text="/resetusage confirmar abcdef"))
     assert len(calls) == 1
+    gateway._update(usage_message(text="/resetusage selecionar 1"))
+    token = _reset_selected_token(sent)
+    gateway._update(usage_message(text="/resetusage confirmar 000000"))
+    assert len(calls) == 2
     gateway._reset_usage_pending["9"]["expires_at"] = 0
     gateway._update(usage_message(text=f"/resetusage confirmar {token}"))
-    assert len(calls) == 1
+    assert len(calls) == 2
     gateway._update(usage_message(text="/resetusage"))
-    fresh = re.search(r"/resetusage confirmar ([0-9a-f]{6})", sent[-1]["text"]).group(1)
+    gateway._update(usage_message(text="/resetusage selecionar 1"))
+    fresh = _reset_selected_token(sent)
     gateway._new_conversation("9")
     gateway._update(usage_message(text=f"/resetusage confirmar {fresh}"))
-    assert len(calls) == 2
+    assert len(calls) == 4
 
 
-def test_resetusage_cancel_or_missing_credit_never_consumes(usage_gateway):
+def test_resetusage_cancel_and_missing_credit_never_consume(usage_gateway):
     gateway, client, sent, _deleted, calls = usage_gateway
     client.request = lambda method, params, timeout: (
-        calls.append((method, params, timeout)) or {"rateLimitResetCredits": {"availableCount": 0}})
+        calls.append((method, params, timeout)) or _reset_snapshot(count=0))
     gateway._update(usage_message(text="/resetusage"))
     assert "não informou renovações" in sent[-1]["text"]
     assert len(calls) == 1 and not gateway._reset_usage_pending
     gateway._update(usage_message(text="/resetusage cancelar"))
+    assert not gateway._reset_usage_pending and len(calls) == 1
+
+
+@pytest.mark.parametrize("used", [0, 25, 99])
+def test_resetusage_never_offers_confirmation_when_quota_is_not_exhausted(usage_gateway, used):
+    gateway, client, sent, _deleted, calls = usage_gateway
+    client.request = lambda method, params, timeout: (
+        calls.append((method, params, timeout)) or _reset_snapshot(used=used))
+    gateway._update(usage_message(text="/resetusage"))
+    assert "Nenhuma confirmação será preparada" in sent[-1]["text"]
     assert not gateway._reset_usage_pending
+    gateway._update(usage_message(text="/resetusage selecionar 1"))
     assert len(calls) == 1
+
+
+def test_resetusage_count_only_requires_explicit_automatic_selection(usage_gateway):
+    gateway, client, sent, _deleted, calls = usage_gateway
+
+    def request(method, params, timeout):
+        calls.append((method, params, timeout))
+        if method == "account/rateLimits/read":
+            return _reset_snapshot(count=2, details=False)
+        assert method == "account/rateLimitResetCredit/consume"
+        assert set(params) == {"idempotencyKey"}
+        return {"outcome": "reset"}
+
+    client.request = request
+    gateway._update(usage_message(text="/resetusage"))
+    assert "vencimentos individuais indisponíveis" in sent[-1]["text"]
+    gateway._update(usage_message(text="/resetusage selecionar 1"))
+    assert len(calls) == 1
+    gateway._update(usage_message(text="/resetusage selecionar automatico"))
+    token = _reset_selected_token(sent)
+    assert len(calls) == 2
+    gateway._update(usage_message(text=f"/resetusage confirmar {token}"))
+    assert len([item for item in calls if item[0].endswith("/consume")]) == 1
+
+
+def test_resetusage_revalidates_selected_credit_and_aborts_on_change(usage_gateway):
+    gateway, client, sent, _deleted, calls = usage_gateway
+    seen = 0
+
+    def request(method, params, timeout):
+        nonlocal seen
+        calls.append((method, params, timeout))
+        assert method == "account/rateLimits/read"
+        seen += 1
+        snapshot = _reset_snapshot()
+        if seen == 2:
+            snapshot["rateLimitResetCredits"]["credits"][0]["status"] = "redeemed"
+        return snapshot
+
+    client.request = request
+    gateway._update(usage_message(text="/resetusage"))
+    gateway._update(usage_message(text="/resetusage selecionar 1"))
+    assert "venceu ou não está disponível" in sent[-1]["text"]
+    assert not any(item[0].endswith("/consume") for item in calls)
+
+
+def test_resetusage_second_preflight_prevents_unnecessary_consumption(usage_gateway):
+    gateway, client, sent, _deleted, calls = usage_gateway
+    seen = 0
+
+    def request(method, params, timeout):
+        nonlocal seen
+        calls.append((method, params, timeout))
+        assert method == "account/rateLimits/read"
+        seen += 1
+        return _reset_snapshot(used=20 if seen >= 3 else 100)
+
+    client.request = request
+    gateway._update(usage_message(text="/resetusage"))
+    gateway._update(usage_message(text="/resetusage selecionar 1"))
+    token = _reset_selected_token(sent)
+    gateway._update(usage_message(text=f"/resetusage confirmar {token}"))
+    assert "Nenhum cupom foi consumido" in sent[-1]["text"]
+    assert len(calls) == 3
+
+
+def test_resetusage_account_change_prevents_consumption(usage_gateway):
+    gateway, client, sent, _deleted, calls = usage_gateway
+    seen = 0
+
+    def request(method, params, timeout):
+        nonlocal seen
+        calls.append((method, params, timeout))
+        assert method == "account/rateLimits/read"
+        seen += 1
+        result = _reset_snapshot()
+        if seen == 3:
+            result["accountId"] = "another-account"
+        return result
+
+    client.request = request
+    gateway._update(usage_message(text="/resetusage"))
+    gateway._update(usage_message(text="/resetusage selecionar 1"))
+    token = _reset_selected_token(sent)
+    gateway._update(usage_message(text=f"/resetusage confirmar {token}"))
+    assert "conta Codex mudou" in sent[-1]["text"]
+    assert len(calls) == 3
 
 
 @pytest.mark.parametrize("outcome, expected", [
@@ -349,35 +498,34 @@ def test_resetusage_cancel_or_missing_credit_never_consumes(usage_gateway):
     ("unexpected", "não confirmou o resgate"),
 ])
 def test_resetusage_handles_service_outcomes_without_retry(usage_gateway, outcome, expected):
-    import re
     gateway, client, sent, _deleted, calls = usage_gateway
 
     def request(method, params, timeout):
         calls.append((method, params, timeout))
-        return ({"rateLimitResetCredits": {"availableCount": 1}} if method == "account/rateLimits/read"
-                else {"outcome": outcome})
+        return (_reset_snapshot() if method == "account/rateLimits/read" else {"outcome": outcome})
 
     client.request = request
     gateway._update(usage_message(text="/resetusage"))
-    token = re.search(r"/resetusage confirmar ([0-9a-f]{6})", sent[-1]["text"]).group(1)
+    gateway._update(usage_message(text="/resetusage selecionar 1"))
+    token = _reset_selected_token(sent)
     gateway._update(usage_message(text=f"/resetusage confirmar {token}"))
     assert expected in sent[-1]["text"]
     assert len([item for item in calls if item[0].endswith("/consume")]) == 1
 
 
 def test_resetusage_unknown_consume_failure_is_not_retried(usage_gateway):
-    import re
     gateway, client, sent, _deleted, calls = usage_gateway
 
     def request(method, params, timeout):
         calls.append((method, params, timeout))
         if method == "account/rateLimitResetCredit/consume":
             raise CodexProtocolError("private@example.test token=private")
-        return {"rateLimitResetCredits": {"availableCount": 1}}
+        return _reset_snapshot()
 
     client.request = request
     gateway._update(usage_message(text="/resetusage"))
-    token = re.search(r"/resetusage confirmar ([0-9a-f]{6})", sent[-1]["text"]).group(1)
+    gateway._update(usage_message(text="/resetusage selecionar 1"))
+    token = _reset_selected_token(sent)
     gateway._update(usage_message(text=f"/resetusage confirmar {token}"))
     assert "incerto" in sent[-1]["text"] and "private" not in sent[-1]["text"]
     gateway._update(usage_message(text=f"/resetusage confirmar {token}"))

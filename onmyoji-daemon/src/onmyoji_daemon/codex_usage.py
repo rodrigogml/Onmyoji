@@ -12,6 +12,8 @@ import math
 import re
 from typing import Any
 
+from .codex_reset import format_reset_credits
+
 
 _PLANS = {
     "free": "Free", "go": "Go", "plus": "Plus", "pro": "Pro",
@@ -170,9 +172,7 @@ def format_rate_limits(response: dict[str, Any], *, timezone: tzinfo | None = No
             lines.append(_LIMIT_STATES[state])
         if bucket.get("spendControlReached") is True:
             lines.append("Limite de gastos atingido. O percentual restante da janela não elimina esse bloqueio.")
-    resets = response.get("rateLimitResetCredits")
-    if isinstance(resets, dict):
-        count = resets.get("availableCount")
-        if type(count) is int and 0 <= count <= 1_000_000:
-            lines.extend(["", f"Renovações extras de franquia disponíveis: {count}."])
+    reset_text = format_reset_credits(response, timezone=timezone)
+    if reset_text:
+        lines.extend(["", reset_text])
     return "\n".join(lines)

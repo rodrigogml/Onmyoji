@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 LAYOUT_VERSION = 2
-SETUP_VERSION = "2026.11.19.1"
+SETUP_VERSION = "2026.11.19.2"
 
 
 class StateLayoutError(RuntimeError):

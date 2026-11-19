@@ -38,6 +38,7 @@ from .telegram_process import ProcessRecoveryError
 from .telegram_delivery import GatewayDelivery, DeliveryOwner, DeliveryUncertain, DeliverySuppressed
 from .codex_capabilities import CapabilitySet
 from .codex_usage import format_rate_limits
+from .codex_reset import available_reset_credits, reset_credit_count, reset_credit_rows, reset_needed
 from .telegram_login import TelegramLogin
 from .instructions import InstructionComposer, TelegramTurnContext
 from .instance import identity, telegram_configuration_path
@@ -1398,11 +1399,11 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
             return
         credit_info = response.get("rateLimitResetCredits") if isinstance(response, dict) else None
         if isinstance(credit_info, dict) and type(credit_info.get("availableCount")) is int and credit_info["availableCount"] > 0:
-            output += "\n\nPara resgatar uma renovação extra, use /resetusage (requer confirmação)."
+            output += "\n\nPara consultar cupons e vencimentos sem consumi-los, use /resetusage. O resgate exige escolha e confirmação separadas."
         reply(output)
 
     def _resetusage(self, conversation_id: str, argument: str) -> None:
-        """Consome uma renovação extra somente após confirmação explícita do owner."""
+        """Consulta, seleciona e confirma um cupom sem consumi-lo na prévia."""
         chat_id, _topic = self._telegram_address(conversation_id)
         if chat_id not in self.contacts.owners():
             return
@@ -1413,21 +1414,44 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
             return
 
         def reply(text: str) -> None:
-            if generation == self._generation(conversation_id):
-                self._ephemeral(conversation_id, text, 120)
+            if generation != self._generation(conversation_id):
+                return
+            telegram_chat_id, topic_values = self._telegram_address(conversation_id)
+            receipts = self._send_agent_text(telegram_chat_id, text, **topic_values)
+            for receipt in receipts:
+                message_id = receipt.get("message_id") if isinstance(receipt, dict) else None
+                if isinstance(message_id, int):
+                    self._schedule_delete(telegram_chat_id, message_id, 300)
+            if generation != self._generation(conversation_id) and self.api:
+                for receipt in receipts:
+                    message_id = receipt.get("message_id") if isinstance(receipt, dict) else None
+                    if isinstance(message_id, int):
+                        try: self.api.delete(telegram_chat_id, message_id)
+                        except Exception: self._record_error("Não foi possível remover a prévia encerrada.")
+
+        def read_limits() -> dict[str, Any]:
+            response = self._app_client().request("account/rateLimits/read", {}, timeout=25)
+            if not isinstance(response, dict):
+                raise CodexProtocolError("Resposta de franquia inválida.")
+            return response
+
+        def valid_account(snapshot: dict[str, Any], current: dict[str, Any]) -> bool:
+            identity = snapshot.get("account_id")
+            return not identity or current.get("accountId") == identity
 
         values = argument.strip().split()
         action = values[0].casefold() if values else ""
         if action == "cancelar" and len(values) == 1:
             with self._reset_usage_lock:
                 removed = self._reset_usage_pending.pop(conversation_id, None)
-            reply("Confirmação de resgate cancelada." if removed else "Não há resgate aguardando confirmação.")
+            reply("Preparação de resgate cancelada." if removed else "Não há resgate aguardando confirmação.")
             return
+
         if action == "confirmar" and len(values) == 2:
             with self._reset_usage_lock:
                 pending = self._reset_usage_pending.get(conversation_id)
-                valid = bool(pending and pending["generation"] == generation
-                             and pending["expires_at"] >= time.time()
+                valid = bool(pending and pending.get("phase") == "confirm"
+                             and pending["generation"] == generation and pending["expires_at"] >= time.time()
                              and secrets.compare_digest(pending["token"], values[1]))
                 busy = self._reset_usage_inflight
                 if valid and not busy:
@@ -1443,14 +1467,36 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
                 if generation != self._generation(conversation_id) or not self.settings.app_server_enabled:
                     return
                 client = self._app_client()
-                result = client.request("account/rateLimitResetCredit/consume",
-                                        {"idempotencyKey": pending["idempotency_key"]}, timeout=25)
+                # Consulta remota obrigatória, imediatamente antes do único consumo.
+                latest = client.request("account/rateLimits/read", {}, timeout=25)
+                needed, reason = reset_needed(latest)
+                if not needed:
+                    reply("Nenhum cupom foi consumido. " + reason)
+                    return
+                if not valid_account(pending, latest):
+                    reply("A conta Codex mudou desde a seleção. Nenhum cupom foi consumido; reinicie /resetusage.")
+                    return
+                if (available := reset_credit_count(latest)) is None or available <= 0:
+                    reply("O Codex não confirmou cupons disponíveis. Nenhum cupom foi consumido.")
+                    return
+                credit_id = pending.get("credit_id")
+                if credit_id:
+                    if credit_id not in available_reset_credits(latest).values():
+                        reply("O cupom escolhido não está mais disponível ou venceu. Nenhum cupom foi consumido.")
+                        return
+                elif reset_credit_rows(latest) not in (None, []):
+                    reply("O Codex agora informa cupons individuais. Selecione um deles em /resetusage; nenhum cupom foi consumido.")
+                    return
+                payload = {"idempotencyKey": pending["idempotency_key"]}
+                if credit_id:
+                    payload["creditId"] = credit_id
+                result = client.request("account/rateLimitResetCredit/consume", payload, timeout=25)
                 outcome = result.get("outcome") if isinstance(result, dict) else None
                 if outcome in {"reset", "alreadyRedeemed"}:
                     self._diagnostic("codex_reset.redeemed", outcome=outcome)
                     try:
-                        latest = client.request("account/rateLimits/read", {}, timeout=25)
-                        reply("Renovação extra aplicada.\n\n" + format_rate_limits(latest))
+                        updated_limits = client.request("account/rateLimits/read", {}, timeout=25)
+                        reply("Renovação extra aplicada.\n\n" + format_rate_limits(updated_limits))
                     except (CodexProtocolError, CodexExecutionError, ProcessRecoveryError, OSError):
                         reply("Renovação extra aplicada. Consulte /usage para atualizar a franquia.")
                 elif outcome == "noCredit":
@@ -1459,21 +1505,88 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
                     reply("O Codex informou que nenhuma janela está elegível para renovação. Nenhum resgate foi aplicado.")
                 else:
                     reply("O Codex não confirmou o resgate. Confira /usage antes de tentar novamente.")
-            except CodexProtocolError as error:
-                self._record_error(error)
-                if error.definitive_rejection and error.rpc_code in {-32600, -32601}:
-                    reply("O Codex instalado não suporta o resgate de franquia. Atualize o Codex pelo setup.")
-                else:
-                    reply("O resultado do resgate é incerto. Confira /usage antes de tentar novamente; não há repetição automática.")
-            except (CodexExecutionError, ProcessRecoveryError, OSError) as error:
+            except (CodexProtocolError, CodexExecutionError, ProcessRecoveryError, OSError) as error:
                 self._record_error(error)
                 reply("O resultado do resgate é incerto. Confira /usage antes de tentar novamente; não há repetição automática.")
             finally:
                 with self._reset_usage_lock:
                     self._reset_usage_inflight = False
             return
+
+        if action == "selecionar" and len(values) == 2:
+            with self._reset_usage_lock:
+                preview = self._reset_usage_pending.get(conversation_id)
+                valid = bool(preview and preview.get("phase") == "catalog"
+                             and preview["generation"] == generation and preview["expires_at"] >= time.time())
+                busy = self._reset_usage_inflight
+            if busy:
+                reply("Já existe um resgate em andamento. Consulte /usage antes de iniciar outro.")
+                return
+            if not valid:
+                reply("Lista ausente ou expirada. Consulte os cupons com /resetusage antes de selecionar.")
+                return
+            option = values[1].casefold()
+            automatic = option == "automatico"
+            if automatic:
+                if not preview["automatic_allowed"]:
+                    reply("Seleção automática não permitida: escolha o número de um cupom apresentado na lista.")
+                    return
+                credit_id = None
+            else:
+                if not option.isascii() or not option.isdecimal() or len(option) > 3:
+                    reply("Seleção inválida. Informe o número exibido após /resetusage.")
+                    return
+                index = int(option)
+                credit_id = preview["choices"].get(index)
+                if not credit_id:
+                    reply("Cupom indisponível para seleção. Consulte /resetusage novamente.")
+                    return
+            if not self.settings.app_server_enabled:
+                reply("O Codex App Server está desabilitado; nenhum cupom foi consumido.")
+                return
+            try:
+                latest = read_limits()
+            except (CodexProtocolError, CodexExecutionError, ProcessRecoveryError, OSError) as error:
+                self._record_error(error)
+                reply("Não foi possível revalidar os cupons. Nenhum cupom foi consumido.")
+                return
+            needed, reason = reset_needed(latest)
+            if not needed or (count := reset_credit_count(latest)) is None or count <= 0:
+                reply("Nenhum cupom foi consumido. " + (reason if not needed else "Os cupons não estão disponíveis."))
+                return
+            if not valid_account(preview, latest):
+                reply("A conta Codex mudou; reabra /resetusage. Nenhum cupom foi consumido.")
+                return
+            if credit_id and credit_id not in available_reset_credits(latest).values():
+                reply("O cupom escolhido venceu ou não está disponível. Reabra /resetusage.")
+                return
+            if automatic and reset_credit_rows(latest) not in (None, []):
+                reply("O Codex agora retornou detalhes individuais; escolha o número do cupom após /resetusage.")
+                return
+            token = secrets.token_hex(3)
+            confirmation = {
+                "phase": "confirm", "generation": generation, "expires_at": time.time() + 120,
+                "token": token, "idempotency_key": str(uuid.uuid4()),
+                "credit_id": credit_id, "account_id": latest.get("accountId"),
+            }
+            with self._reset_usage_lock:
+                if self._reset_usage_inflight or self._reset_usage_pending.get(conversation_id) is not preview:
+                    reply("A lista de cupons mudou. Reabra /resetusage.")
+                    return
+                self._reset_usage_pending[conversation_id] = confirmation
+            selection = (f"Cupom {option} selecionado pelo ID interno conferido."
+                         if credit_id else "Seleção automática solicitada: o Codex escolherá qual cupom consumir, pois não informou detalhes individuais.")
+            reply("Prévia do resgate (sem consumir):\n\n" + format_rate_limits(latest)
+                  + "\n\n" + selection
+                  + "\nSerá consumido 1 cupom, sem possibilidade de desfazer."
+                  + f"\nPara confirmar em até 2 minutos, envie /resetusage confirmar {token}"
+                  + "\nPara desistir, envie /resetusage cancelar.")
+            return
+
         if values:
-            reply("Use /resetusage para preparar o resgate, /resetusage confirmar <código> para concluir ou /resetusage cancelar.")
+            reply("Use /resetusage para consultar, /resetusage selecionar <número> para escolher, "
+                  "/resetusage selecionar automatico se só houver contagem, "
+                  "/resetusage confirmar <código> para consumir ou /resetusage cancelar.")
             return
         if not self.settings.app_server_enabled:
             reply("O resgate de franquia exige o Codex App Server habilitado no setup do daemon.")
@@ -1484,30 +1597,45 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
                 return
             self._reset_usage_pending.pop(conversation_id, None)
         try:
-            limits = self._app_client().request("account/rateLimits/read", {}, timeout=25)
+            limits = read_limits()
         except (CodexProtocolError, CodexExecutionError, ProcessRecoveryError, OSError) as error:
             self._record_error(error)
-            reply("Não foi possível conferir as renovações extras. Consulte /usage e tente novamente.")
+            reply("Não foi possível conferir os cupons. Consulte /usage e tente novamente.")
             return
         if generation != self._generation(conversation_id):
             return
-        credits = limits.get("rateLimitResetCredits") if isinstance(limits, dict) else None
-        count = credits.get("availableCount") if isinstance(credits, dict) else None
-        if type(count) is not int or count <= 0:
-            reply("O Codex não informou renovações extras disponíveis. Consulte /usage.")
+        detail = format_rate_limits(limits)
+        count = reset_credit_count(limits)
+        if count is None or count <= 0:
+            reply(detail + "\n\nO Codex não informou renovações extras disponíveis. Nenhum cupom será consumido.")
             return
-        token = secrets.token_hex(3)
-        pending = {"generation": generation, "expires_at": time.time() + 120,
-                   "token": token, "idempotency_key": str(uuid.uuid4())}
+        needed, reason = reset_needed(limits)
+        if not needed:
+            reply(detail + "\n\n" + reason + "\nNenhuma confirmação será preparada.")
+            return
+        choices = available_reset_credits(limits)
+        rows = reset_credit_rows(limits)
+        automatic_allowed = rows is None or len(rows) == 0
+        if not choices and not automatic_allowed:
+            reply(detail + "\n\nNenhum cupom detalhado está apto à seleção. Nenhuma confirmação será preparada.")
+            return
+        pending = {
+            "phase": "catalog", "generation": generation, "expires_at": time.time() + 300,
+            "choices": choices, "automatic_allowed": automatic_allowed, "account_id": limits.get("accountId"),
+        }
         with self._reset_usage_lock:
             if self._reset_usage_inflight:
                 reply("Já existe um resgate em andamento. Consulte /usage antes de iniciar outro.")
                 return
             self._reset_usage_pending[conversation_id] = pending
-        reply(f"Renovações extras disponíveis: {count}.\n"
-              "Este resgate consome 1 renovação extra e não pode ser desfeito.\n"
-              f"Para confirmar em até 2 minutos, envie /resetusage confirmar {token}\n"
-              "Para desistir, envie /resetusage cancelar.")
+        instructions = ("Para escolher um cupom da lista, envie /resetusage selecionar <número>."
+                        if choices else
+                        "O Codex não forneceu detalhes individuais. Para autorizar que ele escolha um cupom, "
+                        "envie /resetusage selecionar automatico; o vencimento do cupom escolhido é desconhecido.")
+        reply("Consulta de cupons (nenhum será consumido nesta etapa):\n\n" + detail
+              + "\n\n" + reason + "\n" + instructions
+              + "\nA seleção gera um novo código de confirmação, válido por 2 minutos."
+              + "\nPara desistir, envie /resetusage cancelar.")
 
     def _update(self, update: dict[str, Any]) -> None:
         self._input_local.route = "auto"
@@ -1623,6 +1751,9 @@ class Gateway(TelegramLogin, NotificationIngress, TelegramExecution, TelegramCha
         if command == "/usage":
             self._usage(conversation_id); return
         if command == "/resetusage":
+            if "edited_message" in update:
+                self._ephemeral(conversation_id, "Por segurança, envie uma mensagem nova para consultar, selecionar ou confirmar cupons.")
+                return
             self._resetusage(conversation_id, text[len(text.split(maxsplit=1)[0]):].strip()); return
         if command == "/login":
             self._login(conversation_id); return

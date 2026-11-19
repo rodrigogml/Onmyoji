@@ -143,6 +143,15 @@ quantidades de tokens, valores monetários ou acesso liberado a partir do
 percentual restante, nem consome créditos de renovação. Limites de gastos ou de
 uso indicados pelo servidor continuam visíveis mesmo com percentual restante.
 
+Quando o Codex fornece `rateLimitResetCredits.credits`, a consulta apresenta
+até 20 cupons individualizados com posição na lista, título seguro, tipo,
+estado, data de concessão e vencimento no fuso local do host, inclusive quando
+a data é hoje ou o backend declara que o cupom não expira. Uma descrição
+sanitizada também é mostrada quando fornecida. IDs opacos não são exibidos.
+`availableCount` continua sendo a contagem de referência: o servidor pode
+retornar menos detalhes que a quantidade disponível, ou somente a quantidade.
+Nesses casos, os vencimentos desconhecidos não são estimados.
+
 App Server desabilitado, falta de login, autenticação por chave de API ou
 Amazon Bedrock e versão do Codex sem suporte recebem orientações próprias.
 Falhas de comunicação não expõem respostas brutas, e-mails ou credenciais.
@@ -234,16 +243,39 @@ compor o contexto não confiável, mas não autorizam comandos de controle.
 O Gateway rejeita `/usage` fora da DM do owner antes de consultar
 `account/rateLimits/read`.
 
-`/resetusage` fica restrito à DM do owner, inclusive tópicos privados, e inicia
-uma consulta de disponibilidade sem consumir créditos. Para usar uma renovação
-extra disponível, o owner precisa digitar `/resetusage confirmar <código>` com
-o código gerado pelo bot dentro de 2 minutos. `/resetusage cancelar` descarta
-a confirmação pendente. O Gateway consome exatamente um crédito pelo RPC
-`account/rateLimitResetCredit/consume` com chave de idempotência única e não
-repete a operação automaticamente após um resultado incerto. Rejeições de
-conta sem créditos e de janela sem elegibilidade não são tratadas como sucesso.
-Após consumo confirmado, o Gateway relê os limites; `/usage` continua sendo
-somente consulta, e o menu dos demais usuários continua sem `/resetusage`.
+`/resetusage` fica restrito à DM do owner, inclusive tópicos privados.
+Esse comando agora **somente consulta** a disponibilidade e exibe o retrato
+da franquia com cupons e vencimentos que o Codex fornecer. A prévia não gera
+código de consumo. Quando há dados suficientes para verificar que o limite
+continua atingido, o Gateway prepara uma lista temporária de cupons elegíveis:
+
+1. `/resetusage` — consultar limites, cupons e vencimentos; nenhum resgate.
+2. `/resetusage selecionar <número>` — escolher explicitamente um cupom listado.
+   O Gateway confirma novamente que o mesmo ID opaco ainda está disponível,
+   no prazo e associado à conta anterior quando o `accountId` é fornecido;
+   não consome nada. Se o backend
+   fornecer **somente a quantidade**, `/resetusage selecionar automatico`
+   permite solicitar conscientemente que o Codex escolha o cupom, com aviso
+   explícito de que seu vencimento não é conhecido. Essa opção não é aceita
+   quando há uma lista individual disponível.
+3. `/resetusage confirmar <código>` — autorização explícita com código
+   aleatório válido por 2 minutos. Antes da única tentativa de consumo, o
+   Gateway faz **outra leitura remota** para comprovar que a franquia ainda
+   está esgotada, não há bloqueio financeiro distinto, o `accountId`
+   permanece igual quando disponível, há créditos disponíveis e o cupom
+   escolhido ainda está válido. O RPC
+   `account/rateLimitResetCredit/consume` recebe `creditId` específico
+   quando o backend fornece detalhes, além de chave de idempotência.
+   `/resetusage cancelar` descarta a seleção ou confirmação.
+
+O Gateway ignora tentativas de executar `/resetusage` por edição de mensagem:
+consultar, selecionar ou confirmar exige uma mensagem nova, não editada.
+A consulta inicial prepara uma lista por até 5 minutos. Qualquer etapa vencida,
+conta alterada, cupom indisponível ou franquia não esgotada fecha o resgate
+sem consumir. O Gateway não faz repetição automática quando o resultado de
+consumo é incerto. Depois de consumo confirmado, relê os limites. `/usage`
+permanece estritamente de leitura e o catálogo de comandos de outros usuários
+não inclui `/resetusage`.
 
 ### Autocadastro de terceiros — Fase 2
 
